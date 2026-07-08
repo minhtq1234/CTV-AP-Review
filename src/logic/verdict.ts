@@ -43,6 +43,8 @@ function similarity(a: string, b: string): number {
   const longer = Math.max(a.length, b.length)
   if (longer === 0) return 1
   const at = a.split(' '), bt = b.split(' ')
+  // a fully-contained token set (e.g. "grab" inside "cong ty tnhh grab") floors the score at 0.9;
+  // a short common token can over-boost dissimilar names — acceptable heuristic for this prototype
   const contained = at.every(t => bt.includes(t)) || bt.every(t => at.includes(t))
   const lev = 1 - levenshtein(a, b) / longer
   return contained ? Math.max(lev, 0.9) : lev
@@ -50,7 +52,10 @@ function similarity(a: string, b: string): number {
 
 function baseVerdict(expected: string, value: string, kind: FieldKind): Verdict {
   switch (kind) {
-    case 'number': return normNumber(expected) === normNumber(value) ? 'match' : 'mismatch'
+    case 'number': {
+      if (!digits(expected) || !digits(value)) return 'mismatch'   // no parseable number on a side -> not a match
+      return normNumber(expected) === normNumber(value) ? 'match' : 'mismatch'
+    }
     case 'date':   return normDate(expected) === normDate(value) ? 'match' : 'mismatch'
     case 'text':   return expected.trim() === value.trim() ? 'match' : 'mismatch'
     case 'name': {

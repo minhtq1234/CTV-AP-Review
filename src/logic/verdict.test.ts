@@ -55,4 +55,20 @@ describe('orderFields', () => {
     expect(ranked.map(r => r.verdict)).toEqual(['mismatch', 'low_conf', 'fuzzy', 'match'])
     expect(ranked.find(r => r.field.key === 'total')!.index).toBe(3)
   })
+
+  it('breaks ties by page then bbox.y among same-severity fields', () => {
+    const at = (key: string, page: number, y: number): CaseField => ({
+      key, label: key, kind: 'number', expected: '100',
+      prediction: { value: '200', confidence: 0.98, page, bbox: { x: 0, y, width: 10, height: 10 } },
+    })
+    // all mismatch (100 vs 200) -> same severity; expect page asc, then y asc
+    const ranked = orderFields([at('b', 1, 50), at('a', 0, 900), at('c', 1, 20)])
+    expect(ranked.map(r => r.field.key)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('empty-vs-empty number is a mismatch, not a false match', () => {
+    const f: CaseField = { key: 'x', label: 'x', kind: 'number', expected: '',
+      prediction: { value: '', confidence: 0.98, page: 0, bbox: { x: 0, y: 0, width: 1, height: 1 } } }
+    expect(orderFields([f])[0].verdict).toBe('mismatch')
+  })
 })
