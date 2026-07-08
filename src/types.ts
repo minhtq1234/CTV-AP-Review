@@ -29,6 +29,7 @@ export interface Case {
   status: CaseStatus
   pages: DocPage[]
   fields: CaseField[]
+  rejectReason?: string
 }
 
 export interface Frame { scale: number; tx: number; ty: number }

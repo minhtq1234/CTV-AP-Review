@@ -24,6 +24,8 @@ export default function ReviewScreen({ case_, onUpdateCase }: ReviewScreenProps)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(true); return }
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
       e.preventDefault()
       const i = ranked.findIndex(r => r.field.key === selectedKey)
@@ -55,8 +57,9 @@ export default function ReviewScreen({ case_, onUpdateCase }: ReviewScreenProps)
       </div>
       <ActionBar
         status={case_.status}
+        rejectReason={case_.rejectReason}
         onApprove={() => onUpdateCase({ ...case_, status: 'approved' })}
-        onReject={() => onUpdateCase({ ...case_, status: 'rejected' })}
+        onReject={(reason) => onUpdateCase({ ...case_, status: 'rejected', rejectReason: reason })}
       />
       <FieldPalette open={paletteOpen} ranked={ranked}
         onJump={setSelectedKey} onClose={() => setPaletteOpen(false)} />

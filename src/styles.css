@@ -75,3 +75,4 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .btn.primary { border-color: var(--accent); background: #eaf1fb; color: var(--accent); font-weight: 500; }
 .final { font-size: 14px; font-weight: 500; margin-left: auto; }
 .final.approved { color: var(--success); } .final.rejected { color: var(--danger); }
+.final-reason { color: var(--text-muted); font-weight: 400; }
