@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Case } from '../types'
 import { orderFields } from '../logic/verdict'
 import DocViewer from './DocViewer'
+import FieldsPanel from './FieldsPanel'
 
 interface ReviewScreenProps { case_: Case; onUpdateCase: (c: Case) => void }
 
@@ -35,15 +36,7 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
         <div><strong>Đề nghị thanh toán #{case_.id}</strong> — {case_.requester} · {case_.category}</div>
       </header>
       <div className="panes">
-        <aside className="fields-pane">
-          {ranked.map(r => (
-            <div key={r.field.key}
-              className={r.field.key === selectedKey ? 'frow sel' : 'frow'}
-              onClick={() => setSelectedKey(r.field.key)}>
-              {r.field.label}: {r.field.expected} → {r.field.prediction?.value ?? '—'} [{r.verdict}]
-            </div>
-          ))}
-        </aside>
+        <FieldsPanel ranked={ranked} selectedKey={selectedKey} onSelect={setSelectedKey} />
         <DocViewer
           pages={case_.pages}
           page={page}
