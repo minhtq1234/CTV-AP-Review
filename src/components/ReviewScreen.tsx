@@ -38,6 +38,9 @@ export default function ReviewScreen({ case_, onUpdateCase }: ReviewScreenProps)
     <div className="screen">
       <header className="screen-head">
         <div><strong>Đề nghị thanh toán #{case_.id}</strong> — {case_.requester} · {case_.category}</div>
+        <span className={`status-pill ${case_.status}`}>
+          {case_.status === 'pending' ? 'Chờ duyệt' : case_.status === 'approved' ? 'Đã duyệt' : 'Đã từ chối'}
+        </span>
       </header>
       <div className="panes">
         <FieldsPanel ranked={ranked} selectedKey={selectedKey} onSelect={setSelectedKey} />

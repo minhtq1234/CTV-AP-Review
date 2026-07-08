@@ -4,7 +4,7 @@ const RECEIPT = { width: 800, height: 1120 }
 
 // shared receipt coordinate grid (matches the SVG receipts in public/docs)
 const G = {
-  vendor:   { x: 210, y: 96,  width: 380, height: 40 },
+  vendor:   { x: 150, y: 92,  width: 500, height: 48 },
   invoice:  { x: 470, y: 192, width: 210, height: 30 },
   date:     { x: 470, y: 232, width: 150, height: 30 },
   subtotal: { x: 520, y: 542, width: 190, height: 32 },
