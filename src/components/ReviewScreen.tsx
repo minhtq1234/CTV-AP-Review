@@ -3,6 +3,7 @@ import type { Case } from '../types'
 import { orderFields } from '../logic/verdict'
 import DocViewer from './DocViewer'
 import FieldsPanel from './FieldsPanel'
+import FieldPalette from './FieldPalette'
 
 interface ReviewScreenProps { case_: Case; onUpdateCase: (c: Case) => void }
 
@@ -11,6 +12,7 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
   const [selectedKey, setSelectedKey] = useState(ranked[0]?.field.key ?? '')
   const [page, setPage] = useState(0)
   const [lockView, setLockView] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   const selected = case_.fields.find(f => f.key === selectedKey) ?? null
 
@@ -20,6 +22,7 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(true); return }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
       e.preventDefault()
       const i = ranked.findIndex(r => r.field.key === selectedKey)
@@ -46,6 +49,8 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
           onToggleLock={() => setLockView(v => !v)}
         />
       </div>
+      <FieldPalette open={paletteOpen} ranked={ranked}
+        onJump={setSelectedKey} onClose={() => setPaletteOpen(false)} />
     </div>
   )
 }
