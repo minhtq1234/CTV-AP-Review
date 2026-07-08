@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1120" viewBox="0 0 800 1120" font-family="sans-serif">
+  <rect width="800" height="1120" fill="#eef1f4"/>
+  <rect x="80" y="80" width="640" height="380" rx="14" fill="#ffffff" stroke="#d0d5da"/>
+  <text x="110" y="145" font-size="24" font-weight="bold" fill="#1a7a4c">Grab</text>
+  <text x="110" y="178" font-size="16" fill="#555">Chi tiết chuyến đi</text>
+  <line x1="110" y1="198" x2="690" y2="198" stroke="#e5e3dd"/>
+  <text x="110" y="240" font-size="15" fill="#777">Mã chuyến</text><text x="690" y="240" text-anchor="end" font-size="15" fill="#2b2a28">G-88213</text>
+  <text x="110" y="280" font-size="15" fill="#777">Ngày</text><text x="690" y="280" text-anchor="end" font-size="15" fill="#2b2a28">05/07/2026</text>
+  <text x="110" y="320" font-size="15" fill="#777">Điểm đón</text><text x="690" y="320" text-anchor="end" font-size="15" fill="#2b2a28">VNG Campus, Q7</text>
+  <text x="110" y="360" font-size="15" fill="#777">Điểm đến</text><text x="690" y="360" text-anchor="end" font-size="15" fill="#2b2a28">Sân bay Tân Sơn Nhất</text>
+  <line x1="110" y1="392" x2="690" y2="392" stroke="#e5e3dd"/>
+  <text x="110" y="435" font-size="18" font-weight="bold" fill="#2b2a28">Tổng</text><text x="690" y="435" text-anchor="end" font-size="18" font-weight="bold" fill="#2b2a28">2.050.000 ₫</text>
+  <text x="400" y="540" font-size="13" text-anchor="middle" fill="#999">Ảnh chụp màn hình ứng dụng</text>
+</svg>

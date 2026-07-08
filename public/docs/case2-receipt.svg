@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1120" viewBox="0 0 800 1120" font-family="monospace">
+  <rect width="800" height="1120" fill="#ffffff"/>
+  <rect x="60" y="40" width="680" height="1040" fill="none" stroke="#e5e3dd"/>
+  <text x="400" y="120" font-size="30" font-weight="bold" text-anchor="middle" fill="#2b2a28">CÔNG TY TNHH GRAB</text>
+  <text x="400" y="150" font-size="15" text-anchor="middle" fill="#777">Dịch vụ di chuyển • MST 0312345678</text>
+  <line x1="90" y1="170" x2="710" y2="170" stroke="#ccc" stroke-dasharray="4 4"/>
+  <text x="120" y="210" font-size="18" fill="#444">Số hóa đơn:</text>
+  <text x="470" y="210" font-size="18" fill="#2b2a28">AA/26E-0451</text>
+  <text x="120" y="250" font-size="18" fill="#444">Ngày:</text>
+  <text x="470" y="250" font-size="18" fill="#2b2a28">05/07/2026</text>
+  <line x1="90" y1="290" x2="710" y2="290" stroke="#ccc" stroke-dasharray="4 4"/>
+  <text x="120" y="360" font-size="18" fill="#2b2a28">Cước di chuyển (x3 chuyến)</text>
+  <text x="120" y="560" font-size="18" fill="#444">Tiền hàng</text>
+  <text x="700" y="560" font-size="18" text-anchor="end" fill="#2b2a28">1.863.636</text>
+  <text x="120" y="610" font-size="18" fill="#444">Thuế GTGT (10%)</text>
+  <text x="700" y="610" font-size="18" text-anchor="end" fill="#2b2a28">186.364</text>
+  <line x1="90" y1="635" x2="710" y2="635" stroke="#999"/>
+  <text x="120" y="685" font-size="24" font-weight="bold" fill="#2b2a28">TỔNG CỘNG</text>
+  <text x="700" y="685" font-size="24" font-weight="bold" text-anchor="end" fill="#2b2a28">2.050.000 ₫</text>
+  <text x="400" y="1040" font-size="13" text-anchor="middle" fill="#999">Cảm ơn quý khách</text>
+</svg>

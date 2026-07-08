@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1120" viewBox="0 0 800 1120" font-family="monospace">
+  <rect width="800" height="1120" fill="#fffdf8"/>
+  <rect x="60" y="40" width="680" height="1040" fill="none" stroke="#e5e3dd"/>
+  <g transform="rotate(-0.8 400 560)">
+    <text x="400" y="120" font-size="30" font-weight="bold" text-anchor="middle" fill="#2b2a28">NHÀ SÁCH FAHASA</text>
+    <text x="400" y="150" font-size="15" text-anchor="middle" fill="#777">Sách &amp; VPP • MST 0305556677</text>
+    <line x1="90" y1="170" x2="710" y2="170" stroke="#ccc" stroke-dasharray="4 4"/>
+    <text x="120" y="210" font-size="18" fill="#444">Số hóa đơn:</text>
+    <text x="470" y="210" font-size="18" fill="#2b2a28">FHS-0099</text>
+    <text x="120" y="250" font-size="18" fill="#444">Ngày:</text>
+    <text x="470" y="250" font-size="18" fill="#2b2a28">01/07/2026</text>
+    <line x1="90" y1="290" x2="710" y2="290" stroke="#ccc" stroke-dasharray="4 4"/>
+    <text x="120" y="360" font-size="18" fill="#2b2a28">Văn phòng phẩm</text>
+    <text x="120" y="560" font-size="18" fill="#444">Tiền hàng</text>
+    <text x="700" y="560" font-size="18" text-anchor="end" fill="#2b2a28">290.909</text>
+    <text x="120" y="610" font-size="18" fill="#444">Thuế GTGT (10%)</text>
+    <text x="700" y="610" font-size="18" text-anchor="end" fill="#2b2a28">29.091</text>
+    <line x1="90" y1="635" x2="710" y2="635" stroke="#999"/>
+    <text x="120" y="685" font-size="24" font-weight="bold" fill="#2b2a28">TỔNG CỘNG</text>
+    <text x="700" y="685" font-size="24" font-weight="bold" text-anchor="end" fill="#2b2a28">320.000 ₫</text>
+    <rect x="470" y="655" width="250" height="52" fill="#00000012"/>
+  </g>
+  <text x="400" y="1040" font-size="13" text-anchor="middle" fill="#999">Ảnh chụp hóa đơn giấy</text>
+</svg>

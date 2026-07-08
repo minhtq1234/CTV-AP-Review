@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1120" viewBox="0 0 800 1120" font-family="sans-serif">
+  <rect width="800" height="1120" fill="#ffffff"/>
+  <text x="400" y="90" font-size="26" font-weight="bold" text-anchor="middle" fill="#2b2a28">ĐỀ NGHỊ THANH TOÁN</text>
+  <text x="400" y="122" font-size="15" text-anchor="middle" fill="#777">Mã: PR-2026-0138</text>
+  <line x1="60" y1="150" x2="740" y2="150" stroke="#e5e3dd"/>
+  <text x="80" y="210" font-size="18" fill="#444">Người đề nghị:</text><text x="320" y="210" font-size="18" fill="#2b2a28">Trần Thị B</text>
+  <text x="80" y="255" font-size="18" fill="#444">Hạng mục:</text><text x="320" y="255" font-size="18" fill="#2b2a28">Tiếp khách</text>
+  <text x="80" y="300" font-size="18" fill="#444">Nhà cung cấp:</text><text x="320" y="300" font-size="18" fill="#2b2a28">Highlands</text>
+  <text x="80" y="345" font-size="18" fill="#444">Số hóa đơn:</text><text x="320" y="345" font-size="18" fill="#2b2a28">HD-2026-8842</text>
+  <text x="80" y="390" font-size="18" fill="#444">Ngày hóa đơn:</text><text x="320" y="390" font-size="18" fill="#2b2a28">03/07/2026</text>
+  <text x="80" y="435" font-size="18" fill="#444">Tiền hàng:</text><text x="320" y="435" font-size="18" fill="#2b2a28">454.545 ₫</text>
+  <text x="80" y="480" font-size="18" fill="#444">Thuế GTGT:</text><text x="320" y="480" font-size="18" fill="#2b2a28">45.455 ₫</text>
+  <text x="80" y="525" font-size="18" fill="#444">Tổng cộng:</text><text x="320" y="525" font-size="18" font-weight="bold" fill="#2b2a28">500.000 ₫</text>
+</svg>
