@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Case } from '../types'
 import { orderFields } from '../logic/verdict'
+import DocViewer from './DocViewer'
 
 interface ReviewScreenProps { case_: Case; onUpdateCase: (c: Case) => void }
 
@@ -8,6 +9,7 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
   const ranked = orderFields(case_.fields)
   const [selectedKey, setSelectedKey] = useState(ranked[0]?.field.key ?? '')
   const [page, setPage] = useState(0)
+  const [lockView, setLockView] = useState(false)
 
   const selected = case_.fields.find(f => f.key === selectedKey) ?? null
 
@@ -42,9 +44,14 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
             </div>
           ))}
         </aside>
-        <section className="doc-pane">
-          <img src={case_.pages[page].src} alt="" style={{ maxWidth: '100%' }} />
-        </section>
+        <DocViewer
+          pages={case_.pages}
+          page={page}
+          focusBbox={selected?.prediction && selected.prediction.page === page ? selected.prediction.bbox : null}
+          lockView={lockView}
+          onPageChange={setPage}
+          onToggleLock={() => setLockView(v => !v)}
+        />
       </div>
     </div>
   )
