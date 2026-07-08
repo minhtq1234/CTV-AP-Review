@@ -4,10 +4,11 @@ import { orderFields } from '../logic/verdict'
 import DocViewer from './DocViewer'
 import FieldsPanel from './FieldsPanel'
 import FieldPalette from './FieldPalette'
+import ActionBar from './ActionBar'
 
 interface ReviewScreenProps { case_: Case; onUpdateCase: (c: Case) => void }
 
-export default function ReviewScreen({ case_ }: ReviewScreenProps) {
+export default function ReviewScreen({ case_, onUpdateCase }: ReviewScreenProps) {
   const ranked = orderFields(case_.fields)
   const [selectedKey, setSelectedKey] = useState(ranked[0]?.field.key ?? '')
   const [page, setPage] = useState(0)
@@ -49,6 +50,11 @@ export default function ReviewScreen({ case_ }: ReviewScreenProps) {
           onToggleLock={() => setLockView(v => !v)}
         />
       </div>
+      <ActionBar
+        status={case_.status}
+        onApprove={() => onUpdateCase({ ...case_, status: 'approved' })}
+        onReject={() => onUpdateCase({ ...case_, status: 'rejected' })}
+      />
       <FieldPalette open={paletteOpen} ranked={ranked}
         onJump={setSelectedKey} onClose={() => setPaletteOpen(false)} />
     </div>
