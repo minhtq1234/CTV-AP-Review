@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="636" viewBox="0 0 1010 636" font-family="sans-serif">
+  <rect width="1010" height="636" rx="18" fill="#e7eee9"/>
+  <rect x="4" y="4" width="1002" height="628" rx="16" fill="none" stroke="#c4d0c9"/>
+  <circle cx="120" cy="92" r="42" fill="#c0392b"/>
+  <text x="120" y="108" font-size="46" text-anchor="middle" fill="#f2c94c">★</text>
+  <text x="565" y="52" font-size="21" font-weight="bold" text-anchor="middle" fill="#1a1a1a">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</text>
+  <text x="565" y="80" font-size="16" font-style="italic" text-anchor="middle" fill="#1a1a1a">Độc lập - Tự do - Hạnh phúc</text>
+  <text x="520" y="150" font-size="40" font-weight="bold" text-anchor="middle" fill="#c0392b">CĂN CƯỚC CÔNG DÂN</text>
+  <text x="520" y="180" font-size="16" font-style="italic" text-anchor="middle" fill="#333">Citizen Identity Card</text>
+
+  <rect x="40" y="212" width="250" height="330" rx="6" fill="#cfd8d3" stroke="#aab5af"/>
+  <text x="165" y="385" font-size="15" text-anchor="middle" fill="#8a938d">Ảnh</text>
+  <rect x="882" y="212" width="98" height="98" fill="#ffffff" stroke="#aab5af"/>
+  <path d="M890 220h20v20h-20z M920 220h30v10h-30z M960 220h12v30h-12z M890 260h12v42h-12z M930 250h40v12h-40z M950 275h22v27h-22z" fill="#1a1a1a"/>
+
+  <text x="320" y="252" font-size="20" fill="#333">Số / No.:</text>
+  <text x="440" y="256" font-size="32" font-weight="bold" fill="#8a1a1a">079090003210</text>
+
+  <text x="320" y="308" font-size="20" fill="#333">Họ và tên / Full name:</text>
+  <text x="322" y="350" font-size="30" font-weight="bold" fill="#1a1a1a">PHẠM QUỐC HƯNG</text>
+
+  <text x="320" y="398" font-size="19" fill="#333">Ngày sinh / DOB:</text>
+  <text x="560" y="398" font-size="22" fill="#1a1a1a">22/09/1990</text>
+
+  <text x="320" y="438" font-size="19" fill="#333">Giới tính / Sex:</text>
+  <text x="500" y="438" font-size="22" fill="#1a1a1a">Nam</text>
+  <text x="600" y="438" font-size="19" fill="#333">Quốc tịch:</text>
+  <text x="740" y="438" font-size="20" fill="#1a1a1a">Việt Nam</text>
+
+  <text x="320" y="478" font-size="18" fill="#333">Quê quán / Origin: TP. Đà Nẵng</text>
+  <text x="320" y="512" font-size="18" fill="#333">Nơi thường trú / Residence:</text>
+  <text x="320" y="540" font-size="18" fill="#1a1a1a">25 Lê Duẩn, Hải Châu, TP. Đà Nẵng</text>
+
+  <text x="40" y="580" font-size="16" fill="#333">Có giá trị đến / Date of expiry:</text>
+  <text x="250" y="600" font-size="20" font-weight="bold" fill="#1a1a1a">22/09/2030</text>
+</svg>

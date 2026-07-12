@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="505" y="90" font-size="34" font-weight="bold" text-anchor="middle" fill="#1a1a1a">HỢP ĐỒNG DỊCH VỤ</text>
+  <text x="505" y="128" font-size="18" text-anchor="middle" fill="#333">Số: HĐDV-2026-0142-26</text>
+  <line x1="70" y1="150" x2="940" y2="150" stroke="#ccc"/>
+
+  <text x="70" y="200" font-size="19" font-weight="bold" fill="#1a1a1a">BÊN SỬ DỤNG DỊCH VỤ (Bên A):</text>
+  <text x="70" y="232" font-size="18" fill="#1a1a1a">CÔNG TY CỔ PHẦN TẬP ĐOÀN VNG — MST: 0303490096</text>
+  <text x="70" y="262" font-size="18" fill="#333">Địa chỉ: Z06 Đường số 13, P. Tân Thuận, TP. Hồ Chí Minh</text>
+
+  <text x="70" y="322" font-size="19" font-weight="bold" fill="#1a1a1a">BÊN CUNG ỨNG DỊCH VỤ (Bên B):</text>
+  <text x="70" y="360" font-size="18" fill="#333">Họ và tên:</text>
+  <text x="250" y="360" font-size="19" font-weight="bold" fill="#1a1a1a">PHẠM QUỐC HƯNG</text>
+  <text x="70" y="400" font-size="18" fill="#333">Ngày sinh: 22/09/1990</text>
+  <text x="470" y="400" font-size="18" fill="#333">Quốc tịch: Việt Nam</text>
+  <text x="70" y="440" font-size="18" fill="#333">Căn cước công dân số:</text>
+  <text x="410" y="440" font-size="19" fill="#1a1a1a">079090003210</text>
+  <text x="70" y="480" font-size="18" fill="#333">Mã số thuế TNCN: 079090003210</text>
+  <text x="70" y="520" font-size="18" fill="#333">Số tài khoản:</text>
+  <text x="240" y="520" font-size="19" fill="#1a1a1a">0451000778899</text>
+  <text x="70" y="560" font-size="18" fill="#333">Mở tại ngân hàng:</text>
+  <text x="300" y="560" font-size="19" fill="#1a1a1a">ACB - CN Tân Bình, TP.HCM</text>
+
+  <line x1="70" y1="595" x2="940" y2="595" stroke="#eee"/>
+  <text x="70" y="640" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 1. Nội dung công việc</text>
+  <text x="70" y="674" font-size="18" fill="#333">Quản lý cộng đồng cho Danh Tướng 3Q.</text>
+  <text x="70" y="714" font-size="18" fill="#333">Thời hạn thực hiện: 01/02/2026 - 25/02/2026.</text>
+  <text x="70" y="754" font-size="18" fill="#333">Địa điểm: Online.</text>
+
+  <text x="70" y="814" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 2. Phí dịch vụ</text>
+  <text x="70" y="848" font-size="18" fill="#333">Tổng phí dịch vụ:</text>
+  <text x="340" y="848" font-size="19" font-weight="bold" fill="#1a1a1a">15.000.000 VNĐ</text>
+  <text x="70" y="884" font-size="16" fill="#555">(Bằng chữ: Mười lăm triệu đồng)</text>
+  <text x="70" y="924" font-size="18" fill="#333">Bên B tự kê khai và nộp thuế TNCN (kèm bản cam kết thu nhập).</text>
+
+  <text x="70" y="984" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 3. Điều khoản chung</text>
+  <text x="70" y="1018" font-size="18" fill="#333">Hai bên cam kết thực hiện đúng các điều khoản đã thỏa thuận.</text>
+
+  <text x="280" y="1220" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">ĐẠI DIỆN BÊN A</text>
+  <text x="730" y="1220" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">BÊN B</text>
+  <text x="730" y="1330" font-size="18" text-anchor="middle" fill="#1a1a1a">Phạm Quốc Hưng</text>
+</svg>
