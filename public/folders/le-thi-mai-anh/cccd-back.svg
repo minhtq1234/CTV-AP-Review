@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="636" viewBox="0 0 1010 636" font-family="sans-serif">
+  <rect width="1010" height="636" rx="18" fill="#e9eef1"/>
+  <rect x="4" y="4" width="1002" height="628" rx="16" fill="none" stroke="#c4d0c9"/>
+  <text x="40" y="60" font-size="18" fill="#333">Đặc điểm nhân dạng / Personal identification:</text>
+  <text x="40" y="92" font-size="18" fill="#1a1a1a">Sẹo chấm C: 1cm trên trán</text>
+  <text x="40" y="150" font-size="18" fill="#333">Ngày, tháng, năm / Date of issue:</text>
+  <text x="360" y="150" font-size="20" font-weight="bold" fill="#1a1a1a">03/05/2018</text>
+  <text x="40" y="200" font-size="16" fill="#333">CỤC TRƯỞNG CỤC CẢNH SÁT QUẢN LÝ HÀNH CHÍNH VỀ TRẬT TỰ XÃ HỘI</text>
+  <circle cx="230" cy="300" r="70" fill="none" stroke="#c0392b" stroke-width="2"/>
+  <text x="230" y="306" font-size="13" text-anchor="middle" fill="#c0392b">BỘ CÔNG AN</text>
+  <rect x="620" y="90" width="150" height="180" fill="#f4f6f5" stroke="#aab5af"/>
+  <text x="695" y="285" font-size="13" text-anchor="middle" fill="#555">Ngón trỏ trái</text>
+  <rect x="800" y="90" width="150" height="180" fill="#f4f6f5" stroke="#aab5af"/>
+  <text x="875" y="285" font-size="13" text-anchor="middle" fill="#555">Ngón trỏ phải</text>
+  <text x="40" y="430" font-family="monospace" font-size="26" fill="#1a1a1a">IDVNM1980043216079198004321&lt;&lt;4</text>
+  <text x="40" y="470" font-family="monospace" font-size="26" fill="#1a1a1a">9805037F2305037VNM&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;2</text>
+  <text x="40" y="510" font-family="monospace" font-size="26" fill="#1a1a1a">LE&lt;&lt;THI&lt;MAI&lt;ANH&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</text>
+</svg>
