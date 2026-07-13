@@ -1,25 +1,27 @@
 import type { Bbox, CaseStatus, FieldKind } from '../types'
 
-// A CTV folder = one collaborator = one review case, backed by several evidence documents.
-export type EvidenceKind = 'id_front' | 'id_back' | 'contract' | 'commitment'
+// A CTV folder = one collaborator = one review case, backed by several evidence documents,
+// each of which can span multiple pages.
+export type EvidenceKind = 'id_front' | 'id_back' | 'contract' | 'commitment' | 'pit' | 'bbnt'
+
+export interface DocPage { src: string; width: number; height: number } // natural px
 
 export interface EvidenceDoc {
   id: string
   kind: EvidenceKind
   label: string
-  src: string
-  width: number   // natural px
-  height: number  // natural px
+  pages: DocPage[]
 }
 
 export type CheckGroup = 'Danh tính' | 'Ngân hàng' | 'Thanh toán' | 'Chính sách'
 export type CheckType = 'compare' | 'expiry' | 'math' | 'policy'
 
-// What the AI "read" off one of the evidence documents (seeded, like the v1 predictions).
-export interface CtvExtract {
-  value: string
-  docId: string   // which EvidenceDoc this was read from
-  bbox: Bbox      // in that doc's natural px
+// One place a field's value was found — a specific page of a specific document.
+export interface CtvSource {
+  docId: string
+  page: number      // 0-based page index within the doc
+  value: string     // what the AI read here
+  bbox: Bbox        // in that page's natural px
   confidence: number
 }
 
@@ -28,9 +30,9 @@ export interface CtvField {
   label: string
   group: CheckGroup
   check: CheckType
-  kind: FieldKind        // used when check === 'compare'
-  expected: string       // the claimed value from the Excel row (source of truth for the request)
-  extract: CtvExtract | null
+  kind: FieldKind          // used when check === 'compare'
+  expected: string         // the claimed value from the Excel row (the reference)
+  sources: CtvSource[]     // every document/page this value appears in — cross-checked against `expected`
 }
 
 export interface CtvFolder {
@@ -38,7 +40,7 @@ export interface CtvFolder {
   name: string
   product: string
   status: CaseStatus
-  exempt: boolean        // PIT exemption claimed via bản cam kết
+  exempt: boolean          // PIT exemption claimed via bản cam kết
   docs: EvidenceDoc[]
   fields: CtvField[]
   rejectReason?: string

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="70" y="90" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 3. Quyền và nghĩa vụ của Bên A</text>
+  <text x="70" y="128" font-size="17" fill="#333">3.1. Cung cấp đầy đủ thông tin, tài liệu cần thiết để Bên B thực hiện công việc.</text>
+  <text x="70" y="160" font-size="17" fill="#333">3.2. Thanh toán phí dịch vụ đầy đủ, đúng hạn theo Điều 2 của Hợp đồng.</text>
+  <text x="70" y="192" font-size="17" fill="#333">3.3. Có quyền yêu cầu Bên B chỉnh sửa nếu kết quả không đạt yêu cầu.</text>
+  <text x="70" y="224" font-size="17" fill="#333">3.4. Khấu trừ và nộp thuế TNCN thay cho Bên B theo quy định pháp luật.</text>
+
+  <text x="70" y="300" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 4. Quyền và nghĩa vụ của Bên B</text>
+  <text x="70" y="338" font-size="17" fill="#333">4.1. Thực hiện công việc đúng nội dung, tiến độ và chất lượng đã thỏa thuận.</text>
+  <text x="70" y="370" font-size="17" fill="#333">4.2. Chịu trách nhiệm về tính chính xác của thông tin cá nhân đã cung cấp.</text>
+  <text x="70" y="402" font-size="17" fill="#333">4.3. Bảo mật thông tin, tài liệu của Bên A trong và sau thời gian hợp tác.</text>
+  <text x="70" y="434" font-size="17" fill="#333">4.4. Được nhận phí dịch vụ đầy đủ, đúng hạn theo thỏa thuận.</text>
+  <text x="70" y="466" font-size="17" fill="#333">4.5. Tự chịu trách nhiệm về nghĩa vụ thuế thu nhập cá nhân của mình.</text>
+
+  <text x="70" y="560" font-size="17" fill="#555">Các bên thống nhất rằng mọi trao đổi liên quan đến Hợp đồng được thực hiện</text>
+  <text x="70" y="592" font-size="17" fill="#555">bằng văn bản hoặc thư điện tử và có giá trị như nhau.</text>
+
+  <text x="505" y="1350" font-size="14" text-anchor="middle" fill="#999">— Trang 2/5 —</text>
+</svg>

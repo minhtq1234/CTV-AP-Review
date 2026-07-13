@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="505" y="86" font-size="26" font-weight="bold" text-anchor="middle" fill="#1a1a1a">CHỨNG TỪ KHẤU TRỪ THUẾ TNCN</text>
+  <text x="505" y="118" font-size="15" text-anchor="middle" fill="#777">Mẫu số: 03/TNCN — Kỳ tính thuế: Tháng 02/2026</text>
+  <line x1="70" y1="150" x2="940" y2="150" stroke="#ccc"/>
+
+  <text x="70" y="200" font-size="18" font-weight="bold" fill="#1a1a1a">I. Tổ chức trả thu nhập</text>
+  <text x="70" y="234" font-size="17" fill="#333">Tên: CÔNG TY CỔ PHẦN TẬP ĐOÀN VNG — MST: 0303490096</text>
+
+  <text x="70" y="300" font-size="18" font-weight="bold" fill="#1a1a1a">II. Cá nhân nhận thu nhập</text>
+  <text x="70" y="360" font-size="17" fill="#333">Họ và tên:</text>
+  <text x="330" y="360" font-size="18" font-weight="bold" fill="#1a1a1a">PHẠM QUỐC HƯNG</text>
+  <text x="70" y="415" font-size="17" fill="#333">Mã số thuế:</text>
+  <text x="330" y="415" font-size="18" fill="#1a1a1a">079090003210</text>
+  <text x="70" y="470" font-size="17" fill="#333">Số CCCD:</text>
+  <text x="330" y="470" font-size="18" fill="#1a1a1a">079090003210</text>
+
+  <line x1="70" y1="520" x2="940" y2="520" stroke="#eee"/>
+  <text x="70" y="570" font-size="18" font-weight="bold" fill="#1a1a1a">III. Thu nhập và thuế khấu trừ</text>
+  <text x="70" y="620" font-size="17" fill="#333">Tổng thu nhập chịu thuế:</text>
+  <text x="850" y="620" font-size="18" text-anchor="end" fill="#1a1a1a">15.000.000</text>
+  <text x="70" y="660" font-size="17" fill="#333">Thuế suất:</text>
+  <text x="850" y="660" font-size="18" text-anchor="end" fill="#1a1a1a">0% (miễn)</text>
+  <text x="70" y="700" font-size="17" fill="#333">Số thuế TNCN đã khấu trừ:</text>
+  <text x="850" y="700" font-size="18" font-weight="bold" text-anchor="end" fill="#1a1a1a">0</text>
+
+  <text x="720" y="820" font-size="16" text-anchor="middle" fill="#777">NGƯỜI TRẢ THU NHẬP</text>
+  <circle cx="720" cy="920" r="66" fill="none" stroke="#c0392b" stroke-width="2"/>
+  <text x="720" y="925" font-size="15" text-anchor="middle" fill="#c0392b">VNG</text>
+</svg>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="505" y="86" font-size="26" font-weight="bold" text-anchor="middle" fill="#1a1a1a">BIÊN BẢN NGHIỆM THU DỊCH VỤ</text>
+  <text x="505" y="118" font-size="15" text-anchor="middle" fill="#777">Ngày 25 tháng 02 năm 2026</text>
+  <line x1="70" y1="150" x2="940" y2="150" stroke="#ccc"/>
+
+  <text x="70" y="200" font-size="17" fill="#333">Bên A: CÔNG TY CỔ PHẦN TẬP ĐOÀN VNG</text>
+  <text x="70" y="300" font-size="18" font-weight="bold" fill="#1a1a1a">Bên B (Cá nhân cung ứng dịch vụ):</text>
+  <text x="70" y="360" font-size="17" fill="#333">Họ và tên:</text>
+  <text x="330" y="360" font-size="18" font-weight="bold" fill="#1a1a1a">PHẠM QUỐC HƯNG</text>
+  <text x="70" y="415" font-size="17" fill="#333">Số CCCD:</text>
+  <text x="330" y="415" font-size="18" fill="#1a1a1a">079090003210</text>
+
+  <line x1="70" y1="470" x2="940" y2="470" stroke="#eee"/>
+  <text x="70" y="520" font-size="18" font-weight="bold" fill="#1a1a1a">Nội dung nghiệm thu</text>
+  <text x="70" y="558" font-size="17" fill="#333">Công việc: Quản lý cộng đồng Danh Tướng 3Q.</text>
+  <text x="70" y="592" font-size="17" fill="#333">Thời gian thực hiện: 01/02/2026 - 25/02/2026.</text>
+  <text x="70" y="626" font-size="17" fill="#333">Kết quả: Đạt yêu cầu. Hai bên đồng ý nghiệm thu và thanh toán.</text>
+
+  <text x="290" y="760" font-size="16" text-anchor="middle" fill="#777">ĐẠI DIỆN BÊN A</text>
+  <text x="720" y="760" font-size="16" text-anchor="middle" fill="#777">BÊN B</text>
+  <text x="720" y="880" font-size="17" text-anchor="middle" fill="#1a1a1a">Phạm Quốc Hưng</text>
+</svg>

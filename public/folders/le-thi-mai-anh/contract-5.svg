@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="505" y="90" font-size="24" font-weight="bold" text-anchor="middle" fill="#1a1a1a">HỢP ĐỒNG DỊCH VỤ (trang cuối)</text>
+  <text x="70" y="160" font-size="17" fill="#333">Hai bên đã đọc, hiểu rõ và đồng ý ký kết Hợp đồng này.</text>
+  <text x="70" y="196" font-size="17" fill="#333">Hợp đồng có hiệu lực kể từ ngày ký.</text>
+  <line x1="70" y1="240" x2="940" y2="240" stroke="#eee"/>
+  <text x="290" y="320" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">ĐẠI DIỆN BÊN A</text>
+  <text x="720" y="320" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">BÊN B</text>
+  <text x="290" y="352" font-size="14" text-anchor="middle" fill="#777">(Ký, ghi rõ họ tên, đóng dấu)</text>
+  <text x="720" y="352" font-size="14" text-anchor="middle" fill="#777">(Ký, ghi rõ họ tên)</text>
+  <circle cx="290" cy="450" r="72" fill="none" stroke="#c0392b" stroke-width="2"/>
+  <text x="290" y="446" font-size="15" text-anchor="middle" fill="#c0392b">CÔNG TY CP</text>
+  <text x="290" y="466" font-size="17" font-weight="bold" text-anchor="middle" fill="#c0392b">VNG</text>
+  <path d="M250 430 q30 -30 60 10 q20 25 55 -5" fill="none" stroke="#1c3f94" stroke-width="2"/>
+  <path d="M680 430 q25 -25 50 5 q18 22 60 -8" fill="none" stroke="#1c3f94" stroke-width="2"/>
+  <text x="290" y="560" font-size="18" text-anchor="middle" fill="#1a1a1a">Ngô Thị Soa</text>
+  <text x="720" y="560" font-size="18" text-anchor="middle" fill="#1a1a1a">Lê Thị Mai Anh</text>
+  <text x="505" y="1350" font-size="14" text-anchor="middle" fill="#999">— Trang 5/5 —</text>
+</svg>

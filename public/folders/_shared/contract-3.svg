@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="1400" viewBox="0 0 1010 1400" font-family="serif">
+  <rect width="1010" height="1400" fill="#ffffff"/>
+  <rect x="30" y="30" width="950" height="1340" fill="none" stroke="#e5e3dd"/>
+  <text x="70" y="90" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 5. Phương thức thanh toán</text>
+  <text x="70" y="128" font-size="17" fill="#333">5.1. Thanh toán một lần bằng chuyển khoản vào tài khoản của Bên B.</text>
+  <text x="70" y="160" font-size="17" fill="#333">5.2. Thời hạn thanh toán: trong vòng 15 ngày kể từ ngày nghiệm thu.</text>
+  <text x="70" y="192" font-size="17" fill="#333">5.3. Số tiền thực nhận là số tiền sau khi đã trừ thuế TNCN (nếu có).</text>
+
+  <text x="70" y="270" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 6. Bảo mật thông tin</text>
+  <text x="70" y="308" font-size="17" fill="#333">6.1. Hai bên cam kết không tiết lộ thông tin của Hợp đồng cho bên thứ ba.</text>
+  <text x="70" y="340" font-size="17" fill="#333">6.2. Nghĩa vụ bảo mật có hiệu lực trong 02 năm sau khi Hợp đồng chấm dứt.</text>
+  <text x="70" y="372" font-size="17" fill="#333">6.3. Bên vi phạm phải bồi thường toàn bộ thiệt hại phát sinh (nếu có).</text>
+
+  <text x="70" y="450" font-size="19" font-weight="bold" fill="#1a1a1a">Điều 7. Bất khả kháng</text>
+  <text x="70" y="488" font-size="17" fill="#333">7.1. Các bên không chịu trách nhiệm khi xảy ra sự kiện bất khả kháng theo</text>
+  <text x="70" y="520" font-size="17" fill="#333">quy định của pháp luật (thiên tai, dịch bệnh, quyết định của cơ quan nhà nước).</text>
+
+  <text x="505" y="1350" font-size="14" text-anchor="middle" fill="#999">— Trang 3/5 —</text>
+</svg>

@@ -6,18 +6,23 @@ import { boxToViewport, loupeFrame } from '../logic/loupe'
 interface Props {
   docs: EvidenceDoc[]
   activeDocId: string
+  activePage: number
   focusBbox: Bbox | null
   lockView: boolean
   onSelectDoc: (id: string) => void
+  onSelectPage: (page: number) => void
   onToggleLock: () => void
 }
 
-export default function EvidenceViewer({ docs, activeDocId, focusBbox, lockView, onSelectDoc, onToggleLock }: Props) {
+export default function EvidenceViewer({
+  docs, activeDocId, activePage, focusBbox, lockView, onSelectDoc, onSelectPage, onToggleLock,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
-  const nat = { w: doc.width, h: doc.height }
+  const page = doc.pages[activePage] ?? doc.pages[0]
+  const nat = { w: page.width, h: page.height }
 
   useLayoutEffect(() => {
     const el = ref.current!
@@ -29,7 +34,7 @@ export default function EvidenceViewer({ docs, activeDocId, focusBbox, lockView,
   useLayoutEffect(() => {
     if (lockView || vp.w === 0) return
     setFrame(loupeFrame(focusBbox, nat, vp))
-  }, [focusBbox, vp.w, vp.h, activeDocId, lockView])
+  }, [focusBbox, vp.w, vp.h, activeDocId, activePage, lockView])
 
   const zoom = (factor: number) => setFrame(f => {
     const s = Math.max(0.1, Math.min(6, f.scale * factor))
@@ -38,6 +43,7 @@ export default function EvidenceViewer({ docs, activeDocId, focusBbox, lockView,
   })
   const fit = () => setFrame(loupeFrame(null, nat, vp))
   const hl = focusBbox ? boxToViewport(focusBbox, frame) : null
+  const pageCount = doc.pages.length
 
   return (
     <section className="ev">
@@ -50,9 +56,18 @@ export default function EvidenceViewer({ docs, activeDocId, focusBbox, lockView,
       </div>
       <div className="ev-stage" ref={ref}>
         <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-          <img src={doc.src} width={nat.w} height={nat.h} alt="" />
+          <img src={page.src} width={nat.w} height={nat.h} alt="" />
         </div>
         {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
+
+        {pageCount > 1 && (
+          <div className="doc-pager">
+            <button disabled={activePage === 0} onClick={() => onSelectPage(activePage - 1)} aria-label="Trang trước">‹</button>
+            <span>{activePage + 1} / {pageCount}</span>
+            <button disabled={activePage === pageCount - 1} onClick={() => onSelectPage(activePage + 1)} aria-label="Trang sau">›</button>
+          </div>
+        )}
+
         <div className="doc-tools">
           <button onClick={fit} aria-label="Vừa khung">⤢</button>
           <button onClick={() => zoom(0.8)} aria-label="Thu nhỏ">−</button>
