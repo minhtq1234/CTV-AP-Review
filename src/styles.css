@@ -80,6 +80,7 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .mode-bar { display: flex; gap: 6px; padding: 8px 14px 0; }
 .mode { padding: 5px 12px; border: 0.5px solid var(--border); border-radius: 8px 8px 0 0; background: transparent; cursor: pointer; font-size: 13px; color: var(--text-muted); }
 .mode.on { border-color: var(--accent); color: var(--accent); background: #eaf1fb; font-weight: 500; }
+.mf-badge { font-size: 10px; color: var(--accent); background: #eaf1fb; border: 0.5px solid var(--border); padding: 1px 7px; border-radius: 20px; margin-left: 7px; vertical-align: middle; }
 .ftag { font-size: 10px; color: var(--text-muted); border: 0.5px solid var(--border); border-radius: 4px; padding: 1px 5px; margin-left: 6px; font-weight: 400; vertical-align: middle; }
 .ev { width: 53%; display: flex; flex-direction: column; min-width: 0; }
 .ev-tabs { display: flex; gap: 4px; padding: 6px 8px; background: var(--surface); border-bottom: 0.5px solid var(--border); overflow-x: auto; }

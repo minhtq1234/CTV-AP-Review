@@ -1,22 +1,39 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Case } from '../types'
 import { seedCases } from '../data/cases'
 import ReviewScreen from './ReviewScreen'
 import type { CtvFolder } from '../ctv/types'
 import { folders as seedFolders } from '../ctv/folders'
+import { loadManifestFolder } from '../ctv/loadFolder'
 import FolderReview from './FolderReview'
 
 type Mode = 'ctv' | 'receipts'
 
+// One folder is loaded at runtime from a manifest.json (the splitter's output shape),
+// the rest are seeded — to show a splitter-produced manifest renders identically.
+const MANIFEST_URL = '/folders/le-thi-mai-anh/manifest.json'
+const HARDCODED = seedFolders.filter(f => f.id !== 'le-thi-mai-anh')
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('ctv')
   const [cases, setCases] = useState<Case[]>(seedCases)
-  const [folders, setFolders] = useState<CtvFolder[]>(seedFolders)
   const [caseId, setCaseId] = useState(seedCases[0].id)
-  const [folderId, setFolderId] = useState(seedFolders[0].id)
+  const [folders, setFolders] = useState<CtvFolder[]>(HARDCODED)
+  const [manifestId, setManifestId] = useState<string | null>(null)
+  const [folderId, setFolderId] = useState(HARDCODED[0].id)
+
+  useEffect(() => {
+    loadManifestFolder(MANIFEST_URL)
+      .then(mf => {
+        setFolders(prev => (prev.some(f => f.id === mf.id) ? prev : [mf, ...prev]))
+        setManifestId(mf.id)
+        setFolderId(mf.id)
+      })
+      .catch(() => {})
+  }, [])
 
   const curCase = cases.find(c => c.id === caseId)!
-  const curFolder = folders.find(f => f.id === folderId)!
+  const curFolder = folders.find(f => f.id === folderId) ?? folders[0]
 
   return (
     <div className="app">
@@ -31,6 +48,7 @@ export default function App() {
             {folders.map(f => (
               <button key={f.id} className={f.id === folderId ? 'tab active' : 'tab'} onClick={() => setFolderId(f.id)}>
                 {f.name} · {f.product}
+                {f.id === manifestId && <span className="mf-badge" title="Nạp từ manifest.json (đầu ra của splitter)">manifest</span>}
                 {f.status !== 'pending' && <span className={`dot ${f.status}`} />}
               </button>
             ))}
