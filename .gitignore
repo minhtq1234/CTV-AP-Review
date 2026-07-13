@@ -2,3 +2,5 @@ node_modules
 dist
 *.local
 *.tsbuildinfo
+splitter/output
+__pycache__
