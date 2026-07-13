@@ -12,8 +12,10 @@ export function loupeFrame(
     const s = Math.min(vp.w / nat.w, vp.h / nat.h) * 0.92
     return { scale: s, tx: (vp.w - nat.w * s) / 2, ty: (vp.h - nat.h * s) / 2 }
   }
-  const targetH = vp.h * 0.14
-  const magnify = clamp(targetH / bbox.height, 1.1, 2.5)
+  // Aim for the box to fill ~10% of viewport height so surrounding content stays visible,
+  // clamped to [1.1x, 2.0x]. Lower the 0.10 / 2.0 to zoom out further.
+  const targetH = vp.h * 0.10
+  const magnify = clamp(targetH / bbox.height, 1.1, 2.0)
   const fit = Math.min(vp.w / bbox.width, vp.h / bbox.height) * 0.92
   const s = Math.min(magnify, fit)
   const cx = bbox.x + bbox.width / 2

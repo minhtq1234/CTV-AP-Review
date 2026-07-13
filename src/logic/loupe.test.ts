@@ -19,9 +19,9 @@ describe('loupeFrame', () => {
     expect(f.tx + cx * f.scale).toBeCloseTo(vp.w / 2, 4)
     expect(f.ty + cy * f.scale).toBeCloseTo(vp.h / 2, 4)
   })
-  it('clamps magnification to [1.1, 2.5]', () => {
+  it('clamps magnification to [1.1, 2.0]', () => {
     const tiny = { x: 10, y: 10, width: 4, height: 4 }
-    expect(loupeFrame(tiny, nat, vp).scale).toBeLessThanOrEqual(2.5)
+    expect(loupeFrame(tiny, nat, vp).scale).toBeLessThanOrEqual(2.0)
     const big = { x: 0, y: 0, width: 800, height: 1120 }
     expect(loupeFrame(big, nat, vp).scale).toBeLessThanOrEqual(Math.min(vp.w / 800, vp.h / 1120) * 0.92 + 1e-9)
   })
