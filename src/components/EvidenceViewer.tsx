@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, loupeFrame } from '../logic/loupe'
+import { assetUrl } from '../assets'
 
 interface Props {
   docs: EvidenceDoc[]
@@ -68,7 +69,7 @@ export default function EvidenceViewer({
       </div>
       <div className="ev-stage" ref={ref}>
         <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-          <img src={page.src} width={nat.w} height={nat.h} alt="" />
+          <img src={assetUrl(page.src)} width={nat.w} height={nat.h} alt="" />
         </div>
         {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Bbox, DocPage, Frame } from '../types'
 import { boxToViewport, loupeFrame } from '../logic/loupe'
+import { assetUrl } from '../assets'
 
 interface DocViewerProps {
   pages: DocPage[]; page: number; focusBbox: Bbox | null
@@ -37,7 +38,7 @@ export default function DocViewer({ pages, page, focusBbox, lockView, onPageChan
   return (
     <section className="doc-pane" ref={ref}>
       <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-        <img src={pages[page].src} width={nat.w} height={nat.h} alt="" />
+        <img src={assetUrl(pages[page].src)} width={nat.w} height={nat.h} alt="" />
       </div>
       {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
