@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import type { CaseStatus } from '../types'
 
-interface ActionBarProps { status: CaseStatus; rejectReason?: string; onApprove: () => void; onReject: (reason: string) => void }
+interface ActionBarProps { status: CaseStatus; rejectReason?: string; hint?: string; onApprove: () => void; onReject: (reason: string) => void }
 
-export default function ActionBar({ status, rejectReason, onApprove, onReject }: ActionBarProps) {
+export default function ActionBar({ status, rejectReason, hint, onApprove, onReject }: ActionBarProps) {
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
 
@@ -20,7 +20,7 @@ export default function ActionBar({ status, rejectReason, onApprove, onReject }:
 
   return (
     <div className="action-bar">
-      <span className="hint">↑ ↓ chuyển trường · ⌘K nhảy nhanh</span>
+      <span className="hint">{hint ?? '↑ ↓ chuyển trường · ⌘K nhảy nhanh'}</span>
       <div className="actions">
         {rejecting && (
           <input className="reason" autoFocus placeholder="Lý do (tuỳ chọn)"

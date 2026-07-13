@@ -1,4 +1,4 @@
-import type { Bbox, Verdict } from '../types'
+import type { Verdict } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import type { RankedCtv } from '../ctv/checks'
 import { counts } from '../ctv/checks'
@@ -8,7 +8,7 @@ interface Props {
   docs: EvidenceDoc[]
   selectedKey: string
   onSelect: (key: string) => void
-  onFocusSource: (docId: string, page: number, bbox: Bbox) => void
+  onFocusSource: (fieldKey: string, sourceIdx: number) => void
 }
 
 const CHIP: Record<Verdict, { cls: string; glyph: string }> = {
@@ -46,7 +46,7 @@ export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect,
                   const sc = CHIP[sr.verdict]
                   return (
                     <button key={i} className={`srcchip ${sc.cls}`} title={sr.source.value}
-                      onClick={e => { e.stopPropagation(); onFocusSource(sr.source.docId, sr.source.page, sr.source.bbox) }}>
+                      onClick={e => { e.stopPropagation(); onFocusSource(r.field.key, i) }}>
                       <span className="srcchip-g">{sc.glyph}</span> {label(sr.source.docId)}
                       {sr.verdict === 'mismatch' && <span className="srcbad">: {sr.source.value}</span>}
                     </button>

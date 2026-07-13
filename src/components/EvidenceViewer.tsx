@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, loupeFrame } from '../logic/loupe'
@@ -36,11 +36,23 @@ export default function EvidenceViewer({
     setFrame(loupeFrame(focusBbox, nat, vp))
   }, [focusBbox, vp.w, vp.h, activeDocId, activePage, lockView])
 
-  const zoom = (factor: number) => setFrame(f => {
+  const zoom = useCallback((factor: number) => setFrame(f => {
     const s = Math.max(0.1, Math.min(6, f.scale * factor))
     const cx = (vp.w / 2 - f.tx) / f.scale, cy = (vp.h / 2 - f.ty) / f.scale
     return { scale: s, tx: vp.w / 2 - cx * s, ty: vp.h / 2 - cy * s }
-  })
+  }), [vp.w, vp.h])
+
+  // Alt +/- to zoom — uses physical key codes so ⌥ on macOS works (⌥- would type an en-dash).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey) return
+      const k = e.key
+      if (e.code === 'Equal' || k === '=' || k === '+' || k === '≠' || k === '±') { e.preventDefault(); zoom(1.25) }
+      else if (e.code === 'Minus' || k === '-' || k === '_' || k === '–' || k === '—') { e.preventDefault(); zoom(0.8) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zoom])
   const fit = () => setFrame(loupeFrame(null, nat, vp))
   const hl = focusBbox ? boxToViewport(focusBbox, frame) : null
   const pageCount = doc.pages.length
