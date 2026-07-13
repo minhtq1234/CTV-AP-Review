@@ -51,7 +51,7 @@ export default function FolderReview({ folder, onUpdate }: Props) {
   return (
     <div className="screen">
       <header className="screen-head">
-        <div><strong>Hồ sơ CTV · {folder.name}</strong> — {folder.product}</div>
+        <div><strong>{folder.heading ?? 'Hồ sơ CTV'} · {folder.name}</strong> — {folder.product}</div>
         <span className={`status-pill ${folder.status}`}>
           {folder.status === 'pending' ? 'Chờ duyệt' : folder.status === 'approved' ? 'Đã duyệt' : 'Đã từ chối'}
         </span>

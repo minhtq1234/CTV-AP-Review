@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400" font-family="sans-serif">
+  <rect width="1000" height="1400" fill="#ffffff"/>
+  <rect x="26" y="26" width="948" height="1348" fill="none" stroke="#c9d4e6"/>
+  <rect x="26" y="26" width="948" height="70" fill="#eef3fb"/>
+  <text x="500" y="60" font-size="24" font-weight="bold" text-anchor="middle" fill="#1a3a6b">ĐỀ NGHỊ PHÊ DUYỆT CÔNG TÁC</text>
+  <text x="500" y="84" font-size="15" text-anchor="middle" fill="#3a5a8b">FA-TA260420005</text>
+
+  <text x="60" y="150" font-size="17" font-weight="bold" fill="#1a3a6b">THÔNG TIN CHUYẾN ĐI</text>
+  <text x="60" y="196" font-size="16" fill="#444">Người đi (PAX):</text>
+  <text x="330" y="196" font-size="17" font-weight="bold" fill="#1a1a1a">Lê Hoàng Nam</text>
+  <text x="60" y="240" font-size="16" fill="#444">Nơi đến:</text>
+  <text x="330" y="240" font-size="17" fill="#1a1a1a">TP. Hồ Chí Minh (khứ hồi từ Hà Nội)</text>
+  <text x="60" y="284" font-size="16" fill="#444">Ngày đi:</text>
+  <text x="330" y="284" font-size="17" fill="#1a1a1a">05/05/2026</text>
+  <text x="600" y="284" font-size="16" fill="#444">Ngày về:</text>
+  <text x="720" y="284" font-size="17" fill="#1a1a1a">09/05/2026</text>
+  <text x="60" y="328" font-size="16" fill="#444">Mục đích:</text>
+  <text x="330" y="328" font-size="16" fill="#1a1a1a">Tham dự AI Training và làm việc với team</text>
+
+  <text x="60" y="410" font-size="17" font-weight="bold" fill="#1a3a6b">CHI PHÍ ĐƯỢC DUYỆT (VND)</text>
+  <line x1="60" y1="428" x2="840" y2="428" stroke="#c9d4e6"/>
+  <text x="70" y="462" font-size="15" font-weight="bold" fill="#444">Khoản mục</text>
+  <text x="830" y="462" font-size="15" font-weight="bold" text-anchor="end" fill="#444">Số tiền được duyệt</text>
+  <text x="70" y="510" font-size="16" fill="#1a1a1a">Vé máy bay</text>
+  <text x="830" y="510" font-size="17" font-weight="bold" text-anchor="end" fill="#1a1a1a">5.628.000</text>
+  <text x="70" y="548" font-size="16" fill="#1a1a1a">Khách sạn</text>
+  <text x="830" y="548" font-size="16" text-anchor="end" fill="#1a1a1a">4.800.000</text>
+  <text x="70" y="586" font-size="16" fill="#1a1a1a">Công tác phí</text>
+  <text x="830" y="586" font-size="16" text-anchor="end" fill="#1a1a1a">1.750.000</text>
+  <line x1="60" y1="608" x2="840" y2="608" stroke="#999"/>
+  <text x="70" y="644" font-size="16" font-weight="bold" fill="#1a1a1a">Tổng</text>
+  <text x="830" y="644" font-size="17" font-weight="bold" text-anchor="end" fill="#1a1a1a">12.178.000</text>
+
+  <text x="60" y="740" font-size="17" font-weight="bold" fill="#1a7a4c">TRẠNG THÁI: ĐÃ DUYỆT</text>
+  <text x="60" y="782" font-size="15" fill="#555">Người phê duyệt 1: Nguyễn Doãn Phú — 20/04/2026</text>
+  <text x="60" y="812" font-size="15" fill="#555">Người phê duyệt 2: Vương Chí Quang — 23/04/2026</text>
+  <text x="60" y="856" font-size="14" fill="#888">Hóa đơn ERP: DC260424007 · Trạng thái: Completed</text>
+</svg>

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400" font-family="serif">
+  <rect width="1000" height="1400" fill="#ffffff"/>
+  <rect x="26" y="26" width="948" height="1348" fill="none" stroke="#d9c9a0"/>
+  <text x="500" y="66" font-size="24" font-weight="bold" text-anchor="middle" fill="#8a1a1a">HÓA ĐƠN GIÁ TRỊ GIA TĂNG</text>
+  <text x="500" y="92" font-size="14" font-style="italic" text-anchor="middle" fill="#666">(VAT INVOICE) — Bản thể hiện của hóa đơn điện tử</text>
+  <text x="70" y="140" font-size="15" fill="#444">Ký hiệu: C26TKA</text>
+  <text x="330" y="140" font-size="15" fill="#444">Số:</text>
+  <text x="380" y="140" font-size="16" font-weight="bold" fill="#1a1a1a">00002865</text>
+  <text x="640" y="140" font-size="15" fill="#444">Ngày: 12/05/2026</text>
+  <line x1="60" y1="160" x2="940" y2="160" stroke="#e5ddc4"/>
+
+  <text x="70" y="200" font-size="16" font-weight="bold" fill="#1a1a1a">Người bán: CÔNG TY TNHH DU LỊCH KHANH</text>
+  <text x="70" y="234" font-size="15" fill="#444">Mã số thuế:</text>
+  <text x="230" y="234" font-size="16" fill="#1a1a1a">0312244033</text>
+  <text x="70" y="290" font-size="16" font-weight="bold" fill="#1a1a1a">Người mua: Cty CP Dịch vụ Dữ liệu CNTT Vi Na (VINADATA)</text>
+  <text x="70" y="324" font-size="15" fill="#444">Mã số thuế:</text>
+  <text x="230" y="324" font-size="16" fill="#1a1a1a">0304851362</text>
+  <line x1="60" y1="350" x2="940" y2="350" stroke="#e5ddc4"/>
+
+  <text x="70" y="392" font-size="15" font-weight="bold" fill="#444">Nội dung</text>
+  <text x="830" y="392" font-size="15" font-weight="bold" text-anchor="end" fill="#444">Thành tiền (đã gồm VAT)</text>
+  <text x="70" y="440" font-size="16" fill="#1a1a1a">Vé máy bay quốc nội — N9HR7N SGNHANSGN</text>
+  <text x="830" y="440" font-size="17" font-weight="bold" text-anchor="end" fill="#1a1a1a">1.537.000</text>
+  <text x="70" y="478" font-size="14" fill="#777">Trần Văn Minh · khứ hồi 14/04–17/04/2026</text>
+  <line x1="60" y1="510" x2="940" y2="510" stroke="#e5ddc4"/>
+
+  <text x="70" y="552" font-size="15" fill="#444">Thuế suất GTGT:</text>
+  <text x="830" y="552" font-size="16" text-anchor="end" fill="#1a1a1a">8%</text>
+  <text x="70" y="592" font-size="16" font-weight="bold" fill="#1a1a1a">Tổng thanh toán:</text>
+  <text x="830" y="592" font-size="18" font-weight="bold" text-anchor="end" fill="#8a1a1a">1.537.000</text>
+  <text x="70" y="628" font-size="13" fill="#999">(Bằng chữ: Một triệu năm trăm ba mươi bảy nghìn đồng)</text>
+</svg>

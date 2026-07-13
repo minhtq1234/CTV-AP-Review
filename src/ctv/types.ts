@@ -13,7 +13,7 @@ export interface EvidenceDoc {
   pages: DocPage[]
 }
 
-export type CheckGroup = 'Danh tính' | 'Ngân hàng' | 'Thanh toán' | 'Chính sách'
+export type CheckGroup = 'Danh tính' | 'Ngân hàng' | 'Thanh toán' | 'Chính sách' | 'Chứng từ' | 'Chuyến đi'
 export type CheckType = 'compare' | 'expiry' | 'math' | 'policy'
 
 // One place a field's value was found — a specific page of a specific document.
@@ -39,8 +39,9 @@ export interface CtvFolder {
   id: string
   name: string
   product: string
+  heading?: string         // panel header label (defaults to "Hồ sơ CTV")
   status: CaseStatus
-  exempt: boolean          // PIT exemption claimed via bản cam kết
+  exempt: boolean          // PIT exemption claimed via bản cam kết (n/a for flight cases)
   docs: EvidenceDoc[]
   fields: CtvField[]
   rejectReason?: string
