@@ -41,24 +41,31 @@ visual report to verify the boundaries by eye. No OCR, no GPU.
 
 ## Approach
 
-### Stage 1 — Boundary signal: template-match the contract cover
+### Stage 1 — Boundary signal: auto-derive the recurring cover, then cut
 
-Each packet opens with a visually distinctive cover: a centered
-"HỢP ĐỒNG DỊCH VỤ" title above a two-column "BÊN A / BÊN B" header block.
+Each packet opens with a visually distinctive cover (in this submission, a
+centered "HỢP ĐỒNG DỊCH VỤ" title above a two-column "BÊN A / BÊN B" block).
+**Nothing about the specific page numbers, threshold, or reference layout is
+hardcoded** — the cover is discovered from the file itself:
 
-1. Render each page to a low-DPI grayscale image (PyMuPDF).
-2. Take a reference crop of the title/header **band** (top ~25% of the page)
-   from a known cover page (p8).
-3. Score every page's top band against the reference with
-   `cv2.matchTemplate` (normalized cross-correlation, `TM_CCOEFF_NORMED`),
-   after resizing bands to a common width so scores are comparable.
-4. Pages scoring above a tuned threshold are packet starts. Continuation
-   pages (dense body text, biên bản, forms) score low and do not trigger.
+1. Render each page to a low-DPI grayscale image (PyMuPDF); take each page's top
+   **band** (top ~25%), resized to a common size so bands are comparable.
+2. Compute pairwise similarity across all top-bands (`cv2.matchTemplate` /
+   normalized correlation) and cluster them. In a stack of repeating packets the
+   cover band recurs ~N times near-identically, forming the **largest recurring
+   cluster**; that cluster is the set of covers, and its medoid is the derived
+   template. Body/biên bản/form/appendix pages are visually varied and do not
+   form a comparably large tight cluster.
+3. The cut points are the cover pages (cluster members), in order. The
+   separating **threshold is the natural gap** between the cover cluster's
+   similarity and the rest — computed from the distribution, not a constant.
+4. **Preamble is derived, not fixed:** every page before the first detected
+   cover is front matter (the summary + bảng kê here). A file with a longer,
+   shorter, or absent preamble is handled with no change.
 
-The threshold is chosen empirically against the file (inspect the score
-distribution; there should be a clear bimodal gap between cover pages and the
-rest). Front matter (p1–7) is excluded from packetization (it is the summary +
-bảng kê, not a CTV packet).
+Optional override: a caller may pass one known cover (page + band) to seed the
+template instead of auto-deriving it — useful if a submission's covers vary too
+much to cluster cleanly.
 
 ### Stage 2 — Reconcile against the roster (guardrail)
 
@@ -92,10 +99,11 @@ A single HTML file (thumbnails embedded as data-URIs) containing:
 ## Data flow
 
 ```
-PDF (262 scanned pages)
+PDF (any # of scanned pages)
   → render pages (grayscale, low DPI)                     [PyMuPDF]
-  → cover scores per page                                 [cv2.matchTemplate]
-  → boundaries (score > threshold, excl. front matter)
+  → page top-bands → pairwise similarity → cluster        [cv2 / numpy]
+  → largest recurring cluster = covers; medoid = template
+  → derived threshold (gap); first cover ends the preamble
   → packets [{start,end,cover_score,pages}]
   → reconcile with roster rows                            [openpyxl]
   → packets + name + confidence flags
@@ -125,16 +133,42 @@ contain real PII and are written to the scratchpad only, never committed.**
 
 ## Risks & mitigations
 
-- **Threshold fragility** — a single global threshold may misfire on a stray
-  page. Mitigation: inspect the score distribution to confirm a clean gap; the
-  roster count/order cross-check catches an off-by-one; near-threshold pages are
-  flagged amber rather than silently cut.
+- **Cluster/threshold fragility** — if covers vary too much, the recurring
+  cluster could be loose or a stray page could sit near the gap. Mitigation: the
+  threshold is the derived distribution gap (not a constant); the roster
+  count/order cross-check catches an off-by-one; near-threshold pages are flagged
+  amber rather than silently cut; and a caller can seed a known cover template as
+  an override.
+- **No dominant cluster** — a submission that is *not* a stack of repeating
+  same-template packets (heterogeneous one-off docs) won't produce a clear cover
+  cluster. Mitigation: detect this (no cluster meaningfully larger than the rest)
+  and report it rather than emit garbage cuts; that case needs the later
+  OCR/type-classifier route, out of scope here.
 - **Variable packet length** — contracts are 4–5 pages, so packet size varies.
   Mitigation: boundaries come from cover detection, not fixed spacing; length is
   only a confidence signal, not a cut rule.
 - **Rotated pages** — some pages are landscape/rotated. Mitigation: cover
   detection uses the (portrait) contract cover; rotated appendix pages are not
   covers and score low.
+
+## Generality
+
+The 262-page / ~33-CTV file is only a sample. Nothing in the algorithm is keyed
+to those numbers:
+
+- **Page count** — any; pages are processed as a stream.
+- **Packet count** — whatever the recurring-cover cluster contains, validated
+  against the roster's N (also read from the file, not assumed).
+- **Preamble length** — derived (pages before the first cover); 0, 7, or more.
+- **Packet length** — variable; boundaries come from covers, not fixed spacing.
+- **Threshold / reference cover** — derived from the file, not constants.
+
+**The one assumption:** the submission is a stack of *repeating same-template
+packets* — which is what these monthly CTV packs are. The same code handles a
+smaller or larger pack of the same shape unchanged. A genuinely different
+submission format re-derives its own cover template automatically (or accepts a
+one-page seed); a non-repeating pile of heterogeneous docs is explicitly out of
+scope and is detected and reported rather than mis-cut.
 
 ## Success criterion
 
