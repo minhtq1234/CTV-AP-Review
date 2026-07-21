@@ -9,7 +9,7 @@ reference packets by STT / field, not by real values.
 | 001 | OCR / fields | resolved | MST/CCCD kept independent; MST reads MSTTNCN; now doc-labeled |
 | 002 | alignment | resolved | Now align by OCR'd CCCD (name fallback), not position |
 | 003 | doc segmentation | resolved | Packet split into per-document EvidenceDocs; sources doc-labeled |
-| 004 | multi-doc sources | open | A field should be navigable on EVERY doc it appears on, incl. unread |
+| 004 | multi-doc sources | resolved | Field navigable on every doc incl. handwritten "cần xem"; value is a hint |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -110,5 +110,9 @@ eye there; the OCR'd value and auto-verdict are hints, not the decision. Locatin
 label is far more robust than reading handwriting, so this plays to the tool's
 strength.
 
-**Status:** in progress — building on the "locate & look" principle
-(plan `docs/superpowers/plans/2026-07-13-locate-and-look.md`).
+**Status:** resolved — commits `aa0e8fe` (server: locate each field on every doc,
+read or "cần xem") + `8086aec` (reviewer: per-doc sources, value is a hint not the
+gate). Verified live on the real file (Nguyễn Hoàng Phúc): Ngày sinh/CCCD/MST/TK
+each show a source on both Hợp đồng and Biên bản; clicking the contract's
+"cần xem" chip switches to that document and boxes the handwritten value for a human
+read; unread copies don't turn matching fields red.
