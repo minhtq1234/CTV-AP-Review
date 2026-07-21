@@ -207,12 +207,19 @@ def coarse_label(aspect: float, ink: float, is_cover: bool) -> str:
     `aspect` is width/height (so a landscape/rotated page is > 1); `ink` is the
     fraction of dark pixels. Order matters: cover first, then rotated, then
     dense-text vs sparse-form.
+
+    The ink threshold is calibrated to real low-DPI scans, not a naive guess:
+    at dpi=40 a full scanned page's dark-pixel fraction lands nowhere near the
+    10%+ one might assume for "dense text" — on a real 262-page CTV submission
+    it ranged ~0.00001-0.0051 (median ~0.0014). 0.002 sits above the median,
+    separating denser contract/biên-bản body text from sparser forms, tables,
+    signature pages, and photocopied ID cards.
     """
     if is_cover:
         return "Hợp đồng (bìa)"
     if aspect > 1.15:
         return "Phụ lục (xoay)"
-    if ink >= 0.12:
+    if ink >= 0.002:
         return "Văn bản"
     return "Biểu mẫu"
 

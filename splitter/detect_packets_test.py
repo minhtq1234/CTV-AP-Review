@@ -112,14 +112,17 @@ def test_extract_roster_names_empty_when_no_header():
     assert extract_roster_names([["x", "y"], [1, 2]]) == []
 
 def test_coarse_label_cover_wins():
-    assert coarse_label(aspect=0.71, ink=0.3, is_cover=True) == "Hợp đồng (bìa)"
+    assert coarse_label(aspect=0.71, ink=0.003, is_cover=True) == "Hợp đồng (bìa)"
 
 def test_coarse_label_rotated_by_aspect():
-    assert coarse_label(aspect=1.4, ink=0.2, is_cover=False) == "Phụ lục (xoay)"
+    assert coarse_label(aspect=1.4, ink=0.001, is_cover=False) == "Phụ lục (xoay)"
 
 def test_coarse_label_dense_vs_sparse():
-    assert coarse_label(aspect=0.71, ink=0.25, is_cover=False) == "Văn bản"
-    assert coarse_label(aspect=0.71, ink=0.04, is_cover=False) == "Biểu mẫu"
+    # Ink thresholds are calibrated to real low-DPI ink density (fraction of
+    # dark pixels over the *whole page*), not a naive guess: on the real file
+    # this ranges ~0.00001-0.0051 (median ~0.0014), nowhere near 0.1+.
+    assert coarse_label(aspect=0.71, ink=0.003, is_cover=False) == "Văn bản"
+    assert coarse_label(aspect=0.71, ink=0.0008, is_cover=False) == "Biểu mẫu"
 
 def test_report_html_has_summary_and_cards():
     ps = [Packet(index=0, start=7, end=14, cover_score=0.9, name="Nguyễn Văn A",
