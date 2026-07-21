@@ -11,6 +11,7 @@ CtvField/CtvSource) so manifests load straight into the existing reviewer.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 
 
@@ -81,3 +82,71 @@ def norm(s: str) -> str:
     decomposed = unicodedata.normalize("NFD", s)
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return stripped.casefold()
+
+
+# ---------------------------------------------------------------------------
+# Anchored pattern search (Task A2)
+# ---------------------------------------------------------------------------
+
+PATTERNS = {
+    "MST": r"\d{10,13}",
+    "CCCD_SPACED": r"\d(?:\s*\d){8,12}",
+    "MONEY": r"\d{1,3}(?:[.,]\d{3})+",
+    "DATE": r"\d{1,2}/\d{1,2}/\d{4}",
+}
+
+
+def _line_text_and_spans(line: list[dict]) -> tuple[str, list[tuple[int, int]]]:
+    """Joined (space-separated) line text, plus each word's [start,end) span in it."""
+    parts = []
+    spans = []
+    pos = 0
+    for i, w in enumerate(line):
+        t = w["text"]
+        start = pos
+        end = pos + len(t)
+        spans.append((start, end))
+        pos = end
+        if i < len(line) - 1:
+            pos += 1  # the joining space
+    text = " ".join(w["text"] for w in line)
+    return text, spans
+
+
+def _search_line(line: list[dict], pattern: str) -> dict | None:
+    """Search `pattern` over `line`'s joined text; map the match back to words."""
+    text, spans = _line_text_and_spans(line)
+    m = re.search(pattern, text)
+    if not m:
+        return None
+    s, e = m.start(), m.end()
+    matched_words = [w for w, (ws, we) in zip(line, spans) if we > s and ws < e]
+    if not matched_words:
+        return None
+    value = re.sub(r"\s+", "", m.group(0))
+    confidence = min(w["conf"] for w in matched_words) / 100
+    return {"value": value, "bbox": union_bbox(matched_words), "confidence": confidence}
+
+
+def find_in_lines(
+    lines: list[list[dict]],
+    anchors: list[str],
+    pattern: str,
+    allow_next_line: bool = True,
+) -> list[dict]:
+    """For each line whose text (accent-insensitively) contains an anchor,
+    search that line (and optionally the next) for `pattern`; return one hit
+    per matching anchor line: `{value, bbox, confidence}`.
+    """
+    anchors_norm = [norm(a) for a in anchors]
+    hits = []
+    for idx, line in enumerate(lines):
+        text = " ".join(w["text"] for w in line)
+        if not any(a in norm(text) for a in anchors_norm):
+            continue
+        hit = _search_line(line, pattern)
+        if hit is None and allow_next_line and idx + 1 < len(lines):
+            hit = _search_line(lines[idx + 1], pattern)
+        if hit is not None:
+            hits.append(hit)
+    return hits
