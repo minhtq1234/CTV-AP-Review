@@ -41,7 +41,7 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 
 .fields-summary { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--text-muted);
   padding: 9px 13px; border-bottom: 0.5px solid var(--border); }
-.s-mismatch { color: var(--danger); } .s-low { color: var(--warning); }
+.s-mismatch { color: var(--danger); } .s-low { color: var(--warning); } .s-review { color: var(--text-muted); }
 .frow { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-bottom: 0.5px solid var(--border); cursor: pointer; }
 .frow.sel { background: #eaf1fb; }
 .chip { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
@@ -50,6 +50,10 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .v-low { background: #fbf1e0; color: var(--warning); }
 .v-fuzzy { background: #f1efe8; color: var(--text-muted); border: 0.5px solid var(--border); }
 .v-match { background: #e7f3ea; color: var(--success); }
+/* Field-level "review" (#004): neutral "cần xem" -- an unread-only field, not an exception.
+   Wider auto-width pill instead of the fixed 22px glyph square the other verdicts use. */
+.chip.v-review { width: auto; height: auto; padding: 2px 9px; border-radius: 20px; font-size: 11px;
+  background: #f1efe8; color: var(--text-muted); border: 0.5px solid var(--border); white-space: nowrap; }
 .fbody { min-width: 0; display: flex; flex-direction: column; }
 .flabel { font-size: 13px; font-weight: 500; }
 .fvals { font-size: 12px; color: var(--text-muted); font-family: monospace; }
@@ -105,6 +109,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .srcchip.v-low { background: #fbf1e0; border-color: #e6cfa0; color: var(--warning); }
 .srcchip.v-fuzzy { background: #f1efe8; color: var(--text-muted); }
 .srcchip.v-match { background: #e7f3ea; border-color: #b8dcc2; color: var(--success); }
+/* Located-but-unread source (#004): navigable ("cần xem · <doc>"), styled neutral -- never
+   colored like a verdict, since an unread copy is a location to check, not a hint. */
+.srcchip.unread { color: var(--text-muted); font-style: italic; }
 .srcbad { font-family: monospace; }
 
 /* Upload flow ("Tải hồ sơ"): dropzone, processing, split-result, review-back-bar. */
