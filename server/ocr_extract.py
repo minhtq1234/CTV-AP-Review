@@ -11,7 +11,6 @@ CtvField/CtvSource) so manifests load straight into the existing reviewer.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import unicodedata
@@ -381,6 +380,29 @@ FIELD_SPECS = [
 _EMPTY_SOURCE = {"docId": "", "page": 0, "value": "", "bbox": {"x": 0, "y": 0, "width": 0, "height": 0}, "confidence": 0.0}
 
 
+def _dedupe_sources(sources: list[dict]) -> list[dict]:
+    """Collapse sources that share the same (docId, value) to the
+    highest-confidence one, preserving first-seen order.
+
+    Multiple lines of the SAME document confirming the same value (e.g. a
+    "Căn cước" line and an "MSTTNCN" line both showing the same digits) are
+    one document's worth of evidence, not two -- without this, the reviewer
+    would show duplicate same-doc chips for a value that appears on several
+    lines of one document (see docs/test-findings.md #003).
+    """
+    best: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for s in sources:
+        key = (s["docId"], s["value"])
+        prev = best.get(key)
+        if prev is None:
+            order.append(key)
+            best[key] = s
+        elif s["confidence"] > prev["confidence"]:
+            best[key] = s
+    return [best[k] for k in order]
+
+
 def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: dict[str, str]) -> list[dict]:
     """Run every FIELD_SPECS entry over every doc/page's OCR words.
 
@@ -409,6 +431,7 @@ def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: d
                         "bbox": hit["bbox"],
                         "confidence": hit["confidence"],
                     })
+        sources = _dedupe_sources(sources)
         if not sources:
             sources = [dict(_EMPTY_SOURCE)]
         fields.append({
@@ -505,22 +528,41 @@ def _slug(name: str) -> str:
     return s or "folder"
 
 
+def _page_text(words: list[dict]) -> str:
+    """Plain reading-order text for one page's OCR words, for classify_page."""
+    lines = group_lines(words)
+    return "\n".join(" ".join(w["text"] for w in line) for line in lines)
+
+
+def _best_value(field: dict) -> str:
+    """The highest-confidence non-empty source value for one extracted field
+    (used to derive the packet's OCR'd identity — see `ocr_packet`)."""
+    candidates = [s for s in field["sources"] if s.get("value")]
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda s: s["confidence"])["value"]
+
+
 def ocr_packet(
     pdf_path: str,
     start: int,
     end: int,
-    roster_row: dict[str, str],
     out_dir: str,
-    name: str,
-    product: str,
     display_dpi: int = 150,
     ocr_dpi: int = 300,
 ) -> dict:
-    """Render + OCR + extract one packet's page range into a CtvFolder manifest.
+    """Render + OCR + segment one packet's page range.
 
-    Writes `manifest.json` (and the page PNGs from render_pages) into
-    `out_dir`, and returns the manifest dict. Pages are addressed by index
-    relative to the packet's own start (0-based), matching `docs[].pages[]`.
+    Writes the page PNGs (via render_pages) into `out_dir` and returns
+    `{"folder": {"docs": [...], "fields": [...]}, "identity": {"cccd", "name"}}`.
+
+    Pages are segmented into documents by title (`segment_docs`); each field
+    source's `docId`/`page` point at the owning document (page index relative
+    to that document, matching `docs[].pages[]`). `fields[].expected` is left
+    empty here — identity (which roster row this packet belongs to) isn't
+    known until the caller matches `identity` against the roster
+    (`pipeline.match_roster`) and fills expected values in
+    (`pipeline.fill_expected`) before writing the manifest.
     """
     os.makedirs(out_dir, exist_ok=True)
     pages = render_pages(pdf_path, start, end, out_dir, display_dpi=display_dpi)
@@ -530,10 +572,31 @@ def ocr_packet(
         words, factor = ocr_words(pdf_path, abs_page, ocr_dpi=ocr_dpi, display_dpi=display_dpi)
         words_by_page[rel_idx] = scale_words(words, factor)
 
-    fields = extract_fields({"packet": words_by_page}, roster_row)
-    docs = [{"id": "packet", "kind": "contract", "label": "Hồ sơ", "pages": pages}]
-    manifest = build_manifest(_slug(name), name, product, docs, fields)
+    page_texts = [_page_text(words_by_page[i]) for i in range(len(pages))]
+    segments = segment_docs(page_texts)
 
-    with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-    return manifest
+    docs: list[dict] = []
+    words_by_doc: dict[str, dict[int, list[dict]]] = {}
+    kind_counts: dict[str, int] = {}
+    for seg in segments:
+        n = kind_counts.get(seg["kind"], 0)
+        kind_counts[seg["kind"]] = n + 1
+        doc_id = f"{seg['kind']}-{n}"
+        docs.append({
+            "id": doc_id,
+            "kind": seg["kind"],
+            "label": seg["label"],
+            "pages": [pages[pk] for pk in seg["pages"]],
+        })
+        words_by_doc[doc_id] = {
+            j: words_by_page[pk] for j, pk in enumerate(seg["pages"])
+        }
+
+    fields = extract_fields(words_by_doc, {})
+    by_key = {f["key"]: f for f in fields}
+    identity = {
+        "cccd": _best_value(by_key["cccd"]),
+        "name": _best_value(by_key["hoten"]),
+    }
+
+    return {"folder": {"docs": docs, "fields": fields}, "identity": identity}

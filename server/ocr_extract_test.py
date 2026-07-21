@@ -142,13 +142,18 @@ def test_extract_fields_assembles_manifest_fields():
     assert by_key["hoten"]["sources"][0]["docId"] == "bbnt"
 
     # cccd's own FIELD_SPEC anchors on "msttncn" too (an individual's MSTTNCN
-    # commonly equals their CCCD) -- so it legitimately picks up 3 confirming
-    # sources here (bbnt's "Căn cước" line + bbnt's "MSTTNCN" line +
-    # tra_cuu_mst's "MSTTNCN" line), all carrying the same, roster-matching
-    # value -- extra cross-checks, not noise, since every value agrees.
+    # commonly equals their CCCD), so bbnt legitimately confirms it via two
+    # different lines ("Căn cước" + "MSTTNCN") -- but both are the SAME
+    # document agreeing with itself, so they dedupe to bbnt's single
+    # highest-confidence hit (the "MSTTNCN" line, conf 0.93). tra_cuu_mst is
+    # a different document, so it stays as its own, distinct source: 2
+    # sources total, one per confirming document.
     assert by_key["cccd"]["expected"] == "048091001309"
-    assert len(by_key["cccd"]["sources"]) == 3
+    assert len(by_key["cccd"]["sources"]) == 2
+    assert {s["docId"] for s in by_key["cccd"]["sources"]} == {"bbnt", "tra_cuu_mst"}
     assert all(s["value"] == "048091001309" for s in by_key["cccd"]["sources"])
+    bbnt_cccd_source = next(s for s in by_key["cccd"]["sources"] if s["docId"] == "bbnt")
+    assert abs(bbnt_cccd_source["confidence"] - 0.93) < 1e-6
 
     # phi has no OCR hit anywhere -> single empty/low-confidence fallback source,
     # so it reads as an exception in the reviewer rather than silently vanishing.
@@ -156,6 +161,29 @@ def test_extract_fields_assembles_manifest_fields():
     assert len(by_key["phi"]["sources"]) == 1
     assert by_key["phi"]["sources"][0]["value"] == ""
     assert by_key["phi"]["sources"][0]["confidence"] == 0.0
+
+
+def test_extract_fields_dedupes_same_doc_same_value_sources():
+    # Two different lines within the SAME document both yield the same value
+    # for the same field (e.g. "Căn cước" line + "MSTTNCN" line both showing
+    # the CCCD digits) -- these must collapse to one source per document
+    # (highest confidence kept), not two, so the reviewer's "checked in N
+    # documents" count reflects documents, not incidental duplicate lines.
+    words_by_doc = {
+        "bbnt": {0: [
+            W("Căn", 10, 40, 25, 18), W("cước", 40, 40, 30, 18),
+            *[W(d, 100 + i * 20, 40, 12, 18, conf=80) for i, d in enumerate("048091001309")],
+            W("MSTTNCN", 10, 100, 70, 18), W(":", 85, 100, 10, 18),
+            *[W(d, 120 + i * 15, 100, 12, 18, conf=97) for i, d in enumerate("048091001309")],
+        ]},
+    }
+    fields = extract_fields(words_by_doc, {"cccd": "048091001309"})
+    by_key = {f["key"]: f for f in fields}
+    assert len(by_key["cccd"]["sources"]) == 1
+    only = by_key["cccd"]["sources"][0]
+    assert only["docId"] == "bbnt"
+    assert only["value"] == "048091001309"
+    assert abs(only["confidence"] - 0.97) < 1e-6  # kept the higher-confidence hit
 
 
 def test_find_name_rejects_prose_anchor_mid_sentence():
