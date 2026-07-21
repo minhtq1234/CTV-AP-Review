@@ -6,9 +6,19 @@ reference packets by STT / field, not by real values.
 
 | ID | Area | Status | Summary |
 |----|------|--------|---------|
-| 001 | OCR / fields | open | MST and CCCD validated as the same value (see below) |
-| 002 | alignment | open | Packet paired to WRONG roster row (by position) → all fields red |
-| 003 | doc segmentation | open | Packet's ~4 documents bundled into one "Hồ sơ"; sources unlabeled |
+| 001 | OCR / fields | resolved | MST/CCCD kept independent; MST reads MSTTNCN; now doc-labeled |
+| 002 | alignment | resolved | Now align by OCR'd CCCD (name fallback), not position |
+| 003 | doc segmentation | resolved | Packet split into per-document EvidenceDocs; sources doc-labeled |
+
+**Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
+`docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
+real file with the v3 error roster: the previously all-red packet at p154–161 now
+correctly resolves to **Nguyễn Đào Hồng Hạnh** (name green), shows 3 document tabs
+(Hợp đồng / Biên bản thanh lý / Tra cứu thuế), and each field's sources are labeled
+by document. Nguyễn Thảo Ly ↔ Nguyễn Đào Hồng Hạnh (swapped between roster order and
+PDF order) are now paired correctly by CCCD. Remaining amber/red on that packet are
+legitimate OCR outcomes (handwritten contract fields → flagged for a human), not the
+mispairing bug.
 
 ---
 
