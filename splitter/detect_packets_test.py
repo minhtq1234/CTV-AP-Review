@@ -8,6 +8,7 @@ from detect_packets import implausible_structure
 from detect_packets import extract_roster_names
 from detect_packets import coarse_label
 from detect_packets import build_report_html
+from detect_packets import packet_filename
 
 def _scores_for(bounds, cover=0.9):
     # build a per-page score list where each packet's start page scores `cover`
@@ -208,6 +209,23 @@ def test_seed_scores_self_similarity_not_corrupted():
     scores, seed = seed_scores(bands)
     assert seed < 3, seed                     # seed picked from the recurring covers
     assert scores[seed] > 0.9, scores[seed]   # true self-similarity, NOT -1.0
+
+def test_packet_filename_normal_name():
+    # index 0 -> order "01"; pages are 1-based inclusive (start+1..end+1).
+    assert packet_filename(0, "Huỳnh Thị Thúy Phượng", 7, 14, False) == \
+        "01_Huỳnh-Thị-Thúy-Phượng_p8-15.pdf"
+
+def test_packet_filename_none_name():
+    assert packet_filename(6, None, 49, 56, False) == "07_CHUA-KHOP-TEN_p50-57.pdf"
+
+def test_packet_filename_strips_path_illegal_chars():
+    # '/' (and other path-illegal chars) are removed outright, not replaced.
+    assert packet_filename(1, "A/B Co", 0, 7, False) == "02_AB-Co_p1-8.pdf"
+
+def test_packet_filename_auto_merged_suffix():
+    # Regression case: the real Trần Ứng Hỷ packet, p193-200, auto-merged.
+    assert packet_filename(23, "Trần Ứng Hỷ", 192, 199, True) == \
+        "24_Trần-Ứng-Hỷ_p193-200_can-xac-nhan.pdf"
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap

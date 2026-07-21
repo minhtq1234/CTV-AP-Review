@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import base64
 import html as _html
+import os
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -301,6 +303,42 @@ def build_report_html(
         f"<title>{_html.escape(title)}</title><style>{style}</style></head><body>"
         f"{banner}<div class='grid'>{''.join(cards)}</div></body></html>"
     )
+
+
+_PATH_ILLEGAL_CHARS = re.compile(r'[/\\:*?"<>|]')
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def packet_filename(
+    index: int,
+    name: str | None,
+    start: int,
+    end: int,
+    auto_merged: bool,
+) -> str:
+    """Build a filesystem-safe filename for one packet's exported PDF.
+
+    `index` is 0-based; the file uses a 1-based, zero-padded 2-digit order
+    (01, 02, ...). Pages in the name are 1-based inclusive (start+1..end+1),
+    matching the HTML report's `p{a}-{b}` ranges.
+
+    `name` is slugified: surrounding whitespace stripped, internal whitespace
+    runs collapsed to a single '-', and path-illegal characters
+    (/ \\ : * ? " < > |) removed outright. Vietnamese diacritics are kept —
+    macOS handles UTF-8 filenames fine. A missing/empty name becomes
+    CHUA-KHOP-TEN. An auto-merged boundary gets a _can-xac-nhan suffix before
+    .pdf, so it's visibly flagged for review from the filename alone.
+    """
+    order = f"{index + 1:02d}"
+    if name is None or not name.strip():
+        slug = "CHUA-KHOP-TEN"
+    else:
+        slug = name.strip()
+        slug = _WHITESPACE_RUN.sub("-", slug)
+        slug = _PATH_ILLEGAL_CHARS.sub("", slug)
+    rng = f"p{start + 1}-{end + 1}"
+    suffix = "_can-xac-nhan" if auto_merged else ""
+    return f"{order}_{slug}_{rng}{suffix}.pdf"
 
 
 def load_page_bands(
