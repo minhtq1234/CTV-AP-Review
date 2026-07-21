@@ -7,6 +7,8 @@ reference packets by STT / field, not by real values.
 | ID | Area | Status | Summary |
 |----|------|--------|---------|
 | 001 | OCR / fields | open | MST and CCCD validated as the same value (see below) |
+| 002 | alignment | open | Packet paired to WRONG roster row (by position) → all fields red |
+| 003 | doc segmentation | open | Packet's ~4 documents bundled into one "Hồ sơ"; sources unlabeled |
 
 ---
 
@@ -29,3 +31,44 @@ CCCD are **not** always equal — a legacy 10-digit individual MST differs from 
   legacy MSTs.
 
 **Status:** open — noted during testing; no fix applied yet.
+
+---
+
+## 002 — Packet matched to the wrong roster row (position-based alignment)
+
+**Observed:** A packet was labeled with one collaborator's name (roster) while its
+pages were entirely a **different** collaborator's documents; all 6 fields went red.
+
+**Root cause:** Packets are paired to roster rows **by position** (i-th packet →
+i-th roster row), which assumes the PDF packet order == roster row order. A single
+swap or boundary shift mispairs a packet and cascades to the rest. The
+"N/N đã khớp tên" banner only verifies the **count**, not per-packet correctness,
+so it gives false confidence. Names are handwritten/OCR-unreliable, so the current
+logic can't self-check the pairing.
+
+**Fix direction:** Align each packet to its roster row by **matching the OCR'd
+CCCD** (reliable, unique per person) instead of by position; fall back to
+name/MST fuzzy match; flag packets whose CCCD matches no roster row (or matches
+none confidently) rather than blindly assigning by order.
+
+**Status:** open — high priority (produces wholesale false mismatches).
+
+## 003 — Packet not segmented into its constituent documents
+
+**Observed:** A packet is really ~4 documents (Hợp đồng, Biên bản nghiệm thu,
+Phụ lục đánh giá, Tra cứu thuế), but the OCR pipeline bundles all pages into a
+single `EvidenceDoc` labeled "Hồ sơ". Every field source chip therefore just says
+"Hồ sơ" — you can't tell which document a value came from — and a field that
+legitimately appears in several documents (e.g. CCCD on the contract + biên bản +
+tax-lookup) shows duplicate same-value sources with no document distinction.
+
+**Note (user):** "there are actually 4 documents; many data fields appear more
+than 1 place." The multi-source cross-check is correct in spirit, but sources need
+per-document labels and the packet needs doc-type segmentation — like the
+synthetic folders' doc tabs (CCCD / Hợp đồng / Tờ khai PIT / Biên bản).
+
+**Fix direction:** Segment packet pages into documents by detecting each doc's
+cover/type; build one `EvidenceDoc` per document; label each field source with its
+document so the reviewer shows "checked across N documents" meaningfully.
+
+**Status:** open — enables both clearer sources and the CCCD-based alignment in 002.
