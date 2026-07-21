@@ -1,32 +1,46 @@
 # server/ — OCR/extract (Stage A) + FastAPI backend (Stage B)
 
-`ocr_extract.py` turns a source PDF's page range + a roster row into a
-`CtvFolder` manifest — the exact JSON shape `src/ctv/types.ts` expects, so it
-loads straight into the existing reviewer (`FolderReview`) with no new UI.
+`ocr_extract.py` renders + OCRs a source PDF's page range, segments it into
+its constituent documents (`classify_page`/`segment_docs` — Hợp đồng, Biên
+bản nghiệm thu, Bản cam kết, Phụ lục, Tra cứu thuế, CCCD), and extracts each
+field's sources per document, returning `{"folder": {docs, fields}, "identity":
+{cccd, name}}`. The `folder` shape matches `src/ctv/types.ts`'s `CtvFolder`
+(minus `expected`, which isn't known yet) so it loads straight into the
+existing reviewer (`FolderReview`) with no new UI, once the caller fills it
+in.
 
 `pipeline.py` orchestrates the packet splitter (`splitter/detect_packets.py`)
 and `ocr_extract.py` into one call: split the source PDF into per-CTV
-packets, then OCR/extract each into a manifest. `jobs.py` runs that pipeline
-on a background thread with progress; `app.py` is the FastAPI service that
-exposes it over HTTP (upload, poll, serve manifests + page PNGs) for the
-frontend's upload flow.
+packets, OCR/segment each packet, then align it to its roster row by OCR'd
+identity — `match_roster`: exact CCCD match, falling back to name — rather
+than by packet position (a single swap or boundary shift used to mispair a
+packet and cascade to the rest). The matched row fills each field's
+`expected` (`fill_expected`) and the folder's name/product before the
+manifest is written; an unmatched packet is flagged `"roster-unmatched"`
+instead of being silently paired to the wrong row. `jobs.py` runs that
+pipeline on a background thread with progress; `app.py` is the FastAPI
+service that exposes it over HTTP (upload, poll, serve manifests + page
+PNGs) for the frontend's upload flow.
 
 ## Running the tests
 
 ```bash
 cd server
 python3 ocr_extract_test.py     # plain-assert, no framework
+python3 pipeline_test.py        # plain-assert, no framework (match_roster, roster indexing)
 python3 jobs_test.py            # plain-assert, no framework
 python3 app_test.py             # the pytest-free subset (rewrite, validation, traversal)
 python3 -m pytest app_test.py -q   # full suite, incl. the two monkeypatch tests
 ```
 
 Only pure logic is unit-tested this way (word scaling/line grouping/bbox
-union/anchor matching in `ocr_extract`; job lifecycle in `jobs`; URL
+union/anchor matching/page classification in `ocr_extract`; roster indexing
+and identity matching in `pipeline`; job lifecycle in `jobs`; URL
 rewriting/validation/routing in `app`, with the real pipeline monkeypatched
-out). `pipeline.py` itself has no unit test — it wires together
-already-tested modules around real PDF/OCR I/O, and is verified by running
-the real file through the server (below).
+out). `ocr_packet`/`run_pipeline`'s I/O layer (PyMuPDF render + pytesseract
+OCR) has no unit test — it wires together already-tested pure logic around
+real PDF/OCR I/O, and is verified by running the real file through the
+server (below).
 
 ## Running the server
 
@@ -69,9 +83,9 @@ curl -s http://127.0.0.1:8000/api/jobs/<job_id>       # poll until status == "do
 curl -s http://127.0.0.1:8000/api/jobs/<job_id>/packets/0/manifest.json
 ```
 
-## Roster -> field mapping
+## Roster -> field mapping, and packet alignment
 
-`pipeline.roster_row_for(rows, packet_index)` maps the roster's Vietnamese
+`pipeline.all_roster_rows(rows)` maps every roster data row's Vietnamese
 columns to the six field keys `ocr_extract.extract_fields` expects, plus a
 product name:
 
@@ -85,10 +99,15 @@ product name:
 | Phí dịch vụ              | `phi`      |
 | Note (text before " - ") | product    |
 
-Packets align to roster rows strictly by order (packet *i* -> the *i*-th
-roster data row), the same convention `detect_packets.reconcile` uses to
-name packets. With no roster (`roster_path=None`), every packet gets an
-empty `roster_row` — no expected values, no product.
+`pipeline.build_roster_index(rows)` indexes all of them once, up front, by
+`digits(cccd)` and by `norm(name)`. Each packet is then aligned to its row by
+**identity**, not position: `match_roster(cccd, name, by_cccd, by_name)`
+tries an exact CCCD match first, falls back to a name match (so a roster row
+with a typo'd CCCD still aligns by name and correctly flags the CCCD field
+as a mismatch, instead of not matching at all), and otherwise reports
+`"unmatched"` — the packet gets flagged `"roster-unmatched"` rather than
+silently paired to the wrong row. With no roster (`roster_path=None`), every
+packet is `"unmatched"` — no expected values, no product.
 
 ## PII
 
