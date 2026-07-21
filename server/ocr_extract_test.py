@@ -1,7 +1,7 @@
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
-    classify_page, segment_docs,
+    classify_page, segment_docs, locate_field,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -53,6 +53,57 @@ def test_find_value_on_next_line():
 def test_find_returns_empty_when_no_anchor():
     lines = [[W("random", 10, 50, 40, 18)]]
     assert find_in_lines(lines, anchors=["ma so thue"], pattern=PATTERNS["MST"]) == []
+
+
+# ---------------------------------------------------------------------------
+# locate_field (#004) -- one hit per anchor line, readable value OR a
+# located-but-unread ("cần xem") hit, never neither and never dropped.
+# ---------------------------------------------------------------------------
+
+def test_locate_field_returns_value_when_pattern_matches():
+    spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
+    lines = [[W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18), W(":", 70, 50, 10, 18),
+              W("24/04/1991", 85, 50, 90, 18, conf=88)]]
+    hits = locate_field(lines, spec)
+    assert len(hits) == 1
+    assert hits[0]["value"] == "24/04/1991"
+    assert abs(hits[0]["confidence"] - 0.88) < 1e-6
+    assert hits[0]["bbox"]["width"] > 0
+
+def test_locate_field_locates_unread_region_when_label_present_but_value_unreadable():
+    # Handwritten date OCR'd as illegible tokens: label is there, nothing
+    # after it matches the DATE pattern -> "cần xem", pointing at the region
+    # right after the label (not the whole line, not nothing).
+    spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
+    lines = [[W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18), W(":", 70, 50, 10, 18),
+              W("~~~~", 85, 50, 90, 18, conf=35)]]
+    hits = locate_field(lines, spec)
+    assert len(hits) == 1
+    assert hits[0]["value"] == ""
+    assert hits[0]["confidence"] == 0.0
+    assert hits[0]["bbox"]["width"] > 0 and hits[0]["bbox"]["height"] > 0
+    assert hits[0]["bbox"]["x"] == 70  # starts right after "sinh", not at the line start
+
+def test_locate_field_falls_back_to_label_bbox_when_nothing_follows_on_line():
+    spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
+    lines = [[W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18)]]
+    hits = locate_field(lines, spec)
+    assert len(hits) == 1
+    assert hits[0]["value"] == ""
+    assert hits[0]["confidence"] == 0.0
+    assert hits[0]["bbox"] == union_bbox(lines[0])
+
+def test_locate_field_no_hit_when_label_absent():
+    spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
+    lines = [[W("random", 10, 50, 40, 18, conf=90)]]
+    assert locate_field(lines, spec) == []
+
+def test_locate_field_works_with_real_mst_spec():
+    mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
+    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("048091001309")]
+    lines = [[W("MSTTNCN", 10, 50, 70, 18), W(":", 85, 50, 10, 18)] + digs]
+    hits = locate_field(lines, mst_spec)
+    assert len(hits) == 1 and hits[0]["value"] == "048091001309"
 
 def _mst_hits(lines):
     mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
@@ -164,11 +215,12 @@ def test_extract_fields_assembles_manifest_fields():
 
 
 def test_extract_fields_dedupes_same_doc_same_value_sources():
-    # Two different lines within the SAME document both yield the same value
-    # for the same field (e.g. "Căn cước" line + "MSTTNCN" line both showing
-    # the CCCD digits) -- these must collapse to one source per document
-    # (highest confidence kept), not two, so the reviewer's "checked in N
-    # documents" count reflects documents, not incidental duplicate lines.
+    # Two different lines within the SAME document both yield a hit for the
+    # same field (e.g. a "Căn cước" line + an "MSTTNCN" line both showing the
+    # CCCD digits) -- a document contributes exactly ONE source per field
+    # (the best hit -- see extract_fields/_best_hit, #004), not one per
+    # confirming line, so the reviewer's "checked in N documents" count
+    # reflects documents, not incidental duplicate lines.
     words_by_doc = {
         "bbnt": {0: [
             W("Căn", 10, 40, 25, 18), W("cước", 40, 40, 30, 18),
@@ -184,6 +236,46 @@ def test_extract_fields_dedupes_same_doc_same_value_sources():
     assert only["docId"] == "bbnt"
     assert only["value"] == "048091001309"
     assert abs(only["confidence"] - 0.97) < 1e-6  # kept the higher-confidence hit
+
+
+def test_extract_fields_emits_unread_source_for_doc_with_label_but_no_readable_value():
+    # #004: Ngày sinh appears on both the contract (handwritten -> illegible)
+    # and the biên bản (typed -> readable). Both documents must get a
+    # navigable source: the biên bản's read + verdictable, the contract's as
+    # "cần xem" (empty value, region-after-label bbox, zero confidence) --
+    # not silently dropped the way the old find_in_lines-only path did.
+    words_by_doc = {
+        "contract": {0: [
+            W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18), W(":", 70, 50, 10, 18),
+            W("scribble", 85, 50, 90, 18, conf=35),
+        ]},
+        "bbnt": {0: [
+            W("Ngày", 10, 40, 30, 18), W("sinh", 45, 40, 25, 18), W(":", 70, 40, 10, 18),
+            W("24/04/1991", 85, 40, 90, 18, conf=88),
+        ]},
+    }
+    fields = extract_fields(words_by_doc, {"ngaysinh": "24/04/1991"})
+    by_key = {f["key"]: f for f in fields}
+    ns = by_key["ngaysinh"]
+    assert len(ns["sources"]) == 2
+    by_doc = {s["docId"]: s for s in ns["sources"]}
+    assert by_doc["bbnt"]["value"] == "24/04/1991"
+    assert by_doc["bbnt"]["confidence"] > 0
+    assert by_doc["contract"]["value"] == ""
+    assert by_doc["contract"]["confidence"] == 0.0
+    assert by_doc["contract"]["bbox"]["width"] > 0 and by_doc["contract"]["bbox"]["height"] > 0
+
+
+def test_extract_fields_label_in_no_document_still_emits_single_cần_xem_source():
+    # If a field's label appears in NO document at all, it must still show
+    # up as one navigable-but-empty "cần xem" exception -- never silently
+    # vanish from the manifest.
+    words_by_doc = {"contract": {0: [W("random", 10, 50, 40, 18)]}}
+    fields = extract_fields(words_by_doc, {"tk": "19001234567"})
+    by_key = {f["key"]: f for f in fields}
+    assert len(by_key["tk"]["sources"]) == 1
+    assert by_key["tk"]["sources"][0]["value"] == ""
+    assert by_key["tk"]["sources"][0]["confidence"] == 0.0
 
 
 def test_find_name_rejects_prose_anchor_mid_sentence():

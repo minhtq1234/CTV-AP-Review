@@ -158,6 +158,95 @@ def find_in_lines(
     return hits
 
 
+def _norm_line_text_and_spans(line: list[dict]) -> tuple[str, list[tuple[int, int]]]:
+    """Like `_line_text_and_spans`, but built from each word's NORMALIZED
+    (accent/case-insensitive) text -- lets an anchor's match span in the
+    normalized text be mapped back to the words it covers (see
+    `_anchor_word_span`). `norm` is a per-character transform (casefold +
+    strip combining marks) that leaves the joining space untouched, so this
+    is equivalent to `norm(" ".join(w["text"] for w in line))`.
+    """
+    parts = []
+    spans = []
+    pos = 0
+    for i, w in enumerate(line):
+        t = norm(w["text"])
+        start = pos
+        end = pos + len(t)
+        spans.append((start, end))
+        pos = end
+        if i < len(line) - 1:
+            pos += 1  # the joining space
+    text = " ".join(norm(w["text"]) for w in line)
+    return text, spans
+
+
+def _anchor_word_span(line: list[dict], anchor_norm: str) -> list[int] | None:
+    """Word indices in `line` covered by `anchor_norm`'s first match in the
+    line's normalized text, or None if it doesn't occur on this line."""
+    text, spans = _norm_line_text_and_spans(line)
+    idx = text.find(anchor_norm)
+    if idx < 0:
+        return None
+    s, e = idx, idx + len(anchor_norm)
+    covered = [i for i, (ws, we) in enumerate(spans) if we > s and ws < e]
+    return covered or None
+
+
+def _label_region_bbox(line: list[dict], anchors_norm: list[str]) -> dict:
+    """Where to point the loupe when a line's label is present but its value
+    isn't readable: the words AFTER the (first-matching) label on this line,
+    so the highlight lands on the blank/handwritten space where the value
+    should be -- falling back to the label's own words if nothing follows.
+    """
+    for a in anchors_norm:
+        covered = _anchor_word_span(line, a)
+        if covered:
+            after = line[max(covered) + 1:]
+            return union_bbox(after) if after else union_bbox([line[i] for i in covered])
+    # Anchor matched on the whole joined-text check but no per-word span was
+    # found (shouldn't normally happen) -- the whole line is still a better
+    # location than nothing.
+    return union_bbox(line)
+
+
+def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
+    """For each line whose text contains one of `spec["anchors"]` (accent-
+    insensitively), produce exactly one hit -- never zero for a matching
+    line, never more than one -- so a field's LOCATION is found even when
+    its value can't be read (e.g. handwritten):
+
+    - if any of `spec["patterns"]` matches this line (or, failing that, the
+      next line -- same lookahead as `find_in_lines`) -> a readable hit:
+      `{value, bbox, confidence}` from the matched words;
+    - else -> a located-but-unread hit: `value=""`, `bbox` = the region
+      right after the label on this line (see `_label_region_bbox`),
+      `confidence=0.0`.
+
+    This is the "locate & look" fix for docs/test-findings.md #004: a label
+    reliably found is worth a navigable "cần xem" chip even when its
+    handwritten value isn't -- the OCR'd value is a hint, never the gate.
+    """
+    anchors_norm = [norm(a) for a in spec["anchors"]]
+    patterns = spec.get("patterns", [])
+    hits = []
+    for idx, line in enumerate(lines):
+        text = " ".join(w["text"] for w in line)
+        if not any(a in norm(text) for a in anchors_norm):
+            continue
+        hit = None
+        for pattern in patterns:
+            hit = _search_line(line, pattern)
+            if hit is None and idx + 1 < len(lines):
+                hit = _search_line(lines[idx + 1], pattern)
+            if hit is not None:
+                break
+        if hit is None:
+            hit = {"value": "", "bbox": _label_region_bbox(line, anchors_norm), "confidence": 0.0}
+        hits.append(hit)
+    return hits
+
+
 def _clean_tok(s: str) -> str:
     return s.strip(" :;.,")
 
@@ -436,58 +525,63 @@ FIELD_SPECS = [
 _EMPTY_SOURCE = {"docId": "", "page": 0, "value": "", "bbox": {"x": 0, "y": 0, "width": 0, "height": 0}, "confidence": 0.0}
 
 
-def _dedupe_sources(sources: list[dict]) -> list[dict]:
-    """Collapse sources that share the same (docId, value) to the
-    highest-confidence one, preserving first-seen order.
-
-    Multiple lines of the SAME document confirming the same value (e.g. a
-    "Căn cước" line and an "MSTTNCN" line both showing the same digits) are
-    one document's worth of evidence, not two -- without this, the reviewer
-    would show duplicate same-doc chips for a value that appears on several
-    lines of one document (see docs/test-findings.md #003).
+def _hits_for_doc(spec: dict, pages: dict[int, list[dict]]) -> list[tuple[int, dict]]:
+    """Every `(page_idx, hit)` a field's spec produces across one document's
+    pages: `find_name` for name fields (unchanged -- its labeled-context +
+    person-name-shape guards are what keep it from flooding the name field
+    with every mid-sentence mention of "Bên cung ứng dịch vụ"), `locate_field`
+    (readable-or-"cần xem") for every other field.
     """
-    best: dict[tuple[str, str], dict] = {}
-    order: list[tuple[str, str]] = []
-    for s in sources:
-        key = (s["docId"], s["value"])
-        prev = best.get(key)
-        if prev is None:
-            order.append(key)
-            best[key] = s
-        elif s["confidence"] > prev["confidence"]:
-            best[key] = s
-    return [best[k] for k in order]
+    hits = []
+    for page_idx, words in pages.items():
+        lines = group_lines(words)
+        page_hits = find_name(lines, spec["anchors"]) if spec["kind"] == "name" else locate_field(lines, spec)
+        hits.extend((page_idx, h) for h in page_hits)
+    return hits
+
+
+def _best_hit(hits: list[tuple[int, dict]]) -> tuple[int, dict] | None:
+    """The one hit a document contributes for a field (#004: a document gets
+    exactly one source per field, never one per confirming/anchor line) --
+    a readable value (highest confidence) if the document has one; else a
+    located-but-unread hit, still worth a navigable "cần xem" chip rather
+    than no source at all.
+    """
+    if not hits:
+        return None
+    readable = [ph for ph in hits if ph[1]["value"]]
+    pool = readable or hits
+    return max(pool, key=lambda ph: ph[1]["confidence"])
 
 
 def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: dict[str, str]) -> list[dict]:
-    """Run every FIELD_SPECS entry over every doc/page's OCR words.
+    """Run every FIELD_SPECS entry over every document's OCR words, emitting
+    ONE source per document whose label is present (#004 "locate & look"):
+    readable occurrences carry a value + bbox + confidence (the hint verdict,
+    as before); unreadable ones ("cần xem") carry `value=""`, the
+    region-after-label bbox, and `confidence=0.0` -- still navigable, never a
+    hard mismatch.
 
     `words_by_doc` is `{docId: {page_index: [scaled Word, ...]}}`. `expected`
-    comes from `roster_row[roster_key]`; a field with no OCR hit anywhere
-    still appears, with a single empty/zero-confidence source, so it reads
+    comes from `roster_row[roster_key]`; a field whose label appears in NO
+    document still gets a single empty/zero-confidence source, so it reads
     as an exception to check rather than silently disappearing.
     """
     fields = []
     for spec in FIELD_SPECS:
         sources = []
         for doc_id, pages in words_by_doc.items():
-            for page_idx, words in pages.items():
-                lines = group_lines(words)
-                if spec["kind"] == "name":
-                    hits = find_name(lines, spec["anchors"])
-                else:
-                    hits = []
-                    for pattern in spec["patterns"]:
-                        hits.extend(find_in_lines(lines, spec["anchors"], pattern))
-                for hit in hits:
-                    sources.append({
-                        "docId": doc_id,
-                        "page": page_idx,
-                        "value": hit["value"],
-                        "bbox": hit["bbox"],
-                        "confidence": hit["confidence"],
-                    })
-        sources = _dedupe_sources(sources)
+            best = _best_hit(_hits_for_doc(spec, pages))
+            if best is None:
+                continue  # this field's label doesn't appear in this document
+            page_idx, hit = best
+            sources.append({
+                "docId": doc_id,
+                "page": page_idx,
+                "value": hit["value"],
+                "bbox": hit["bbox"],
+                "confidence": hit["confidence"],
+            })
         if not sources:
             sources = [dict(_EMPTY_SOURCE)]
         fields.append({
