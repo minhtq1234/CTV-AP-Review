@@ -104,6 +104,21 @@ def reconcile(
     return packets
 
 
+def implausible_structure(n_covers: int, total_pages: int, roster_n: int | None) -> bool:
+    """True if the detected covers don't look like a real repeating-packet
+    structure — e.g. the wrong document type, or the recurring-cover
+    heuristic simply failed to find anything sensible.
+
+    A handful of stray false positives is expected and handled elsewhere
+    (prune_excess_covers); this is a coarse sanity guard for gross failure.
+    With a roster, more than double the expected count is implausible.
+    Without one, fall back to a page-count ratio.
+    """
+    if roster_n is not None:
+        return n_covers > 2 * roster_n
+    return n_covers > total_pages / 4
+
+
 def prune_excess_covers(
     cover_pages: list[int],
     page_scores: list[float],
@@ -208,8 +223,8 @@ def coarse_label(aspect: float, ink: float, is_cover: bool) -> str:
     """Best-effort page type from cheap visual features.
 
     `aspect` is width/height (so a landscape/rotated page is > 1); `ink` is the
-    fraction of dark pixels. Order matters: cover first, then rotated, then
-    dense-text vs sparse-form.
+    fraction of dark pixels over the *whole page*. Order matters: cover first,
+    then rotated, then dense-text vs sparse-form.
 
     The ink threshold is calibrated to real low-DPI scans, not a naive guess:
     at dpi=40 a full scanned page's dark-pixel fraction lands nowhere near the
@@ -232,6 +247,7 @@ def build_report_html(
     roster_n: int | None,
     thumbs: dict[int, str],
     title: str,
+    warning: str | None = None,
 ) -> str:
     """Self-contained HTML: summary banner + one card per packet."""
     amber = sum(1 for p in packets if p.confidence == "amber")
@@ -246,10 +262,11 @@ def build_report_html(
     merged_txt = (
         f" · {merged} ranh giới gộp tự động — cần xác nhận" if merged else ""
     )
+    warn_txt = f" · ⚠ {_html.escape(warning)}" if warning else ""
     banner = (
         f'<div class="banner"><b>{_html.escape(title)}</b>'
         f'<span>{len(packets)} / {roster_txt} gói (tìm thấy / bảng kê) · {aligned}'
-        f' · {amber} ranh giới cần xem lại{merged_txt}</span></div>'
+        f' · {amber} ranh giới cần xem lại{merged_txt}{warn_txt}</span></div>'
     )
     cards = []
     for p in packets:
@@ -380,6 +397,13 @@ def main(argv: list[str] | None = None) -> int:
         roster_names = extract_roster_names(_roster_rows(args.roster))
     roster_n = len(roster_names) if roster_names is not None else None
 
+    warning = None
+    if implausible_structure(len(cover_pages), n, roster_n):
+        warning = (
+            "Không phát hiện cấu trúc hồ sơ lặp lại — "
+            "có thể không phải tập hồ sơ đồng dạng"
+        )
+
     kept_covers, merged_covers = prune_excess_covers(cover_pages, scores, roster_n)
     bounds = packets_from_covers(kept_covers, n)
 
@@ -402,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     html = build_report_html(
         packets, roster_n=roster_n,
         thumbs=thumbs, title="Tách hồ sơ CTV — báo cáo ranh giới",
+        warning=warning,
     )
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
@@ -411,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
     if merged_covers:
         print(f"auto-merged {len(merged_covers)} cover(s) at page(s) "
               f"{[c + 1 for c in merged_covers]} (raw covers detected: {len(cover_pages)})")
+    if warning:
+        print(f"WARNING: {warning}")
     print(f"report -> {args.out}")
     return 0
 

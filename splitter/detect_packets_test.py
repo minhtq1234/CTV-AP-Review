@@ -4,6 +4,7 @@ from detect_packets import derive_threshold, covers_from_scores, packets_from_co
 from detect_packets import seed_scores
 from detect_packets import reconcile, Packet
 from detect_packets import prune_excess_covers
+from detect_packets import implausible_structure
 from detect_packets import extract_roster_names
 from detect_packets import coarse_label
 from detect_packets import build_report_html
@@ -55,6 +56,18 @@ def test_reconcile_flags_near_threshold_cover():
     scores = _scores_for(bounds, cover=0.52)  # only just above threshold 0.5
     ps = reconcile(bounds, scores, ["An"], threshold=0.5, near_margin=0.05)
     assert "near-threshold" in ps[0].flags
+
+def test_implausible_structure_flags_gross_overcount_with_roster():
+    assert implausible_structure(n_covers=70, total_pages=262, roster_n=32) is True
+
+def test_implausible_structure_ok_with_roster():
+    assert implausible_structure(n_covers=33, total_pages=262, roster_n=32) is False
+
+def test_implausible_structure_flags_without_roster():
+    assert implausible_structure(n_covers=100, total_pages=262, roster_n=None) is True
+
+def test_implausible_structure_ok_without_roster():
+    assert implausible_structure(n_covers=33, total_pages=262, roster_n=None) is False
 
 def test_prune_excess_covers_drops_too_close_cover_to_hit_roster_n():
     # 20 sits only 4 pages after 16 (< min_len) -- a mid-packet false positive,
@@ -166,6 +179,12 @@ def test_report_html_no_roster_does_not_claim_mismatch():
     html = build_report_html(ps, roster_n=None, thumbs={}, title="T")
     assert "lệch số lượng" not in html
     assert "không có bảng kê" in html
+
+def test_report_html_includes_structure_warning():
+    ps = [Packet(index=0, start=0, end=7, cover_score=0.9)]
+    html = build_report_html(ps, roster_n=1, thumbs={}, title="T",
+                              warning="Không phát hiện cấu trúc hồ sơ lặp lại")
+    assert "Không phát hiện cấu trúc hồ sơ lặp lại" in html
 
 def test_seed_scores_self_similarity_not_corrupted():
     # 3 near-identical "cover" bands (the recurring boundary) + 5 distinct
