@@ -47,6 +47,16 @@ export default function UploadFlow() {
     }
   }
 
+  // Resume an in-flight job via ?job=<id> — jobs take minutes, so a refresh
+  // (or a shared link) can rejoin one instead of re-uploading.
+  useEffect(() => {
+    const jid = new URLSearchParams(window.location.search).get('job')
+    if (jid) {
+      setJobId(jid)
+      setPhase('processing')
+    }
+  }, [])
+
   // Poll job status every 800ms while processing; stop on done/error or unmount.
   useEffect(() => {
     if (phase !== 'processing' || !jobId) return
