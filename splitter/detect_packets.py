@@ -90,3 +90,37 @@ def reconcile(
         for p in packets:
             p.flags.append("count-mismatch")
     return packets
+
+
+def extract_roster_names(
+    rows: list[list],
+    keywords: tuple[str, ...] = ("họ và tên", "họ tên", "tên", "name"),
+) -> list[str]:
+    """Find the name column by header keyword; return non-empty names below it.
+
+    Skips any title/blank rows above the table. Stops collecting at the first
+    fully blank row after data has begun.
+    """
+    header_row = name_col = None
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            if cell and any(k in str(cell).strip().casefold() for k in keywords):
+                header_row, name_col = r, c
+                break
+        if header_row is not None:
+            break
+    if header_row is None:
+        return []
+    names: list[str] = []
+    started = False
+    for row in rows[header_row + 1:]:
+        blank = all(cell is None or str(cell).strip() == "" for cell in row)
+        if blank:
+            if started:
+                break
+            continue
+        started = True
+        val = row[name_col] if name_col < len(row) else None
+        if val and str(val).strip():
+            names.append(str(val).strip())
+    return names

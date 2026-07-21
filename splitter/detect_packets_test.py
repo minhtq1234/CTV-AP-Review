@@ -1,5 +1,6 @@
 from detect_packets import derive_threshold, covers_from_scores, packets_from_covers
 from detect_packets import reconcile, Packet
+from detect_packets import extract_roster_names
 
 def _scores_for(bounds, cover=0.9):
     # build a per-page score list where each packet's start page scores `cover`
@@ -36,6 +37,19 @@ def test_reconcile_flags_near_threshold_cover():
     scores = _scores_for(bounds, cover=0.52)  # only just above threshold 0.5
     ps = reconcile(bounds, scores, ["An"], threshold=0.5, near_margin=0.05)
     assert "near-threshold" in ps[0].flags
+
+def test_extract_roster_names_finds_column_below_header():
+    rows = [
+        ["BẢNG KÊ THANH TOÁN CTV", None, None],   # title band, skipped
+        ["STT", "Họ và tên", "Số CCCD"],           # header row
+        [1, "Nguyễn Văn A", "079..."],
+        [2, "Trần Thị B", "052..."],
+        [None, None, None],                         # trailing blank, skipped
+    ]
+    assert extract_roster_names(rows) == ["Nguyễn Văn A", "Trần Thị B"]
+
+def test_extract_roster_names_empty_when_no_header():
+    assert extract_roster_names([["x", "y"], [1, 2]]) == []
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap
