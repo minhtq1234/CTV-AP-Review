@@ -245,9 +245,15 @@ def seed_scores(bands: list[np.ndarray]) -> tuple[list[float], int]:
         return [], -1
     M = np.stack([_unit(b) for b in bands])   # (n, d), zero-mean unit rows
     sim = M @ M.T                              # (n, n) NCC in [-1, 1]
-    np.fill_diagonal(sim, -1.0)                # ignore self-match
+    # Recurrence (for seed selection) must ignore self-match, or every page
+    # would look maximally "recurrent" with itself. Mask a *copy* for that —
+    # the returned per-page scores must keep the true self-similarity (~1.0)
+    # so the seed's own entry correctly reads as a cover, not as a forced
+    # -1.0 outlier that would blow up derive_threshold's gap search.
+    masked = sim.copy()
+    np.fill_diagonal(masked, -1.0)
     k = max(3, len(bands) // 20)
-    recurrence = np.sort(sim, axis=1)[:, -k:].sum(axis=1)
+    recurrence = np.sort(masked, axis=1)[:, -k:].sum(axis=1)
     seed = int(np.argmax(recurrence))
     return sim[seed].tolist(), seed
 
