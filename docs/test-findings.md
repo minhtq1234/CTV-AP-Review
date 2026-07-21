@@ -9,6 +9,7 @@ reference packets by STT / field, not by real values.
 | 001 | OCR / fields | resolved | MST/CCCD kept independent; MST reads MSTTNCN; now doc-labeled |
 | 002 | alignment | resolved | Now align by OCR'd CCCD (name fallback), not position |
 | 003 | doc segmentation | resolved | Packet split into per-document EvidenceDocs; sources doc-labeled |
+| 004 | multi-doc sources | open | A field should be navigable on EVERY doc it appears on, incl. unread |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -82,3 +83,25 @@ cover/type; build one `EvidenceDoc` per document; label each field source with i
 document so the reviewer shows "checked across N documents" meaningfully.
 
 **Status:** open — enables both clearer sources and the CCCD-based alignment in 002.
+
+## 004 — A field must be checkable on every document it appears on
+
+**Observed:** `Ngày sinh` appears on both the Hợp đồng and the Biên bản (visible in
+the viewer), but only the Biên bản shows as a source. The contract's copy is
+**handwritten**, OCR couldn't read it, so no source was emitted — leaving no chip
+to click to verify that occurrence. Same for CCCD/MST/TK across the 3 documents.
+
+**Want (user):** check the data on all documents. Each field should be navigable
+on **every document it appears on**, not only where OCR succeeded.
+
+**Fix direction:** for each field, emit one source per document whose label is
+present. Readable (typed) → value + bbox + confidence + verdict (as now).
+Unreadable (handwritten) → a "cần xem" source pointing at the location (region
+after the label) so the loupe still jumps there. Treat unread occurrences as
+"chưa đọc được — cần kiểm tra" (navigable, flagged) rather than a hard mismatch,
+so a field whose readable copies match isn't false-failed by an unread copy.
+Requires: extraction change (server) + a source-level "unread" state in the
+reviewer (checks/verdict + source-chip rendering).
+
+**Status:** open — enhancement; realizes the original "check each field across
+multiple documents" goal on the real OCR pipeline.
