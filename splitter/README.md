@@ -41,3 +41,25 @@ filled, the folder drops straight into the review app with no other change.
 
 32 folders · STT 1–33 (missing 17, caught) · 61 CCCD images (~30 pairs) ·
 262 PDF pages (front-matter 1–5, ~8 pp/CTV).
+
+## Packet detector (scanned PDFs) — `detect_packets.py`
+
+Splits a scanned multi-CTV PDF into per-collaborator packets by auto-detecting
+the recurring contract-cover page, reconciles the count/order against the roster
+spreadsheet, and writes a self-contained HTML report to eyeball the cuts.
+No OCR, no GPU. Nothing is keyed to a specific page/packet count — the cover
+template, threshold, and preamble length are derived from the file.
+
+Run:
+
+    python3 detect_packets.py \
+      --pdf "/path/to/submission.pdf" \
+      --roster "/path/to/BẢNG KÊ ... .xlsx" \
+      --out "/path/to/scratch/split-report.html"
+
+Tests (pure logic, no PDF needed):
+
+    python3 detect_packets_test.py
+
+**PII:** the HTML report and its thumbnails contain real personal data. Write it
+to a scratch location only — `splitter/*.html` is gitignored. Never commit a report.
