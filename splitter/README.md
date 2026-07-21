@@ -50,16 +50,39 @@ spreadsheet, and writes a self-contained HTML report to eyeball the cuts.
 No OCR, no GPU. Nothing is keyed to a specific page/packet count — the cover
 template, threshold, and preamble length are derived from the file.
 
-Run:
+A roster-guided auto-prune step collapses mid-packet false-positive covers
+(e.g. a "BIÊN BẢN NGHIỆM THU" cover that visually mimics the real contract
+cover) into the packet they belong to, tagging the merge `auto-merged` (amber)
+for a human to confirm rather than silently trusting it.
+
+Run (report only):
 
     python3 detect_packets.py \
       --pdf "/path/to/submission.pdf" \
       --roster "/path/to/BẢNG KÊ ... .xlsx" \
       --out "/path/to/scratch/split-report.html"
 
+Run (also export one PDF per packet — the core deliverable, turning the one
+big scan into per-CTV files). `--out` and `--split-dir` are independent;
+pass either or both:
+
+    python3 detect_packets.py \
+      --pdf "/path/to/submission.pdf" \
+      --roster "/path/to/BẢNG KÊ ... .xlsx" \
+      --out "/path/to/scratch/split-report.html" \
+      --split-dir "/path/to/scratch/CTV-split"
+
+Each packet is written as `NN_Tên-CTV_pA-B.pdf` (order, slugified name,
+1-based inclusive page range), e.g. `01_Huỳnh-Thị-Thúy-Phượng_p8-15.pdf`. A
+missing/unmatched name becomes `CHUA-KHOP-TEN`; an auto-merged boundary gets
+a `_can-xac-nhan` suffix so it stays visibly flagged for review even from
+the filename alone, e.g. `24_Trần-Ứng-Hỷ_p193-200_can-xac-nhan.pdf`.
+
 Tests (pure logic, no PDF needed):
 
     python3 detect_packets_test.py
 
-**PII:** the HTML report and its thumbnails contain real personal data. Write it
-to a scratch location only — `splitter/*.html` is gitignored. Never commit a report.
+**PII:** the HTML report, its thumbnails, and the exported per-packet PDFs all
+contain real personal data. Write them to a scratch location only —
+`splitter/*.html` is gitignored, and `--split-dir`/`--out` should always point
+outside the repo. Never commit a report or an exported PDF.

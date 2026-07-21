@@ -448,7 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Detect per-CTV packets in a scanned PDF.")
     ap.add_argument("--pdf", required=True)
     ap.add_argument("--roster", help="path to the roster .xlsx (optional)")
-    ap.add_argument("--out", required=True, help="output HTML report path")
+    ap.add_argument("--out", help="output HTML report path (optional)")
+    ap.add_argument("--split-dir", help="if set, write one PDF per packet into this directory")
     ap.add_argument("--dpi", type=int, default=40)
     args = ap.parse_args(argv)
 
@@ -487,14 +488,15 @@ def main(argv: list[str] | None = None) -> int:
             for pg in range(p.start, p.end + 1)
         ]
 
-    thumbs = {p.start: render_thumb_datauri(args.pdf, p.start) for p in packets}
-    html = build_report_html(
-        packets, roster_n=roster_n,
-        thumbs=thumbs, title="Tách hồ sơ CTV — báo cáo ranh giới",
-        warning=warning,
-    )
-    with open(args.out, "w", encoding="utf-8") as f:
-        f.write(html)
+    if args.out:
+        thumbs = {p.start: render_thumb_datauri(args.pdf, p.start) for p in packets}
+        html = build_report_html(
+            packets, roster_n=roster_n,
+            thumbs=thumbs, title="Tách hồ sơ CTV — báo cáo ranh giới",
+            warning=warning,
+        )
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(html)
 
     print(f"pages={n} seed_page={seed + 1} threshold={threshold:.3f} "
           f"covers={len(kept_covers)} roster={roster_n if roster_n is not None else '—'}")
@@ -503,7 +505,15 @@ def main(argv: list[str] | None = None) -> int:
               f"{[c + 1 for c in merged_covers]} (raw covers detected: {len(cover_pages)})")
     if warning:
         print(f"WARNING: {warning}")
-    print(f"report -> {args.out}")
+    if args.out:
+        print(f"report -> {args.out}")
+
+    if args.split_dir:
+        split_paths = write_packet_pdfs(args.pdf, packets, args.split_dir)
+        print(f"wrote {len(split_paths)} packet PDFs -> {args.split_dir}")
+        for path in split_paths[:3]:
+            print(f"  {os.path.basename(path)}")
+
     return 0
 
 
