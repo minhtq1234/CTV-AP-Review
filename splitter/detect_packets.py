@@ -6,8 +6,14 @@ unit-tested; the I/O layer below is verified by running on a real PDF.
 """
 from __future__ import annotations
 
+import base64
 import html as _html
+import io
 from dataclasses import dataclass, field
+
+import fitz          # PyMuPDF
+import numpy as np
+from PIL import Image
 
 
 def derive_threshold(scores: list[float]) -> float:
@@ -191,3 +197,67 @@ def build_report_html(
         f"<title>{_html.escape(title)}</title><style>{style}</style></head><body>"
         f"{banner}<div class='grid'>{''.join(cards)}</div></body></html>"
     )
+
+
+def load_page_bands(
+    pdf_path: str,
+    dpi: int = 40,
+    band_frac: float = 0.28,
+    band_size: tuple[int, int] = (160, 64),
+) -> tuple[list[np.ndarray], list[float], list[float], int]:
+    """Render each page grayscale at low DPI; return the resized top band, the
+    page aspect (width/height), and ink density (fraction of dark pixels) per page.
+    """
+    doc = fitz.open(pdf_path)
+    zoom = dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    bands, aspects, inks = [], [], []
+    bw, bh = band_size
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+        img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+        aspects.append(pix.width / pix.height if pix.height else 1.0)
+        arr = np.asarray(img)
+        inks.append(float((arr < 128).mean()))
+        top = img.crop((0, 0, img.width, max(1, int(img.height * band_frac))))
+        top = top.resize((bw, bh))
+        bands.append(np.asarray(top, dtype=np.float32))
+    n = doc.page_count
+    doc.close()
+    return bands, aspects, inks, n
+
+
+def _unit(band: np.ndarray) -> np.ndarray:
+    v = band.ravel().astype(np.float32)
+    v = v - v.mean()
+    norm = np.linalg.norm(v)
+    return v / norm if norm else v
+
+
+def seed_scores(bands: list[np.ndarray]) -> tuple[list[float], int]:
+    """NumPy normalized cross-correlation between all top-bands.
+
+    Seed = the most-recurrent band (highest summed similarity to its nearest
+    neighbours) — i.e. the cover, which repeats once per packet. Returns each
+    page's similarity to the seed, and the seed index.
+    """
+    if not bands:
+        return [], -1
+    M = np.stack([_unit(b) for b in bands])   # (n, d), zero-mean unit rows
+    sim = M @ M.T                              # (n, n) NCC in [-1, 1]
+    np.fill_diagonal(sim, -1.0)                # ignore self-match
+    k = max(3, len(bands) // 20)
+    recurrence = np.sort(sim, axis=1)[:, -k:].sum(axis=1)
+    seed = int(np.argmax(recurrence))
+    return sim[seed].tolist(), seed
+
+
+def render_thumb_datauri(pdf_path: str, page_index: int, width: int = 220) -> str:
+    """Render one page to a small PNG data: URI (for the report)."""
+    doc = fitz.open(pdf_path)
+    page = doc[page_index]
+    zoom = width / page.rect.width
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    png = pix.tobytes("png")
+    doc.close()
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
