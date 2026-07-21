@@ -11,8 +11,14 @@ CtvField/CtvSource) so manifests load straight into the existing reviewer.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import unicodedata
+
+import fitz          # PyMuPDF
+import pytesseract
+from PIL import Image
 
 
 # ---------------------------------------------------------------------------
@@ -286,3 +292,105 @@ def build_manifest(folder_id: str, name: str, product: str, docs: list[dict], fi
         "docs": docs,
         "fields": fields,
     }
+
+
+# ---------------------------------------------------------------------------
+# I/O layer (Task A4) — PyMuPDF render + pytesseract OCR. Not unit-tested
+# (needs a real PDF + Tesseract); verified by running on real packets (A5).
+# ---------------------------------------------------------------------------
+
+def render_pages(pdf_path: str, start: int, end: int, out_dir: str, display_dpi: int = 150) -> list[dict]:
+    """Render packet pages [start,end] (inclusive, 0-based) to PNGs in out_dir.
+
+    Returns `DocPage` dicts `{src, width, height}` in packet order; `src` is
+    the absolute PNG path (offline use — a server would rewrite this to a URL).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    doc = fitz.open(pdf_path)
+    zoom = display_dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    pages = []
+    try:
+        for rel_idx, page_num in enumerate(range(start, end + 1)):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=mat)
+            path = os.path.join(out_dir, f"pg{rel_idx}.png")
+            pix.save(path)
+            pages.append({"src": path, "width": pix.width, "height": pix.height})
+    finally:
+        doc.close()
+    return pages
+
+
+def ocr_words(
+    pdf_path: str, page_index: int, ocr_dpi: int = 300, display_dpi: int = 150,
+) -> tuple[list[dict], float]:
+    """OCR one page (0-based, absolute index) at `ocr_dpi` with Tesseract `vie`.
+
+    Returns (words in OCR-pixel space, `display_dpi/ocr_dpi` scale factor) —
+    the caller scales the words to display space with `scale_words`.
+    """
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[page_index]
+        zoom = ocr_dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    finally:
+        doc.close()
+    data = pytesseract.image_to_data(img, lang="vie", output_type=pytesseract.Output.DICT)
+    words = []
+    for i in range(len(data["text"])):
+        text = data["text"][i].strip()
+        conf = float(data["conf"][i])
+        if not text or conf < 0:
+            continue
+        words.append({
+            "text": text,
+            "x": data["left"][i],
+            "y": data["top"][i],
+            "w": data["width"][i],
+            "h": data["height"][i],
+            "conf": conf,
+        })
+    return words, display_dpi / ocr_dpi
+
+
+def _slug(name: str) -> str:
+    """Filesystem/URL-safe id from a display name (lowercase, ascii, dashes)."""
+    s = re.sub(r"[^a-z0-9]+", "-", norm(name)).strip("-")
+    return s or "folder"
+
+
+def ocr_packet(
+    pdf_path: str,
+    start: int,
+    end: int,
+    roster_row: dict[str, str],
+    out_dir: str,
+    name: str,
+    product: str,
+    display_dpi: int = 150,
+    ocr_dpi: int = 300,
+) -> dict:
+    """Render + OCR + extract one packet's page range into a CtvFolder manifest.
+
+    Writes `manifest.json` (and the page PNGs from render_pages) into
+    `out_dir`, and returns the manifest dict. Pages are addressed by index
+    relative to the packet's own start (0-based), matching `docs[].pages[]`.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    pages = render_pages(pdf_path, start, end, out_dir, display_dpi=display_dpi)
+
+    words_by_page: dict[int, list[dict]] = {}
+    for rel_idx, abs_page in enumerate(range(start, end + 1)):
+        words, factor = ocr_words(pdf_path, abs_page, ocr_dpi=ocr_dpi, display_dpi=display_dpi)
+        words_by_page[rel_idx] = scale_words(words, factor)
+
+    fields = extract_fields({"packet": words_by_page}, roster_row)
+    docs = [{"id": "packet", "kind": "contract", "label": "Hồ sơ", "pages": pages}]
+    manifest = build_manifest(_slug(name), name, product, docs, fields)
+
+    with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return manifest
