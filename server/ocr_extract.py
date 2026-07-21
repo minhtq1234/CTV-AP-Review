@@ -280,9 +280,17 @@ FIELD_SPECS = [
         "patterns": [PATTERNS["CCCD_SPACED"], PATTERNS["MST"]], "roster_key": "cccd",
     },
     {
+        # Anchored on the INDIVIDUAL tax-id label only (MSTTNCN), never the
+        # bare "Mã số thuế"/"MST" -- that generic label also names VNG's own
+        # company MST (on the "Bên sử dụng dịch vụ" block of every doc) and
+        # the tax-lookup page's search box, both of which are NOT the
+        # person's own tax id. Under worst-wins compare, either would
+        # false-mismatch a correct value. MSTTNCN appears on the biên bản,
+        # the contract, the cam kết (under "Tên tôi là"), and the tax-lookup
+        # results row -- all individual-scoped.
         "key": "mst", "label": "Mã số thuế", "group": "Danh tính", "kind": "text",
-        "anchors": ["ma so thue", "mst"],
-        "patterns": [PATTERNS["MST"]], "roster_key": "mst",
+        "anchors": ["msttncn", "ma so thue thu nhap ca nhan", "mst tncn", "ma so thue ca nhan"],
+        "patterns": [PATTERNS["CCCD_SPACED"], PATTERNS["MST"]], "roster_key": "mst",
     },
     {
         "key": "tk", "label": "Số tài khoản", "group": "Ngân hàng", "kind": "text",

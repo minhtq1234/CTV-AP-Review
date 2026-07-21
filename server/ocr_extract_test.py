@@ -1,6 +1,6 @@
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
-    extract_fields, build_manifest, find_name,
+    extract_fields, build_manifest, find_name, FIELD_SPECS,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -53,11 +53,51 @@ def test_find_returns_empty_when_no_anchor():
     lines = [[W("random", 10, 50, 40, 18)]]
     assert find_in_lines(lines, anchors=["ma so thue"], pattern=PATTERNS["MST"]) == []
 
+def _mst_hits(lines):
+    mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
+    hits = []
+    for pattern in mst_spec["patterns"]:
+        hits.extend(find_in_lines(lines, anchors=mst_spec["anchors"], pattern=pattern))
+    return hits
+
+def test_mst_field_ignores_bare_company_label():
+    # "Mã số thuế : 0303490096" with no TNCN marker -- this is what the
+    # company ("Bên sử dụng dịch vụ") block and the VNG MST use; must not
+    # produce an mst source, or it false-mismatches against the person's own
+    # tax id under worst-wins.
+    lines = [[W("Mã", 10, 50, 20, 18), W("số", 35, 50, 15, 18), W("thuế", 55, 50, 25, 18),
+              W(":", 80, 50, 10, 18), W("0303490096", 100, 50, 90, 18, conf=95)]]
+    assert _mst_hits(lines) == []
+
+def test_mst_field_matches_msttncn_individual_marker():
+    # spaced-box format (matches the cam-kết doc's boxed MSTTNCN digits, per
+    # "Keep the digit pattern (plain + spaced-box)").
+    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("048091001309")]
+    lines = [[W("MSTTNCN", 10, 50, 70, 18), W(":", 85, 50, 10, 18)] + digs]
+    hits = _mst_hits(lines)
+    assert len(hits) == 1
+    assert hits[0]["value"] == "048091001309"
+    assert hits[0]["bbox"]["x"] == 120
+
+def test_mst_field_ignores_bare_mst_label_near_search_box_number():
+    # Tax-lookup search box: a lone "MST" label next to an unrelated number
+    # (e.g. the search input's own placeholder/example) -- must not match.
+    lines = [[W("MST", 10, 50, 30, 18), W("8364842409", 50, 50, 90, 18, conf=91)]]
+    assert _mst_hits(lines) == []
+
 def test_extract_fields_assembles_manifest_fields():
     words_by_doc = {
         "bbnt": {0: [
-            W("Mã", 10, 50, 20, 18), W("số", 35, 50, 15, 18), W("thuế", 55, 50, 25, 18),
-            W("0303490096", 120, 50, 90, 18, conf=95),
+            # MSTTNCN (individual tax-id marker, spaced-box digits), not the
+            # bare "Mã số thuế" the company block also uses -- see
+            # test_mst_field_ignores_bare_company_label. Real Vietnamese
+            # individuals' MSTTNCN commonly equals their CCCD, hence the same
+            # digit string as the "Căn cước" line below -- this doc also
+            # legitimately cross-confirms the cccd field via that shared
+            # "msttncn" anchor (cccd's own FIELD_SPEC already lists it).
+            W("MSTTNCN", 10, 40, 70, 18), W(":", 85, 40, 10, 18),
+            *[W(d, 120 + i * 15, 40, 12, 18, conf=93) for i, d in enumerate("048091001309")],
+
             W("Căn", 10, 100, 25, 18), W("cước", 40, 100, 30, 18),
             *[W(d, 100 + i * 20, 130, 12, 18) for i, d in enumerate("048091001309")],
             # ALL-CAPS signature line -- the labeled-context form real contracts
@@ -68,14 +108,14 @@ def test_extract_fields_assembles_manifest_fields():
             W("Nguyễn", 180, 160, 55, 18), W("Văn", 240, 160, 35, 18), W("A", 280, 160, 15, 18),
         ]},
         "tra_cuu_mst": {0: [
-            W("Mã", 10, 50, 20, 18), W("số", 35, 50, 15, 18), W("thuế", 55, 50, 25, 18),
-            W("0303490096", 120, 50, 90, 18, conf=90),
+            W("MSTTNCN", 10, 40, 70, 18), W(":", 85, 40, 10, 18),
+            *[W(d, 120 + i * 15, 40, 12, 18, conf=90) for i, d in enumerate("048091001309")],
         ]},
     }
     roster_row = {
         "name": "Nguyễn Văn A",
         "cccd": "048091001309",
-        "mst": "0303490096",
+        "mst": "048091001309",
         "tk": "19001234567",
         "ngaysinh": "24/04/1991",
         "phi": "10.000.000",
@@ -87,11 +127,11 @@ def test_extract_fields_assembles_manifest_fields():
     for f in fields:
         assert f["check"] == "compare"
 
-    assert by_key["mst"]["expected"] == "0303490096"
+    assert by_key["mst"]["expected"] == "048091001309"
     assert len(by_key["mst"]["sources"]) == 2
     assert {s["docId"] for s in by_key["mst"]["sources"]} == {"bbnt", "tra_cuu_mst"}
     for s in by_key["mst"]["sources"]:
-        assert s["value"] == "0303490096"
+        assert s["value"] == "048091001309"
         assert s["page"] == 0
         assert 0 < s["confidence"] <= 1
 
@@ -100,9 +140,14 @@ def test_extract_fields_assembles_manifest_fields():
     assert by_key["hoten"]["sources"][0]["value"] == "Nguyễn Văn A"
     assert by_key["hoten"]["sources"][0]["docId"] == "bbnt"
 
+    # cccd's own FIELD_SPEC anchors on "msttncn" too (an individual's MSTTNCN
+    # commonly equals their CCCD) -- so it legitimately picks up 3 confirming
+    # sources here (bbnt's "Căn cước" line + bbnt's "MSTTNCN" line +
+    # tra_cuu_mst's "MSTTNCN" line), all carrying the same, roster-matching
+    # value -- extra cross-checks, not noise, since every value agrees.
     assert by_key["cccd"]["expected"] == "048091001309"
-    assert len(by_key["cccd"]["sources"]) == 1
-    assert by_key["cccd"]["sources"][0]["value"] == "048091001309"
+    assert len(by_key["cccd"]["sources"]) == 3
+    assert all(s["value"] == "048091001309" for s in by_key["cccd"]["sources"])
 
     # phi has no OCR hit anywhere -> single empty/low-confidence fallback source,
     # so it reads as an exception in the reviewer rather than silently vanishing.
