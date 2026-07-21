@@ -265,6 +265,75 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 
 
 # ---------------------------------------------------------------------------
+# Document segmentation (#003) — classify each packet page by its title text,
+# then group consecutive pages into documents.
+# ---------------------------------------------------------------------------
+
+# (keywords, kind, label) — first row whose keyword appears wins. `kind` is
+# one of src/ctv/types.ts's EvidenceKind; note two rows share kind "pit"
+# (Phụ lục / Tra cứu thuế) since the type enum doesn't distinguish them --
+# the label is what tells them apart in the reviewer.
+_PAGE_KEYWORDS: list[tuple[list[str], str, str]] = [
+    (["hop dong dich vu"], "contract", "Hợp đồng dịch vụ"),
+    (["bien ban", "nghiem thu", "thanh ly hop dong"], "bbnt", "Biên bản nghiệm thu"),
+    (["ban cam ket", "cam ket"], "commitment", "Bản cam kết"),
+    (["phu luc"], "pit", "Phụ lục"),
+    (["tra cuu", "bang thong tin tra cuu", "nguoi nop thue tncn"], "pit", "Tra cứu thuế"),
+    (["can cuoc cong dan"], "id_front", "CCCD"),
+]
+
+
+def _flatten(s: str) -> str:
+    """Collapse all whitespace (incl. newlines from wrapped OCR lines) to single spaces."""
+    return re.sub(r"\s+", " ", s)
+
+
+def classify_page(text: str) -> tuple[str, str] | None:
+    """Classify one page's OCR text by title keyword -> (kind, label), or
+    None for a continuation/body page with no recognizable title.
+
+    Checks the top ~1/3 of the page's lines first (titles/covers live there),
+    then falls back to the whole page -- a title pushed down by OCR noise
+    still gets picked up, but a keyword buried in body text of an untitled
+    page is a weaker signal than one at the top.
+    """
+    lines = text.splitlines() or [text]
+    top_n = max(1, len(lines) // 3)
+    top = "\n".join(lines[:top_n])
+    for haystack in (top, text):
+        n = _flatten(norm(haystack))
+        for keywords, kind, label in _PAGE_KEYWORDS:
+            if any(kw in n for kw in keywords):
+                return kind, label
+    return None
+
+
+def segment_docs(page_texts: list[str]) -> list[dict]:
+    """Group a packet's pages (in order) into documents by title.
+
+    A page whose text classifies starts a new document; an unclassified page
+    is a continuation of the current document. If the very first page is
+    unclassified, a default `contract` document opens to hold it (and
+    whatever follows, until a real title page starts a new one). Returns
+    `[{kind, label, pages: [packet-relative indices]}, ...]`.
+    """
+    docs: list[dict] = []
+    current: dict | None = None
+    for i, text in enumerate(page_texts):
+        classified = classify_page(text)
+        if classified is not None:
+            kind, label = classified
+            current = {"kind": kind, "label": label, "pages": [i]}
+            docs.append(current)
+        elif current is not None:
+            current["pages"].append(i)
+        else:
+            current = {"kind": "contract", "label": "Hợp đồng dịch vụ", "pages": [i]}
+            docs.append(current)
+    return docs
+
+
+# ---------------------------------------------------------------------------
 # Field assembly (Task A3)
 # ---------------------------------------------------------------------------
 

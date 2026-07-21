@@ -1,6 +1,7 @@
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
+    classify_page, segment_docs,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -250,6 +251,63 @@ def test_build_manifest_shape():
     assert m["docs"] == docs
     assert m["fields"] == fields
     assert set(m.keys()) == {"id", "name", "product", "heading", "status", "exempt", "docs", "fields"}
+
+
+# ---------------------------------------------------------------------------
+# classify_page / segment_docs (document segmentation, #003)
+# ---------------------------------------------------------------------------
+
+def test_classify_page_contract():
+    assert classify_page("Something HỢP ĐỒNG DỊCH VỤ something else on the cover") == \
+        ("contract", "Hợp đồng dịch vụ")
+
+def test_classify_page_bbnt():
+    assert classify_page("BIÊN BẢN NGHIỆM THU công việc đã hoàn thành") == \
+        ("bbnt", "Biên bản nghiệm thu")
+
+def test_classify_page_bbnt_thanh_ly_synonym():
+    assert classify_page("BIÊN BẢN THANH LÝ HỢP ĐỒNG cung ứng dịch vụ") == \
+        ("bbnt", "Biên bản nghiệm thu")
+
+def test_classify_page_commitment():
+    assert classify_page("BẢN CAM KẾT không chịu thuế thu nhập cá nhân") == \
+        ("commitment", "Bản cam kết")
+
+def test_classify_page_phu_luc():
+    assert classify_page("PHỤ LỤC đánh giá kết quả công việc") == ("pit", "Phụ lục")
+
+def test_classify_page_tra_cuu():
+    assert classify_page("BẢNG THÔNG TIN TRA CỨU người nộp thuế TNCN") == \
+        ("pit", "Tra cứu thuế")
+
+def test_classify_page_id_front():
+    assert classify_page("CĂN CƯỚC CÔNG DÂN Số: 048091001309") == ("id_front", "CCCD")
+
+def test_classify_page_body_text_returns_none():
+    assert classify_page("Nội dung công việc thực hiện trong tháng theo bảng chấm công") is None
+
+def test_segment_docs_groups_consecutive_pages_by_title():
+    docs = segment_docs([
+        "HỢP ĐỒNG DỊCH VỤ..", "..body..", "..body..",
+        "BIÊN BẢN NGHIỆM THU..", "..body..",
+        "BẢN CAM KẾT..",
+        "BẢNG THÔNG TIN TRA CỨU..",
+    ])
+    assert len(docs) == 4
+    assert [d["pages"] for d in docs] == [[0, 1, 2], [3, 4], [5], [6]]
+    assert [d["kind"] for d in docs] == ["contract", "bbnt", "commitment", "pit"]
+    assert [d["label"] for d in docs] == [
+        "Hợp đồng dịch vụ", "Biên bản nghiệm thu", "Bản cam kết", "Tra cứu thuế",
+    ]
+
+def test_segment_docs_first_page_unclassified_defaults_to_contract():
+    docs = segment_docs([
+        "Nội dung công việc thực hiện trong tháng theo bảng chấm công",
+        "..body continues, no title on this page either..",
+    ])
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "contract"
+    assert docs[0]["pages"] == [0, 1]
 
 
 if __name__ == "__main__":
