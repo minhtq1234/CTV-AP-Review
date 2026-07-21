@@ -103,5 +103,12 @@ so a field whose readable copies match isn't false-failed by an unread copy.
 Requires: extraction change (server) + a source-level "unread" state in the
 reviewer (checks/verdict + source-chip rendering).
 
-**Status:** open — enhancement; realizes the original "check each field across
-multiple documents" goal on the real OCR pipeline.
+**Guiding principle (user):** the key action is the reviewer validating **with
+their own eyes**, not data extraction. Prioritize the **label/location** over the
+**value** — reliably find where each field appears on each document and guide the
+eye there; the OCR'd value and auto-verdict are hints, not the decision. Locating a
+label is far more robust than reading handwriting, so this plays to the tool's
+strength.
+
+**Status:** in progress — building on the "locate & look" principle
+(plan `docs/superpowers/plans/2026-07-13-locate-and-look.md`).
