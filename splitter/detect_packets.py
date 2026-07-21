@@ -411,6 +411,33 @@ def render_thumb_datauri(pdf_path: str, page_index: int, width: int = 220) -> st
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+def write_packet_pdfs(pdf_path: str, packets: list[Packet], out_dir: str) -> list[str]:
+    """Write one PDF per packet (its page range only) into out_dir.
+
+    This is the core deliverable: turning the one big scan into per-CTV
+    files. Opens the source PDF once, and for each packet inserts just its
+    page range into a fresh document, saved under packet_filename(...).
+    Returns the written paths, in packet order.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    src = fitz.open(pdf_path)
+    paths: list[str] = []
+    try:
+        for p in packets:
+            dst = fitz.open()
+            dst.insert_pdf(src, from_page=p.start, to_page=p.end)
+            path = os.path.join(
+                out_dir,
+                packet_filename(p.index, p.name, p.start, p.end, "auto-merged" in p.flags),
+            )
+            dst.save(path)
+            dst.close()
+            paths.append(path)
+    finally:
+        src.close()
+    return paths
+
+
 def _roster_rows(xlsx_path: str) -> list[list]:
     wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
     ws = wb.active
