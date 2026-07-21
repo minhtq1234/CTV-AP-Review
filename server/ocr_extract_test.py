@@ -1,6 +1,6 @@
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
-    extract_fields, build_manifest,
+    extract_fields, build_manifest, find_name,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -60,8 +60,11 @@ def test_extract_fields_assembles_manifest_fields():
             W("0303490096", 120, 50, 90, 18, conf=95),
             W("Căn", 10, 100, 25, 18), W("cước", 40, 100, 30, 18),
             *[W(d, 100 + i * 20, 130, 12, 18) for i, d in enumerate("048091001309")],
-            W("Bên", 10, 160, 25, 18), W("cung", 40, 160, 30, 18), W("ứng", 75, 160, 25, 18),
-            W("dịch", 105, 160, 30, 18), W("vụ", 140, 160, 20, 18),
+            # ALL-CAPS signature line -- the labeled-context form real contracts
+            # use (see test_find_name_accepts_all_caps_signature_line); a mixed
+            # case in-prose occurrence should NOT produce a hoten source.
+            W("BÊN", 10, 160, 25, 18), W("CUNG", 40, 160, 30, 18), W("ỨNG", 75, 160, 25, 18),
+            W("DỊCH", 105, 160, 30, 18), W("VỤ", 140, 160, 20, 18),
             W("Nguyễn", 180, 160, 55, 18), W("Văn", 240, 160, 35, 18), W("A", 280, 160, 15, 18),
         ]},
         "tra_cuu_mst": {0: [
@@ -108,6 +111,85 @@ def test_extract_fields_assembles_manifest_fields():
     assert by_key["phi"]["sources"][0]["value"] == ""
     assert by_key["phi"]["sources"][0]["confidence"] == 0.0
 
+
+def test_find_name_rejects_prose_anchor_mid_sentence():
+    # "Bên Cung Ứng Dịch Vụ đồng ý rằng" -- Title Case anchor embedded in
+    # ordinary prose, no colon/all-caps label context -> no source at all.
+    lines = [[
+        W("Bên", 10, 50, 25, 18), W("Cung", 40, 50, 35, 18), W("Ứng", 80, 50, 30, 18),
+        W("Dịch", 115, 50, 30, 18), W("Vụ", 150, 50, 20, 18),
+        W("đồng", 180, 50, 35, 18), W("ý", 220, 50, 15, 18), W("rằng", 240, 50, 30, 18),
+    ]]
+    assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
+
+def test_find_name_rejects_prose_anchor_followed_by_boilerplate_phrase():
+    # Real false-positive pattern from the actual contract: two anchor-shaped
+    # phrases back to back in Title Case, no label context. Even though the
+    # trailing words are individually capitalized (name-shaped), the missing
+    # label context must still reject this.
+    lines = [[
+        W("Bên", 10, 50, 25, 18), W("Cung", 40, 50, 35, 18), W("Ứng", 80, 50, 30, 18),
+        W("Dịch", 115, 50, 30, 18), W("Vụ", 150, 50, 20, 18),
+        W("Bên", 185, 50, 25, 18), W("Sử", 215, 50, 20, 18), W("Dụng", 240, 50, 35, 18),
+        W("Dịch", 280, 50, 30, 18), W("Vụ", 315, 50, 20, 18),
+    ]]
+    assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
+
+def test_find_name_accepts_all_caps_signature_line():
+    # Real pattern OCR'd from the contract: "BÊN CUNG ỨNG DỊCH VỤ Huỳnh Thị Thúy Phượng"
+    lines = [[
+        W("BÊN", 10, 160, 30, 18), W("CUNG", 45, 160, 40, 18), W("ỨNG", 90, 160, 35, 18),
+        W("DỊCH", 130, 160, 35, 18), W("VỤ", 170, 160, 25, 18),
+        W("Huỳnh", 210, 160, 50, 18), W("Thị", 265, 160, 30, 18),
+        W("Thúy", 300, 160, 40, 18), W("Phượng", 345, 160, 55, 18),
+    ]]
+    hits = find_name(lines, anchors=["ben cung ung dich vu"])
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Huỳnh Thị Thúy Phượng"
+    assert hits[0]["bbox"]["x"] == 210
+
+def test_find_name_accepts_colon_attached_to_anchor():
+    lines = [[
+        W("Bên", 10, 50, 25, 18), W("cung", 40, 50, 35, 18), W("ứng", 80, 50, 30, 18),
+        W("dịch", 115, 50, 30, 18), W("vụ:", 150, 50, 25, 18),
+        W("Trần", 190, 50, 30, 18), W("Văn", 225, 50, 30, 18), W("A", 260, 50, 15, 18),
+    ]]
+    hits = find_name(lines, anchors=["ben cung ung dich vu"])
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Trần Văn A"
+
+def test_find_name_accepts_standalone_colon_token():
+    # "BÊN CUNG ỨNG DỊCH VỤ : Trần Văn A" -- colon as its own token, stripped
+    # out of the value words.
+    lines = [[
+        W("BÊN", 10, 50, 25, 18), W("CUNG", 40, 50, 35, 18), W("ỨNG", 80, 50, 30, 18),
+        W("DỊCH", 115, 50, 30, 18), W("VỤ", 150, 50, 20, 18), W(":", 175, 50, 10, 18),
+        W("Trần", 190, 50, 30, 18), W("Văn", 225, 50, 30, 18), W("A", 260, 50, 15, 18),
+    ]]
+    hits = find_name(lines, anchors=["ben cung ung dich vu"])
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Trần Văn A"
+
+def test_find_name_dedupes_and_caps_at_three():
+    def caps_line(y, given, conf):
+        return [
+            W("BÊN", 10, y, 30, 18), W("CUNG", 45, y, 40, 18), W("ỨNG", 90, y, 35, 18),
+            W("DỊCH", 130, y, 35, 18), W("VỤ", 170, y, 25, 18),
+        ] + [W(t, 210 + i * 40, y, 35, 18, conf=conf) for i, t in enumerate(given.split())]
+    lines = [
+        caps_line(50, "Trần Văn A", conf=95),
+        caps_line(80, "Trần Văn A", conf=70),    # duplicate value, lower confidence -> dropped
+        caps_line(110, "Nguyễn Thị B", conf=90),
+        caps_line(140, "Lê Văn C", conf=85),
+        caps_line(170, "Phạm Thị D", conf=80),   # 4th unique value -> beyond the cap, dropped
+    ]
+    hits = find_name(lines, anchors=["ben cung ung dich vu"])
+    assert len(hits) == 3
+    values = [h["value"] for h in hits]
+    assert values.count("Trần Văn A") == 1
+    assert "Phạm Thị D" not in values
+    match = next(h for h in hits if h["value"] == "Trần Văn A")
+    assert abs(match["confidence"] - 0.95) < 1e-9
 
 def test_build_manifest_shape():
     fields = extract_fields({}, {"name": "X"})

@@ -159,6 +159,60 @@ def find_in_lines(
     return hits
 
 
+def _clean_tok(s: str) -> str:
+    return s.strip(" :;.,")
+
+
+def _is_labeled_anchor(line: list[dict], i: int, n: int) -> bool:
+    """True if the anchor at `line[i:i+n]` sits in a labeled/signature
+    context, not flowing prose: immediately followed by a ':' (attached to
+    the last anchor word, or as its own token right after), or written in
+    ALL CAPS. Real contracts render the signature-block party label in caps
+    ("BÊN CUNG ỨNG DỊCH VỤ") while ordinary prose repeats the same phrase in
+    mixed case ("Bên Cung Ứng Dịch Vụ ...") dozens of times — that repetition
+    is exactly the false-positive source this guards against.
+    """
+    last_word = line[i + n - 1]["text"]
+    if last_word.rstrip().endswith(":"):
+        return True
+    if i + n < len(line) and line[i + n]["text"].strip().startswith(":"):
+        return True
+    anchor_text = " ".join(w["text"] for w in line[i:i + n])
+    letters = [ch for ch in anchor_text if ch.isalpha()]
+    return bool(letters) and anchor_text == anchor_text.upper()
+
+
+def _looks_like_person_name(words: list[dict]) -> bool:
+    """2-5 alphabetic tokens, each starting with an uppercase letter
+    (Vietnamese uppercase incl. Đ/Ứ/Ô/... included) -- rejects stray digits/
+    punctuation and rejects continuing into lowercase sentence prose (e.g.
+    "sẽ", "các", "đồng ý rằng"), which is exactly what follows a mid-sentence
+    anchor occurrence.
+    """
+    if not (2 <= len(words) <= 5):
+        return False
+    for w in words:
+        core = w["text"].strip(" :;.,")
+        if not core or not core.isalpha() or not core[0].isupper():
+            return False
+    return True
+
+
+def _dedupe_and_cap(hits: list[dict], max_n: int = 3) -> list[dict]:
+    """Collapse identical values to their highest-confidence hit; keep at
+    most `max_n`, highest-confidence first -- so a handful of genuine
+    labeled occurrences don't get diluted by noise, and duplicates don't
+    inflate the source count.
+    """
+    best_by_value: dict[str, dict] = {}
+    for h in hits:
+        prev = best_by_value.get(h["value"])
+        if prev is None or h["confidence"] > prev["confidence"]:
+            best_by_value[h["value"]] = h
+    ordered = sorted(best_by_value.values(), key=lambda h: -h["confidence"])
+    return ordered[:max_n]
+
+
 def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool = True) -> list[dict]:
     """Name fields aren't a regex pattern: the value is whatever text follows
     the anchor phrase (e.g. "Bên cung ứng dịch vụ") on the same line, or the
@@ -166,36 +220,48 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 
     Each anchor is a normalized, space-separated phrase (e.g. "ben cung ung
     dich vu"); it's matched as a contiguous run of words whose normalized
-    text equals the anchor's tokens exactly (so "value" words can be told
-    apart from "anchor" words on the same line).
+    text equals the anchor's tokens exactly. A match only counts when it
+    sits in a labeled/signature context (`_is_labeled_anchor`) and the
+    candidate value looks like a person's name (`_looks_like_person_name`) --
+    without both guards, a phrase that recurs throughout ordinary contract
+    prose (as this one does) would emit dozens of garbage sources, and since
+    the reviewer's compare check takes the worst verdict across all sources,
+    that noise would make even a correct name render as a mismatch. Results
+    are deduped by value and capped (`_dedupe_and_cap`).
     """
     hits = []
     tokenized = [a.split() for a in anchors]
     for idx, line in enumerate(lines):
-        words_norm = [norm(w["text"]) for w in line]
-        matched_end = None
+        words_norm = [_clean_tok(norm(w["text"])) for w in line]
+        match = None
         for tokens in tokenized:
             n = len(tokens)
             for i in range(len(words_norm) - n + 1):
                 if words_norm[i:i + n] == tokens:
-                    matched_end = i + n
+                    match = (i, n)
                     break
-            if matched_end is not None:
+            if match is not None:
                 break
-        if matched_end is None:
+        if match is None:
             continue
-        value_words = line[matched_end:]
+        i, n = match
+        if not _is_labeled_anchor(line, i, n):
+            continue
+        value_words = line[i + n:]
+        if value_words and value_words[0]["text"].strip() == ":":
+            value_words = value_words[1:]
         if not value_words and allow_next_line and idx + 1 < len(lines):
             value_words = lines[idx + 1]
         if not value_words:
             continue
-        value = " ".join(w["text"] for w in value_words)
+        if not _looks_like_person_name(value_words):
+            continue
         hits.append({
-            "value": value,
+            "value": " ".join(w["text"] for w in value_words),
             "bbox": union_bbox(value_words),
             "confidence": min(w["conf"] for w in value_words) / 100,
         })
-    return hits
+    return _dedupe_and_cap(hits)
 
 
 # ---------------------------------------------------------------------------
