@@ -7,15 +7,16 @@ import { folders as seedFolders } from '../ctv/folders'
 import { flights as seedFlights } from '../ctv/flights'
 import { loadManifestFolder } from '../ctv/loadFolder'
 import FolderReview from './FolderReview'
+import UploadFlow from './UploadFlow'
 
-type Mode = 'flight' | 'ctv' | 'receipts'
+type Mode = 'upload' | 'flight' | 'ctv' | 'receipts'
 
 // In CTV mode one folder is loaded at runtime from a manifest.json (the splitter's output shape).
 const MANIFEST_URL = '/folders/le-thi-mai-anh/manifest.json'
 const HARDCODED = seedFolders.filter(f => f.id !== 'le-thi-mai-anh')
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>('flight')
+  const [mode, setMode] = useState<Mode>('upload')
   const [cases, setCases] = useState<Case[]>(seedCases)
   const [caseId, setCaseId] = useState(seedCases[0].id)
   const [folders, setFolders] = useState<CtvFolder[]>(HARDCODED)
@@ -40,10 +41,13 @@ export default function App() {
   return (
     <div className="app">
       <div className="mode-bar">
+        <button className={mode === 'upload' ? 'mode on' : 'mode'} onClick={() => setMode('upload')}>Tải hồ sơ</button>
         <button className={mode === 'flight' ? 'mode on' : 'mode'} onClick={() => setMode('flight')}>Vé máy bay</button>
         <button className={mode === 'ctv' ? 'mode on' : 'mode'} onClick={() => setMode('ctv')}>Hồ sơ CTV</button>
         <button className={mode === 'receipts' ? 'mode on' : 'mode'} onClick={() => setMode('receipts')}>Hoá đơn (demo cũ)</button>
       </div>
+
+      {mode === 'upload' && <UploadFlow />}
 
       {mode === 'flight' && (
         <>
