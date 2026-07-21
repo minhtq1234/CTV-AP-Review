@@ -19,7 +19,7 @@ export interface PacketSummary {
   name: string
   pages: [number, number]
   n_pages: number
-  confidence: number
+  confidence: 'green' | 'amber'
   flags: string[]
   labels: string[]
 }
