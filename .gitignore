@@ -6,4 +6,5 @@ AP-Review-Prototype.html
 *.tsbuildinfo
 splitter/output
 splitter/*.html
+public/folders/_ocr-real
 __pycache__
