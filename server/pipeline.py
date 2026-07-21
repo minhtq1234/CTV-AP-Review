@@ -10,7 +10,9 @@ around real PDF/OCR I/O); verified by running the real file end-to-end
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -95,41 +97,99 @@ def _product_from_note(note: str) -> str:
     return text.split(" - ", 1)[0].strip()
 
 
-def roster_row_for(rows: list[list], packet_index: int) -> tuple[dict[str, str], str]:
-    """Map the `packet_index`-th roster data row (0-based) to a `roster_row`
-    dict (`ocr_extract.extract_fields`'s expected shape: name/cccd/mst/
-    ngaysinh/tk/phi) plus the product parsed from its Note column.
+def all_roster_rows(rows: list[list]) -> list[dict[str, str]]:
+    """Every roster data row (in file order) as a `roster_row` dict
+    (`ocr_extract.extract_fields`'s expected shape: name/cccd/mst/ngaysinh/
+    tk/phi, plus `product` parsed from its Note column). `[]` if there's no
+    header.
 
-    Packets align to roster rows strictly by order — packet i -> the i-th
-    data row — the same convention `detect_packets.reconcile` uses to name
-    packets. Returns `({}, "")` if there's no header, or no such row (an
-    excess packet beyond the roster's length).
+    Replaces the old by-position `roster_row_for(rows, packet_index)`: a
+    packet is no longer assumed to align with the i-th roster row (see
+    `match_roster`) — instead every row is indexed once, up front, by CCCD
+    and by name.
     """
     header = _find_roster_header(rows)
     if header is None:
-        return {}, ""
+        return []
     header_row, cols = header
     data_rows = _roster_data_rows(rows, header_row, cols["name"])
-    if packet_index >= len(data_rows):
-        return {}, ""
-    row = data_rows[packet_index]
 
-    def cell(field: str) -> str:
+    def cell(row: list, field: str) -> str:
         idx = cols.get(field)
         if idx is None or idx >= len(row):
             return ""
         val = row[idx]
         return "" if val is None else str(val).strip()
 
-    roster_row = {
-        "name": cell("name"),
-        "cccd": cell("cccd"),
-        "mst": cell("mst"),
-        "ngaysinh": cell("ngaysinh"),
-        "tk": cell("tk"),
-        "phi": cell("phi"),
-    }
-    return roster_row, _product_from_note(cell("note"))
+    out = []
+    for row in data_rows:
+        out.append({
+            "name": cell(row, "name"),
+            "cccd": cell(row, "cccd"),
+            "mst": cell(row, "mst"),
+            "ngaysinh": cell(row, "ngaysinh"),
+            "tk": cell(row, "tk"),
+            "phi": cell(row, "phi"),
+            "product": _product_from_note(cell(row, "note")),
+        })
+    return out
+
+
+def digits(s: str | None) -> str:
+    """Strip everything but digits (spaces, dashes, dots) for CCCD matching."""
+    return re.sub(r"\D", "", s or "")
+
+
+def build_roster_index(rows: list[list]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Build `{digits(cccd): row}` and `{norm(name): row}` indexes once from
+    the roster, for `match_roster` to look packets up in (by identity,
+    instead of by position)."""
+    by_cccd: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for row in all_roster_rows(rows):
+        c = digits(row["cccd"])
+        if c and c not in by_cccd:
+            by_cccd[c] = row
+        n = oc.norm(row["name"]) if row["name"] else ""
+        if n and n not in by_name:
+            by_name[n] = row
+    return by_cccd, by_name
+
+
+def match_roster(
+    cccd: str, name: str, by_cccd: dict[str, dict], by_name: dict[str, dict],
+) -> tuple[dict | None, str]:
+    """Align a packet to its roster row by identity (#002 fix).
+
+    1. exact CCCD match (reliable, unique per person) -> (row, "cccd")
+    2. else name match (fallback -- needed so a roster row with a
+       deliberately-typo'd CCCD still aligns by name, and then correctly
+       shows the CCCD field as a mismatch rather than failing to match at
+       all) -> (row, "name")
+    3. else -> (None, "unmatched")
+    """
+    key = digits(cccd)
+    if key and key in by_cccd:
+        return by_cccd[key], "cccd"
+    nkey = oc.norm(name) if name else ""
+    if nkey and nkey in by_name:
+        return by_name[nkey], "name"
+    return None, "unmatched"
+
+
+_ROSTER_KEY_BY_FIELD = {spec["key"]: spec["roster_key"] for spec in oc.FIELD_SPECS}
+
+
+def fill_expected(fields: list[dict], row: dict[str, str] | None) -> list[dict]:
+    """Fill each field's `expected` from the matched roster `row` (or leave
+    it empty if `row` is None, i.e. the packet didn't match anyone)."""
+    row = row or {}
+    filled = []
+    for f in fields:
+        g = dict(f)
+        g["expected"] = row.get(_ROSTER_KEY_BY_FIELD.get(f["key"], ""), "")
+        filled.append(g)
+    return filled
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +210,12 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
 
     roster_rows_raw = None
     roster_names = None
+    by_cccd: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
     if roster_path:
         roster_rows_raw = dp._roster_rows(roster_path)
         roster_names = dp.extract_roster_names(roster_rows_raw)
+        by_cccd, by_name = build_roster_index(roster_rows_raw)
     roster_n = len(roster_names) if roster_names is not None else None
 
     kept_covers, merged_covers = dp.prune_excess_covers(cover_pages, scores, roster_n)
@@ -177,17 +240,35 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
     packets_out = []
     matched = 0
     for p in packets:
-        if roster_rows_raw is not None:
-            roster_row, product = roster_row_for(roster_rows_raw, p.index)
-        else:
-            roster_row, product = {}, ""
-        if p.name:
-            matched += 1
-        name = p.name or ""
-
         out_dir = os.path.join(job_dir, "packets", str(p.index))
-        oc.ocr_packet(pdf_path, p.start, p.end, roster_row, out_dir, name=name, product=product)
-        progress_cb("ocr", p.index + 1, len(packets), name)
+        result = oc.ocr_packet(pdf_path, p.start, p.end, out_dir)
+        identity = result["identity"]
+
+        # Align by OCR'd identity (CCCD, name fallback), not by packet
+        # position (#002) -- a single swap or boundary shift in the PDF vs.
+        # roster order used to mispair a packet and cascade to the rest.
+        if roster_rows_raw is not None:
+            row, how = match_roster(identity["cccd"], identity["name"], by_cccd, by_name)
+        else:
+            row, how = None, "no-roster"
+
+        if row is not None:
+            matched += 1
+            p.name = row["name"]
+            product = row["product"]
+        else:
+            p.name = identity["name"] or None
+            product = ""
+            if roster_rows_raw is not None and "roster-unmatched" not in p.flags:
+                p.flags.append("roster-unmatched")
+
+        fields = fill_expected(result["folder"]["fields"], row)
+        folder_id = oc._slug(p.name or f"packet-{p.index}")
+        manifest = oc.build_manifest(folder_id, p.name or "", product, result["folder"]["docs"], fields)
+        with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+        progress_cb("ocr", p.index + 1, len(packets), p.name or "")
 
         packets_out.append({
             "index": p.index,
