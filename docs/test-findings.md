@@ -10,6 +10,8 @@ reference packets by STT / field, not by real values.
 | 002 | alignment | resolved | Now align by OCR'd CCCD (name fallback), not position |
 | 003 | doc segmentation | resolved | Packet split into per-document EvidenceDocs; sources doc-labeled |
 | 004 | multi-doc sources | resolved | Field navigable on every doc incl. handwritten "cần xem"; value is a hint |
+| 005 | locate region | open | "cần xem" box lands on wrong slot on multi-field lines (CCCD → "Ngày cấp") |
+| 006 | doc-switch focus | open | Switching document by tab clears the highlight; selected field not re-boxed on the new doc |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -116,3 +118,46 @@ gate). Verified live on the real file (Nguyễn Hoàng Phúc): Ngày sinh/CCCD/M
 each show a source on both Hợp đồng and Biên bản; clicking the contract's
 "cần xem" chip switches to that document and boxes the handwritten value for a human
 read; unread copies don't turn matching fields red.
+
+## 005 — "cần xem" located region lands on the wrong field slot
+
+**Observed (packet 0, Huỳnh Thị Thúy Phượng, contract page 1241×1755):** the
+unread (handwritten) located regions point at the wrong place:
+- `cccd` → bbox `(x=682, y=720, w=24, h=31)` — a tiny box on the "30" of
+  "Ngày cấp" (issue date), not the CCCD slot.
+- `ngaysinh` → bbox `(x=418, y=656, w=524, h=30)` — 524px wide, spanning the DOB
+  and "Quốc tịch".
+(Read/typed sources on the biên bản are tight and correct — only the unread
+located-region path is wrong.)
+
+**Cause:** `locate_field`'s unread-region heuristic ("region after the label")
+misfires on lines packing several labeled fields ("Căn cước số … Ngày cấp …
+Nơi cấp"; "Ngày sinh … Quốc tịch") — sometimes latching a stray token, sometimes
+running to end-of-line.
+
+**Fix direction:** bound the located region to the span **from the end of the
+field's own label to the start of the next label on that same line** (a word
+matching a known anchor or ending in ":"); default to a reasonable width if the
+field is last on the line. That boxes the value slot precisely — essential since
+"look here" is the whole point.
+
+**Status:** open — high priority (mislocates the eye, undermining locate-&-look).
+
+## 006 — Switching document by tab drops the selected field's highlight
+
+**Observed:** With a field selected, clicking a *document tab* (e.g. "Biên bản
+thanh lý hợp đồng") shows the page but **no box** — even though that field has a
+read source there. The box only appears when clicking the field's source *chip*.
+(Confirmed the biên-bản bbox is correct: clicking Ngày sinh's biên-bản chip boxes
+"22/05/1989".) Cause: `FolderReview`'s `onSelectDoc` sets `focusBbox = null`.
+
+**Want:** when a field is selected, switching to a document where that field has a
+source should **auto-focus that source's bbox** on the new document — so checking a
+field across its documents is one click per doc and the eye is always guided.
+
+**Fix direction:** in `FolderReview`, on document switch, if the selected field has
+a source on the newly-active document, focus that source's bbox instead of clearing;
+only clear when the field has no source there. Keeps free-browsing sensible while
+serving the cross-document check.
+
+**Status:** open — locate-&-look UX polish (pairs with #005).
