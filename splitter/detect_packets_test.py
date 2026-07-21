@@ -1,6 +1,7 @@
 from detect_packets import derive_threshold, covers_from_scores, packets_from_covers
 from detect_packets import reconcile, Packet
 from detect_packets import extract_roster_names
+from detect_packets import coarse_label
 
 def _scores_for(bounds, cover=0.9):
     # build a per-page score list where each packet's start page scores `cover`
@@ -50,6 +51,16 @@ def test_extract_roster_names_finds_column_below_header():
 
 def test_extract_roster_names_empty_when_no_header():
     assert extract_roster_names([["x", "y"], [1, 2]]) == []
+
+def test_coarse_label_cover_wins():
+    assert coarse_label(aspect=0.71, ink=0.3, is_cover=True) == "Hợp đồng (bìa)"
+
+def test_coarse_label_rotated_by_aspect():
+    assert coarse_label(aspect=1.4, ink=0.2, is_cover=False) == "Phụ lục (xoay)"
+
+def test_coarse_label_dense_vs_sparse():
+    assert coarse_label(aspect=0.71, ink=0.25, is_cover=False) == "Văn bản"
+    assert coarse_label(aspect=0.71, ink=0.04, is_cover=False) == "Biểu mẫu"
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap

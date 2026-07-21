@@ -124,3 +124,19 @@ def extract_roster_names(
         if val and str(val).strip():
             names.append(str(val).strip())
     return names
+
+
+def coarse_label(aspect: float, ink: float, is_cover: bool) -> str:
+    """Best-effort page type from cheap visual features.
+
+    `aspect` is width/height (so a landscape/rotated page is > 1); `ink` is the
+    fraction of dark pixels. Order matters: cover first, then rotated, then
+    dense-text vs sparse-form.
+    """
+    if is_cover:
+        return "Hợp đồng (bìa)"
+    if aspect > 1.15:
+        return "Phụ lục (xoay)"
+    if ink >= 0.12:
+        return "Văn bản"
+    return "Biểu mẫu"
