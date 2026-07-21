@@ -6,13 +6,16 @@ unit-tested; the I/O layer below is verified by running on a real PDF.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import html as _html
 import io
+import sys
 from dataclasses import dataclass, field
 
 import fitz          # PyMuPDF
 import numpy as np
+import openpyxl
 from PIL import Image
 
 
@@ -267,3 +270,53 @@ def render_thumb_datauri(pdf_path: str, page_index: int, width: int = 220) -> st
     png = pix.tobytes("png")
     doc.close()
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def _roster_rows(xlsx_path: str) -> list[list]:
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+    ws = wb.active
+    return [list(row) for row in ws.iter_rows(values_only=True)]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Detect per-CTV packets in a scanned PDF.")
+    ap.add_argument("--pdf", required=True)
+    ap.add_argument("--roster", help="path to the roster .xlsx (optional)")
+    ap.add_argument("--out", required=True, help="output HTML report path")
+    ap.add_argument("--dpi", type=int, default=40)
+    args = ap.parse_args(argv)
+
+    bands, aspects, inks, n = load_page_bands(args.pdf, dpi=args.dpi)
+    scores, seed = seed_scores(bands)
+    threshold = derive_threshold(scores)
+    cover_pages = covers_from_scores(scores, threshold)
+    bounds = packets_from_covers(cover_pages, n)
+
+    roster_names = None
+    if args.roster:
+        roster_names = extract_roster_names(_roster_rows(args.roster))
+
+    packets = reconcile(bounds, scores, roster_names, threshold)
+    cover_set = set(cover_pages)
+    for p in packets:
+        p.labels = [
+            coarse_label(aspects[pg], inks[pg], is_cover=(pg in cover_set))
+            for pg in range(p.start, p.end + 1)
+        ]
+
+    thumbs = {p.start: render_thumb_datauri(args.pdf, p.start) for p in packets}
+    html = build_report_html(
+        packets, roster_n=(len(roster_names) if roster_names is not None else None),
+        thumbs=thumbs, title="Tách hồ sơ CTV — báo cáo ranh giới",
+    )
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"pages={n} seed_page={seed + 1} threshold={threshold:.3f} "
+          f"covers={len(cover_pages)} roster={len(roster_names) if roster_names else '—'}")
+    print(f"report -> {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

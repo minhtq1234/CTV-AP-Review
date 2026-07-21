@@ -5,4 +5,5 @@ AP-Review-Prototype.html
 *.local
 *.tsbuildinfo
 splitter/output
+splitter/*.html
 __pycache__
