@@ -268,23 +268,61 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 # then group consecutive pages into documents.
 # ---------------------------------------------------------------------------
 
-# (keywords, kind, label) — first row whose keyword appears wins. `kind` is
-# one of src/ctv/types.ts's EvidenceKind; note two rows share kind "pit"
-# (Phụ lục / Tra cứu thuế) since the type enum doesn't distinguish them --
-# the label is what tells them apart in the reviewer.
-_PAGE_KEYWORDS: list[tuple[list[str], str, str]] = [
-    (["hop dong dich vu"], "contract", "Hợp đồng dịch vụ"),
-    (["bien ban", "nghiem thu", "thanh ly hop dong"], "bbnt", "Biên bản nghiệm thu"),
-    (["ban cam ket", "cam ket"], "commitment", "Bản cam kết"),
-    (["phu luc"], "pit", "Phụ lục"),
-    (["tra cuu", "bang thong tin tra cuu", "nguoi nop thue tncn"], "pit", "Tra cứu thuế"),
-    (["can cuoc cong dan"], "id_front", "CCCD"),
+# (keyword, kind, label) — first row whose keyword appears wins. `kind` is
+# one of src/ctv/types.ts's EvidenceKind; several rows share a kind ("bbnt":
+# nghiệm thu / thanh lý hợp đồng; "pit": Phụ lục / Tra cứu thuế) since the
+# type enum doesn't distinguish them -- the label is what tells them apart in
+# the reviewer. More specific keywords are listed before the generic "bien
+# ban"/"cam ket" catch-alls they're a substring-superset of (a real title
+# like "BIÊN BẢN NGHIỆM THU VÀ THANH LÝ HỢP ĐỒNG" contains "bien ban" too,
+# but should resolve to the more specific label).
+_PAGE_KEYWORDS: list[tuple[str, str, str]] = [
+    ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
+    ("thanh ly hop dong", "bbnt", "Biên bản thanh lý hợp đồng"),
+    ("nghiem thu", "bbnt", "Biên bản nghiệm thu"),
+    ("bien ban", "bbnt", "Biên bản nghiệm thu"),
+    ("ban cam ket", "commitment", "Bản cam kết"),
+    ("cam ket", "commitment", "Bản cam kết"),
+    ("phu luc", "pit", "Phụ lục"),
+    ("bang thong tin tra cuu", "pit", "Tra cứu thuế"),
+    ("nguoi nop thue tncn", "pit", "Tra cứu thuế"),
+    ("tra cuu", "pit", "Tra cứu thuế"),
+    ("can cuoc cong dan", "id_front", "CCCD"),
 ]
+
+# A real document title is a short, standalone heading line (occasionally
+# wrapped across two consecutive short lines, e.g. "BIÊN BẢN" / "NGHIỆM THU
+# VÀ THANH LÝ HỢP ĐỒNG"). Real contract prose constantly *mentions* a
+# document's own name in passing ("...theo quy định tại Điều 2 của Biên Bản
+# này, Hợp Đồng sẽ được thanh lý...") -- those sentences run well past this
+# length, which is what keeps such a mention from being mistaken for a title.
+_TITLE_MAX_WORDS = 10
 
 
 def _flatten(s: str) -> str:
     """Collapse all whitespace (incl. newlines from wrapped OCR lines) to single spaces."""
     return re.sub(r"\s+", " ", s)
+
+
+def _top_slice(text: str) -> str:
+    """The top ~1/3 of a page's lines (where titles/covers live)."""
+    lines = text.splitlines() or [text]
+    top_n = max(1, len(lines) // 3)
+    return "\n".join(lines[:top_n])
+
+
+def _title_candidates(lines: list[str]) -> list[str]:
+    """Short, heading-shaped strings from a run of OCR lines: each short
+    line alone, plus each pair of consecutive short lines joined (a title
+    sometimes wraps across two lines) -- long lines never participate, which
+    is what rejects a body-prose sentence that merely mentions a document's
+    own name in passing (see `_TITLE_MAX_WORDS`).
+    """
+    short = [i for i, line in enumerate(lines) if 0 < len(line.split()) <= _TITLE_MAX_WORDS]
+    short_set = set(short)
+    candidates = [lines[i] for i in short]
+    candidates += [lines[i] + " " + lines[i + 1] for i in short if i + 1 in short_set]
+    return candidates
 
 
 def classify_page(text: str) -> tuple[str, str] | None:
@@ -293,16 +331,19 @@ def classify_page(text: str) -> tuple[str, str] | None:
 
     Checks the top ~1/3 of the page's lines first (titles/covers live there),
     then falls back to the whole page -- a title pushed down by OCR noise
-    still gets picked up, but a keyword buried in body text of an untitled
-    page is a weaker signal than one at the top.
+    (e.g. banner/UI chrome above a tax-lookup results title) still gets
+    picked up, but a keyword found only outside the top is a weaker signal
+    than one at the top (see `segment_docs`, which uses that distinction to
+    avoid false-starting a new document on a boilerplate closing clause).
+    Only short, heading-shaped lines are considered (`_title_candidates`),
+    so a keyword mentioned in passing within ordinary body prose is ignored.
     """
     lines = text.splitlines() or [text]
     top_n = max(1, len(lines) // 3)
-    top = "\n".join(lines[:top_n])
-    for haystack in (top, text):
-        n = _flatten(norm(haystack))
-        for keywords, kind, label in _PAGE_KEYWORDS:
-            if any(kw in n for kw in keywords):
+    for line_group in (lines[:top_n], lines):
+        candidates = [_flatten(norm(c)) for c in _title_candidates(line_group)]
+        for kw, kind, label in _PAGE_KEYWORDS:
+            if any(kw in c for c in candidates):
                 return kind, label
     return None
 
@@ -313,14 +354,29 @@ def segment_docs(page_texts: list[str]) -> list[dict]:
     A page whose text classifies starts a new document; an unclassified page
     is a continuation of the current document. If the very first page is
     unclassified, a default `contract` document opens to hold it (and
-    whatever follows, until a real title page starts a new one). Returns
-    `[{kind, label, pages: [packet-relative indices]}, ...]`.
+    whatever follows, until a real title page starts a new one).
+
+    Exception: if a page classifies to the SAME (kind, label) as the
+    document already open, but only via the whole-page fallback (not the
+    top ~1/3) -- e.g. a closing clause like "Biên bản này được lập thành 02
+    bản..." repeating the document's own name near the bottom of its last
+    page -- it's treated as a continuation, not a new document. A real
+    second same-kind/-label document's title still lives in ITS OWN top
+    ~1/3, so this only suppresses the weak, self-referential false
+    positive.
+
+    Returns `[{kind, label, pages: [packet-relative indices]}, ...]`.
     """
     docs: list[dict] = []
     current: dict | None = None
     for i, text in enumerate(page_texts):
         classified = classify_page(text)
         if classified is not None:
+            if current is not None and (current["kind"], current["label"]) == classified:
+                matched_in_top = classify_page(_top_slice(text)) == classified
+                if not matched_in_top:
+                    current["pages"].append(i)
+                    continue
             kind, label = classified
             current = {"kind": kind, "label": label, "pages": [i]}
             docs.append(current)

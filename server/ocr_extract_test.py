@@ -294,8 +294,19 @@ def test_classify_page_bbnt():
         ("bbnt", "Biên bản nghiệm thu")
 
 def test_classify_page_bbnt_thanh_ly_synonym():
-    assert classify_page("BIÊN BẢN THANH LÝ HỢP ĐỒNG cung ứng dịch vụ") == \
-        ("bbnt", "Biên bản nghiệm thu")
+    # "thanh ly hop dong" is more specific than the generic "bien ban"
+    # catch-all it's a substring-superset of, so it gets its own label --
+    # real packets can contain both a "Biên bản nghiệm thu" AND a distinct
+    # "Biên bản thanh lý hợp đồng" (sometimes combined into one title, as
+    # below, wrapped across two short lines the way real OCR renders it,
+    # with enough body lines below it that both title lines fall in the
+    # top ~1/3 -- the real-world shape this pattern was found in).
+    text = (
+        "BIÊN BẢN\nNGHIỆM THU VÀ THANH LÝ HỢP ĐỒNG\n"
+        "Được lập vào ngày 01/01/2026\ngiữa hai bên như sau\n"
+        "Bên A và Bên B đồng ý\nký kết văn bản này"
+    )
+    assert classify_page(text) == ("bbnt", "Biên bản thanh lý hợp đồng")
 
 def test_classify_page_commitment():
     assert classify_page("BẢN CAM KẾT không chịu thuế thu nhập cá nhân") == \
@@ -314,6 +325,19 @@ def test_classify_page_id_front():
 def test_classify_page_body_text_returns_none():
     assert classify_page("Nội dung công việc thực hiện trong tháng theo bảng chấm công") is None
 
+def test_classify_page_rejects_long_prose_mentioning_doc_name_in_passing():
+    # Real false-positive found verifying against an actual packet: a
+    # continuation page's body prose merely *references* the document's own
+    # name mid-sentence ("...theo quy định tại Điều 2 của Biên Bản này, Hợp
+    # Đồng sẽ được thanh lý hoàn toàn...") -- far too long a line to be a
+    # title, so it must NOT classify (and so must stay a continuation page
+    # of whatever document is already open, not start a false new one).
+    text = (
+        "Theo quy định tại Điều 2 của Biên Bản này, Hợp Đồng sẽ được thanh lý "
+        "hoàn toàn và không bên nào còn nghĩa vụ gì thêm đối với bên còn lại"
+    )
+    assert classify_page(text) is None
+
 def test_segment_docs_groups_consecutive_pages_by_title():
     docs = segment_docs([
         "HỢP ĐỒNG DỊCH VỤ..", "..body..", "..body..",
@@ -327,6 +351,34 @@ def test_segment_docs_groups_consecutive_pages_by_title():
     assert [d["label"] for d in docs] == [
         "Hợp đồng dịch vụ", "Biên bản nghiệm thu", "Bản cam kết", "Tra cứu thuế",
     ]
+
+def test_segment_docs_merges_boilerplate_repeat_of_current_doc_title():
+    # Real-packet regression: a 2nd page of the SAME "Biên bản nghiệm thu"
+    # document that merely closes with boilerplate repeating the doc's own
+    # name ("...biên bản này được lập thành 02 bản...") must NOT be treated
+    # as a second document. Unlike the cover page, the phrase only appears
+    # deep in the body (outside the top ~1/3) -- that's exactly the "weak"
+    # signal that shouldn't be trusted to start a new same-kind/-label doc.
+    # A later, genuinely different document (also only detectable outside
+    # its own top ~1/3, e.g. a tax-lookup screenshot with banner chrome
+    # above the results title) must still start its own new document.
+    filler = [f"dòng nội dung công việc số {i}" for i in range(5)]
+    pages = [
+        "BIÊN BẢN NGHIỆM THU\n" + "\n".join(filler),
+        "\n".join(
+            ["Nội dung tiếp theo", "không có tiêu đề", "vẫn không có"] + filler +
+            ["Biên bản này được lập thành 02 bản có giá trị như nhau"]
+        ),
+        "\n".join(
+            ["Không liên quan", "chưa có tiêu đề", "vẫn chưa"] + filler +
+            ["Bảng thông tin tra cứu người nộp thuế TNCN"]
+        ),
+    ]
+    docs = segment_docs(pages)
+    assert len(docs) == 2
+    assert docs[0]["kind"] == "bbnt" and docs[0]["pages"] == [0, 1]
+    assert docs[1]["kind"] == "pit" and docs[1]["pages"] == [2]
+
 
 def test_segment_docs_first_page_unclassified_defaults_to_contract():
     docs = segment_docs([
