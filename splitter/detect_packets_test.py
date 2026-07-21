@@ -1,4 +1,7 @@
+import numpy as np
+
 from detect_packets import derive_threshold, covers_from_scores, packets_from_covers
+from detect_packets import seed_scores
 from detect_packets import reconcile, Packet
 from detect_packets import prune_excess_covers
 from detect_packets import extract_roster_names
@@ -29,6 +32,16 @@ def test_reconcile_count_mismatch_is_not_a_per_card_flag():
     assert ps[1].name is None
     assert "no-roster-match" in ps[1].flags
     assert all("count-mismatch" not in p.flags for p in ps)
+
+def test_reconcile_no_roster_does_not_flag_no_roster_match():
+    # With no roster at all, there's nothing to mismatch against -- packets
+    # should just come back unnamed and green, not amber.
+    bounds = [(3, 10), (11, 18)]
+    scores = _scores_for(bounds)
+    ps = reconcile(bounds, scores, None, threshold=0.5)
+    assert all(p.name is None for p in ps)
+    assert all("no-roster-match" not in p.flags for p in ps)
+    assert all(p.confidence == "green" for p in ps), [p.flags for p in ps]
 
 def test_reconcile_flags_length_out_of_range():
     bounds = [(3, 30)]  # 28 pages, way over the norm
@@ -147,6 +160,35 @@ def test_report_html_shows_auto_merged_count_in_banner():
     html = build_report_html(ps, roster_n=1, thumbs={}, title="T")
     assert "gộp tự động" in html
     assert "auto-merged" in html
+
+def test_report_html_no_roster_does_not_claim_mismatch():
+    ps = [Packet(index=0, start=0, end=7, cover_score=0.9)]
+    html = build_report_html(ps, roster_n=None, thumbs={}, title="T")
+    assert "lệch số lượng" not in html
+    assert "không có bảng kê" in html
+
+def test_seed_scores_self_similarity_not_corrupted():
+    # 3 near-identical "cover" bands (the recurring boundary) + 5 distinct
+    # "noise" bands (unique page content), as small synthetic arrays -- no PDF
+    # needed. Regression test for the bug where sim's diagonal (masked to -1.0
+    # for recurrence/seed-selection) leaked into the returned per-page scores,
+    # forcing the seed's own score to a false -1.0 outlier instead of its true
+    # self-similarity (~1.0) and corrupting derive_threshold's gap search.
+    base = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+    covers = [base + i * 0.01 for i in range(3)]
+    # Genuinely distinct directions (not scalar multiples of one pattern --
+    # those would collapse to the same direction after zero-mean/unit-norm).
+    noise = [
+        np.array([[1.0, 9.0], [4.0, 2.0]], dtype=np.float32),
+        np.array([[7.0, 1.0], [8.0, 3.0]], dtype=np.float32),
+        np.array([[2.0, 6.0], [1.0, 5.0]], dtype=np.float32),
+        np.array([[9.0, 2.0], [3.0, 7.0]], dtype=np.float32),
+        np.array([[4.0, 8.0], [6.0, 1.0]], dtype=np.float32),
+    ]
+    bands = covers + noise
+    scores, seed = seed_scores(bands)
+    assert seed < 3, seed                     # seed picked from the recurring covers
+    assert scores[seed] > 0.9, scores[seed]   # true self-similarity, NOT -1.0
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import base64
 import html as _html
-import io
 import sys
 from dataclasses import dataclass, field
 
@@ -87,10 +86,14 @@ def reconcile(
     packets: list[Packet] = []
     for i, (start, end) in enumerate(bounds):
         p = Packet(index=i, start=start, end=end, cover_score=page_scores[start])
-        if roster_names is not None and i < len(roster_names):
-            p.name = roster_names[i]
-        if p.name is None:
-            p.flags.append("no-roster-match")
+        if roster_names is not None:
+            # Only a roster-relative fact: an excess packet beyond the roster's
+            # length. With no roster at all, there's nothing to mismatch against,
+            # so no packet should be penalized for an absent name.
+            if i < len(roster_names):
+                p.name = roster_names[i]
+            else:
+                p.flags.append("no-roster-match")
         if not (len_range[0] <= p.n_pages <= len_range[1]):
             p.flags.append("length-out-of-range")
         if p.cover_score - threshold < near_margin:
@@ -234,7 +237,12 @@ def build_report_html(
     amber = sum(1 for p in packets if p.confidence == "amber")
     merged = sum(1 for p in packets if "auto-merged" in p.flags)
     roster_txt = "—" if roster_n is None else str(roster_n)
-    aligned = "✓ khớp" if roster_n == len(packets) else "⚠ lệch số lượng"
+    if roster_n is None:
+        aligned = "(không có bảng kê để đối chiếu)"
+    elif roster_n == len(packets):
+        aligned = "✓ khớp"
+    else:
+        aligned = "⚠ lệch số lượng"
     merged_txt = (
         f" · {merged} ranh giới gộp tự động — cần xác nhận" if merged else ""
     )
