@@ -6,6 +6,7 @@ unit-tested; the I/O layer below is verified by running on a real PDF.
 """
 from __future__ import annotations
 
+import html as _html
 from dataclasses import dataclass, field
 
 
@@ -140,3 +141,53 @@ def coarse_label(aspect: float, ink: float, is_cover: bool) -> str:
     if ink >= 0.12:
         return "Văn bản"
     return "Biểu mẫu"
+
+
+def build_report_html(
+    packets: list[Packet],
+    roster_n: int | None,
+    thumbs: dict[int, str],
+    title: str,
+) -> str:
+    """Self-contained HTML: summary banner + one card per packet."""
+    amber = sum(1 for p in packets if p.confidence == "amber")
+    roster_txt = "—" if roster_n is None else str(roster_n)
+    aligned = "✓ khớp" if roster_n == len(packets) else "⚠ lệch số lượng"
+    banner = (
+        f'<div class="banner"><b>{_html.escape(title)}</b>'
+        f'<span>{len(packets)} / {roster_txt} gói (tìm thấy / bảng kê) · {aligned}'
+        f' · {amber} ranh giới cần xem lại</span></div>'
+    )
+    cards = []
+    for p in packets:
+        rng = f"p{p.start + 1}–{p.end + 1}"
+        name = _html.escape(p.name) if p.name else "<i>chưa khớp tên</i>"
+        thumb = thumbs.get(p.start) or thumbs.get(p.index) or ""
+        img = f'<img src="{thumb}" alt="">' if thumb else '<div class="noimg">—</div>'
+        chips = "".join(f'<span class="chip">{_html.escape(l)}</span>' for l in p.labels)
+        flags = "".join(f'<span class="flag">{_html.escape(f)}</span>' for f in p.flags)
+        cards.append(
+            f'<div class="card {p.confidence}">{img}'
+            f'<div class="meta"><div class="nm">{name}</div>'
+            f'<div class="rng">{rng} · {p.n_pages} trang · score {p.cover_score:.2f}</div>'
+            f'<div class="chips">{chips}</div><div class="flags">{flags}</div>'
+            f'</div></div>'
+        )
+    style = (
+        "body{font:14px system-ui;margin:24px;color:#1a1a1a}"
+        ".banner{padding:12px 16px;background:#f4f6f8;border-radius:8px;margin-bottom:16px}"
+        ".banner span{margin-left:12px;color:#555}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}"
+        ".card{border:1px solid #e2e2e2;border-radius:8px;overflow:hidden;background:#fff}"
+        ".card.green{border-left:4px solid #2e7d32}.card.amber{border-left:4px solid #e0a300}"
+        ".card img{width:100%;height:150px;object-fit:cover;object-position:top;background:#fafafa}"
+        ".noimg{height:150px;display:flex;align-items:center;justify-content:center;color:#bbb}"
+        ".meta{padding:10px}.nm{font-weight:600}.rng{color:#666;font-size:12px;margin:4px 0}"
+        ".chip{display:inline-block;font-size:11px;background:#eef;border-radius:10px;padding:1px 7px;margin:2px 2px 0 0}"
+        ".flag{display:inline-block;font-size:11px;background:#fdeaea;color:#a11;border-radius:10px;padding:1px 7px;margin:4px 2px 0 0}"
+    )
+    return (
+        f"<!doctype html><html lang='vi'><head><meta charset='utf-8'>"
+        f"<title>{_html.escape(title)}</title><style>{style}</style></head><body>"
+        f"{banner}<div class='grid'>{''.join(cards)}</div></body></html>"
+    )

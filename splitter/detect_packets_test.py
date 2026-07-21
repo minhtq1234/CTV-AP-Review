@@ -2,6 +2,7 @@ from detect_packets import derive_threshold, covers_from_scores, packets_from_co
 from detect_packets import reconcile, Packet
 from detect_packets import extract_roster_names
 from detect_packets import coarse_label
+from detect_packets import build_report_html
 
 def _scores_for(bounds, cover=0.9):
     # build a per-page score list where each packet's start page scores `cover`
@@ -61,6 +62,24 @@ def test_coarse_label_rotated_by_aspect():
 def test_coarse_label_dense_vs_sparse():
     assert coarse_label(aspect=0.71, ink=0.25, is_cover=False) == "Văn bản"
     assert coarse_label(aspect=0.71, ink=0.04, is_cover=False) == "Biểu mẫu"
+
+def test_report_html_has_summary_and_cards():
+    ps = [Packet(index=0, start=7, end=14, cover_score=0.9, name="Nguyễn Văn A",
+                 labels=["Hợp đồng (bìa)", "Văn bản"])]
+    ps[0]  # green (no flags)
+    html = build_report_html(ps, roster_n=1, thumbs={0: "data:image/png;base64,AAAA"},
+                             title="Test")
+    assert "<html" in html.lower()
+    assert "Nguyễn Văn A" in html          # name rendered
+    assert "p8–15" in html                 # 1-based inclusive range (7->8, 14->15)
+    assert "1 / 1" in html                 # found / roster
+    assert "data:image/png;base64,AAAA" in html  # thumbnail embedded
+
+def test_report_html_marks_amber_and_mismatch():
+    ps = [Packet(index=0, start=7, end=40, cover_score=0.9, flags=["length-out-of-range"])]
+    html = build_report_html(ps, roster_n=2, thumbs={}, title="T")
+    assert "amber" in html
+    assert "length-out-of-range" in html
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap
