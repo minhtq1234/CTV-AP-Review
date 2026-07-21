@@ -101,6 +101,72 @@ def reconcile(
     return packets
 
 
+def prune_excess_covers(
+    cover_pages: list[int],
+    page_scores: list[float],
+    roster_n: int | None,
+    min_len: int = 5,
+) -> tuple[list[int], list[int]]:
+    """Drop the weakest excess covers (mid-packet false positives) until the
+    count matches the roster.
+
+    A cover is only a pruning candidate if its gap to the *previous* cover is
+    below `min_len` pages — too close together to be a real packet boundary
+    (e.g. a "BIÊN BẢN NGHIỆM THU" cover that visually mimics the real contract
+    cover a few pages into the same packet). Among candidates, the weakest is
+    dropped first, one at a time, until the count reaches roster_n:
+
+      1. smallest gap-to-previous wins (most obviously "too close");
+      2. tie-break: whichever removal better restores the document's normal
+         cadence — i.e. the merged gap it produces (previous-surviving-cover
+         to next-surviving-cover) lands closest to the median of the already
+         "normal" (>= min_len) gaps. Two candidates can tie on gap alone (a
+         false-positive cover sandwiched between two real ones creates two
+         equally-short gaps either side of it); this resolves that
+         ambiguity from the document's own spacing, not a coin flip;
+      3. final tie-break: lowest cover_score (least convincing as a cover).
+
+    If no candidate remains but the count is still too high, stop — a
+    legitimately short packet is never force-pruned; it is left for
+    reconcile()'s length-out-of-range flag.
+
+    Returns (kept_covers, merged_cover_pages): the surviving cover pages, and
+    the ones dropped (their pages merge into the previous packet).
+    """
+    cov = sorted(cover_pages)
+    if roster_n is None:
+        return cov, []
+    merged: list[int] = []
+    while len(cov) > roster_n:
+        gaps = [cov[i] - cov[i - 1] for i in range(1, len(cov))]
+        candidate_idx = [i for i in range(1, len(cov)) if gaps[i - 1] < min_len]
+        if not candidate_idx:
+            break
+        normal_gaps = [g for g in gaps if g >= min_len]
+        typical = _median(normal_gaps) if normal_gaps else min_len
+
+        def _rank(i: int) -> tuple[int, float, float]:
+            gap = cov[i] - cov[i - 1]
+            if i + 1 < len(cov):
+                merged_gap = cov[i + 1] - cov[i - 1]
+            else:
+                merged_gap = gap  # no next cover to validate the merge against
+            return (gap, abs(merged_gap - typical), page_scores[cov[i]])
+
+        candidate_idx.sort(key=_rank)
+        drop_i = candidate_idx[0]
+        merged.append(cov.pop(drop_i))
+    return cov, sorted(merged)
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    mid = len(s) // 2
+    if len(s) % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2
+
+
 def extract_roster_names(
     rows: list[list],
     keywords: tuple[str, ...] = ("họ và tên", "họ tên", "tên", "name"),
@@ -159,12 +225,16 @@ def build_report_html(
 ) -> str:
     """Self-contained HTML: summary banner + one card per packet."""
     amber = sum(1 for p in packets if p.confidence == "amber")
+    merged = sum(1 for p in packets if "auto-merged" in p.flags)
     roster_txt = "—" if roster_n is None else str(roster_n)
     aligned = "✓ khớp" if roster_n == len(packets) else "⚠ lệch số lượng"
+    merged_txt = (
+        f" · {merged} ranh giới gộp tự động — cần xác nhận" if merged else ""
+    )
     banner = (
         f'<div class="banner"><b>{_html.escape(title)}</b>'
         f'<span>{len(packets)} / {roster_txt} gói (tìm thấy / bảng kê) · {aligned}'
-        f' · {amber} ranh giới cần xem lại</span></div>'
+        f' · {amber} ranh giới cần xem lại{merged_txt}</span></div>'
     )
     cards = []
     for p in packets:
@@ -289,14 +359,24 @@ def main(argv: list[str] | None = None) -> int:
     scores, seed = seed_scores(bands)
     threshold = derive_threshold(scores)
     cover_pages = covers_from_scores(scores, threshold)
-    bounds = packets_from_covers(cover_pages, n)
 
     roster_names = None
     if args.roster:
         roster_names = extract_roster_names(_roster_rows(args.roster))
+    roster_n = len(roster_names) if roster_names is not None else None
+
+    kept_covers, merged_covers = prune_excess_covers(cover_pages, scores, roster_n)
+    bounds = packets_from_covers(kept_covers, n)
 
     packets = reconcile(bounds, scores, roster_names, threshold)
-    cover_set = set(cover_pages)
+    for merged_page in merged_covers:
+        for p in packets:
+            if p.start <= merged_page <= p.end:
+                if "auto-merged" not in p.flags:
+                    p.flags.append("auto-merged")
+                break
+
+    cover_set = set(kept_covers)
     for p in packets:
         p.labels = [
             coarse_label(aspects[pg], inks[pg], is_cover=(pg in cover_set))
@@ -305,14 +385,17 @@ def main(argv: list[str] | None = None) -> int:
 
     thumbs = {p.start: render_thumb_datauri(args.pdf, p.start) for p in packets}
     html = build_report_html(
-        packets, roster_n=(len(roster_names) if roster_names is not None else None),
+        packets, roster_n=roster_n,
         thumbs=thumbs, title="Tách hồ sơ CTV — báo cáo ranh giới",
     )
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
 
     print(f"pages={n} seed_page={seed + 1} threshold={threshold:.3f} "
-          f"covers={len(cover_pages)} roster={len(roster_names) if roster_names else '—'}")
+          f"covers={len(kept_covers)} roster={roster_n if roster_n is not None else '—'}")
+    if merged_covers:
+        print(f"auto-merged {len(merged_covers)} cover(s) at page(s) "
+              f"{[c + 1 for c in merged_covers]} (raw covers detected: {len(cover_pages)})")
     print(f"report -> {args.out}")
     return 0
 
