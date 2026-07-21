@@ -96,9 +96,8 @@ def reconcile(
         if p.cover_score - threshold < near_margin:
             p.flags.append("near-threshold")
         packets.append(p)
-    if roster_names is not None and len(bounds) != len(roster_names):
-        for p in packets:
-            p.flags.append("count-mismatch")
+    # Count mismatch is a whole-batch fact, not a per-packet defect — it belongs
+    # in the report banner (build_report_html), not stamped on every card.
     return packets
 
 

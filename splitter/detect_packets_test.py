@@ -19,13 +19,15 @@ def test_reconcile_aligns_names_in_order():
     assert [p.name for p in ps] == ["An", "Binh"]
     assert all(p.confidence == "green" for p in ps), [p.flags for p in ps]
 
-def test_reconcile_flags_count_mismatch():
+def test_reconcile_count_mismatch_is_not_a_per_card_flag():
+    # Count mismatch belongs in the report banner only (build_report_html), so
+    # attention stays on the actual exception packet, not every card.
     bounds = [(3, 10), (11, 18)]
     scores = _scores_for(bounds)
     ps = reconcile(bounds, scores, ["An"], threshold=0.5)  # roster has 1, found 2
     assert ps[1].name is None
     assert "no-roster-match" in ps[1].flags
-    assert all("count-mismatch" in p.flags for p in ps)
+    assert all("count-mismatch" not in p.flags for p in ps)
 
 def test_reconcile_flags_length_out_of_range():
     bounds = [(3, 30)]  # 28 pages, way over the norm
