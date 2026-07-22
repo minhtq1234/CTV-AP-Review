@@ -12,6 +12,7 @@ reference packets by STT / field, not by real values.
 | 004 | multi-doc sources | resolved | Field navigable on every doc incl. handwritten "cần xem"; value is a hint |
 | 005 | locate region | resolved | "cần xem" region computed geometrically from the label's right edge; box on the value slot |
 | 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
+| 007 | orphaned processing case | open (low) | A case interrupted mid-pipeline stays "processing" forever after a restart |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -170,3 +171,18 @@ serving the cross-document check.
 field's source on the newly-active document (via `focusAt`), clearing only when the
 field has no source there. Verified live: with Ngày sinh selected, clicking the
 "Biên bản thanh lý hợp đồng" tab boxes "22/05/1989" on the biên bản.
+
+## 007 — Orphaned "processing" case after an interrupted pipeline
+
+**Observed:** A case whose pipeline was killed mid-run (the case-management build
+agent's B3 e2e hit the 600s watchdog during OCR) left `case.json` with
+`status="processing"`, 0 packets, and no worker. On the next backend restart the
+startup index rebuild loaded it as a perpetual "Đang xử lý…" case that never
+completes. Deleted it manually via `DELETE /api/cases/{id}`.
+
+**Fix direction (not urgent for a local prototype):** on startup index rebuild,
+reconcile any case still in `status="processing"` (no live worker) to a stale/error
+state (e.g. `status="error"`, message "xử lý bị gián đoạn"), so the list can offer
+delete/retry instead of showing it processing forever.
+
+**Status:** open (low priority) — only occurs if the backend dies mid-pipeline.
