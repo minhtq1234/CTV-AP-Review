@@ -193,17 +193,139 @@ def _anchor_word_span(line: list[dict], anchor_norm: str) -> list[int] | None:
     return covered or None
 
 
-def _label_region_bbox(line: list[dict], anchors_norm: list[str]) -> dict:
+# #005: the OCR confidence (0-100) at/above which a word is treated as printed
+# LABEL text rather than a handwritten/illegible value. A value lands in the
+# "unread" branch in the first place because it *didn't* OCR into a matching
+# pattern -- handwriting that couldn't be read reliably scores LOW confidence,
+# so this doubles as the signal that keeps the "next label" search (below)
+# from being fooled by an illegible value that happens to contain no digits
+# (e.g. garbled strokes OCR'd as letters) into treating it as a label word.
+_MIN_LABEL_CONF = 50
+
+# Small bound on how many "glue" words (e.g. "số" between an anchor and its
+# own separator colon in "Căn cước ... số :") `_value_start_after_label` will
+# scan past looking for that colon, so it can't run away into unrelated
+# content when a label has no colon nearby at all.
+_LABEL_GLUE_LOOKAHEAD = 3
+
+_all_anchor_tokens_cache: list[list[str]] | None = None
+
+
+def _all_anchor_tokens() -> list[list[str]]:
+    """Every FIELD_SPECS anchor, tokenized + normalized, deduped -- the
+    global "known label" vocabulary `_next_label_start` checks against so it
+    recognizes ANY field's label (not just the one currently being located)
+    as a boundary. Lazily built (FIELD_SPECS is defined further down this
+    module) and cached; safe since it only depends on the fixed spec table.
+    """
+    global _all_anchor_tokens_cache
+    if _all_anchor_tokens_cache is None:
+        seen: set[tuple[str, ...]] = set()
+        toks: list[list[str]] = []
+        for spec in FIELD_SPECS:
+            for a in spec["anchors"]:
+                t = tuple(norm(a).split())
+                if t and t not in seen:
+                    seen.add(t)
+                    toks.append(list(t))
+        _all_anchor_tokens_cache = toks
+    return _all_anchor_tokens_cache
+
+
+def _looks_like_label_word(w: dict) -> bool:
+    """A word plausibly belonging to a printed LABEL, not a value: no digits
+    (Vietnamese label words never are) and OCR'd with reasonable confidence
+    (see `_MIN_LABEL_CONF`)."""
+    core = w["text"].rstrip(":;., ").strip()
+    return bool(core) and not any(ch.isdigit() for ch in core) and w["conf"] >= _MIN_LABEL_CONF
+
+
+def _matches_anchor_at(line: list[dict], idx: int, anchor_tokens: list[list[str]]) -> bool:
+    """True if a KNOWN field anchor's tokens match starting at `line[idx]`."""
+    words_norm = [norm(w["text"]) for w in line[idx:idx + 4]]
+    return any(tokens and words_norm[:len(tokens)] == tokens for tokens in anchor_tokens)
+
+
+def _next_label_start(line: list[dict], from_idx: int, max_label_words: int = 4) -> int | None:
+    """Index of the next label on this line at/after `from_idx` -- either a
+    run of words matching a KNOWN field anchor, or a short label-shaped run
+    (see `_looks_like_label_word`) whose last word ends with ':' (catches
+    labels the tool doesn't track as a field, e.g. "Ngày cấp:", "Nơi cấp:")
+    -- so a located-but-unread region never runs past where the NEXT field's
+    label begins on a multi-field line (#005), or `None` if there isn't one.
+    """
+    anchor_tokens = _all_anchor_tokens()
+    for i in range(from_idx, len(line)):
+        if _matches_anchor_at(line, i, anchor_tokens):
+            return i
+        for j in range(i, min(i + max_label_words, len(line))):
+            if not _looks_like_label_word(line[j]):
+                break  # hit a value-shaped (digit/low-confidence) word -- no label run here
+            if line[j]["text"].rstrip().endswith(":"):
+                return i
+    return None
+
+
+def _value_start_after_label(line: list[dict], covered: list[int]) -> int:
+    """Index of the first VALUE word after this field's own label: skips
+    forward past this label's own trailing connector/separator (e.g. the
+    "số" between the "Căn cước" anchor and its own separator colon in "Căn
+    cước ... số :"), stopping right after the first colon it finds within a
+    small lookahead -- or, if nothing looks like a separator nearby, right
+    after the label's own words (so a colon-less or already-attached-colon
+    label, e.g. "Ngày sinh:", doesn't wrongly eat the next word).
+    """
+    idx = max(covered) + 1
+    limit = min(idx + _LABEL_GLUE_LOOKAHEAD, len(line))
+    for j in range(idx, limit):
+        if line[j]["text"].rstrip().endswith(":"):
+            return j + 1
+        if not _looks_like_label_word(line[j]):
+            break  # already looks like a value -- nothing left to skip
+    return idx
+
+
+def _bbox_over_line_y(words_for_x: list[dict], line: list[dict]) -> dict:
+    """Union bbox using `words_for_x`'s x-extent but `line`'s own y-extent --
+    label lines can have tiny cross-word y jitter; anchoring height to the
+    whole line keeps the highlight consistent (per #005's fix direction)."""
+    xs0 = [w["x"] for w in words_for_x]
+    xs1 = [w["x"] + w["w"] for w in words_for_x]
+    y0 = min(w["y"] for w in line)
+    y1 = max(w["y"] + w["h"] for w in line)
+    return {"x": min(xs0), "y": y0, "width": max(xs1) - min(xs0), "height": y1 - y0}
+
+
+def _label_region_bbox(line: list[dict], anchors_norm: list[str], page_lines: list[list[dict]]) -> dict:
     """Where to point the loupe when a line's label is present but its value
-    isn't readable: the words AFTER the (first-matching) label on this line,
-    so the highlight lands on the blank/handwritten space where the value
-    should be -- falling back to the label's own words if nothing follows.
+    isn't readable: the VALUE SLOT -- from just after this label's own
+    separator to the start of the next label on the same line (#005: "the
+    region after the label" used to swallow the NEXT field's label+value on
+    multi-field lines, or latch onto a stray token, when it just ran to the
+    end of the line). Falls back to a default width (~30% of the page,
+    estimated from `page_lines`) if this label is the last one on the line,
+    or to the label's own words if nothing follows it at all.
     """
     for a in anchors_norm:
         covered = _anchor_word_span(line, a)
-        if covered:
-            after = line[max(covered) + 1:]
-            return union_bbox(after) if after else union_bbox([line[i] for i in covered])
+        if not covered:
+            continue
+        value_start = _value_start_after_label(line, covered)
+        if value_start >= len(line):
+            return union_bbox([line[i] for i in covered])
+        next_idx = _next_label_start(line, value_start)
+        if next_idx is not None:
+            value_words = line[value_start:next_idx]
+            if value_words:
+                return _bbox_over_line_y(value_words, line)
+            return union_bbox([line[i] for i in covered])  # degenerate span -- fall back
+        # No next label on this line -- a bounded default slot, not "to the end
+        # of the line" (that's exactly what used to latch onto unrelated text).
+        page_width = max((w["x"] + w["w"] for pl in page_lines for w in pl), default=0)
+        default_width = max(round(page_width * 0.3), 40)
+        y0 = min(w["y"] for w in line)
+        y1 = max(w["y"] + w["h"] for w in line)
+        return {"x": line[value_start]["x"], "y": y0, "width": default_width, "height": y1 - y0}
     # Anchor matched on the whole joined-text check but no per-word span was
     # found (shouldn't normally happen) -- the whole line is still a better
     # location than nothing.
@@ -219,9 +341,8 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
     - if any of `spec["patterns"]` matches this line (or, failing that, the
       next line -- same lookahead as `find_in_lines`) -> a readable hit:
       `{value, bbox, confidence}` from the matched words;
-    - else -> a located-but-unread hit: `value=""`, `bbox` = the region
-      right after the label on this line (see `_label_region_bbox`),
-      `confidence=0.0`.
+    - else -> a located-but-unread hit: `value=""`, `bbox` = the value slot
+      on this line (see `_label_region_bbox`), `confidence=0.0`.
 
     This is the "locate & look" fix for docs/test-findings.md #004: a label
     reliably found is worth a navigable "cần xem" chip even when its
@@ -242,7 +363,7 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
             if hit is not None:
                 break
         if hit is None:
-            hit = {"value": "", "bbox": _label_region_bbox(line, anchors_norm), "confidence": 0.0}
+            hit = {"value": "", "bbox": _label_region_bbox(line, anchors_norm, lines), "confidence": 0.0}
         hits.append(hit)
     return hits
 
