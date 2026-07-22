@@ -438,6 +438,56 @@ def test_find_name_dedupes_and_caps_at_three():
     match = next(h for h in hits if h["value"] == "Trần Văn A")
     assert abs(match["confidence"] - 0.95) < 1e-9
 
+# ---------------------------------------------------------------------------
+# #008: more name label variants, plus a scoped "cần xem" fallback when a
+# labeled name occurrence is present but unreadable -- without flooding on
+# ordinary prose mentions of the anchor phrase.
+# ---------------------------------------------------------------------------
+
+def test_find_name_matches_ten_toi_la_label():
+    # Bản cam kết's own name label: "Tên tôi là : Trần Văn A".
+    lines = [[
+        W("Tên", 10, 50, 30, 18), W("tôi", 45, 50, 30, 18), W("là", 80, 50, 25, 18), W(":", 108, 50, 10, 18),
+        W("Trần", 130, 50, 35, 18), W("Văn", 170, 50, 30, 18), W("A", 205, 50, 15, 18),
+    ]]
+    hits = find_name(lines, anchors=["ten toi la"])
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Trần Văn A"
+
+def test_find_name_locates_unread_value_on_labeled_line_without_flooding():
+    # ALL-CAPS labeled context ("BÊN CUNG ỨNG DỊCH VỤ") but the handwritten
+    # name OCR'd as illegible, non-name-shaped tokens -- must still produce
+    # exactly ONE navigable "cần xem" source at the geometric value slot
+    # (#008), reusing #005's label-right-edge -> next-label logic, instead of
+    # silently dropping this document's name entirely.
+    line = [
+        W("BÊN", 10, 160, 30, 18), W("CUNG", 45, 160, 40, 18), W("ỨNG", 90, 160, 35, 18),
+        W("DỊCH", 130, 160, 35, 18), W("VỤ", 170, 160, 25, 18),
+        W("scribble1", 210, 160, 60, 18, conf=30), W("scribble2", 275, 160, 60, 18, conf=30),
+    ]
+    hits = find_name([line], anchors=["ben cung ung dich vu"])
+    assert len(hits) == 1
+    h = hits[0]
+    assert h["value"] == ""
+    assert h["confidence"] == 0.0
+    label_right = 170 + 25  # right edge of "VỤ", the anchor's last matched word
+    assert h["bbox"]["x"] == label_right + 4
+    assert h["bbox"]["width"] > 0 and h["bbox"]["height"] > 0
+
+def test_find_name_prose_mention_still_produces_no_source():
+    # Guard against flooding (#008 must not regress this): a mixed-case,
+    # non-labeled prose mention -- no colon, not ALL CAPS -- must produce NO
+    # source at all, not even "cần xem". The labeled-context guard rejects it
+    # before the unread fallback is ever considered (same guarantee as
+    # test_find_name_rejects_prose_anchor_mid_sentence, restated here as the
+    # explicit #008 regression check).
+    lines = [[
+        W("Bên", 10, 50, 25, 18), W("Cung", 40, 50, 35, 18), W("Ứng", 80, 50, 30, 18),
+        W("Dịch", 115, 50, 30, 18), W("Vụ", 150, 50, 20, 18),
+        W("đồng", 180, 50, 35, 18), W("ý", 220, 50, 15, 18), W("rằng", 240, 50, 30, 18),
+    ]]
+    assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
+
 def test_build_manifest_shape():
     fields = extract_fields({}, {"name": "X"})
     docs = [{"id": "packet", "kind": "contract", "label": "Hồ sơ",

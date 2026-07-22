@@ -264,44 +264,55 @@ def _next_label_start(line: list[dict], from_idx: int, max_label_words: int = 4)
     return None
 
 
-def _label_region_bbox(line: list[dict], anchors_norm: list[str], page_lines: list[list[dict]]) -> dict:
-    """Where to point the loupe when a line's label is present but its value
-    isn't readable: the VALUE SLOT, computed GEOMETRICALLY from the label's
-    own bbox -- NOT from "the next word token after the label".
+def _geometric_value_slot(
+    line: list[dict], label_words: list[dict], label_end_idx: int, page_lines: list[list[dict]],
+) -> dict:
+    """The VALUE SLOT for a labeled-but-unreadable occurrence, computed
+    GEOMETRICALLY from the label's own bbox -- NOT from "the next word token
+    after the label". Shared by `_label_region_bbox` (#005, pattern fields)
+    and `find_name`'s located fallback (#008).
 
-    #005 follow-up: a handwritten value that OCR'd to zero usable word
-    tokens (illegible enough that Tesseract found nothing there at all --
-    the common case for a scrawled CCCD) makes "the next token after the
-    label" literally BE the next field's own label ("Ngày cấp"), so any
+    #005: a handwritten value that OCR'd to zero usable word tokens
+    (illegible enough that Tesseract found nothing there at all -- the
+    common case for a scrawled CCCD) makes "the next token after the label"
+    literally BE the next field's own label ("Ngày cấp"), so any
     token-index-based skip logic lands the region's START on the wrong
     field. Anchoring x0 to the label's own right edge sidesteps this
     entirely: it's correct whether the gap has zero, one, or many tokens.
 
-    - x0 = the right edge of this label's own (last) matched word, + a tiny
-      pad (`_LABEL_RIGHT_PAD`).
-    - x1 = the left edge of the next label on the same line (see
-      `_next_label_start`), if any; else x0 + a default width (~30% of the
-      page, estimated from `page_lines`).
+    - x0 = the right edge of `label_words` (the label's own matched words),
+      + a tiny pad (`_LABEL_RIGHT_PAD`).
+    - x1 = the left edge of the next label on the same line, searched from
+      `label_end_idx` (see `_next_label_start`), if any; else x0 + a
+      default width (~30% of the page, estimated from `page_lines`).
     - y = the label LINE's own y-span (not just the matched words'), so
       cross-word y jitter doesn't affect the highlight's height.
+    """
+    x0 = max(w["x"] + w["w"] for w in label_words) + _LABEL_RIGHT_PAD
+    y0 = min(w["y"] for w in line)
+    y1 = max(w["y"] + w["h"] for w in line)
+    next_idx = _next_label_start(line, label_end_idx)
+    width = (line[next_idx]["x"] - x0) if next_idx is not None else None
+    if width is None or width <= 0:
+        # No next label on this line (or it's degenerately close) -- a
+        # bounded default slot, not "to the end of the line" (that's
+        # exactly what used to latch onto unrelated trailing text).
+        page_width = max((w["x"] + w["w"] for pl in page_lines for w in pl), default=0)
+        width = max(round(page_width * 0.3), 40)
+    return {"x": x0, "y": y0, "width": width, "height": y1 - y0}
+
+
+def _label_region_bbox(line: list[dict], anchors_norm: list[str], page_lines: list[list[dict]]) -> dict:
+    """Where to point the loupe when a line's label is present but its value
+    isn't readable: `_geometric_value_slot` anchored on whichever of
+    `anchors_norm` matches this line (see `_anchor_word_span`).
     """
     for a in anchors_norm:
         covered = _anchor_word_span(line, a)
         if not covered:
             continue
         label_words = [line[i] for i in covered]
-        x0 = max(w["x"] + w["w"] for w in label_words) + _LABEL_RIGHT_PAD
-        y0 = min(w["y"] for w in line)
-        y1 = max(w["y"] + w["h"] for w in line)
-        next_idx = _next_label_start(line, max(covered) + 1)
-        width = (line[next_idx]["x"] - x0) if next_idx is not None else None
-        if width is None or width <= 0:
-            # No next label on this line (or it's degenerately close) -- a
-            # bounded default slot, not "to the end of the line" (that's
-            # exactly what used to latch onto unrelated trailing text).
-            page_width = max((w["x"] + w["w"] for pl in page_lines for w in pl), default=0)
-            width = max(round(page_width * 0.3), 40)
-        return {"x": x0, "y": y0, "width": width, "height": y1 - y0}
+        return _geometric_value_slot(line, label_words, max(covered) + 1, page_lines)
     # Anchor matched on the whole joined-text check but no per-word span was
     # found (shouldn't normally happen) -- the whole line is still a better
     # location than nothing.
@@ -406,13 +417,22 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
     Each anchor is a normalized, space-separated phrase (e.g. "ben cung ung
     dich vu"); it's matched as a contiguous run of words whose normalized
     text equals the anchor's tokens exactly. A match only counts when it
-    sits in a labeled/signature context (`_is_labeled_anchor`) and the
-    candidate value looks like a person's name (`_looks_like_person_name`) --
-    without both guards, a phrase that recurs throughout ordinary contract
-    prose (as this one does) would emit dozens of garbage sources, and since
-    the reviewer's compare check takes the worst verdict across all sources,
-    that noise would make even a correct name render as a mismatch. Results
-    are deduped by value and capped (`_dedupe_and_cap`).
+    sits in a labeled/signature context (`_is_labeled_anchor`) -- without
+    that guard, a phrase that recurs throughout ordinary contract prose (as
+    "Bên Cung Ứng Dịch Vụ" does) would emit dozens of garbage sources, and
+    since the reviewer's compare check takes the worst verdict across all
+    sources, that noise would make even a correct name render as a mismatch.
+
+    Once a match sits in a genuinely labeled context, it's worth a source
+    either way (#008): if the value looks like a person's name
+    (`_looks_like_person_name`) -> a readable hit with that value; else --
+    handwritten/illegible, or nothing OCR'd there at all -- a located-but-
+    unread ("cần xem") hit at the geometric value slot (`_geometric_value_slot`,
+    shared with #005's pattern-field fallback), so the document's name is
+    still navigable rather than silently missing. The labeled-context guard
+    is what keeps this scoped: a prose mid-sentence mention never reaches
+    this point at all. Results are deduped by value and capped
+    (`_dedupe_and_cap`).
     """
     hits = []
     tokenized = [a.split() for a in anchors]
@@ -437,15 +457,18 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
             value_words = value_words[1:]
         if not value_words and allow_next_line and idx + 1 < len(lines):
             value_words = lines[idx + 1]
-        if not value_words:
-            continue
-        if not _looks_like_person_name(value_words):
-            continue
-        hits.append({
-            "value": " ".join(w["text"] for w in value_words),
-            "bbox": union_bbox(value_words),
-            "confidence": min(w["conf"] for w in value_words) / 100,
-        })
+        if value_words and _looks_like_person_name(value_words):
+            hits.append({
+                "value": " ".join(w["text"] for w in value_words),
+                "bbox": union_bbox(value_words),
+                "confidence": min(w["conf"] for w in value_words) / 100,
+            })
+        else:
+            hits.append({
+                "value": "",
+                "bbox": _geometric_value_slot(line, line[i:i + n], i + n, lines),
+                "confidence": 0.0,
+            })
     return _dedupe_and_cap(hits)
 
 
@@ -580,8 +603,11 @@ def segment_docs(page_texts: list[str]) -> list[dict]:
 
 FIELD_SPECS = [
     {
+        # "ten toi la" (Bản cam kết's "Tên tôi là:") and "ho va ten" (generic
+        # "Họ và tên" label) added per #008 -- the name was only found on the
+        # Biên bản before, missing it on the cam kết and (readably) the contract.
         "key": "hoten", "label": "Họ tên", "group": "Danh tính", "kind": "name",
-        "anchors": ["ben cung ung dich vu", "ten nguoi nop thue"],
+        "anchors": ["ben cung ung dich vu", "ten nguoi nop thue", "ten toi la", "ho va ten"],
         "patterns": [], "roster_key": "name",
     },
     {
