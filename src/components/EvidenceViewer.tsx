@@ -85,7 +85,11 @@ export default function EvidenceViewer({
     <section className="ev">
       <div className="ev-tabs">
         {docs.map(d => (
-          <button key={d.id} className={d.id === doc.id ? 'ev-tab on' : 'ev-tab'} onClick={() => onSelectDoc(d.id)}>
+          // U3: tint each tab by document kind (CCCD/hợp đồng/PIT/…) so the set of available
+          // documents is visually distinguishable at a glance; the active tab still gets the
+          // accent treatment on top (see `.ev-tab.on` in styles.css).
+          <button key={d.id} className={`ev-tab k-${d.kind}${d.id === doc.id ? ' on' : ''}`}
+            onClick={() => onSelectDoc(d.id)}>
             {d.label}
           </button>
         ))}
