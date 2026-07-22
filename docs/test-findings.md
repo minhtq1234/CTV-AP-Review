@@ -10,8 +10,8 @@ reference packets by STT / field, not by real values.
 | 002 | alignment | resolved | Now align by OCR'd CCCD (name fallback), not position |
 | 003 | doc segmentation | resolved | Packet split into per-document EvidenceDocs; sources doc-labeled |
 | 004 | multi-doc sources | resolved | Field navigable on every doc incl. handwritten "cần xem"; value is a hint |
-| 005 | locate region | open | "cần xem" box lands on wrong slot on multi-field lines (CCCD → "Ngày cấp") |
-| 006 | doc-switch focus | open | Switching document by tab clears the highlight; selected field not re-boxed on the new doc |
+| 005 | locate region | resolved | "cần xem" region computed geometrically from the label's right edge; box on the value slot |
+| 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -141,7 +141,13 @@ matching a known anchor or ending in ":"); default to a reasonable width if the
 field is last on the line. That boxes the value slot precisely — essential since
 "look here" is the whole point.
 
-**Status:** open — high priority (mislocates the eye, undermining locate-&-look).
+**Status:** resolved — commit `910d888`. First pass (bound width to end-of-line)
+looked fixed by the numbers but the live browser check showed the CCCD box still on
+"Ngày cấp": when a handwritten value produces no OCR tokens, a token-based region
+start latches the next field's label. Final fix computes the region **geometrically**
+— from the label's right edge to the next label's left edge — so it covers the value
+slot even with no value tokens. Verified by rendering the box onto the contract page:
+CCCD box on the CCCD number, DOB box tight before "Quốc tịch".
 
 ## 006 — Switching document by tab drops the selected field's highlight
 
@@ -160,4 +166,7 @@ a source on the newly-active document, focus that source's bbox instead of clear
 only clear when the field has no source there. Keeps free-browsing sensible while
 serving the cross-document check.
 
-**Status:** open — locate-&-look UX polish (pairs with #005).
+**Status:** resolved — commit `4a7bc82`. `onSelectDoc` now re-focuses the selected
+field's source on the newly-active document (via `focusAt`), clearing only when the
+field has no source there. Verified live: with Ngày sinh selected, clicking the
+"Biên bản thanh lý hợp đồng" tab boxes "22/05/1989" on the biên bản.
