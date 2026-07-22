@@ -1,7 +1,7 @@
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
-    classify_page, segment_docs, locate_field,
+    classify_page, segment_docs, locate_field, _upright_rotation,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -554,7 +554,9 @@ def test_classify_page_commitment():
         ("commitment", "Bản cam kết")
 
 def test_classify_page_phu_luc():
-    assert classify_page("PHỤ LỤC đánh giá kết quả công việc") == ("pit", "Phụ lục")
+    # #010: Phụ lục is its own "appendix" kind, not "pit" (it no longer
+    # shares a kind with Tra cứu thuế).
+    assert classify_page("PHỤ LỤC đánh giá kết quả công việc") == ("appendix", "Phụ lục")
 
 def test_classify_page_tra_cuu():
     assert classify_page("BẢNG THÔNG TIN TRA CỨU người nộp thuế TNCN") == \
@@ -643,6 +645,65 @@ def test_segment_docs_detects_cam_ket_and_tra_cuu_via_relaxed_full_page_markers(
     docs = segment_docs(pages)
     assert [d["kind"] for d in docs] == ["contract", "bbnt", "commitment", "pit"]
     assert [d["pages"] for d in docs] == [[0, 1], [2, 3], [4], [5]]
+
+
+# ---------------------------------------------------------------------------
+# #010: rotation-aware OCR -- pure upright-angle decision logic.
+# ---------------------------------------------------------------------------
+
+def test_upright_rotation_converts_osd_clockwise_angle_to_ccw_pil_angle():
+    # Real rotated page found in production: OSD reports rotate=270 (rotate
+    # 270° clockwise to fix) with confidence 9.94 -- verified against the
+    # actual page that the correct PIL angle to apply is +90 CCW (reads
+    # upright: img.rotate(90, expand=True)).
+    assert _upright_rotation(270, 9.94) == 90
+    assert _upright_rotation(90, 8.0) == 270
+    assert _upright_rotation(180, 8.0) == 180
+
+def test_upright_rotation_leaves_upright_pages_unrotated():
+    # rotate=0 (OSD found nothing to fix) -> never rotate, regardless of
+    # confidence -- real portrait pages report a wide range of confidences
+    # (6-20 observed) alongside rotate=0.
+    assert _upright_rotation(0, 15.36) == 0
+    assert _upright_rotation(0, 0.0) == 0
+
+def test_upright_rotation_never_rotates_on_low_confidence():
+    # A low-confidence guess must NOT be acted on -- a wrongly-rotated
+    # portrait page would be worse than the (already correct) status quo.
+    assert _upright_rotation(90, 0.5) == 0
+    assert _upright_rotation(270, 1.49) == 0
+
+def test_upright_rotation_boundary_at_min_conf_threshold():
+    assert _upright_rotation(90, 1.5) == 270    # exactly at the threshold -> acts
+    assert _upright_rotation(90, 1.4999) == 0   # just under -> doesn't
+
+
+# ---------------------------------------------------------------------------
+# #010: Phụ lục (SOW/KPI appendix) classified as its own "appendix" kind,
+# via the same relaxed full-page-marker mechanism #009 introduced (its
+# title band is often still noisy even once the page OCRs upright).
+# ---------------------------------------------------------------------------
+
+def test_classify_page_appendix_via_sow_kpi_markers():
+    text = (
+        "một bảng nội dung công việc bị nhiễu không có tiêu đề gọn gàng nào cả\n"
+        "PHỤ LỤC ĐÁNH GIÁ CHẤT LƯỢNG DỊCH VỤ CTV sản xuất nội dung SOW KPI theo tháng"
+    )
+    assert classify_page(text) == ("appendix", "Phụ lục")
+
+def test_segment_docs_splits_out_appendix_from_bien_ban():
+    # End-to-end reproduction of the real bug: a Phụ lục (now upright, but
+    # with a noisy/garbled title band) still starts its own document, not
+    # folding into the preceding Biên bản.
+    pages = [
+        "BIÊN BẢN THANH LÝ HỢP ĐỒNG..",
+        "Nội dung công việc thực hiện trong tháng theo bảng chấm công",
+        "một dòng nhiễu không liên quan ở phía trên đây không có tiêu đề\n"
+        "PHỤ LỤC ĐÁNH GIÁ CHẤT LƯỢNG DỊCH VỤ CTV theo các chỉ tiêu SOW KPI đã thống nhất",
+    ]
+    docs = segment_docs(pages)
+    assert [d["kind"] for d in docs] == ["bbnt", "appendix"]
+    assert [d["pages"] for d in docs] == [[0, 1], [2]]
 
 
 def test_segment_docs_groups_consecutive_pages_by_title():

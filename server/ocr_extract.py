@@ -478,13 +478,12 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 # ---------------------------------------------------------------------------
 
 # (keyword, kind, label) — first row whose keyword appears wins. `kind` is
-# one of src/ctv/types.ts's EvidenceKind; several rows share a kind ("bbnt":
-# nghiệm thu / thanh lý hợp đồng; "pit": Phụ lục / Tra cứu thuế) since the
-# type enum doesn't distinguish them -- the label is what tells them apart in
-# the reviewer. More specific keywords are listed before the generic "bien
-# ban"/"cam ket" catch-alls they're a substring-superset of (a real title
-# like "BIÊN BẢN NGHIỆM THU VÀ THANH LÝ HỢP ĐỒNG" contains "bien ban" too,
-# but should resolve to the more specific label).
+# one of src/ctv/types.ts's EvidenceKind; "bbnt" is shared by nghiệm thu /
+# thanh lý hợp đồng since the type enum doesn't distinguish them -- the label
+# is what tells them apart in the reviewer. More specific keywords are listed
+# before the generic "bien ban"/"cam ket" catch-alls they're a substring-
+# superset of (a real title like "BIÊN BẢN NGHIỆM THU VÀ THANH LÝ HỢP ĐỒNG"
+# contains "bien ban" too, but should resolve to the more specific label).
 _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
     ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
     ("thanh ly hop dong", "bbnt", "Biên bản thanh lý hợp đồng"),
@@ -492,7 +491,10 @@ _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
     ("bien ban", "bbnt", "Biên bản nghiệm thu"),
     ("ban cam ket", "commitment", "Bản cam kết"),
     ("cam ket", "commitment", "Bản cam kết"),
-    ("phu luc", "pit", "Phụ lục"),
+    # "appendix" (not "pit") per #010 -- Phụ lục (an SOW/KPI evaluation
+    # appendix) is its own document type, distinct from the tax-lookup
+    # ("pit") docs it used to share a kind with.
+    ("phu luc", "appendix", "Phụ lục"),
     ("bang thong tin tra cuu", "pit", "Tra cứu thuế"),
     ("nguoi nop thue tncn", "pit", "Tra cứu thuế"),
     ("tra cuu", "pit", "Tra cứu thuế"),
@@ -515,6 +517,10 @@ _FULL_PAGE_MARKERS: list[tuple[list[str], str, str]] = [
     (["ban cam ket", "08/ck-tncn", "mau so: 08"], "commitment", "Bản cam kết"),
     (["bang thong tin tra cuu", "thong tin ve nguoi nop thue", "tra cuu thong tin",
       "gdt.gov.vn", "co quan thue"], "pit", "Tra cứu thuế"),
+    # #010: a rotated Phụ lục (SOW/KPI evaluation appendix) OCRs with a
+    # noisy/garbled title band even once upright (the surrounding table text
+    # is itself low-quality) -- these markers catch it wherever they land.
+    (["phu luc", "danh gia chat luong dich vu", "sow", "kpi"], "appendix", "Phụ lục"),
 ]
 
 # A real document title is a short, standalone heading line (occasionally
@@ -768,28 +774,100 @@ def build_manifest(folder_id: str, name: str, product: str, docs: list[dict], fi
 
 
 # ---------------------------------------------------------------------------
+# Rotation-aware OCR (#010) — pure upright-angle decision logic. The OSD call
+# itself (Tesseract's page orientation detector) is I/O (see
+# `detect_page_rotation` below); this is the pure math around its result, so
+# it's unit-testable without a real PDF/Tesseract.
+# ---------------------------------------------------------------------------
+
+# Tesseract OSD's `orientation_conf` below which its rotation guess is too
+# unreliable to act on -- never rotate a page you're unsure about, since a
+# wrongly-rotated portrait page would be worse than the (already correct)
+# status quo. Chosen well below the real rotated page's observed ~8-10 and
+# comfortably above the noise floor typical portrait pages report even when
+# OSD (correctly) finds nothing to fix.
+_MIN_OSD_CONF = 1.5
+
+
+def _upright_rotation(osd_rotate: int, osd_conf: float, min_conf: float = _MIN_OSD_CONF) -> int:
+    """The angle (degrees, PIL `Image.rotate`-style: positive = counter-
+    clockwise) to apply to make a page upright, given Tesseract OSD's
+    `rotate` (the CLOCKWISE angle OSD says the image needs) and its
+    `orientation_conf` -- or `0` (no rotation) if `osd_rotate` isn't one of
+    the 3 real rotations, or confidence is below `min_conf`.
+
+    OSD's `rotate` and PIL's CCW-positive convention are opposite senses of
+    the same turn, so the CCW angle to apply is `(360 - osd_rotate) % 360`
+    (e.g. OSD `rotate=270` -> apply `+90` CCW -- verified against a real
+    rotated page: `img.rotate(90, expand=True)` reads upright).
+    """
+    if osd_rotate not in (90, 180, 270) or osd_conf < min_conf:
+        return 0
+    return (360 - osd_rotate) % 360
+
+
+# ---------------------------------------------------------------------------
 # I/O layer (Task A4) — PyMuPDF render + pytesseract OCR. Not unit-tested
 # (needs a real PDF + Tesseract); verified by running on real packets (A5).
 # ---------------------------------------------------------------------------
 
-def render_pages(pdf_path: str, start: int, end: int, out_dir: str, display_dpi: int = 150) -> list[dict]:
+def detect_page_rotation(pdf_path: str, page_index: int, osd_dpi: int = 150) -> int:
+    """Detect a page's upright rotation (0/90/180/270, PIL CCW-style) via
+    Tesseract OSD -- `0` if OSD errors (sparse/blank/unusual pages can throw),
+    finds nothing to fix, or isn't confident (`_upright_rotation`). Never
+    guesses: an unrotated page is always a safe fallback.
+    """
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[page_index]
+        zoom = osd_dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    finally:
+        doc.close()
+    try:
+        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
+    except Exception:  # noqa: BLE001 - OSD can fail outright on some pages; never rotate on a guess
+        return 0
+    return _upright_rotation(osd.get("rotate", 0), osd.get("orientation_conf", 0.0))
+
+
+def render_pages(
+    pdf_path: str, start: int, end: int, out_dir: str, display_dpi: int = 150,
+    rotations: dict[int, int] | None = None,
+) -> list[dict]:
     """Render packet pages [start,end] (inclusive, 0-based) to PNGs in out_dir.
 
-    Returns `DocPage` dicts `{src, width, height}` in packet order; `src` is
-    the absolute PNG path (offline use — a server would rewrite this to a URL).
+    `rotations` is `{rel_idx: degrees}` (PIL CCW angle, see
+    `_upright_rotation`) -- a page with a detected non-upright orientation is
+    rotated upright before saving, so the served PNG reads correctly (#010).
+    Absent/0 for the vast majority of already-upright pages, which are saved
+    byte-for-byte exactly as before.
+
+    Returns `DocPage` dicts `{src, width, height}` in packet order (`width`/
+    `height` are the UPRIGHT/post-rotation dimensions); `src` is the absolute
+    PNG path (offline use — a server would rewrite this to a URL).
     """
     os.makedirs(out_dir, exist_ok=True)
     doc = fitz.open(pdf_path)
     zoom = display_dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
+    rotations = rotations or {}
     pages = []
     try:
         for rel_idx, page_num in enumerate(range(start, end + 1)):
             page = doc[page_num]
             pix = page.get_pixmap(matrix=mat)
+            angle = rotations.get(rel_idx, 0)
             path = os.path.join(out_dir, f"pg{rel_idx}.png")
-            pix.save(path)
-            pages.append({"src": path, "width": pix.width, "height": pix.height})
+            if angle:
+                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).rotate(angle, expand=True)
+                img.save(path)
+                width, height = img.size
+            else:
+                pix.save(path)
+                width, height = pix.width, pix.height
+            pages.append({"src": path, "width": width, "height": height})
     finally:
         doc.close()
     return pages
@@ -797,8 +875,15 @@ def render_pages(pdf_path: str, start: int, end: int, out_dir: str, display_dpi:
 
 def ocr_words(
     pdf_path: str, page_index: int, ocr_dpi: int = 300, display_dpi: int = 150,
+    rotation: int = 0,
 ) -> tuple[list[dict], float]:
     """OCR one page (0-based, absolute index) at `ocr_dpi` with Tesseract `vie`.
+
+    `rotation` (PIL CCW degrees, see `_upright_rotation`) is applied to the
+    OCR-dpi image before running Tesseract, so a rotated page's words come
+    out in the SAME upright orientation as the matching `render_pages`
+    (#010) -- the `display_dpi/ocr_dpi` scale factor below stays valid since
+    both images are rotated by the same angle before that uniform scaling.
 
     Returns (words in OCR-pixel space, `display_dpi/ocr_dpi` scale factor) —
     the caller scales the words to display space with `scale_words`.
@@ -811,6 +896,8 @@ def ocr_words(
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     finally:
         doc.close()
+    if rotation:
+        img = img.rotate(rotation, expand=True)
     data = pytesseract.image_to_data(img, lang="vie", output_type=pytesseract.Output.DICT)
     words = []
     for i in range(len(data["text"])):
@@ -870,13 +957,26 @@ def ocr_packet(
     known until the caller matches `identity` against the roster
     (`pipeline.match_roster`) and fills expected values in
     (`pipeline.fill_expected`) before writing the manifest.
+
+    #010: each page's rotation is detected once (`detect_page_rotation`) and
+    applied consistently to BOTH the served display PNG and the OCR image,
+    so a rotated page (e.g. a landscape SOW/KPI appendix scanned sideways)
+    reads upright in the reviewer and OCRs correctly, instead of garbling.
     """
     os.makedirs(out_dir, exist_ok=True)
-    pages = render_pages(pdf_path, start, end, out_dir, display_dpi=display_dpi)
+    rotations = {
+        rel_idx: angle
+        for rel_idx, abs_page in enumerate(range(start, end + 1))
+        if (angle := detect_page_rotation(pdf_path, abs_page, osd_dpi=display_dpi))
+    }
+    pages = render_pages(pdf_path, start, end, out_dir, display_dpi=display_dpi, rotations=rotations)
 
     words_by_page: dict[int, list[dict]] = {}
     for rel_idx, abs_page in enumerate(range(start, end + 1)):
-        words, factor = ocr_words(pdf_path, abs_page, ocr_dpi=ocr_dpi, display_dpi=display_dpi)
+        words, factor = ocr_words(
+            pdf_path, abs_page, ocr_dpi=ocr_dpi, display_dpi=display_dpi,
+            rotation=rotations.get(rel_idx, 0),
+        )
         words_by_page[rel_idx] = scale_words(words, factor)
 
     page_texts = [_page_text(words_by_page[i]) for i in range(len(pages))]

@@ -2,7 +2,9 @@ import type { Bbox, CaseStatus, FieldKind } from '../types'
 
 // A CTV folder = one collaborator = one review case, backed by several evidence documents,
 // each of which can span multiple pages.
-export type EvidenceKind = 'id_front' | 'id_back' | 'contract' | 'commitment' | 'pit' | 'bbnt'
+// 'appendix' (#010): an SOW/KPI evaluation appendix (Phụ lục) -- its own kind, distinct
+// from 'pit' (Tra cứu thuế), which it used to share a kind with before #010.
+export type EvidenceKind = 'id_front' | 'id_back' | 'contract' | 'commitment' | 'pit' | 'bbnt' | 'appendix'
 
 export interface DocPage { src: string; width: number; height: number } // natural px
 
