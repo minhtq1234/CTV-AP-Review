@@ -73,9 +73,10 @@ def test_locate_field_returns_value_when_pattern_matches():
 def test_locate_field_locates_unread_region_when_label_present_but_value_unreadable():
     # Handwritten date OCR'd as illegible (low-confidence) tokens: label is
     # there, nothing after it matches the DATE pattern -> "cần xem", pointing
-    # at the VALUE slot -- past the label's own separator colon, not at the
-    # whole line and not at nothing (#005: this is the last-on-line case, so
-    # it gets the bounded default-width slot, not a run to end-of-line).
+    # at the VALUE slot -- geometrically right after the label's own right
+    # edge (#005 follow-up), not at the whole line and not at nothing. No
+    # next label on this line -> the bounded default-width slot, not a run
+    # to end-of-line.
     spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
     lines = [[W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18), W(":", 70, 50, 10, 18),
               W("~~~~", 85, 50, 90, 18, conf=35)]]
@@ -84,16 +85,20 @@ def test_locate_field_locates_unread_region_when_label_present_but_value_unreada
     assert hits[0]["value"] == ""
     assert hits[0]["confidence"] == 0.0
     assert hits[0]["bbox"]["width"] > 0 and hits[0]["bbox"]["height"] > 0
-    assert hits[0]["bbox"]["x"] == 85  # starts right after the label's own ":", at the value word
+    assert hits[0]["bbox"]["x"] == 74  # "sinh" right edge (45+25=70) + the small pad
 
-def test_locate_field_falls_back_to_label_bbox_when_nothing_follows_on_line():
+def test_locate_field_falls_back_to_default_width_when_nothing_follows_on_line():
+    # No next label at all on the line -> bounded default-width slot
+    # starting right at the label's own right edge (+ pad), not a
+    # zero-width box and not the label's own text re-highlighted.
     spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
     lines = [[W("Ngày", 10, 50, 30, 18), W("sinh", 45, 50, 25, 18)]]
     hits = locate_field(lines, spec)
     assert len(hits) == 1
     assert hits[0]["value"] == ""
     assert hits[0]["confidence"] == 0.0
-    assert hits[0]["bbox"] == union_bbox(lines[0])
+    assert hits[0]["bbox"]["x"] == 74
+    assert hits[0]["bbox"]["width"] > 0
 
 def test_locate_field_no_hit_when_label_absent():
     spec = {"anchors": ["ngay sinh"], "patterns": [PATTERNS["DATE"]]}
@@ -109,8 +114,8 @@ def test_locate_field_no_hit_when_label_absent():
 def test_locate_field_unread_region_stops_before_next_label_cccd_then_ngay_cap():
     # Real-packet pattern: "Căn cước/Hộ chiếu số : <handwritten CCCD>  Ngày
     # cấp: 30/11/2022  Nơi cấp: ..." -- the cccd region must be the SLOT
-    # between its own label and "Ngày cấp:", not the tiny "30" token and not
-    # a box spanning all the way to "Nơi cấp".
+    # between its own label's right edge and "Ngày cấp:", not the tiny "30"
+    # token and not a box spanning all the way to "Nơi cấp".
     cccd_spec = next(s for s in FIELD_SPECS if s["key"] == "cccd")
     line = [
         W("Căn", 10, 700, 40, 30), W("cước", 55, 700, 50, 30),
@@ -124,9 +129,10 @@ def test_locate_field_unread_region_stops_before_next_label_cccd_then_ngay_cap()
     assert len(hits) == 1
     h = hits[0]
     assert h["value"] == ""  # handwritten -- no CCCD pattern matched
-    assert h["bbox"]["x"] >= 155           # starts at/after its own "số :" separator
+    label_right = 55 + 50  # right edge of "cước", the anchor's last matched word
+    assert h["bbox"]["x"] == label_right + 4  # starts at the label's own right edge (+ pad)
     end = h["bbox"]["x"] + h["bbox"]["width"]
-    assert end <= 355                      # ends before "Ngày" starts -- not the "30", not "Nơi"
+    assert end == 355  # ends exactly at "Ngày" -- not the "30", not "Nơi"
 
 def test_locate_field_unread_region_stops_before_next_label_dob_then_quoc_tich():
     # Real-packet pattern: "Ngày sinh : <handwritten DOB>  Quốc tịch: Việt
@@ -143,9 +149,35 @@ def test_locate_field_unread_region_stops_before_next_label_dob_then_quoc_tich()
     assert len(hits) == 1
     h = hits[0]
     assert h["value"] == ""
-    assert h["bbox"]["x"] >= 120            # starts at/after its own "sinh :" separator
+    label_right = 60 + 45  # right edge of "sinh", the anchor's last matched word
+    assert h["bbox"]["x"] == label_right + 4
     end = h["bbox"]["x"] + h["bbox"]["width"]
-    assert end <= 320                       # ends before "Quốc" starts -- not "Việt Nam" too
+    assert end == 320  # ends exactly at "Quốc" -- not "Việt Nam" too
+
+def test_locate_field_unread_region_covers_gap_when_value_has_no_ocr_tokens():
+    # #005 follow-up (caught live): the handwritten CCCD OCR'd to ZERO word
+    # tokens at all (illegible enough that Tesseract found nothing there) --
+    # the region must still be geometrically bounded to the gap between this
+    # label's own right edge and the NEXT label's left edge. Computing the
+    # region from "the next word token after the label" breaks here: with
+    # zero value tokens, that next token literally IS "Ngày" (the next
+    # field's own label), landing the box there instead of on the CCCD slot.
+    cccd_spec = next(s for s in FIELD_SPECS if s["key"] == "cccd")
+    line = [
+        W("Căn", 10, 700, 40, 30), W("cước", 55, 700, 50, 30),
+        W("số", 110, 700, 30, 30), W(":", 145, 700, 10, 30),
+        # <-- no words at all here: the handwritten CCCD OCR'd to nothing -->
+        W("Ngày", 355, 700, 45, 30), W("cấp:", 405, 700, 45, 30),
+        W("30", 460, 700, 25, 30), W("/11/2022", 490, 700, 90, 30),
+    ]
+    hits = locate_field([line], cccd_spec)
+    assert len(hits) == 1
+    h = hits[0]
+    assert h["value"] == ""
+    label_right = 55 + 50
+    assert h["bbox"]["x"] == label_right + 4  # starts at the label's right edge, NOT at "Ngày"
+    end = h["bbox"]["x"] + h["bbox"]["width"]
+    assert end == 355  # ends at "Ngày" -- covers the empty gap, doesn't land on the next label
 
 def test_locate_field_works_with_real_mst_spec():
     mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")

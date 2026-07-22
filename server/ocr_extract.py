@@ -202,11 +202,9 @@ def _anchor_word_span(line: list[dict], anchor_norm: str) -> list[int] | None:
 # (e.g. garbled strokes OCR'd as letters) into treating it as a label word.
 _MIN_LABEL_CONF = 50
 
-# Small bound on how many "glue" words (e.g. "số" between an anchor and its
-# own separator colon in "Căn cước ... số :") `_value_start_after_label` will
-# scan past looking for that colon, so it can't run away into unrelated
-# content when a label has no colon nearby at all.
-_LABEL_GLUE_LOOKAHEAD = 3
+# Small horizontal pad (px) added after a label's own right edge, so the
+# located region starts just clear of the label's text rather than touching it.
+_LABEL_RIGHT_PAD = 4
 
 _all_anchor_tokens_cache: list[list[str]] | None = None
 
@@ -266,66 +264,44 @@ def _next_label_start(line: list[dict], from_idx: int, max_label_words: int = 4)
     return None
 
 
-def _value_start_after_label(line: list[dict], covered: list[int]) -> int:
-    """Index of the first VALUE word after this field's own label: skips
-    forward past this label's own trailing connector/separator (e.g. the
-    "số" between the "Căn cước" anchor and its own separator colon in "Căn
-    cước ... số :"), stopping right after the first colon it finds within a
-    small lookahead -- or, if nothing looks like a separator nearby, right
-    after the label's own words (so a colon-less or already-attached-colon
-    label, e.g. "Ngày sinh:", doesn't wrongly eat the next word).
-    """
-    idx = max(covered) + 1
-    limit = min(idx + _LABEL_GLUE_LOOKAHEAD, len(line))
-    for j in range(idx, limit):
-        if line[j]["text"].rstrip().endswith(":"):
-            return j + 1
-        if not _looks_like_label_word(line[j]):
-            break  # already looks like a value -- nothing left to skip
-    return idx
-
-
-def _bbox_over_line_y(words_for_x: list[dict], line: list[dict]) -> dict:
-    """Union bbox using `words_for_x`'s x-extent but `line`'s own y-extent --
-    label lines can have tiny cross-word y jitter; anchoring height to the
-    whole line keeps the highlight consistent (per #005's fix direction)."""
-    xs0 = [w["x"] for w in words_for_x]
-    xs1 = [w["x"] + w["w"] for w in words_for_x]
-    y0 = min(w["y"] for w in line)
-    y1 = max(w["y"] + w["h"] for w in line)
-    return {"x": min(xs0), "y": y0, "width": max(xs1) - min(xs0), "height": y1 - y0}
-
-
 def _label_region_bbox(line: list[dict], anchors_norm: list[str], page_lines: list[list[dict]]) -> dict:
     """Where to point the loupe when a line's label is present but its value
-    isn't readable: the VALUE SLOT -- from just after this label's own
-    separator to the start of the next label on the same line (#005: "the
-    region after the label" used to swallow the NEXT field's label+value on
-    multi-field lines, or latch onto a stray token, when it just ran to the
-    end of the line). Falls back to a default width (~30% of the page,
-    estimated from `page_lines`) if this label is the last one on the line,
-    or to the label's own words if nothing follows it at all.
+    isn't readable: the VALUE SLOT, computed GEOMETRICALLY from the label's
+    own bbox -- NOT from "the next word token after the label".
+
+    #005 follow-up: a handwritten value that OCR'd to zero usable word
+    tokens (illegible enough that Tesseract found nothing there at all --
+    the common case for a scrawled CCCD) makes "the next token after the
+    label" literally BE the next field's own label ("Ngày cấp"), so any
+    token-index-based skip logic lands the region's START on the wrong
+    field. Anchoring x0 to the label's own right edge sidesteps this
+    entirely: it's correct whether the gap has zero, one, or many tokens.
+
+    - x0 = the right edge of this label's own (last) matched word, + a tiny
+      pad (`_LABEL_RIGHT_PAD`).
+    - x1 = the left edge of the next label on the same line (see
+      `_next_label_start`), if any; else x0 + a default width (~30% of the
+      page, estimated from `page_lines`).
+    - y = the label LINE's own y-span (not just the matched words'), so
+      cross-word y jitter doesn't affect the highlight's height.
     """
     for a in anchors_norm:
         covered = _anchor_word_span(line, a)
         if not covered:
             continue
-        value_start = _value_start_after_label(line, covered)
-        if value_start >= len(line):
-            return union_bbox([line[i] for i in covered])
-        next_idx = _next_label_start(line, value_start)
-        if next_idx is not None:
-            value_words = line[value_start:next_idx]
-            if value_words:
-                return _bbox_over_line_y(value_words, line)
-            return union_bbox([line[i] for i in covered])  # degenerate span -- fall back
-        # No next label on this line -- a bounded default slot, not "to the end
-        # of the line" (that's exactly what used to latch onto unrelated text).
-        page_width = max((w["x"] + w["w"] for pl in page_lines for w in pl), default=0)
-        default_width = max(round(page_width * 0.3), 40)
+        label_words = [line[i] for i in covered]
+        x0 = max(w["x"] + w["w"] for w in label_words) + _LABEL_RIGHT_PAD
         y0 = min(w["y"] for w in line)
         y1 = max(w["y"] + w["h"] for w in line)
-        return {"x": line[value_start]["x"], "y": y0, "width": default_width, "height": y1 - y0}
+        next_idx = _next_label_start(line, max(covered) + 1)
+        width = (line[next_idx]["x"] - x0) if next_idx is not None else None
+        if width is None or width <= 0:
+            # No next label on this line (or it's degenerately close) -- a
+            # bounded default slot, not "to the end of the line" (that's
+            # exactly what used to latch onto unrelated trailing text).
+            page_width = max((w["x"] + w["w"] for pl in page_lines for w in pl), default=0)
+            width = max(round(page_width * 0.3), 40)
+        return {"x": x0, "y": y0, "width": width, "height": y1 - y0}
     # Anchor matched on the whole joined-text check but no per-word span was
     # found (shouldn't normally happen) -- the whole line is still a better
     # location than nothing.
