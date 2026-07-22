@@ -12,8 +12,8 @@ reference packets by STT / field, not by real values.
 | 004 | multi-doc sources | resolved | Field navigable on every doc incl. handwritten "cần xem"; value is a hint |
 | 005 | locate region | resolved | "cần xem" region computed geometrically from the label's right edge; box on the value slot |
 | 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
-| 007 | orphaned processing case | open (low) | A case interrupted mid-pipeline stays "processing" forever after a restart |
-| 008 | name not found on some docs | open | Name missed on Bản cam kết ("Tên tôi là") + handwritten contract copy |
+| 007 | orphaned processing case | resolved | Reconciled to "error" on CaseStore load; no more perpetual spinner |
+| 008 | name not found on some docs | resolved | Added "Tên tôi là"/"Họ và tên" anchors + scoped "cần xem" fallback |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -186,7 +186,11 @@ reconcile any case still in `status="processing"` (no live worker) to a stale/er
 state (e.g. `status="error"`, message "xử lý bị gián đoạn"), so the list can offer
 delete/retry instead of showing it processing forever.
 
-**Status:** open (low priority) — only occurs if the backend dies mid-pipeline.
+**Status:** resolved — commit `ecf8c2d`. `CaseStore._load` reconciles any on-disk
+case still `status="processing"` to `status="error"` ("Xử lý bị gián đoạn — vui lòng
+xoá và tải lại."), leaving other statuses untouched. Verified live: created a case,
+killed the backend mid-processing, restarted → the case shows "error", not a
+perpetual spinner.
 
 ## 008 — Name field not detected on some documents
 
@@ -210,4 +214,8 @@ the Bản cam kết or the Hợp đồng dịch vụ.
    prose mention of the anchor phrase), so it's navigable even when unreadable —
    consistent with the locate-&-look principle (#004).
 
-**Status:** open — extraction coverage; pairs with #004's "locate & look" model.
+**Status:** resolved — commits `ac6e55c`, `22dbb3e`. Added `"ten toi la"`,
+`"ho va ten"` (and `"en toi la"` for a real Tesseract dropped-leading-letter
+artifact) to the name anchors, and gave the name a scoped "cần xem" located fallback
+(labeled context only, no prose flood). Verified live on Trần Ứng Hỷ: Họ tên now has
+sources on Hợp đồng (cần xem), Biên bản (read), and Bản cam kết (cần xem).
