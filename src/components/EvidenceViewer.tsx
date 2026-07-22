@@ -22,6 +22,8 @@ export default function EvidenceViewer({
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
   const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
+  const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
+  const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
   const page = doc.pages[activePage] ?? doc.pages[0]
   const nat = { w: page.width, h: page.height }
@@ -77,6 +79,49 @@ export default function EvidenceViewer({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // U4: Option/Alt + P toggles pan mode — same physical-key-code guard as Alt +/- above (⌥P
+  // types 'π' on a macOS US layout), plus the input-focus guard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (e.altKey && (e.code === 'KeyP' || e.key === 'p' || e.key === 'P' || e.key === 'π')) {
+        e.preventDefault()
+        setPanMode(v => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // U4: drag-to-pan while panMode is on — mousedown on the stage captures the frame's current
+  // offset, then window-level mousemove/mouseup drag it (window-level so the drag keeps tracking
+  // even if the cursor leaves the stage bounds mid-drag).
+  const onStageMouseDown = (e: React.MouseEvent) => {
+    if (!panMode) return
+    e.preventDefault()
+    dragRef.current = { x: e.clientX, y: e.clientY, tx: frame.tx, ty: frame.ty }
+  }
+
+  useEffect(() => {
+    if (!panMode) return
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      const tx = d.tx + (e.clientX - d.x)
+      const ty = d.ty + (e.clientY - d.y)
+      setFrame(f => ({ ...f, tx, ty }))
+    }
+    const onUp = () => { dragRef.current = null }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      dragRef.current = null
+    }
+  }, [panMode])
+
   const fit = () => setFrame(loupeFrame(null, nat, vp))
   const hl = showHighlight && inflated ? boxToViewport(inflated, frame) : null
   const pageCount = doc.pages.length
@@ -94,9 +139,9 @@ export default function EvidenceViewer({
           </button>
         ))}
       </div>
-      <div className="ev-stage" ref={ref}>
+      <div className={panMode ? 'ev-stage panning' : 'ev-stage'} ref={ref} onMouseDown={onStageMouseDown}>
         <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-          <img src={assetUrl(page.src)} width={nat.w} height={nat.h} alt="" />
+          <img src={assetUrl(page.src)} width={nat.w} height={nat.h} alt="" draggable={false} />
         </div>
         {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
@@ -115,6 +160,8 @@ export default function EvidenceViewer({
           <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
           <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
             aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>
+          <button className={panMode ? 'on' : ''} onClick={() => setPanMode(v => !v)}
+            aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
         </div>
       </div>
