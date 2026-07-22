@@ -13,6 +13,7 @@ reference packets by STT / field, not by real values.
 | 005 | locate region | resolved | "cần xem" region computed geometrically from the label's right edge; box on the value slot |
 | 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
 | 007 | orphaned processing case | open (low) | A case interrupted mid-pipeline stays "processing" forever after a restart |
+| 008 | name not found on some docs | open | Name missed on Bản cam kết ("Tên tôi là") + handwritten contract copy |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -186,3 +187,27 @@ state (e.g. `status="error"`, message "xử lý bị gián đoạn"), so the lis
 delete/retry instead of showing it processing forever.
 
 **Status:** open (low priority) — only occurs if the backend dies mid-pipeline.
+
+## 008 — Name field not detected on some documents
+
+**Observed (Trần Ứng Hỷ):** `Họ tên` shows a source only on the Biên bản — not on
+the Bản cam kết or the Hợp đồng dịch vụ.
+
+**Cause:** the name field's anchors are only
+`["ben cung ung dich vu", "ten nguoi nop thue"]` (ocr_extract.py FIELD_SPECS).
+- **Bản cam kết** labels the name **"Tên tôi là:"** — not in the anchor list → missed.
+- **Hợp đồng dịch vụ** matches the "BÊN CUNG ỨNG DỊCH VỤ" anchor, but the name there
+  is **handwritten** → OCR can't read it and the name-shape guard drops it.
+- The name field is deliberately stricter than others (labeled + name-shaped match,
+  no "cần xem" fallback) because "Bên Cung Ứng Dịch Vụ" recurs in prose dozens of
+  times; a raw locate-fallback would flood with false name sources.
+
+**Fix direction:**
+1. Add label variants to the name anchors — at least `"ten toi la"` (Bản cam kết)
+   and `"ho va ten"` — so more documents' name occurrences are found.
+2. Give the handwritten party-line name a **scoped** "cần xem" located source (only
+   the actual signature/party line via the labeled + name-shape context, NOT every
+   prose mention of the anchor phrase), so it's navigable even when unreadable —
+   consistent with the locate-&-look principle (#004).
+
+**Status:** open — extraction coverage; pairs with #004's "locate & look" model.
