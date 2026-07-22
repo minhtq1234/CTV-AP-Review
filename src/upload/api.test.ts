@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stageLabel, progressPct, withAbsolutePageSrc } from './api'
+import { stageLabel, progressPct, withAbsolutePageSrc, caseProgressLabel, decisionBadge } from './api'
 
 describe('upload api helpers', () => {
   it('maps stages to Vietnamese labels', () => {
@@ -16,5 +16,17 @@ describe('upload api helpers', () => {
     const m: any = { docs: [{ pages: [{ src: '/api/jobs/J/packets/0/page/pg0.png', width: 1, height: 1 }] }] }
     const out = withAbsolutePageSrc(m, 'http://127.0.0.1:8000')
     expect(out.docs[0].pages[0].src).toBe('http://127.0.0.1:8000/api/jobs/J/packets/0/page/pg0.png')
+  })
+})
+
+describe('case helpers', () => {
+  it('formats progress', () => {
+    expect(caseProgressLabel({ decided: 12, total: 32, flagged: 3 }))
+      .toMatch(/12\/32.*duyệt.*3.*cần xem/i)
+  })
+  it('maps decision to badge', () => {
+    expect(decisionBadge('approved')).toMatch(/duyệt/i)
+    expect(decisionBadge('rejected')).toMatch(/từ chối/i)
+    expect(decisionBadge('pending')).toMatch(/chưa xem/i)
   })
 })
