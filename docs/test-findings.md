@@ -14,6 +14,7 @@ reference packets by STT / field, not by real values.
 | 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
 | 007 | orphaned processing case | resolved | Reconciled to "error" on CaseStore load; no more perpetual spinner |
 | 008 | name not found on some docs | resolved | Added "Tên tôi là"/"Họ và tên" anchors + scoped "cần xem" fallback |
+| 009 | inconsistent doc segmentation | open | Cam kết / Tra cứu pages fold into "Biên bản" when their title isn't detected |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -219,3 +220,28 @@ the Bản cam kết or the Hợp đồng dịch vụ.
 artifact) to the name anchors, and gave the name a scoped "cần xem" located fallback
 (labeled context only, no prose flood). Verified live on Trần Ứng Hỷ: Họ tên now has
 sources on Hợp đồng (cần xem), Biên bản (read), and Bản cam kết (cần xem).
+
+## 009 — Inconsistent document segmentation (docs fold into "Biên bản")
+
+**Observed:** two 8-page packets with the same 4 underlying documents segment
+differently — Trần Ứng Hỷ → 4 docs (Hợp đồng 4p / Biên bản 2p / Bản cam kết 1p /
+Tra cứu thuế 1p); Huỳnh Thị Thúy Phượng → only 2 docs (Hợp đồng 4p / **Biên bản 4p**
+with the cam kết + tra-cứu pages folded in, so the biên bản's "page 4/4" is actually
+the tax-lookup).
+
+**Cause:** `segment_docs`/`classify_page` starts a new document when it recognizes
+that page's title/heading. When a heading isn't recognized — OCR noise on the title
+band, or the tax-lookup page being a screenshot with a small/nonstandard header —
+the page folds into the preceding document. (Known #003 limitation.)
+
+**Impact:** cosmetic/navigational only — field extraction, matching, packet count,
+and identity are unaffected (fields are found across all pages regardless of doc
+grouping). Only the document TABS are inconsistent (count varies; a page can sit
+under the wrong label).
+
+**Fix direction:** strengthen per-doc-type title detection in `segment_docs` —
+add tra-cứu headings ("bang thong tin tra cuu", "thong tin ve nguoi nop thue",
+"gdt.gov.vn") and cam-kết headings ("ban cam ket", "08/ck-tncn"), tolerant of OCR
+title-band noise; consider light layout cues for the screenshot-style tax page.
+
+**Status:** open — extraction/segmentation quality (pairs with #003).
