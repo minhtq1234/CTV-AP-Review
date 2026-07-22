@@ -14,7 +14,8 @@ reference packets by STT / field, not by real values.
 | 006 | doc-switch focus | resolved | Doc-tab switch re-focuses the selected field's source on the new document |
 | 007 | orphaned processing case | resolved | Reconciled to "error" on CaseStore load; no more perpetual spinner |
 | 008 | name not found on some docs | resolved | Added "Tên tôi là"/"Họ và tên" anchors + scoped "cần xem" fallback |
-| 009 | inconsistent doc segmentation | open | Cam kết / Tra cứu pages fold into "Biên bản" when their title isn't detected |
+| 009 | inconsistent doc segmentation | resolved | Tra-cứu + cam-kết now detected anywhere on page; Phụ lục residual → #010 |
+| 010 | rotated Phụ lục not segmented | open (low) | Rotated SOW appendix OCR-garbled → folds into "Biên bản" |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -244,4 +245,29 @@ add tra-cứu headings ("bang thong tin tra cuu", "thong tin ve nguoi nop thue",
 "gdt.gov.vn") and cam-kết headings ("ban cam ket", "08/ck-tncn"), tolerant of OCR
 title-band noise; consider light layout cues for the screenshot-style tax page.
 
-**Status:** open — extraction/segmentation quality (pairs with #003).
+**Status:** resolved — commit `dd07c85`. `classify_page` gained a full-page marker
+fallback for the two unambiguous doc types: tra-cứu ("bảng thông tin tra cứu",
+"thông tin về người nộp thuế", "gdt.gov.vn", …) and cam-kết ("bản cam kết",
+"08/ck-tncn"), matched anywhere on the page (not just heading lines); the ambiguous
+"biên bản"/"hợp đồng" titles keep the #003 anti-over-split guard. Verified: packet 0
+(Huỳnh Thị Thúy Phượng) 2 → 3 docs (Tra cứu thuế split out); packet 23 unchanged (4).
+**Correction:** packet 0 has no Bản cam kết — its 4th document is a **Phụ lục đánh
+giá chất lượng dịch vụ** (confirmed on p14). Document composition varies per CTV; the
+earlier "same 4 documents" note was a skim error. The Phụ lục residual is tracked as #010.
+
+## 010 — Rotated "Phụ lục" (SOW appendix) not segmented
+
+**Observed:** packet 0's page 14 is a **Phụ lục đánh giá chất lượng dịch vụ** — a
+rotated (90°) SOW/KPI table — which folds into the "Biên bản" tab instead of being
+its own document.
+
+**Cause:** the page is rotated, so 0°-OCR garbles its title/body; `segment_docs`
+can't key on a recognizable heading. (Keyword classification, as used for #009,
+can't recover a title the OCR never produced.)
+
+**Fix direction:** detect page rotation (PyMuPDF/OSD) and re-OCR rotated pages
+upright, or add a layout heuristic (a landscape/rotated page inside a portrait
+packet → "Phụ lục"). Bigger than keyword matching.
+
+**Status:** open (low priority) — cosmetic (tab grouping only; extraction/matching
+unaffected).
