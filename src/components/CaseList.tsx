@@ -1,8 +1,9 @@
-import type { CaseSummary, CaseState } from '../upload/api'
-import { caseProgressLabel } from '../upload/api'
+import type { CaseSummary, CaseState, Progress } from '../upload/api'
+import { caseProgressLabel, progressPct, stageLabel } from '../upload/api'
 
 interface Props {
   cases: CaseSummary[]
+  live?: Record<string, Progress>   // live OCR progress per processing case
   onOpen: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
@@ -26,7 +27,7 @@ function fmtDate(iso: string | null): string {
 
 // The landing screen of the "Tải hồ sơ" mode: every past + in-flight upload as
 // a row (name, date, status, review progress), open to resume, delete to remove.
-export default function CaseList({ cases, onOpen, onNew, onDelete }: Props) {
+export default function CaseList({ cases, live, onOpen, onNew, onDelete }: Props) {
   return (
     <div className="case-list">
       <div className="case-list-head">
@@ -38,23 +39,44 @@ export default function CaseList({ cases, onOpen, onNew, onDelete }: Props) {
         <p className="case-list-empty">Chưa có hồ sơ nào — bấm "+ Tải hồ sơ mới" để bắt đầu.</p>
       ) : (
         <div className="case-rows">
-          {cases.map(c => (
-            <div key={c.id} className="case-row" onClick={() => onOpen(c.id)}>
-              <div className="case-row-main">
-                <span className="case-row-name">{c.name}</span>
-                <span className="case-row-date">{fmtDate(c.createdAt)}</span>
-              </div>
-              <span className={`case-pill ${c.status}`}>{STATUS_LABEL[c.status]}</span>
-              <span className="case-row-progress">{caseProgressLabel(c.progress)}</span>
-              <button
-                className="btn case-row-delete"
-                onClick={e => { e.stopPropagation(); onDelete(c.id) }}
-                title="Xoá hồ sơ"
+          {cases.map(c => {
+            const processing = c.status === 'processing'
+            const lp = live?.[c.id]
+            return (
+              <div
+                key={c.id}
+                className={`case-row${processing ? ' processing' : ''}`}
+                onClick={() => { if (!processing) onOpen(c.id) }}
               >
-                Xoá
-              </button>
-            </div>
-          ))}
+                <div className="case-row-main">
+                  <span className="case-row-name">{c.name}</span>
+                  <span className="case-row-date">{fmtDate(c.createdAt)}</span>
+                </div>
+                <span className={`case-pill ${c.status}`}>{STATUS_LABEL[c.status]}</span>
+                {processing ? (
+                  <div className="case-row-live">
+                    <div className="mini-bar">
+                      <div className="mini-bar-fill" style={{ width: `${lp ? progressPct(lp) : 0}%` }} />
+                    </div>
+                    <span className="case-row-live-text">
+                      {lp && lp.total
+                        ? `gói ${lp.done}/${lp.total}${lp.detail ? ' · ' + lp.detail : ''}`
+                        : stageLabel(lp?.stage ?? 'queued')}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="case-row-progress">{caseProgressLabel(c.progress)}</span>
+                )}
+                <button
+                  className="btn case-row-delete"
+                  onClick={e => { e.stopPropagation(); onDelete(c.id) }}
+                  title="Xoá hồ sơ"
+                >
+                  Xoá
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

@@ -4,24 +4,22 @@ import { listCases, getCase, createCase, setDecision, deleteCase, fetchPacketMan
 import type { CaseSummary, CaseDetail as CaseDetailT, Progress } from '../upload/api'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
-import ProcessingScreen from './ProcessingScreen'
 import CaseDetail from './CaseDetail'
 import FolderReview from './FolderReview'
 
-type Screen = 'list' | 'upload' | 'processing' | 'detail' | 'review'
+type Screen = 'list' | 'upload' | 'detail' | 'review'
 
 const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8000).'
-const DEFAULT_PROGRESS: Progress = { stage: 'queued', done: 0, total: 0, detail: '' }
 
-// The "Tải hồ sơ" mode's screen router: case list (landing) → upload a new
-// submission → watch real processing progress → case detail (packets, review
-// progress) → open a packet into the existing FolderReview, whose duyệt/từ
-// chối now persist to the backend (setDecision) instead of living only in
-// local React state.
+// The "Tải hồ sơ" flow. After an upload we return straight to the case list —
+// processing happens in the background and shows as an inline progress bar on the
+// case's own row (no blocking full-screen spinner). Opening a case → case detail
+// → a packet → the existing FolderReview, whose duyệt/từ chối persist (setDecision).
 export default function UploadFlow() {
   const [screen, setScreen] = useState<Screen>('list')
   const [busy, setBusy] = useState(false)
   const [cases, setCases] = useState<CaseSummary[]>([])
+  const [live, setLive] = useState<Record<string, Progress>>({})
   const [caseId, setCaseId] = useState<string | null>(null)
   const [detail, setDetail] = useState<CaseDetailT | null>(null)
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
@@ -29,42 +27,29 @@ export default function UploadFlow() {
   const [err, setErr] = useState<string | null>(null)
 
   const refreshList = async () => {
-    try {
-      setCases(await listCases())
-    } catch {
-      setErr(CONN_ERR)
-    }
+    try { setCases(await listCases()) } catch { setErr(CONN_ERR) }
   }
 
   const backToList = () => {
-    setScreen('list')
-    setCaseId(null)
-    setDetail(null)
-    setPacketIndex(null)
-    setFolder(null)
-    refreshList()
+    setScreen('list'); setCaseId(null); setDetail(null)
+    setPacketIndex(null); setFolder(null); refreshList()
   }
 
   const openCase = async (id: string) => {
     setErr(null)
     try {
       const d = await getCase(id)
-      setCaseId(id)
-      setDetail(d)
-      setScreen(d.status === 'processing' ? 'processing' : 'detail')
-    } catch {
-      setErr(CONN_ERR)
-    }
+      // A still-processing case has nothing to review yet — keep it on the list,
+      // where its row shows live progress.
+      if (d.status === 'processing') { setScreen('list'); refreshList(); return }
+      setCaseId(id); setDetail(d); setScreen('detail')
+    } catch { setErr(CONN_ERR) }
   }
 
-  // Load the case list on mount and whenever we return to it.
-  useEffect(() => {
-    refreshList()
-  }, [])
+  // Load the list on mount.
+  useEffect(() => { refreshList() }, [])
 
-  // Resume a case via ?case=<id> — a case can take minutes to process (or sit
-  // mid-review for days), so a refresh or a shared link can rejoin it directly
-  // instead of hunting through the list.
+  // Resume a case via ?case=<id> (a shared link or a refresh mid-review).
   useEffect(() => {
     const cid = new URLSearchParams(window.location.search).get('case')
     if (cid) openCase(cid)
@@ -72,76 +57,65 @@ export default function UploadFlow() {
     // eslint-disable-next-line
   }, [])
 
-  const onNew = () => {
-    setErr(null)
-    setScreen('upload')
-  }
+  // While the list is showing, poll it; for any case still processing, pull its
+  // live OCR progress for the inline row bar. The interval stops once nothing is
+  // processing, and is re-armed whenever we (re-)enter the list (e.g. after an
+  // upload, which transitions upload → list).
+  useEffect(() => {
+    if (screen !== 'list') return
+    let cancelled = false
+    let timer: ReturnType<typeof setInterval> | null = null
+    const poll = async () => {
+      try {
+        const list = await listCases()
+        if (cancelled) return
+        setCases(list)
+        const proc = list.filter(c => c.status === 'processing')
+        if (proc.length) {
+          const entries = await Promise.all(proc.map(async c => {
+            try { return [c.id, (await getCase(c.id)).liveProgress] as const }
+            catch { return [c.id, undefined] as const }
+          }))
+          if (cancelled) return
+          setLive(prev => {
+            const next = { ...prev }
+            for (const [id, lp] of entries) if (lp) next[id] = lp
+            return next
+          })
+        } else if (timer) { clearInterval(timer); timer = null }
+      } catch { /* transient poll error — ignore, next tick retries */ }
+    }
+    poll()
+    timer = setInterval(poll, 1500)
+    return () => { cancelled = true; if (timer) clearInterval(timer) }
+  }, [screen])
+
+  const onNew = () => { setErr(null); setScreen('upload') }
 
   const onStart = async (pdf: File, roster?: File) => {
-    setErr(null)
-    setBusy(true)
+    setErr(null); setBusy(true)
     try {
       const { case_id } = await createCase(pdf, roster)
       setCaseId(case_id)
-      setDetail(null)
-      setScreen('processing')
-    } catch {
-      setErr(CONN_ERR)
-    } finally {
-      setBusy(false)
-    }
+      setScreen('list')     // straight back to the list; the new case processes inline
+      refreshList()
+    } catch { setErr(CONN_ERR) } finally { setBusy(false) }
   }
 
   const onDeleteCase = async (id: string) => {
-    try {
-      await deleteCase(id)
-      await refreshList()
-    } catch {
-      setErr(CONN_ERR)
-    }
+    try { await deleteCase(id); await refreshList() } catch { setErr(CONN_ERR) }
   }
-
-  // Poll case status every 800ms while processing; stop once it leaves
-  // "processing" (ready/in_review/done/error) or on unmount.
-  useEffect(() => {
-    if (screen !== 'processing' || !caseId) return
-    let cancelled = false
-
-    const tick = async () => {
-      try {
-        const d = await getCase(caseId)
-        if (cancelled) return
-        setDetail(d)
-        if (d.status === 'error') setErr(d.error ?? 'Lỗi xử lý không rõ nguyên nhân.')
-        else if (d.status !== 'processing') setScreen('detail')
-      } catch {
-        if (!cancelled) setErr(CONN_ERR)
-      }
-    }
-
-    tick()
-    const id = setInterval(tick, 800)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [screen, caseId])
 
   const onOpenPacket = async (index: number) => {
     if (!caseId) return
     try {
       const f = await fetchPacketManifest(caseId, index)
-      setPacketIndex(index)
-      setFolder(f)
-      setScreen('review')
-    } catch {
-      setErr(CONN_ERR)
-    }
+      setPacketIndex(index); setFolder(f); setScreen('review')
+    } catch { setErr(CONN_ERR) }
   }
 
-  // Persist a duyệt/từ chối decision, then either jump straight to the next
-  // unreviewed packet (keeps a reviewer moving through the batch with one
-  // click per packet) or, once every packet is decided, back to case detail.
+  // Persist a duyệt/từ chối decision, then jump to the next unreviewed packet
+  // (keeps the reviewer moving) or back to case detail once all are decided.
   const onDecide = async (decision: 'approved' | 'rejected', rejectReason?: string) => {
     if (!caseId || packetIndex == null) return
     try {
@@ -152,9 +126,7 @@ export default function UploadFlow() {
       const next = pending.find(p => p.index > packetIndex) ?? pending[0]
       if (next) await onOpenPacket(next.index)
       else setScreen('detail')
-    } catch {
-      setErr(CONN_ERR)
-    }
+    } catch { setErr(CONN_ERR) }
   }
 
   if (err) {
@@ -169,15 +141,11 @@ export default function UploadFlow() {
   }
 
   if (screen === 'list') {
-    return <CaseList cases={cases} onOpen={openCase} onNew={onNew} onDelete={onDeleteCase} />
+    return <CaseList cases={cases} live={live} onOpen={openCase} onNew={onNew} onDelete={onDeleteCase} />
   }
 
   if (screen === 'upload') {
     return <UploadScreen onStart={onStart} busy={busy} />
-  }
-
-  if (screen === 'processing') {
-    return <ProcessingScreen progress={detail?.liveProgress ?? DEFAULT_PROGRESS} />
   }
 
   if (screen === 'detail' && detail) {

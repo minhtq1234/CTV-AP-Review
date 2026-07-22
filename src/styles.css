@@ -175,6 +175,13 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .case-row-date { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .case-row-progress { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .case-row-delete { font-size: 12px; padding: 5px 12px; }
+.case-row.processing { cursor: default; }
+.case-row.processing:hover { border-color: var(--border); }
+.case-row-live { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.mini-bar { width: 90px; height: 5px; border-radius: 3px; background: #e6e3d9; overflow: hidden; flex: none; }
+.mini-bar-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+.case-row-live-text { font-size: 12px; color: var(--text-muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
 .case-pill { font-size: 11px; padding: 3px 10px; border-radius: 8px; white-space: nowrap; }
 .case-pill.processing { color: var(--text-muted); background: #f1efe8; }
 .case-pill.ready { color: var(--accent); background: #eaf1fb; }
