@@ -27,6 +27,16 @@ export default function FolderReview({ folder, onUpdate }: Props) {
     else setFocusBbox(null)
   }
 
+  // Switching document by tab (#006): if the currently selected field has a source on the
+  // newly-active document, jump straight to it (same as clicking that source's chip) so
+  // walking a field across its documents is one click per doc, eye always guided. Only clear
+  // the highlight when the field genuinely has no source there.
+  const onSelectDoc = (id: string) => {
+    const idx = folder.fields.find(f => f.key === selectedKey)?.sources.findIndex(s => s.docId === id) ?? -1
+    if (idx >= 0) focusAt(selectedKey, idx)
+    else { setActiveDocId(id); setActivePage(0); setFocusBbox(null) }
+  }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
@@ -70,7 +80,7 @@ export default function FolderReview({ folder, onUpdate }: Props) {
           activePage={activePage}
           focusBbox={focusBbox}
           lockView={lockView}
-          onSelectDoc={id => { setActiveDocId(id); setActivePage(0); setFocusBbox(null) }}
+          onSelectDoc={onSelectDoc}
           onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
           onToggleLock={() => setLockView(v => !v)}
         />
