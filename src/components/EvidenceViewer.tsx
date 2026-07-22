@@ -3,6 +3,7 @@ import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
 import { assetUrl } from '../assets'
+import HotkeyHelp from './HotkeyHelp'
 
 interface Props {
   docs: EvidenceDoc[]
@@ -23,6 +24,7 @@ export default function EvidenceViewer({
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
   const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
   const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
+  const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
   const page = doc.pages[activePage] ?? doc.pages[0]
@@ -74,6 +76,18 @@ export default function EvidenceViewer({
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setShowHighlight(v => !v) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // U5: `?` opens/closes the hotkey reference; Escape closes it if open. Same input-focus guard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) { e.preventDefault(); setShowHelp(v => !v) }
+      else if (e.key === 'Escape') setShowHelp(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -163,8 +177,10 @@ export default function EvidenceViewer({
           <button className={panMode ? 'on' : ''} onClick={() => setPanMode(v => !v)}
             aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
+          <button onClick={() => setShowHelp(v => !v)} aria-label="Danh sách phím tắt" title="Phím tắt (?)">?</button>
         </div>
       </div>
+      <HotkeyHelp open={showHelp} onClose={() => setShowHelp(false)} />
     </section>
   )
 }

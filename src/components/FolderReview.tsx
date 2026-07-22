@@ -88,7 +88,7 @@ export default function FolderReview({ folder, onUpdate }: Props) {
       <ActionBar
         status={folder.status}
         rejectReason={folder.rejectReason}
-        hint="↑↓ chuyển trường · ←→ đổi chứng từ · Alt +/− phóng to"
+        hint="↑↓ chuyển trường · ←→ đổi chứng từ · Alt +/− phóng to · B ẩn/hiện khung · ⌥P di chuyển · ? xem tất cả phím tắt"
         onApprove={() => onUpdate({ ...folder, status: 'approved' })}
         onReject={reason => onUpdate({ ...folder, status: 'rejected', rejectReason: reason })}
       />
