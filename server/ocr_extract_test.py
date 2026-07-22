@@ -579,6 +579,72 @@ def test_classify_page_rejects_long_prose_mentioning_doc_name_in_passing():
     )
     assert classify_page(text) is None
 
+# ---------------------------------------------------------------------------
+# #009: cam-kết/tra-cứu detected via distinctive markers ANYWHERE on the
+# page, when their title isn't a clean heading-shaped line -- without
+# loosening the #003 guard for the ambiguous "biên bản"/"hợp đồng" titles.
+# ---------------------------------------------------------------------------
+
+def test_classify_page_tra_cuu_marker_anywhere_on_noisy_screenshot_page():
+    # Real bug (#009): a tax-portal screenshot's identifying text is often
+    # buried in banner/UI-chrome noise, not a clean short heading line --
+    # this line is 17 words long, far past _TITLE_MAX_WORDS, so the existing
+    # heading-shaped-line check alone would miss it entirely.
+    text = (
+        "some banner chrome misc noise here that is not a clean heading\n"
+        "more noise from the browser toolbar rendering artifacts\n"
+        "Thông tin về người nộp thuế TNCN hiển thị bên dưới đây cho quý khách tra cứu\n"
+        "MST 0123456789 tên người nộp thuế ABC"
+    )
+    assert classify_page(text) == ("pit", "Tra cứu thuế")
+
+def test_classify_page_cam_ket_marker_anywhere_via_form_number():
+    # Real bug (#009): the cam-kết page's own "BẢN CAM KẾT" title sometimes
+    # isn't picked up cleanly (OCR title-band noise); its printed form-number
+    # header ("Mẫu số: 08/CK-TNCN") is a reliable, distinctive fallback.
+    text = (
+        "Mẫu số: 08/CK-TNCN\n"
+        "(Ban hành kèm theo Thông tư số 60/2021/TT-BTC)\n"
+        "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM"
+    )
+    assert classify_page(text) == ("commitment", "Bản cam kết")
+
+def test_classify_page_still_rejects_long_prose_mentioning_bien_ban_after_009_fix():
+    # #009 regression guard: relaxing tra-cứu/cam-kết detection must NOT
+    # loosen the #003 guard for the ambiguous, frequently-repeated "biên
+    # bản"/"hợp đồng" titles -- this long prose mention must still classify
+    # to None (same text as test_classify_page_rejects_long_prose_mentioning_
+    # doc_name_in_passing, re-asserted here as the explicit #009 check).
+    text = (
+        "Theo quy định tại Điều 2 của Biên Bản này, Hợp Đồng sẽ được thanh lý "
+        "hoàn toàn và không bên nào còn nghĩa vụ gì thêm đối với bên còn lại"
+    )
+    assert classify_page(text) is None
+
+def test_segment_docs_detects_cam_ket_and_tra_cuu_via_relaxed_full_page_markers():
+    # Reproduces the real bug end-to-end: a packet whose cam-kết and
+    # tra-cứu pages have no clean heading-shaped title line still segments
+    # into 4 documents (not folding into the preceding Biên bản), while a
+    # contract page's mid-prose mention of "Biên Bản"/"Hợp Đồng" still
+    # doesn't start a false new document (#003 guard intact).
+    pages = [
+        "HỢP ĐỒNG DỊCH VỤ..",
+        "Theo quy định tại Điều 2 của Biên Bản này, Hợp Đồng sẽ được thanh lý "
+        "hoàn toàn và không bên nào còn nghĩa vụ gì thêm đối với bên còn lại",
+        "BIÊN BẢN THANH LÝ HỢP ĐỒNG..",
+        "Nội dung công việc thực hiện trong tháng theo bảng chấm công",
+        # cam-kết page: no clean "BẢN CAM KẾT" heading, only its form-number header
+        "Mẫu số: 08/CK-TNCN\n(Ban hành kèm theo Thông tư số 60/2021/TT-BTC)\n"
+        "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM",
+        # tax-lookup screenshot: identifying text buried in a long line, no short heading
+        "một số dòng banner giao diện trình duyệt không liên quan ở phía trên đây\n"
+        "Thông tin về người nộp thuế TNCN được hiển thị chi tiết ở bên dưới cho quý khách tra cứu",
+    ]
+    docs = segment_docs(pages)
+    assert [d["kind"] for d in docs] == ["contract", "bbnt", "commitment", "pit"]
+    assert [d["pages"] for d in docs] == [[0, 1], [2, 3], [4], [5]]
+
+
 def test_segment_docs_groups_consecutive_pages_by_title():
     docs = segment_docs([
         "HỢP ĐỒNG DỊCH VỤ..", "..body..", "..body..",

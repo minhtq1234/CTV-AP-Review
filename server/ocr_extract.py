@@ -499,6 +499,24 @@ _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
     ("can cuoc cong dan", "id_front", "CCCD"),
 ]
 
+# #009: two document types whose title/heading band is often too noisy or
+# nonstandard for the heading-shaped-line check above to catch reliably --
+# a tax-lookup screenshot's identifying text is frequently buried in banner/
+# UI-chrome noise (not a clean short title line), and a cam-kết's own
+# "BẢN CAM KẾT" heading can get merged/garbled by OCR. Their OWN markers
+# below are distinctive enough to search ANYWHERE on the page -- not just a
+# heading-shaped line -- because they never appear in ordinary contract/
+# biên-bản prose, unlike the ambiguous, frequently-repeated "biên bản"/
+# "hợp đồng" titles that the #003 guard above exists to protect (those stay
+# heading-restricted; this relaxed check is intentionally scoped to just
+# these two marker sets, checked only when the heading-restricted keywords
+# above found nothing -- see `classify_page`).
+_FULL_PAGE_MARKERS: list[tuple[list[str], str, str]] = [
+    (["ban cam ket", "08/ck-tncn", "mau so: 08"], "commitment", "Bản cam kết"),
+    (["bang thong tin tra cuu", "thong tin ve nguoi nop thue", "tra cuu thong tin",
+      "gdt.gov.vn", "co quan thue"], "pit", "Tra cứu thuế"),
+]
+
 # A real document title is a short, standalone heading line (occasionally
 # wrapped across two consecutive short lines, e.g. "BIÊN BẢN" / "NGHIỆM THU
 # VÀ THANH LÝ HỢP ĐỒNG"). Real contract prose constantly *mentions* a
@@ -546,6 +564,13 @@ def classify_page(text: str) -> tuple[str, str] | None:
     avoid false-starting a new document on a boilerplate closing clause).
     Only short, heading-shaped lines are considered (`_title_candidates`),
     so a keyword mentioned in passing within ordinary body prose is ignored.
+
+    #009: if neither pass matches, a last check searches the WHOLE page text
+    -- unrestricted by line length/shape -- for `_FULL_PAGE_MARKERS`, since a
+    tax-lookup screenshot or a cam-kết page's identifying text doesn't always
+    land in a clean heading-shaped line. This stays scoped to just those two
+    marker sets (distinctive enough to be safe anywhere); the ambiguous,
+    frequently-repeated "biên bản"/"hợp đồng" titles above are untouched.
     """
     lines = text.splitlines() or [text]
     top_n = max(1, len(lines) // 3)
@@ -554,6 +579,10 @@ def classify_page(text: str) -> tuple[str, str] | None:
         for kw, kind, label in _PAGE_KEYWORDS:
             if any(kw in c for c in candidates):
                 return kind, label
+    whole_page = _flatten(norm(text))
+    for markers, kind, label in _FULL_PAGE_MARKERS:
+        if any(m in whole_page for m in markers):
+            return kind, label
     return None
 
 
