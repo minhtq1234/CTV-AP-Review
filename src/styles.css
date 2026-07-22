@@ -101,12 +101,8 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .ev-tab { padding: 5px 10px; border: 0.5px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; font-size: 12px; white-space: nowrap; color: var(--text-muted); }
 /* U3: subtle per-kind tint so the available documents stand out from one another; scoped to
    :not(.on) so the active tab always keeps the accent treatment below regardless of kind. */
-.ev-tab.k-id_front:not(.on), .ev-tab.k-id_back:not(.on) { border-color: #c7d7ec; color: #3b6ea5; background: #eef4fb; }
-.ev-tab.k-contract:not(.on) { border-color: #dccdf0; color: #6c4fa0; background: #f3eefb; }
-.ev-tab.k-commitment:not(.on) { border-color: #c3e6d1; color: #2e7d46; background: #eaf7ef; }
-.ev-tab.k-pit:not(.on) { border-color: #ecd7a8; color: #b9770e; background: #fbf1e0; }
-.ev-tab.k-bbnt:not(.on) { border-color: #f0c2d4; color: #b3477a; background: #fbeaf1; }
-.ev-tab.on { border-color: var(--accent); color: var(--accent); background: #eaf1fb; }
+.ev-tab:hover:not(.on) { border-color: var(--accent); color: var(--accent); }
+.ev-tab.on { border-color: var(--accent); color: #fff; background: var(--accent); font-weight: 600; }
 .ev-stage { flex: 1; position: relative; overflow: hidden; background: var(--mat); }
 /* U4: pan mode shows a grab cursor and blocks text selection while dragging the page. */
 .ev-stage.panning { cursor: grab; user-select: none; }
