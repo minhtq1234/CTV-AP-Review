@@ -153,10 +153,35 @@ export default function UploadFlow() {
   }
 
   if (screen === 'review' && folder) {
+    // Prev/next scrub across the whole submission (by list order, regardless of
+    // decision) — distinct from onDecide's auto-advance to the next *pending* packet.
+    const packets = detail?.packets ?? []
+    const pos = packets.findIndex(p => p.index === packetIndex)
+    const prev = pos > 0 ? packets[pos - 1] : null
+    const next = pos >= 0 && pos < packets.length - 1 ? packets[pos + 1] : null
     return (
       <div className="review-flow">
         <div className="review-back-bar">
           <button className="btn" onClick={() => setScreen('detail')}>← Quay lại hồ sơ</button>
+          <div className="review-nav">
+            <button
+              className="btn"
+              disabled={!prev}
+              title={prev ? `Gói trước: ${prev.name || 'chưa khớp tên'}` : undefined}
+              onClick={() => prev && onOpenPacket(prev.index)}
+            >
+              ← Gói trước
+            </button>
+            <span className="review-nav-pos">{pos >= 0 ? `Gói ${pos + 1} / ${packets.length}` : ''}</span>
+            <button
+              className="btn"
+              disabled={!next}
+              title={next ? `Gói sau: ${next.name || 'chưa khớp tên'}` : undefined}
+              onClick={() => next && onOpenPacket(next.index)}
+            >
+              Gói sau →
+            </button>
+          </div>
         </div>
         <FolderReview
           key={packetIndex ?? folder.id}

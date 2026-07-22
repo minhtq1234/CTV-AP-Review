@@ -175,7 +175,14 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .result-actions { margin-top: 18px; }
 
 .review-flow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.review-back-bar { padding: 8px 14px; border-bottom: 0.5px solid var(--border); background: var(--surface); }
+.review-back-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px; border-bottom: 0.5px solid var(--border); background: var(--surface); }
+/* Packet-to-packet nav (prev / position / next) — scrub the whole submission
+   without returning to the case grid. */
+.review-nav { display: flex; align-items: center; gap: 8px; }
+.review-nav-pos { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+  white-space: nowrap; min-width: 60px; text-align: center; }
+.review-nav .btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Case list + case detail ("Tải hồ sơ" landing + packet grid). */
 .case-list { flex: 1; overflow-y: auto; padding: 20px 24px; }
