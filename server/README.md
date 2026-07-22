@@ -17,10 +17,12 @@ than by packet position (a single swap or boundary shift used to mispair a
 packet and cascade to the rest). The matched row fills each field's
 `expected` (`fill_expected`) and the folder's name/product before the
 manifest is written; an unmatched packet is flagged `"roster-unmatched"`
-instead of being silently paired to the wrong row. `jobs.py` runs that
-pipeline on a background thread with progress; `app.py` is the FastAPI
-service that exposes it over HTTP (upload, poll, serve manifests + page
-PNGs) for the frontend's upload flow.
+instead of being silently paired to the wrong row. `cases.py` is the
+persistent `CaseStore` (JSON-on-disk under `data/cases/<id>/`) each upload
+becomes a durable **case** in; `app.py` is the FastAPI service that runs the
+pipeline on a background thread and exposes cases over HTTP (upload, poll,
+serve manifests + page PNGs, save per-packet review decisions) for the
+frontend's upload flow.
 
 ## Running the tests
 
@@ -28,19 +30,19 @@ PNGs) for the frontend's upload flow.
 cd server
 python3 ocr_extract_test.py     # plain-assert, no framework
 python3 pipeline_test.py        # plain-assert, no framework (match_roster, roster indexing)
-python3 jobs_test.py            # plain-assert, no framework
-python3 app_test.py             # the pytest-free subset (rewrite, validation, traversal)
-python3 -m pytest app_test.py -q   # full suite, incl. the two monkeypatch tests
+python3 cases_test.py           # plain-assert, no framework (CaseStore, status/progress)
+python3 app_test.py             # the pytest-free subset (rewrite, validation, traversal, 404s)
+python3 -m pytest app_test.py -q   # full suite, incl. the monkeypatched-pipeline tests
 ```
 
 Only pure logic is unit-tested this way (word scaling/line grouping/bbox
 union/anchor matching/page classification in `ocr_extract`; roster indexing
-and identity matching in `pipeline`; job lifecycle in `jobs`; URL
-rewriting/validation/routing in `app`, with the real pipeline monkeypatched
-out). `ocr_packet`/`run_pipeline`'s I/O layer (PyMuPDF render + pytesseract
-OCR) has no unit test — it wires together already-tested pure logic around
-real PDF/OCR I/O, and is verified by running the real file through the
-server (below).
+and identity matching in `pipeline`; case persistence + status/progress
+recomputation in `cases`; URL rewriting/validation/routing in `app`, with
+the real pipeline monkeypatched out). `ocr_packet`/`run_pipeline`'s I/O
+layer (PyMuPDF render + pytesseract OCR) has no unit test — it wires
+together already-tested pure logic around real PDF/OCR I/O, and is verified
+by running the real file through the server (below).
 
 ## Running the server
 
@@ -55,32 +57,47 @@ service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
 
 ### Endpoints
 
-- `POST /api/jobs` — multipart `pdf` (required) + `roster` (optional
-  `.xlsx`). Saves both into a fresh `tempfile.mkdtemp()` job directory,
-  starts the pipeline on a background thread, returns `{"job_id": "..."}`.
-- `GET /api/jobs/{id}` — `{id, status, progress, result, error}`.
-  `status` is `queued` / `processing` / `done` / `error`; `progress` is
-  `{stage, done, total, detail}` (`stage` goes `"splitting"` -> `"ocr"`,
-  with `done`/`total` counting packets OCR'd and `detail` the current
-  packet's name); `result` (once `done`) is
-  `{"summary": {found, roster_n, matched, auto_merged}, "packets": [...]}`.
-- `GET /api/jobs/{id}/packets/{i}/manifest.json` — that packet's
+- `POST /api/cases` — multipart `pdf` (required) + `roster` (optional
+  `.xlsx`). Creates a case dir under `data/cases/<id>/`, saves both files
+  into it, starts the pipeline on a background thread, returns
+  `{"case_id": "..."}`.
+- `GET /api/cases` — list of `{id, name, createdAt, status, pdfName,
+  progress: {decided, total, flagged}}`, newest first.
+- `GET /api/cases/{id}` — the full case: `{id, name, createdAt, status,
+  pdfName, rosterName, summary, error, packets, progress}` plus, while
+  `status == "processing"`, a `liveProgress: {stage, done, total, detail}`
+  (`stage` goes `"splitting"` -> `"ocr"`). `status` is `processing` /
+  `ready` / `in_review` / `done` / `error`; each packet in `packets[]` has
+  `{index, name, pages, confidence, flags, decision, rejectReason,
+  reviewedAt, ...}` (`decision` is `pending`/`approved`/`rejected`).
+- `PUT /api/cases/{id}/packets/{i}/decision` — body `{"decision": "...",
+  "rejectReason"?: "..."}`. Persists the packet's decision, recomputes the
+  case status, returns `{packet, progress, status}`. 404 for an unknown
+  case, 400 for an invalid `decision`.
+- `DELETE /api/cases/{id}` — removes the case dir + index entry.
+- `GET /api/cases/{id}/packets/{i}/manifest.json` — that packet's
   `CtvFolder` manifest, with every page's `src` rewritten from the on-disk
-  path to `/api/jobs/{id}/packets/{i}/page/{basename}`.
-- `GET /api/jobs/{id}/packets/{i}/page/{name}` — the rendered page PNG.
+  path to `/api/cases/{id}/packets/{i}/page/{basename}`.
+- `GET /api/cases/{id}/packets/{i}/page/{name}` — the rendered page PNG.
   `name` must match `^[A-Za-z0-9_.-]+\.png$` (400 otherwise) — a guard
   against path traversal, since it's joined onto a directory path.
+
+On startup, `CaseStore` scans `data/cases/*/case.json` and rebuilds its
+index from disk, so cases (and saved decisions) survive a backend restart.
 
 ### Example: upload the real file, poll, fetch a manifest
 
 ```bash
 curl -s -F "pdf=@/path/to/scan.pdf" \
         -F "roster=@/path/to/roster.xlsx" \
-        http://127.0.0.1:8000/api/jobs
-# => {"job_id": "..."}
+        http://127.0.0.1:8000/api/cases
+# => {"case_id": "..."}
 
-curl -s http://127.0.0.1:8000/api/jobs/<job_id>       # poll until status == "done"
-curl -s http://127.0.0.1:8000/api/jobs/<job_id>/packets/0/manifest.json
+curl -s http://127.0.0.1:8000/api/cases/<case_id>       # poll until status == "ready"
+curl -s http://127.0.0.1:8000/api/cases/<case_id>/packets/0/manifest.json
+curl -s -X PUT -H 'content-type: application/json' \
+     -d '{"decision":"approved"}' \
+     http://127.0.0.1:8000/api/cases/<case_id>/packets/0/decision
 ```
 
 ## Roster -> field mapping, and packet alignment
@@ -111,13 +128,14 @@ packet is `"unmatched"` — no expected values, no product.
 
 ## PII
 
-The source PDF, roster spreadsheet, and every job directory (manifests,
-page PNGs) this server reads or writes contain real personal data (names,
-CCCD, MST, bank accounts, dates of birth). Job data always lives under a
-per-job `tempfile.mkdtemp()` directory outside the repo — never commit:
+The source PDF, roster spreadsheet, and every case directory (`case.json`,
+manifests, page PNGs) this server reads or writes contain real personal
+data (names, CCCD, MST, bank accounts, dates of birth). All of it lives
+under `server/data/` — gitignored, never committed:
 
+- `server/data/` itself (the whole tree — `.gitignore` has `server/data`),
 - the source PDF or roster spreadsheet,
-- any `manifest.json` or page PNG produced by a job or by
+- any `case.json`, `manifest.json`, or page PNG produced by a case or by
   `render_pages`/`ocr_packet` run offline,
 - ad-hoc driver scripts that point at real files.
 

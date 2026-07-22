@@ -2,9 +2,12 @@
 split -> OCR/extract on a background thread with progress, and serves the
 per-packet CtvFolder manifests + rendered page PNGs the frontend consumes.
 
-Binds 127.0.0.1 only (run via `uvicorn app:app --host 127.0.0.1`); job data
-lives under a per-job `tempfile.mkdtemp()` directory — never inside the repo,
-never committed. See server/README.md for the full PII note.
+Binds 127.0.0.1 only (run via `uvicorn app:app --host 127.0.0.1`). Each
+upload becomes a durable **case** under `server/data/cases/<id>/` (see
+`cases.py`) — unlike the old temp-dir job store, this survives a backend
+restart: `case.json` holds the metadata + per-packet decisions, and
+`packets/<i>/` holds that packet's manifest + rendered pages. Never commit
+`server/data` — see server/README.md for the full PII note.
 """
 from __future__ import annotations
 
@@ -12,14 +15,16 @@ import json
 import os
 import re
 import shutil
-import tempfile
 from copy import deepcopy
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+import threading
 
-from jobs import JobStore, start_job
+from cases import CaseStore, progress_of
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
 
@@ -41,9 +46,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-store = JobStore()
+store = CaseStore(os.path.join(os.path.dirname(__file__), "data", "cases"))
+
+# Live progress while a case is `processing` (not persisted — it's transient
+# and only meaningful for the in-flight run); keyed by case id.
+_progress: dict[str, dict] = {}
 
 _PAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.png$")
+_VALID_DECISIONS = {"pending", "approved", "rejected"}
 
 
 def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
@@ -51,7 +61,7 @@ def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
 
     `ocr_extract.render_pages` writes `src` as an absolute on-disk path (fine
     for the offline/no-server use case); the server instead exposes pages
-    under the job/packet-scoped page endpoint, keyed by basename only.
+    under the case/packet-scoped page endpoint, keyed by basename only.
     """
     out = deepcopy(manifest)
     for doc in out.get("docs", []):
@@ -60,60 +70,108 @@ def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
     return out
 
 
-@app.post("/api/jobs")
-async def post_job(pdf: UploadFile = File(...), roster: UploadFile | None = File(None)):
-    job_dir = tempfile.mkdtemp(prefix="ap-review-job-")
-    pdf_path = os.path.join(job_dir, "input.pdf")
+def _run_case(cid: str, pdf_path: str, roster_path: str | None) -> None:
+    case_dir = store.case_dir(cid)
+
+    def cb(stage: str, done: int, total: int, detail: str) -> None:
+        _progress[cid] = {"stage": stage, "done": done, "total": total, "detail": detail}
+
+    try:
+        result = run_pipeline(pdf_path, roster_path, case_dir, cb)
+        store.set_result(cid, summary=result.get("summary"), packets=result.get("packets", []))
+    except Exception as e:  # noqa: BLE001 - surfaced to the caller via case["error"]
+        store.set_error(cid, str(e))
+    finally:
+        _progress.pop(cid, None)
+
+
+@app.post("/api/cases")
+async def post_case(pdf: UploadFile = File(...), roster: UploadFile | None = File(None)):
+    now = datetime.now(timezone.utc).isoformat()
+    cid = store.create(name=pdf.filename or "case", pdf_name=pdf.filename or "input.pdf",
+                        roster_name=roster.filename if roster is not None else None, now=now)
+    case_dir = store.case_dir(cid)
+
+    pdf_path = os.path.join(case_dir, "input.pdf")
     with open(pdf_path, "wb") as f:
         shutil.copyfileobj(pdf.file, f)
 
     roster_path = None
     if roster is not None:
-        roster_path = os.path.join(job_dir, "roster.xlsx")
+        roster_path = os.path.join(case_dir, "roster.xlsx")
         with open(roster_path, "wb") as f:
             shutil.copyfileobj(roster.file, f)
 
-    jid = store.create(job_dir)
-    start_job(store, jid, pdf_path, roster_path, run=run_pipeline)
-    return {"job_id": jid}
+    t = threading.Thread(target=_run_case, args=(cid, pdf_path, roster_path), daemon=True)
+    t.start()
+    return {"case_id": cid}
 
 
-@app.get("/api/jobs/{jid}")
-async def get_job(jid: str):
-    job = store.get(jid)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return {
-        "id": job["id"],
-        "status": job["status"],
-        "progress": job["progress"],
-        "result": job["result"],
-        "error": job["error"],
-    }
+@app.get("/api/cases")
+async def list_cases():
+    return store.list()
 
 
-@app.get("/api/jobs/{jid}/packets/{i}/manifest.json")
-async def get_manifest(jid: str, i: int):
-    job = store.get(jid)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    path = os.path.join(job["dir"], "packets", str(i), "manifest.json")
+@app.get("/api/cases/{cid}")
+async def get_case(cid: str):
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    out = dict(case)
+    out["progress"] = progress_of(case["packets"])
+    if case["status"] == "processing" and cid in _progress:
+        out["liveProgress"] = _progress[cid]
+    return out
+
+
+class DecisionBody(BaseModel):
+    decision: str
+    rejectReason: str | None = None
+
+
+@app.put("/api/cases/{cid}/packets/{i}/decision")
+async def put_decision(cid: str, i: int, body: DecisionBody):
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    if body.decision not in _VALID_DECISIONS:
+        raise HTTPException(status_code=400, detail="invalid decision")
+    now = datetime.now(timezone.utc).isoformat()
+    updated = store.set_decision(cid, i, body.decision, body.rejectReason, now=now)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    packet = next((p for p in updated["packets"] if p["index"] == i), None)
+    return {"packet": packet, "progress": progress_of(updated["packets"]), "status": updated["status"]}
+
+
+@app.delete("/api/cases/{cid}")
+async def delete_case(cid: str):
+    store.delete(cid)
+    return {"ok": True}
+
+
+@app.get("/api/cases/{cid}/packets/{i}/manifest.json")
+async def get_manifest(cid: str, i: int):
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    path = os.path.join(store.case_dir(cid), "packets", str(i), "manifest.json")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="manifest not found")
     with open(path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    base = f"/api/jobs/{jid}/packets/{i}"
+    base = f"/api/cases/{cid}/packets/{i}"
     return JSONResponse(rewrite_manifest_urls(manifest, base))
 
 
-@app.get("/api/jobs/{jid}/packets/{i}/page/{name}")
-async def get_page(jid: str, i: int, name: str):
+@app.get("/api/cases/{cid}/packets/{i}/page/{name}")
+async def get_page(cid: str, i: int, name: str):
     if not _PAGE_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="invalid page name")
-    job = store.get(jid)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    path = os.path.join(job["dir"], "packets", str(i), name)
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    path = os.path.join(store.case_dir(cid), "packets", str(i), name)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="page not found")
     return FileResponse(path)
