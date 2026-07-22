@@ -15,7 +15,7 @@ reference packets by STT / field, not by real values.
 | 007 | orphaned processing case | resolved | Reconciled to "error" on CaseStore load; no more perpetual spinner |
 | 008 | name not found on some docs | resolved | Added "Tên tôi là"/"Họ và tên" anchors + scoped "cần xem" fallback |
 | 009 | inconsistent doc segmentation | resolved | Tra-cứu + cam-kết now detected anywhere on page; Phụ lục residual → #010 |
-| 010 | rotated Phụ lục not segmented | open (low) | Rotated SOW appendix OCR-garbled → folds into "Biên bản" |
+| 010 | rotated Phụ lục not segmented | resolved | Rotation-aware OCR (OSD) renders rotated pages upright; Phụ lục now its own tab |
 
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
@@ -269,5 +269,15 @@ can't recover a title the OCR never produced.)
 upright, or add a layout heuristic (a landscape/rotated page inside a portrait
 packet → "Phụ lục"). Bigger than keyword matching.
 
-**Status:** open (low priority) — cosmetic (tab grouping only; extraction/matching
-unaffected).
+**Status:** resolved — commit `07f5b07`. Went with the rotation-aware OCR route:
+`detect_page_rotation` runs Tesseract OSD (`image_to_osd`) per page and, when the
+orientation confidence clears a threshold, `_upright_rotation` maps the OSD angle to
+a PIL rotation so `render_pages`/`ocr_words` render + OCR the page **upright**. Once
+upright, the Phụ lục's real title band OCRs cleanly and `classify_page`'s Phụ lục
+full-page markers ("phụ lục", "đánh giá chất lượng dịch vụ", "SOW", "KPI") split it
+into its own document; `'appendix'` added to `EvidenceKind`.
+**Verified live** on the real file (case re-OCR'd with the v3 error roster): packet 0
+(Huỳnh Thị Thúy Phượng) now shows **4 document tabs** — Hợp đồng dịch vụ / Biên bản
+thanh lý hợp đồng / **Phụ lục** / Tra cứu thuế — and the Phụ lục renders **upright and
+fully legible** (title "PHỤ LỤC ĐÁNH GIÁ CHẤT LƯỢNG DỊCH VỤ" + the SOW/KPI table),
+where before it was sideways and folded into "Biên bản". Packet 23 unchanged (4 docs).
