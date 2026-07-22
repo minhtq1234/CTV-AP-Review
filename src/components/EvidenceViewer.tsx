@@ -21,6 +21,7 @@ export default function EvidenceViewer({
   const ref = useRef<HTMLDivElement>(null)
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
+  const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
   const page = doc.pages[activePage] ?? doc.pages[0]
   const nat = { w: page.width, h: page.height }
@@ -62,8 +63,22 @@ export default function EvidenceViewer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom])
+
+  // U2: `B` toggles the highlight overlay — ignored while typing in a text field (same
+  // input-focus guard used by FolderReview's field/document nav).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setShowHighlight(v => !v) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const fit = () => setFrame(loupeFrame(null, nat, vp))
-  const hl = inflated ? boxToViewport(inflated, frame) : null
+  const hl = showHighlight && inflated ? boxToViewport(inflated, frame) : null
   const pageCount = doc.pages.length
 
   return (
@@ -94,6 +109,8 @@ export default function EvidenceViewer({
           <button onClick={() => zoom(0.8)} aria-label="Thu nhỏ">−</button>
           <span>{Math.round(frame.scale * 100)}%</span>
           <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
+          <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
+            aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
         </div>
       </div>
