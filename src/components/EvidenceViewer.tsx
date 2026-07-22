@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
-import { boxToViewport, loupeFrame } from '../logic/loupe'
+import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
 import { assetUrl } from '../assets'
 
 interface Props {
@@ -24,6 +24,14 @@ export default function EvidenceViewer({
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
   const page = doc.pages[activePage] ?? doc.pages[0]
   const nat = { w: page.width, h: page.height }
+  // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
+  // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
+  // keeps a stable reference across re-renders that don't actually change the source bbox
+  // (e.g. a zoom/pan update) -- otherwise the effect below would re-fit the frame on every render.
+  const inflated = useMemo(
+    () => focusBbox ? inflateBbox(focusBbox, 0.2, nat.w, nat.h) : null,
+    [focusBbox, nat.w, nat.h],
+  )
 
   useLayoutEffect(() => {
     const el = ref.current!
@@ -34,8 +42,8 @@ export default function EvidenceViewer({
 
   useLayoutEffect(() => {
     if (lockView || vp.w === 0) return
-    setFrame(loupeFrame(focusBbox, nat, vp))
-  }, [focusBbox, vp.w, vp.h, activeDocId, activePage, lockView])
+    setFrame(loupeFrame(inflated, nat, vp))
+  }, [inflated, vp.w, vp.h, activeDocId, activePage, lockView])
 
   const zoom = useCallback((factor: number) => setFrame(f => {
     const s = Math.max(0.1, Math.min(6, f.scale * factor))
@@ -55,7 +63,7 @@ export default function EvidenceViewer({
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom])
   const fit = () => setFrame(loupeFrame(null, nat, vp))
-  const hl = focusBbox ? boxToViewport(focusBbox, frame) : null
+  const hl = inflated ? boxToViewport(inflated, frame) : null
   const pageCount = doc.pages.length
 
   return (

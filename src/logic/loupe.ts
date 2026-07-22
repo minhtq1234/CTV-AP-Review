@@ -23,6 +23,18 @@ export function loupeFrame(
   return { scale: s, tx: vp.w / 2 - cx * s, ty: vp.h / 2 - cy * s }
 }
 
+// Grow a bbox by `frac` of its own width/height on each side (e.g. 0.2 = 20% larger all
+// round), clamped to the page's natural bounds so the box never runs off the page.
+export function inflateBbox(bbox: Bbox, frac: number, natW: number, natH: number): Bbox {
+  const dx = bbox.width * frac
+  const dy = bbox.height * frac
+  const left = clamp(bbox.x - dx, 0, natW)
+  const top = clamp(bbox.y - dy, 0, natH)
+  const right = clamp(bbox.x + bbox.width + dx, 0, natW)
+  const bottom = clamp(bbox.y + bbox.height + dy, 0, natH)
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
 export function boxToViewport(bbox: Bbox, frame: Frame) {
   return {
     left: frame.tx + bbox.x * frame.scale,
