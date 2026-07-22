@@ -454,6 +454,24 @@ def test_find_name_matches_ten_toi_la_label():
     assert len(hits) == 1
     assert hits[0]["value"] == "Trần Văn A"
 
+def test_find_name_matches_garbled_ten_label_missing_leading_letter():
+    # Real-packet OCR artifact found verifying #008 on an actual scan:
+    # Tesseract dropped the leading "T" of "Tên", reading the printed label
+    # "Tên tôi là:" as "ên tối là:" -- the "en toi la" anchor variant still
+    # catches it (still gated by the same labeled-context guard). The name
+    # value itself was ALSO garbled ("lrần Ung Hy" -- doesn't start
+    # uppercase), so this correctly falls to the "cần xem" unread branch
+    # rather than reporting garbled text as if it were a confident read.
+    hoten_spec = next(s for s in FIELD_SPECS if s["key"] == "hoten")
+    lines = [[
+        W("ên", 10, 50, 20, 18), W("tối", 40, 50, 30, 18), W("là:", 80, 50, 30, 18),
+        W("lrần", 120, 50, 40, 18, conf=40), W("Ung", 165, 50, 35, 18, conf=40), W("Hy", 205, 50, 25, 18, conf=40),
+    ]]
+    hits = find_name(lines, anchors=hoten_spec["anchors"])
+    assert len(hits) == 1
+    assert hits[0]["value"] == ""  # garbled value doesn't pass the name-shape check
+    assert hits[0]["confidence"] == 0.0
+
 def test_find_name_locates_unread_value_on_labeled_line_without_flooding():
     # ALL-CAPS labeled context ("BÊN CUNG ỨNG DỊCH VỤ") but the handwritten
     # name OCR'd as illegible, non-name-shaped tokens -- must still produce

@@ -606,8 +606,13 @@ FIELD_SPECS = [
         # "ten toi la" (Bản cam kết's "Tên tôi là:") and "ho va ten" (generic
         # "Họ và tên" label) added per #008 -- the name was only found on the
         # Biên bản before, missing it on the cam kết and (readably) the contract.
+        # "en toi la" additionally covers a real-packet OCR artifact found
+        # verifying #008 on an actual scan: Tesseract dropped the leading "T"
+        # of "Tên", reading the printed label as "ên tôi là" -- still safely
+        # scoped by the same `_is_labeled_anchor` guard (ALL CAPS or a ':'
+        # label), so it doesn't open the door to unrelated prose.
         "key": "hoten", "label": "Họ tên", "group": "Danh tính", "kind": "name",
-        "anchors": ["ben cung ung dich vu", "ten nguoi nop thue", "ten toi la", "ho va ten"],
+        "anchors": ["ben cung ung dich vu", "ten nguoi nop thue", "ten toi la", "en toi la", "ho va ten"],
         "patterns": [], "roster_key": "name",
     },
     {
