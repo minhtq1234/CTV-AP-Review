@@ -50,6 +50,55 @@ def test_delete_removes_case():
         s.delete(cid)
         assert s.get(cid) is None and s.list() == []
 
+
+def _write_raw_case(root: str, cid: str, status: str, error=None) -> None:
+    """Write a case.json directly to disk (bypassing CaseStore), simulating
+    whatever a previous process last wrote before it died/restarted."""
+    case_dir = os.path.join(root, cid)
+    os.makedirs(case_dir, exist_ok=True)
+    case = {
+        "id": cid, "name": "x", "createdAt": "2026-07-13T00:00:00", "status": status,
+        "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": error,
+        "packets": _pkts(["pending"]) if status not in ("processing",) else [],
+    }
+    with open(os.path.join(case_dir, "case.json"), "w", encoding="utf-8") as f:
+        json.dump(case, f, ensure_ascii=False)
+
+
+def test_reconciles_orphaned_processing_case_to_error_on_load():
+    # #007: a case.json left "processing" by a now-dead process (no live
+    # worker survives a restart) must be reconciled to "error" on the next
+    # CaseStore construction (the startup index rebuild), not loaded as a
+    # perpetual "Đang xử lý…" case.
+    with tempfile.TemporaryDirectory() as d:
+        _write_raw_case(d, "orphan1", status="processing")
+        s = CaseStore(d)
+        case = s.get("orphan1")
+        assert case["status"] == "error"
+        assert case["error"] == "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
+        # persisted back to disk, not just patched in memory
+        reloaded = CaseStore(d).get("orphan1")
+        assert reloaded["status"] == "error"
+        assert reloaded["error"] == "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
+
+
+def test_reconcile_leaves_other_statuses_untouched():
+    # Every other lifecycle status (including a GENUINE pipeline error, whose
+    # own message must not be clobbered by the "interrupted" one) survives a
+    # fresh CaseStore load unchanged.
+    with tempfile.TemporaryDirectory() as d:
+        _write_raw_case(d, "ready1", status="ready")
+        _write_raw_case(d, "review1", status="in_review")
+        _write_raw_case(d, "done1", status="done")
+        _write_raw_case(d, "err1", status="error", error="lỗi thật: sai định dạng PDF")
+
+        s = CaseStore(d)
+        assert s.get("ready1")["status"] == "ready"
+        assert s.get("review1")["status"] == "in_review"
+        assert s.get("done1")["status"] == "done"
+        assert s.get("err1")["status"] == "error"
+        assert s.get("err1")["error"] == "lỗi thật: sai định dạng PDF"
+
 if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f): f(); print(f"  ok {n}")

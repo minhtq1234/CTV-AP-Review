@@ -81,9 +81,20 @@ class CaseStore:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     case = json.load(f)
-                self._idx[cid] = case
             except Exception:  # noqa: BLE001 - skip corrupt/partial files, don't crash startup
                 continue
+            if case.get("status") == "processing":
+                # #007: a case still "processing" on disk has no live worker --
+                # the process that was running its pipeline is gone (this is a
+                # startup index rebuild, not a resume). Reconcile it to a
+                # stale/error state so the list offers delete/retry instead of
+                # showing a perpetual "Đang xử lý…" spinner. Persist it so the
+                # reconciled state survives (not just patched in memory).
+                case["status"] = "error"
+                case["error"] = "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
+                self._write(case)
+            else:
+                self._idx[cid] = case
 
     def _path(self, cid: str) -> str:
         return os.path.join(self.root, cid, "case.json")
