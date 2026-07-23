@@ -35,6 +35,8 @@ against the wrong person's expected values).
   field's document + page.
 - Server **generates + persists** one consolidated report (Markdown + CSV), grouped
   by CTV, and the app previews / copies / downloads it.
+- **Pin the roster value onto the doc view**, next to the focused field, so the
+  roster-vs-document comparison happens at the point of gaze.
 - **Remove** approve/reject semantics.
 
 ## Non-goals (YAGNI)
@@ -119,6 +121,32 @@ object (see backend) on meaningful changes — flag toggled, Done clicked — an
 flushes seen-progress when navigating away from the packet (Back / prev-next /
 Danh sách). This avoids a network call per arrow-key while keeping resume accurate.
 
+## Roster value pinned to the field (doc view)
+
+The reviewer's primary act is comparing the **bảng kê value** against what the
+**document** actually says. Today the roster value lives in the left fields panel, so
+comparing means eye-travel between panes. Instead, pin the roster value onto the doc
+view, at the point of gaze:
+
+- When a field is focused, a **floating callout** on the doc view shows that field's
+  **roster (bảng kê) value** — two lines: a small `Bảng kê — <field label>` header
+  over the **big, high-contrast value**. It shows the roster value **only**, never
+  the OCR'd doc value: the reviewer reads the actual document with their eyes and
+  compares (showing the OCR guess big would bias that).
+- It is **anchored to the highlighted field box** and **tracks it** on zoom/pan,
+  sitting just **above** the box (flips **below** when near the top edge), offset so
+  it never covers the value being read. **Text size is viewport-fixed** — always
+  legible regardless of document zoom.
+- **Fallback (unlocated / handwritten "cần xem" fields, no box on the active doc):**
+  the roster value renders as a **fixed chip in a corner** of the doc pane, so it is
+  still on screen while the reviewer hunts for the value by eye.
+- Only shown when the focused field has a non-empty roster value.
+- **Toggle:** a doc-toolbar button + hotkey **`V`** (default on), **independent** of
+  the box toggle (`B`); added to the `?` hotkey legend and the ActionBar hint.
+- **Implementation:** in `EvidenceViewer` (which already computes the box's viewport
+  rect via `boxToViewport` and owns the toolbar + hotkey pattern). `FolderReview`
+  passes the focused field's `expected` value + label down as props.
+
 ## Submission level + the consolidated report (idea #2)
 
 **Case-detail screen:**
@@ -175,7 +203,9 @@ reconstructed, and there are only a handful of test cases. Noted, not preserved.
 - **Browser verification:** skim a packet (progress fills, Done unlocks only at
   full), flag a field with a note, mark Done → status `cần gửi lại`, export report →
   check grouping and that a `Khớp theo tên` packet shows the identity warning and
-  appears in the report.
+  appears in the report. Confirm the **roster callout** pins next to the focused
+  field, tracks it on zoom/pan, stays legible zoomed out, falls back to a corner chip
+  for an unlocated field, and toggles with `V` independently of `B`.
 
 ## Out of scope
 
