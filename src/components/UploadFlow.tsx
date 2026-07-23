@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { CtvFolder } from '../ctv/types'
-import { listCases, getCase, createCase, setDecision, deleteCase, fetchPacketManifest } from '../upload/api'
-import type { CaseSummary, CaseDetail as CaseDetailT, Progress } from '../upload/api'
+import { listCases, getCase, createCase, setReview, deleteCase, fetchPacketManifest } from '../upload/api'
+import type { CaseSummary, CaseDetail as CaseDetailT, Progress, PacketReview } from '../upload/api'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
 import CaseDetail from './CaseDetail'
@@ -14,7 +14,7 @@ const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backen
 // The "Tải hồ sơ" flow. After an upload we return straight to the case list —
 // processing happens in the background and shows as an inline progress bar on the
 // case's own row (no blocking full-screen spinner). Opening a case → case detail
-// → a packet → the existing FolderReview, whose duyệt/từ chối persist (setDecision).
+// → a packet → the existing FolderReview, whose per-field review state persists (setReview).
 export default function UploadFlow() {
   const [screen, setScreen] = useState<Screen>('list')
   const [busy, setBusy] = useState(false)
@@ -24,6 +24,7 @@ export default function UploadFlow() {
   const [detail, setDetail] = useState<CaseDetailT | null>(null)
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
   const [folder, setFolder] = useState<CtvFolder | null>(null)
+  const [review, setReviewState] = useState<PacketReview>({ done: false, fields: {} })
   const [err, setErr] = useState<string | null>(null)
 
   const refreshList = async () => {
@@ -110,22 +111,24 @@ export default function UploadFlow() {
     if (!caseId) return
     try {
       const f = await fetchPacketManifest(caseId, index)
+      const meta = detail?.packets.find(p => p.index === index)
+      setReviewState(meta?.review ?? { done: false, fields: {} })
       setPacketIndex(index); setFolder(f); setScreen('review')
     } catch { setErr(CONN_ERR) }
   }
 
-  // Persist a duyệt/từ chối decision, then jump to the next unreviewed packet
-  // (keeps the reviewer moving) or back to case detail once all are decided.
-  const onDecide = async (decision: 'approved' | 'rejected', rejectReason?: string) => {
+  // Persist review changes (seen fields, flags, done) as the reviewer works
+  // through a packet, and keep case detail (grid + prev/next + progress) in sync.
+  const flushReview = async (r: PacketReview) => {
     if (!caseId || packetIndex == null) return
     try {
-      await setDecision(caseId, packetIndex, decision, rejectReason)
-      const d = await getCase(caseId)
-      setDetail(d)
-      const pending = d.packets.filter(p => p.decision === 'pending')
-      const next = pending.find(p => p.index > packetIndex) ?? pending[0]
-      if (next) await onOpenPacket(next.index)
-      else setScreen('detail')
+      const res = await setReview(caseId, packetIndex, r)
+      setDetail(d => d && ({
+        ...d,
+        packets: d.packets.map(p => p.index === packetIndex ? res.packet : p),
+        status: res.status,
+        progress: res.progress,
+      }))
     } catch { setErr(CONN_ERR) }
   }
 
@@ -153,12 +156,12 @@ export default function UploadFlow() {
   }
 
   if (screen === 'review' && folder) {
-    // Prev/next scrub across the whole submission (by list order, regardless of
-    // decision) — distinct from onDecide's auto-advance to the next *pending* packet.
+    // Prev/next scrub across the whole submission, by list order.
     const packets = detail?.packets ?? []
     const pos = packets.findIndex(p => p.index === packetIndex)
     const prev = pos > 0 ? packets[pos - 1] : null
     const next = pos >= 0 && pos < packets.length - 1 ? packets[pos + 1] : null
+    const meta = detail?.packets.find(p => p.index === packetIndex)
     return (
       <div className="review-flow">
         <div className="review-back-bar">
@@ -186,11 +189,11 @@ export default function UploadFlow() {
         <FolderReview
           key={packetIndex ?? folder.id}
           folder={folder}
-          onUpdate={f => {
-            setFolder(f)
-            if (f.status === 'approved') onDecide('approved')
-            else if (f.status === 'rejected') onDecide('rejected', f.rejectReason)
-          }}
+          review={review}
+          matchedBy={meta?.matchedBy ?? 'no-roster'}
+          ocrIdentity={meta?.ocrIdentity ?? { cccd: '', name: '' }}
+          rosterIdentity={meta?.rosterIdentity ?? null}
+          onReview={r => { setReviewState(r); flushReview(r) }}
         />
       </div>
     )
