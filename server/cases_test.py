@@ -120,6 +120,22 @@ def test_reconcile_leaves_other_statuses_untouched():
         assert s.get("err1")["status"] == "error"
         assert s.get("err1")["error"] == "lỗi thật: sai định dạng PDF"
 
+def test_load_migrates_old_decision_packets(tmp_path):
+    cid = "old"
+    d = tmp_path / cid
+    d.mkdir()
+    old = {"id": cid, "name": "x", "createdAt": None, "status": "in_review",
+           "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": None,
+           "packets": [{"index": 0, "confidence": "green",
+                        "decision": "approved", "rejectReason": None, "reviewedAt": "t"}]}
+    (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
+    store = CaseStore(str(tmp_path))
+    p = store.get(cid)["packets"][0]
+    assert p["review"] == {"done": False, "fields": {}}
+    assert "decision" not in p and "rejectReason" not in p and "reviewedAt" not in p
+    assert p["matchedBy"] == "no-roster"
+
+
 if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f): f(); print(f"  ok {n}")

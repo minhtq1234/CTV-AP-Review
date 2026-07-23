@@ -104,7 +104,26 @@ class CaseStore:
                 case["error"] = "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
                 self._write(case)
             else:
-                self._idx[cid] = case
+                # #Task2: migrate legacy packets (pre-review-model, i.e. before
+                # the `decision`/`rejectReason`/`reviewedAt` fields were
+                # replaced by `review={"done","fields"}` + match meta) so
+                # cases persisted before that change don't crash the new
+                # code. Only touches packets actually missing `review`
+                # (idempotent — a second load is a no-op).
+                changed = False
+                for p in case.get("packets", []):
+                    if "review" not in p:
+                        p["review"] = {"done": False, "fields": {}}
+                        for k in ("decision", "rejectReason", "reviewedAt"):
+                            p.pop(k, None)
+                        p.setdefault("matchedBy", "no-roster")
+                        p.setdefault("ocrIdentity", {"cccd": "", "name": ""})
+                        p.setdefault("rosterIdentity", None)
+                        changed = True
+                if changed:
+                    self._write(case)   # persist migration (also indexes)
+                else:
+                    self._idx[cid] = case
 
     def _path(self, cid: str) -> str:
         return os.path.join(self.root, cid, "case.json")
