@@ -20,6 +20,7 @@ _SPLITTER_DIR = os.path.join(_REPO_ROOT, "splitter")
 if _SPLITTER_DIR not in sys.path:
     sys.path.insert(0, _SPLITTER_DIR)
 
+import checklist  # noqa: E402
 import detect_packets as dp  # noqa: E402
 import ocr_extract as oc  # noqa: E402
 
@@ -265,6 +266,13 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
         fields = fill_expected(result["folder"]["fields"], row)
         folder_id = oc._slug(p.name or f"packet-{p.index}")
         manifest = oc.build_manifest(folder_id, p.name or "", product, result["folder"]["docs"], fields)
+        manifest["checks"] = checklist.build_checklist(
+            fields,
+            {"matchedBy": how,
+             "ocrIdentity": {"cccd": identity.get("cccd", ""), "name": identity.get("name", "")},
+             "rosterIdentity": ({"cccd": row.get("cccd", ""), "name": row.get("name", "")} if row is not None else None)},
+            result["folder"]["docs"],
+        )
         with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
 
