@@ -38,3 +38,20 @@ def test_identity_and_confirm_kinds():
 def test_weak_match_identity_is_review():
     c = _by_code(build_checklist(FIELDS, {**MATCH, "matchedBy": "name"}, DOCS))
     assert c["G-ID"]["autostatus"] == "review"
+
+def test_name_with_D_stroke_matches():
+    fields = [{"key": "name", "label": "Họ và tên", "expected": "Đặng Văn Đức",
+               "sources": [{"docId": "contract", "page": 0, "value": "ĐẶNG VĂN ĐỨC",
+                            "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]}]
+    c = {x["code"]: x for x in build_checklist(fields, MATCH, DOCS)}
+    assert c["B1"]["autostatus"] == "match"
+
+def test_contract_routed_checks_fall_back_to_first_doc():
+    docs = [{"id": "only", "kind": "bbnt", "label": "x"}]  # no doc tagged 'contract'
+    c = {x["code"]: x for x in build_checklist(FIELDS, MATCH, docs)}
+    assert c["B3"]["evidenceDocId"] == "only"   # contract fallback -> first doc
+    # B2 ("phi") has sources: [] in FIELDS, so src is None and the _VALUE loop's
+    # fallback branch is exercised. B1 ("name") hardcodes sources[0].docId ==
+    # "contract" in FIELDS, which always wins the `or` short-circuit regardless
+    # of the fallback fix, so it can't discriminate this behavior.
+    assert c["B2"]["evidenceDocId"] == "only"

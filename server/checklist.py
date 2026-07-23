@@ -4,8 +4,11 @@ pipeline calls this and writes the result into each packet's manifest under `che
 from __future__ import annotations
 import re, unicodedata
 
+_DIACRITIC_SPECIAL = {"đ": "d", "Đ": "D"}
+
 def _norm(s: str) -> str:
-    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(_DIACRITIC_SPECIAL.get(ch, ch) for ch in (s or ""))
+    s = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in s if not unicodedata.combining(ch)).casefold().strip()
 
 def _digits(s: str) -> str:
@@ -61,7 +64,7 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                    "autostatus": "match" if matched_by == "cccd" else "review"})
     for code, label, kind_doc in _CONFIRM_GATES:
         checks.append({"code": code, "label": label, "tier": "gate", "kind": "confirm",
-                       "evidenceDocId": _doc_by_kind(docs, kind_doc),
+                       "evidenceDocId": contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc),
                        "reference": None, "source": None, "autostatus": None})
 
     for code, label, kind_doc, fkey in _VALUE:
@@ -70,7 +73,7 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
             continue
         src = (f.get("sources") or [None])[0]
         checks.append({"code": code, "label": label, "tier": "detail", "kind": "value",
-                       "evidenceDocId": (src or {}).get("docId") or _doc_by_kind(docs, kind_doc),
+                       "evidenceDocId": (src or {}).get("docId") or (contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)),
                        "reference": f.get("expected", ""), "source": src,
                        "autostatus": _autostatus(f.get("expected", ""), src)})
     for code, label, kind_doc in _CONFIRM_DETAIL:
