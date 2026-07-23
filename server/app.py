@@ -170,7 +170,7 @@ async def get_report_md(cid: str):
     path = os.path.join(store.case_dir(cid), "report.md")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="report not generated")
-    return FileResponse(path, media_type="text/markdown")
+    return FileResponse(path, media_type="text/markdown", filename="bao-cao.md")
 
 
 @app.get("/api/cases/{cid}/report.csv")
@@ -178,7 +178,7 @@ async def get_report_csv(cid: str):
     path = os.path.join(store.case_dir(cid), "report.csv")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="report not generated")
-    return FileResponse(path, media_type="text/csv")
+    return FileResponse(path, media_type="text/csv", filename="bao-cao.csv")
 
 
 @app.delete("/api/cases/{cid}")

@@ -27,7 +27,8 @@ export default function ReportPanel({ caseId, onClose }: Props) {
             <div className="report-actions">
               <button className="btn" onClick={() => {
                 navigator.clipboard.writeText(report.markdown)
-                setCopied(true); setTimeout(() => setCopied(false), 1500)
+                  .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
+                  .catch(() => setErr('Không sao chép được — hãy chọn và copy thủ công.'))
               }}>{copied ? 'Đã sao chép' : 'Sao chép (Markdown)'}</button>
               <a className="btn" href={urls.md} download={`bao-cao-${caseId}.md`}>Tải .md</a>
               <a className="btn" href={urls.csv} download={`bao-cao-${caseId}.csv`}>Tải .csv</a>

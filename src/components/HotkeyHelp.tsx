@@ -7,6 +7,8 @@ const ROWS: { keys: string; desc: string }[] = [
   { keys: '← / →', desc: 'Đổi chứng từ (nguồn) của trường đang chọn' },
   { keys: 'Alt + / Alt −', desc: 'Phóng to / thu nhỏ' },
   { keys: 'B', desc: 'Ẩn / hiện khung tô sáng' },
+  { keys: 'F', desc: 'Đánh dấu trường cần gửi lại' },
+  { keys: 'V', desc: 'Ẩn/hiện giá trị bảng kê trên chứng từ' },
   { keys: 'Option/Alt + P', desc: 'Bật/tắt di chuyển (pan) — kéo để di chuyển tài liệu' },
   { keys: '🔒', desc: 'Khoá khung nhìn (giữ nguyên khi đổi trường/chứng từ)' },
   { keys: '?', desc: 'Hiện / ẩn danh sách phím tắt này' },
