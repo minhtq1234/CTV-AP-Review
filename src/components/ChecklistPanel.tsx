@@ -9,36 +9,19 @@ interface Props {
   onToggleFlag: (code: string, flag: FieldFlag | null) => void
 }
 
-type RowStatus = 'ok' | 'bad' | 'review' | 'flag'
+// Three reviewer-progress states only. The tool does NOT surface its own auto-compare
+// guess in the status column: the reviewer validates with their own eyes, and the column
+// tracks what THEY did — not looked at yet (blank) / looked at / flagged for resubmission.
+type RowStatus = 'unseen' | 'seen' | 'flag'
 
-function rowStatus(c: CheckItem, ir?: { seen: boolean; flag: FieldFlag | null }): RowStatus {
+function rowStatus(ir?: { seen: boolean; flag: FieldFlag | null }): RowStatus {
   if (ir?.flag) return 'flag'
-  if (c.kind === 'confirm') return ir?.seen ? 'ok' : 'review'
-  // value / identity: driven by the autostatus hint
-  return c.autostatus === 'match' ? 'ok' : c.autostatus === 'mismatch' ? 'bad' : 'review'
+  return ir?.seen ? 'seen' : 'unseen'
 }
 
-const DOT_GLYPH: Record<RowStatus, string> = { ok: '✓', bad: '✗', review: '●', flag: '⚑' }
-
-// Right-side status word. Gates never actually surface "bad" (their kind is always
-// confirm/identity -- a value mismatch can't happen -- see server/checklist.py) but the
-// map stays total so the lookup below never needs a fallback branch. Detail splits by
-// kind: a value compare ("Khớp"/"Lệch") vs a plain sighted confirm ("Đạt").
-const GATE_WORD: Record<RowStatus, string> = { ok: 'Đạt', bad: 'Cần xem', review: 'Cần xem', flag: 'Đã đánh dấu' }
-const DETAIL_VALUE_WORD: Record<RowStatus, string> = { ok: 'Khớp', bad: 'Lệch', review: 'Cần xem', flag: 'Đã đánh dấu' }
-const DETAIL_CONFIRM_WORD: Record<RowStatus, string> = { ok: 'Đạt', bad: 'Cần xem', review: 'Cần xem', flag: 'Đã đánh dấu' }
-
-function statusWord(c: CheckItem, status: RowStatus): string {
-  if (c.tier === 'gate') return GATE_WORD[status]
-  return c.kind === 'value' ? DETAIL_VALUE_WORD[status] : DETAIL_CONFIRM_WORD[status]
-}
-
-// The little match hint next to "Bảng kê: {reference}" on value rows always reflects the
-// raw auto-compare, independent of a reviewer flag -- .match-hint only has ok/bad/review
-// variants (no "flag" one), unlike the flag-aware .check-status word above.
-function valueHintStatus(c: CheckItem): 'ok' | 'bad' | 'review' {
-  return c.autostatus === 'match' ? 'ok' : c.autostatus === 'mismatch' ? 'bad' : 'review'
-}
+// State lives entirely in the dot glyph — hollow ring (chưa xem) / ✓ (đã xem) / ⚑ (đã
+// đánh dấu). No redundant text label beside it.
+const DOT_GLYPH: Record<RowStatus, string> = { unseen: '', seen: '✓', flag: '⚑' }
 
 const FLAG_REASONS = ['sai', 'thiếu', 'mờ, không đọc được']
 
@@ -48,23 +31,24 @@ export default function ChecklistPanel({ checks, review, selectedCode, onSelect,
   const total = checks.length
   const seen = checks.filter(c => review.items[c.code]?.seen).length
   const pct = total ? Math.round((seen / total) * 100) : 0
-  const allGatesOk = gates.length > 0 && gates.every(g => rowStatus(g, review.items[g.code]) === 'ok')
+  // "Đủ điều kiện" = every precondition has been looked at and none flagged.
+  const allGatesOk = gates.length > 0 && gates.every(g => {
+    const ir = review.items[g.code]
+    return !!ir?.seen && !ir.flag
+  })
 
   const row = (c: CheckItem) => {
     const ir = review.items[c.code]
-    const status = rowStatus(c, ir)
+    const status = rowStatus(ir)
     const sel = c.code === selectedCode
     const flagged = !!ir?.flag
-    const hint = valueHintStatus(c)
     return (
       <div key={c.code} className={`check-row ${sel ? 'on' : ''}`} onClick={() => onSelect(c.code)}>
         <span className={`check-dot ${status}`}>{DOT_GLYPH[status]}</span>
         <div className="check-main">
           <div className="check-label">{c.label}</div>
           {c.kind === 'value' && (
-            <div className="check-sub">
-              Bảng kê: {c.reference} · <span className={`match-hint ${hint}`}>{DETAIL_VALUE_WORD[hint]}</span>
-            </div>
+            <div className="check-sub">Bảng kê: {c.reference}</div>
           )}
           {flagged && sel && (
             <div className="flag-editor" onClick={e => e.stopPropagation()}>
@@ -81,13 +65,12 @@ export default function ChecklistPanel({ checks, review, selectedCode, onSelect,
             </div>
           )}
         </div>
-        <span className="check-status">{statusWord(c, status)}</span>
         <button className={`flag-btn ${flagged ? 'on' : ''}`}
           title="Đánh dấu cần gửi lại"
           onClick={e => {
             e.stopPropagation()
             onToggleFlag(c.code, flagged ? null : { reason: '', note: '' })
-          }}>{flagged ? 'Đã đánh dấu' : '⚑ Đánh dấu'}</button>
+          }}>{flagged ? 'Bỏ đánh dấu' : '⚑ Đánh dấu'}</button>
       </div>
     )
   }
