@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
+import { calloutAnchor } from '../logic/review'
 import { assetUrl } from '../assets'
 import HotkeyHelp from './HotkeyHelp'
 
@@ -14,15 +15,19 @@ interface Props {
   onSelectDoc: (id: string) => void
   onSelectPage: (page: number) => void
   onToggleLock: () => void
+  rosterLabel?: string        // focused field label, e.g. "Số CCCD"
+  rosterValue?: string | null // focused field's expected (bảng kê) value
 }
 
 export default function EvidenceViewer({
   docs, activeDocId, activePage, focusBbox, lockView, onSelectDoc, onSelectPage, onToggleLock,
+  rosterLabel, rosterValue,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
   const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
+  const [showRoster, setShowRoster] = useState(true) // pin roster value callout, toggled by V
   const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
   const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
@@ -76,6 +81,19 @@ export default function EvidenceViewer({
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setShowHighlight(v => !v) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // `V` toggles the roster (bảng kê) value callout — independent of the `B` box toggle above,
+  // same input-focus guard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (e.key === 'v' || e.key === 'V') { e.preventDefault(); setShowRoster(v => !v) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -138,6 +156,9 @@ export default function EvidenceViewer({
 
   const fit = () => setFrame(loupeFrame(null, nat, vp))
   const hl = showHighlight && inflated ? boxToViewport(inflated, frame) : null
+  // Roster callout anchors off the field box regardless of the `B` highlight toggle — `V` is
+  // an independent on/off switch, so it must not depend on `hl` (which goes null when B is off).
+  const rosterBox = inflated ? boxToViewport(inflated, frame) : null
   const pageCount = doc.pages.length
 
   return (
@@ -158,6 +179,26 @@ export default function EvidenceViewer({
         </div>
         {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
+        {showRoster && rosterValue && (
+          rosterBox
+            ? (() => {
+                const CALLOUT_H = 52
+                const a = calloutAnchor(rosterBox, CALLOUT_H, vp.h)
+                return (
+                  <div className={`roster-callout ${a.placement}`} style={{ left: a.left, top: a.top }}>
+                    <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                    <div className="roster-callout-val">{rosterValue}</div>
+                  </div>
+                )
+              })()
+            : (
+                <div className="roster-callout corner">
+                  <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                  <div className="roster-callout-val">{rosterValue}</div>
+                </div>
+              )
+        )}
+
         {pageCount > 1 && (
           <div className="doc-pager">
             <button disabled={activePage === 0} onClick={() => onSelectPage(activePage - 1)} aria-label="Trang trước">‹</button>
@@ -173,6 +214,8 @@ export default function EvidenceViewer({
           <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
           <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
             aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>
+          <button className={showRoster ? 'on' : ''} onClick={() => setShowRoster(v => !v)}
+            aria-label="Ẩn/hiện giá trị bảng kê" title="Giá trị bảng kê (V)">🏷</button>
           <button className={panMode ? 'on' : ''} onClick={() => setPanMode(v => !v)}
             aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
