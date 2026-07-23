@@ -1,33 +1,30 @@
-import { useState } from 'react'
-import type { CaseStatus } from '../types'
+interface ActionBarProps {
+  done: boolean
+  seenCount: number
+  total: number
+  hint?: string
+  onFinish: () => void
+}
 
-interface ActionBarProps { status: CaseStatus; rejectReason?: string; hint?: string; onApprove: () => void; onReject: (reason: string) => void }
-
-export default function ActionBar({ status, rejectReason, hint, onApprove, onReject }: ActionBarProps) {
-  const [rejecting, setRejecting] = useState(false)
-  const [reason, setReason] = useState('')
-
-  if (status !== 'pending') {
+export default function ActionBar({ done, seenCount, total, hint, onFinish }: ActionBarProps) {
+  const remaining = total - seenCount
+  const canFinish = remaining <= 0
+  if (done) {
     return (
       <div className="action-bar">
-        <span className={`final ${status}`}>
-          {status === 'approved' ? '✓ Đã phê duyệt' : '✗ Đã từ chối'}
-          {status === 'rejected' && rejectReason ? <span className="final-reason"> — {rejectReason}</span> : null}
-        </span>
+        <span className="final approved">✓ Đã xem xong</span>
       </div>
     )
   }
-
   return (
     <div className="action-bar">
-      <span className="hint">{hint ?? '↑ ↓ chuyển trường · ⌘K nhảy nhanh'}</span>
+      <span className="hint">{hint ?? '↑↓ chuyển trường'}</span>
       <div className="actions">
-        {rejecting && (
-          <input className="reason" autoFocus placeholder="Lý do (tuỳ chọn)"
-            value={reason} onChange={e => setReason(e.target.value)} />
-        )}
-        <button className="btn" onClick={() => (rejecting ? onReject(reason) : setRejecting(true))}>✗ Từ chối</button>
-        <button className="btn primary" onClick={onApprove}>✓ Phê duyệt</button>
+        <span className="seen-progress">{seenCount}/{total} đã xem</span>
+        <button className="btn primary" disabled={!canFinish} onClick={onFinish}
+          title={canFinish ? 'Đánh dấu đã xem xong' : `Còn ${remaining} trường chưa xem`}>
+          ✓ Xong
+        </button>
       </div>
     </div>
   )
