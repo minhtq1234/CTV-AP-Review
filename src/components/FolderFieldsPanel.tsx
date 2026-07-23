@@ -2,6 +2,7 @@ import type { Verdict } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import type { FieldVerdict, RankedCtv } from '../ctv/checks'
 import { counts } from '../ctv/checks'
+import type { PacketReview, FieldFlag } from '../upload/api'
 
 interface Props {
   ranked: RankedCtv[]
@@ -9,6 +10,8 @@ interface Props {
   selectedKey: string
   onSelect: (key: string) => void
   onFocusSource: (fieldKey: string, sourceIdx: number) => void
+  review: PacketReview
+  onToggleFlag: (fieldKey: string, flag: FieldFlag | null) => void
 }
 
 // Field-level chip: the 4 hint verdicts, plus the neutral "review" state (#004) -- a field
@@ -30,9 +33,11 @@ const SRC_CHIP: Record<Verdict, { cls: string; glyph: string }> = {
   match: { cls: 'v-match', glyph: '✓' },
 }
 
-export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect, onFocusSource }: Props) {
+export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect, onFocusSource, review, onToggleFlag }: Props) {
   const c = counts(ranked)
   const label = (id: string) => docs.find(d => d.id === id)?.label ?? id
+  const total = ranked.length
+  const seen = ranked.filter(r => review.fields[r.field.key]?.seen).length
   return (
     <aside className="fields-pane">
       <div className="fields-summary">
@@ -40,6 +45,7 @@ export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect,
         {c.mismatch > 0 && <span className="s-mismatch">● {c.mismatch} lệch</span>}
         {c.review > 0 && <span className="s-review">● {c.review} cần xem</span>}
         {c.low_conf > 0 && <span className="s-low">● {c.low_conf} tin cậy thấp</span>}
+        <span className="seen-progress">{seen}/{total} đã xem</span>
       </div>
       {ranked.map(r => {
         const chip = FIELD_CHIP[r.verdict]
@@ -47,11 +53,35 @@ export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect,
         return (
           <div key={r.field.key} className={`cfield ${sel ? 'sel' : ''}`} onClick={() => onSelect(r.field.key)}>
             <div className="cfield-head">
+              <span className={`seen-dot ${review.fields[r.field.key]?.seen ? 'on' : ''}`} />
               <span className={`chip ${chip.cls}`}>{chip.glyph}</span>
               <span className="flabel">{r.field.label}</span>
               <span className="ftag">{r.field.group}</span>
+              <button className={`flag-btn ${review.fields[r.field.key]?.flag ? 'on' : ''}`}
+                title="Đánh dấu cần gửi lại (F)"
+                onClick={e => {
+                  e.stopPropagation()
+                  const cur = review.fields[r.field.key]?.flag
+                  onToggleFlag(r.field.key, cur ? null : { reason: '', note: '' })
+                }}>⚑</button>
             </div>
             <div className="cfield-exp">Kê khai (Excel): <b>{r.field.expected}</b></div>
+            {review.fields[r.field.key]?.flag && sel && (
+              <div className="flag-editor" onClick={e => e.stopPropagation()}>
+                <div className="flag-reasons">
+                  {['sai', 'thiếu', 'mờ, không đọc được'].map(rs => (
+                    <button key={rs}
+                      className={review.fields[r.field.key]!.flag!.reason === rs ? 'on' : ''}
+                      onClick={() => onToggleFlag(r.field.key,
+                        { ...review.fields[r.field.key]!.flag!, reason: rs })}>{rs}</button>
+                  ))}
+                </div>
+                <input className="flag-note" placeholder="Ghi chú (tuỳ chọn)"
+                  value={review.fields[r.field.key]!.flag!.note}
+                  onChange={e => onToggleFlag(r.field.key,
+                    { ...review.fields[r.field.key]!.flag!, note: e.target.value })} />
+              </div>
+            )}
             {r.sources.length > 0 && (
               <div className="cfield-src">
                 <span className="cfield-src-lbl">Đối chiếu:</span>

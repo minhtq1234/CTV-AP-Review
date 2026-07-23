@@ -236,3 +236,15 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .roster-callout.corner { left: 12px !important; top: 12px !important; }
 .roster-callout-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .85; }
 .roster-callout-val { font-size: 20px; font-weight: 700; line-height: 1.15; word-break: break-word; }
+
+.seen-progress { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.seen-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border); flex: none; }
+.seen-dot.on { background: var(--accent); border-color: var(--accent); }
+.flag-btn { margin-left: 6px; border: none; background: none; cursor: pointer; opacity: .4; }
+.flag-btn.on { opacity: 1; color: #c5221f; }
+.flag-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.flag-reasons { display: flex; gap: 6px; flex-wrap: wrap; }
+.flag-reasons button { font-size: 11px; padding: 2px 8px; border: 0.5px solid var(--border);
+  border-radius: 10px; background: var(--surface); cursor: pointer; }
+.flag-reasons button.on { background: #fce8e6; color: #c5221f; border-color: #c5221f; }
+.flag-note { font-size: 12px; padding: 4px 8px; border: 0.5px solid var(--border); border-radius: 6px; }
