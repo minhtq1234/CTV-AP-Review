@@ -106,7 +106,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
       </div>
       <ActionBar done={review.done} seenCount={seenCount} total={codes.length}
         hint="↑↓ mục · ←→ tài liệu · F đánh dấu · B khung · V bảng kê · ⌥P di chuyển · ? phím tắt"
-        onFinish={() => { if (allSeen(review, codes)) onReview({ ...review, done: true }) }} />
+        onFinish={() => { if (codes.length > 0 && allSeen(review, codes)) onReview({ ...review, done: true }) }} />
     </div>
   )
 }

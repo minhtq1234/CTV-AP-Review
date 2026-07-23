@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import threading
 
+import checklist
 from cases import CaseStore, progress_of
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
@@ -197,6 +198,20 @@ async def get_manifest(cid: str, i: int):
         raise HTTPException(status_code=404, detail="manifest not found")
     with open(path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
+    if not manifest.get("checks"):
+        # Pre-v2 manifest (OCR'd before the coded checklist existed) --
+        # build it on the fly from this manifest's own fields/docs + the
+        # packet's match meta rather than serving (and having the reviewer
+        # render) an empty checklist. Not persisted back to disk: cheap
+        # + pure, so recomputing per GET is simpler than a migration.
+        packet = next((p for p in case["packets"] if p["index"] == i), {})
+        manifest["checks"] = checklist.build_checklist(
+            manifest.get("fields", []),
+            {"matchedBy": packet.get("matchedBy", "no-roster"),
+             "ocrIdentity": packet.get("ocrIdentity") or {"cccd": "", "name": ""},
+             "rosterIdentity": packet.get("rosterIdentity")},
+            manifest.get("docs", []),
+        )
     base = f"/api/cases/{cid}/packets/{i}"
     return JSONResponse(rewrite_manifest_urls(manifest, base))
 

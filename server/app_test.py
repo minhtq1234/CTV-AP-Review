@@ -1,3 +1,6 @@
+import json
+import os
+
 from fastapi.testclient import TestClient
 import app as appmod
 from app import app, rewrite_manifest_urls
@@ -85,6 +88,41 @@ def test_report_404_before_generation(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get(f"/api/cases/{cid}/report.md").status_code == 404
     assert c.get(f"/api/cases/{cid}/report.csv").status_code == 404
+
+def test_get_manifest_backfills_checks_when_missing(tmp_path, monkeypatch):
+    """Manifests OCR'd before the coded-checklist feature landed have no
+    `checks` array on disk. `_ready_case`'s fake pipeline (unlike the real
+    one) never writes a manifest.json at all, so we seed one ourselves --
+    with `fields`/`docs` but deliberately no `checks` -- to stand in for a
+    pre-existing on-disk manifest, then strip `checks` the same way a real
+    migration would before writing it back. GET must build the checklist
+    on the fly rather than serving (and the UI rendering) an empty one."""
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    packet_dir = os.path.join(appmod.store.case_dir(cid), "packets", "0")
+    os.makedirs(packet_dir, exist_ok=True)
+    manifest_path = os.path.join(packet_dir, "manifest.json")
+    manifest = {
+        "id": "p0", "name": "Nguyễn Văn A", "product": "",
+        "docs": [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ", "pages": []}],
+        "fields": [{"key": "hoten", "expected": "Nguyễn Văn A", "sources": []}],
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    # Simulate a pre-v2 manifest: load it back and strip `checks` (a no-op
+    # here since we never set it, but this is the shape a real migration --
+    # or an old manifest that predates the field -- would take).
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        on_disk = json.load(f)
+    on_disk.pop("checks", None)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(on_disk, f, ensure_ascii=False, indent=2)
+
+    r = c.get(f"/api/cases/{cid}/packets/0/manifest.json")
+    assert r.status_code == 200
+    checks = r.json()["checks"]
+    assert len(checks) > 0
+    assert checks[0]["code"] == "G-DOC"
 
 if __name__ == "__main__":
     # minimal manual runner (monkeypatch/tmp_path tests need pytest; run those with: python3 -m pytest server/app_test.py)

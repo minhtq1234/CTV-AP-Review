@@ -48,7 +48,7 @@ export default function ChecklistPanel({ checks, review, selectedCode, onSelect,
   const total = checks.length
   const seen = checks.filter(c => review.items[c.code]?.seen).length
   const pct = total ? Math.round((seen / total) * 100) : 0
-  const allGatesOk = gates.every(g => rowStatus(g, review.items[g.code]) === 'ok')
+  const allGatesOk = gates.length > 0 && gates.every(g => rowStatus(g, review.items[g.code]) === 'ok')
 
   const row = (c: CheckItem) => {
     const ir = review.items[c.code]
