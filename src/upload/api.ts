@@ -21,10 +21,31 @@ export interface Progress {
 // ---------------------------------------------------------------------------
 
 export type CaseState = 'processing' | 'ready' | 'in_review' | 'done' | 'error'
-export type Decision = 'pending' | 'approved' | 'rejected'
+
+export type MatchedBy = 'cccd' | 'name' | 'unmatched' | 'no-roster'
+
+export interface Identity {
+  cccd: string
+  name: string
+}
+
+export interface FieldFlag {
+  reason: string
+  note: string
+}
+
+export interface FieldReview {
+  seen: boolean
+  flag: FieldFlag | null
+}
+
+export interface PacketReview {
+  done: boolean
+  fields: Record<string, FieldReview>
+}
 
 export interface CaseProgress {
-  decided: number
+  done: number
   total: number
   flagged: number
 }
@@ -37,9 +58,10 @@ export interface PacketMeta {
   confidence: 'green' | 'amber'
   flags: string[]
   labels?: string[]
-  decision: Decision
-  rejectReason: string | null
-  reviewedAt: string | null
+  matchedBy: MatchedBy
+  ocrIdentity: Identity
+  rosterIdentity: Identity | null
+  review: PacketReview
 }
 
 // The pipeline's split/OCR summary — key names mirror server/pipeline.py's
@@ -130,19 +152,62 @@ export async function createCase(pdf: File, roster?: File): Promise<{ case_id: s
   return res.json()
 }
 
-export async function setDecision(
+export async function setReview(
   caseId: string,
   index: number,
-  decision: Decision,
-  rejectReason?: string | null,
+  review: PacketReview,
 ): Promise<{ packet: PacketMeta; progress: CaseProgress; status: CaseState }> {
-  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/decision`, {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/review`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ decision, rejectReason: rejectReason ?? null }),
+    body: JSON.stringify(review),
   })
-  if (!res.ok) throw new Error(`setDecision: HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`setReview: HTTP ${res.status}`)
   return res.json()
+}
+
+export interface ReportItem {
+  fieldKey: string
+  fieldLabel: string
+  document: string
+  page: number | null
+  rosterValue: string
+  docValue: string
+  reason: string
+  note: string
+}
+
+export interface ReportGroup {
+  index: number
+  name: string
+  cccd: string
+  matchedBy: MatchedBy
+  identityIssue: boolean
+  items: ReportItem[]
+}
+
+export interface Report {
+  groups: ReportGroup[]
+  markdown: string
+  csv: string
+}
+
+export async function generateReport(caseId: string): Promise<Report> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/report`, { method: 'POST' })
+  if (!res.ok) throw new Error(`generateReport: HTTP ${res.status}`)
+  return res.json()
+}
+
+export function reportUrls(caseId: string) {
+  return {
+    md: `${API_BASE}/api/cases/${caseId}/report.md`,
+    csv: `${API_BASE}/api/cases/${caseId}/report.csv`,
+  }
+}
+
+export function packetNeedsResubmit(p: PacketMeta): boolean {
+  const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
+  return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
 }
 
 export async function deleteCase(caseId: string): Promise<void> {
@@ -157,18 +222,8 @@ export async function fetchPacketManifest(caseId: string, index: number): Promis
   return withAbsolutePageSrc(json, API_BASE)
 }
 
-// "12/32 đã duyệt" (+ " · 3 cần xem" when there's at least one flagged/amber packet).
+// "12/32 đã xong" (+ " · 3 cần gửi lại" when there's at least one flagged packet).
 export function caseProgressLabel(p: CaseProgress): string {
-  const base = `${p.decided}/${p.total} đã duyệt`
-  return p.flagged > 0 ? `${base} · ${p.flagged} cần xem` : base
-}
-
-const DECISION_BADGE: Record<Decision, string> = {
-  approved: '✓ Đã duyệt',
-  rejected: '✗ Từ chối',
-  pending: 'Chưa xem',
-}
-
-export function decisionBadge(d: Decision): string {
-  return DECISION_BADGE[d]
+  const base = `${p.done}/${p.total} đã xong`
+  return p.flagged > 0 ? `${base} · ${p.flagged} cần gửi lại` : base
 }

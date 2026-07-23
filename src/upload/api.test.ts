@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { stageLabel, progressPct, withAbsolutePageSrc, caseProgressLabel, decisionBadge } from './api'
+import { describe, it, expect, test } from 'vitest'
+import {
+  stageLabel,
+  progressPct,
+  withAbsolutePageSrc,
+  caseProgressLabel,
+  packetNeedsResubmit,
+  reportUrls,
+  API_BASE,
+} from './api'
 
 describe('upload api helpers', () => {
   it('maps stages to Vietnamese labels', () => {
@@ -21,12 +29,19 @@ describe('upload api helpers', () => {
 
 describe('case helpers', () => {
   it('formats progress', () => {
-    expect(caseProgressLabel({ decided: 12, total: 32, flagged: 3 }))
-      .toMatch(/12\/32.*duyệt.*3.*cần xem/i)
+    expect(caseProgressLabel({ done: 12, total: 32, flagged: 3 }))
+      .toMatch(/12\/32.*xong.*3.*cần gửi lại/i)
   })
-  it('maps decision to badge', () => {
-    expect(decisionBadge('approved')).toMatch(/duyệt/i)
-    expect(decisionBadge('rejected')).toMatch(/từ chối/i)
-    expect(decisionBadge('pending')).toMatch(/chưa xem/i)
-  })
+})
+
+test('packetNeedsResubmit: field flag or weak match', () => {
+  const base = { matchedBy: 'cccd', review: { done: true, fields: {} } } as any
+  expect(packetNeedsResubmit(base)).toBe(false)
+  expect(packetNeedsResubmit({ ...base, matchedBy: 'name' })).toBe(true)
+  expect(packetNeedsResubmit({ ...base, review: { done: true,
+    fields: { cccd: { seen: true, flag: { reason: 'sai', note: '' } } } } })).toBe(true)
+})
+
+test('reportUrls point at the backend', () => {
+  expect(reportUrls('abc').md).toBe(`${API_BASE}/api/cases/abc/report.md`)
 })
