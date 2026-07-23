@@ -278,6 +278,12 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
             "confidence": p.confidence,
             "flags": p.flags,
             "labels": p.labels,
+            "matchedBy": how,
+            "ocrIdentity": {"cccd": identity.get("cccd", ""), "name": identity.get("name", "")},
+            "rosterIdentity": (
+                {"cccd": row.get("cccd", ""), "name": row.get("name", "")}
+                if row is not None else None
+            ),
         })
 
     summary = {
