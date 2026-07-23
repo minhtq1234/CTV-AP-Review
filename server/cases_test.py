@@ -2,14 +2,14 @@ import json, os, tempfile
 from cases import CaseStore, case_status, progress_of, needs_resubmit
 
 def _pkt(index, done=False, flags=None, matched_by="cccd"):
-    fields = {}
+    items = {}
     for k in (flags or []):
-        fields[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
+        items[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
     return {"index": index, "name": f"P{index}", "pages": [index * 8, index * 8 + 7],
              "confidence": "green", "matchedBy": matched_by,
              "ocrIdentity": {"cccd": "", "name": ""},
              "rosterIdentity": {"cccd": "", "name": ""},
-             "review": {"done": done, "fields": fields}}
+             "review": {"done": done, "items": items}}
 
 def _pkts(dones):
     return [_pkt(i, done=d) for i, d in enumerate(dones)]
@@ -53,16 +53,16 @@ def test_set_review_updates_status_and_persists():
         s = CaseStore(d)
         cid = s.create(name="x", pdf_name="x.pdf", roster_name=None)
         s.set_result(cid, summary=None, packets=_pkts([False, False]))
-        s.set_review(cid, 0, {"done": True, "fields": {}})
+        s.set_review(cid, 0, {"done": True, "items": {}})
         assert s.get(cid)["status"] == "in_review"
         assert s.get(cid)["packets"][0]["review"]["done"] is True
         s.set_review(cid, 1, {
             "done": True,
-            "fields": {"cccd": {"seen": True, "flag": {"reason": "sai", "note": "thiếu chữ ký"}}},
+            "items": {"A2": {"seen": True, "flag": {"reason": "sai", "note": ""}}},
         })
         assert s.get(cid)["status"] == "done"
-        reloaded = CaseStore(d).get(cid)["packets"][1]["review"]["fields"]["cccd"]
-        assert reloaded["flag"]["note"] == "thiếu chữ ký"
+        reloaded = CaseStore(d).get(cid)["packets"][1]["review"]["items"]["A2"]
+        assert reloaded["flag"]["reason"] == "sai"
 
 def test_delete_removes_case():
     with tempfile.TemporaryDirectory() as d:
@@ -131,9 +131,31 @@ def test_load_migrates_old_decision_packets(tmp_path):
     (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
     store = CaseStore(str(tmp_path))
     p = store.get(cid)["packets"][0]
-    assert p["review"] == {"done": False, "fields": {}}
+    assert p["review"] == {"done": False, "items": {}}
     assert "decision" not in p and "rejectReason" not in p and "reviewedAt" not in p
     assert p["matchedBy"] == "no-roster"
+
+
+def test_progress_and_needs_resubmit_use_items():
+    from cases import needs_resubmit, progress_of
+    flagged = {"index": 0, "confidence": "green", "matchedBy": "cccd",
+               "review": {"done": True, "items": {"A2": {"seen": True, "flag": {"reason": "sai", "note": ""}}}}}
+    clean = {"index": 1, "confidence": "green", "matchedBy": "cccd", "review": {"done": True, "items": {}}}
+    assert needs_resubmit(flagged) is True and needs_resubmit(clean) is False
+    assert progress_of([flagged, clean]) == {"done": 2, "total": 2, "flagged": 1}
+
+
+def test_load_migrates_fields_to_items(tmp_path):
+    cid = "old"
+    d = tmp_path / cid
+    d.mkdir()
+    old = {"id": cid, "name": "x", "createdAt": None, "status": "in_review", "pdfName": "x.pdf",
+           "rosterName": None, "summary": None, "error": None,
+           "packets": [{"index": 0, "confidence": "green", "matchedBy": "cccd",
+                        "review": {"done": False, "fields": {"hoten": {"seen": True, "flag": None}}}}]}
+    (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
+    p = CaseStore(str(tmp_path)).get(cid)["packets"][0]
+    assert p["review"] == {"done": False, "items": {}} and "fields" not in p["review"]
 
 
 if __name__ == "__main__":
