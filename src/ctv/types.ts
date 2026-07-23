@@ -27,6 +27,24 @@ export interface CtvSource {
   confidence: number
 }
 
+export type CheckTier = 'gate' | 'detail'
+export type CheckKind = 'value' | 'identity' | 'confirm'
+export type CheckAutoStatus = 'match' | 'mismatch' | 'review'
+
+// One row of the reviewer checklist. Built by the backend (server/checklist.py) from
+// the packet's OCR fields + match key + segmented docs, and carried in the manifest
+// under `checks`. `source` is a located value on a scanned doc (value kind only).
+export interface CheckItem {
+  code: string
+  label: string
+  tier: CheckTier
+  kind: CheckKind
+  evidenceDocId: string | null
+  reference: string | null
+  source: CtvSource | null
+  autostatus: CheckAutoStatus | null
+}
+
 export interface CtvField {
   key: string
   label: string
@@ -46,5 +64,6 @@ export interface CtvFolder {
   exempt: boolean          // PIT exemption claimed via bản cam kết (n/a for flight cases)
   docs: EvidenceDoc[]
   fields: CtvField[]
+  checks?: CheckItem[]     // coded reviewer checklist rows (server/checklist.py); optional for now
   rejectReason?: string
 }
