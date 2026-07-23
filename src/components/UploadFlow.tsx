@@ -6,6 +6,7 @@ import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
 import CaseDetail from './CaseDetail'
 import FolderReview from './FolderReview'
+import ReportPanel from './ReportPanel'
 
 type Screen = 'list' | 'upload' | 'detail' | 'review'
 
@@ -26,6 +27,7 @@ export default function UploadFlow() {
   const [folder, setFolder] = useState<CtvFolder | null>(null)
   const [review, setReviewState] = useState<PacketReview>({ done: false, fields: {} })
   const [err, setErr] = useState<string | null>(null)
+  const [showReport, setShowReport] = useState(false)
 
   const refreshList = async () => {
     try { setCases(await listCases()) } catch { setErr(CONN_ERR) }
@@ -152,7 +154,13 @@ export default function UploadFlow() {
   }
 
   if (screen === 'detail' && detail) {
-    return <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList} onExport={() => {}} />
+    return (
+      <>
+        <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList}
+          onExport={() => setShowReport(true)} />
+        {showReport && caseId && <ReportPanel caseId={caseId} onClose={() => setShowReport(false)} />}
+      </>
+    )
   }
 
   if (screen === 'review' && folder) {
