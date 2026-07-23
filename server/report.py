@@ -14,33 +14,33 @@ _MATCH_NOTE = {
 
 
 def _needs_resubmit(p: dict) -> bool:
-    review = p.get("review") or {"fields": {}}
-    if any(f.get("flag") for f in review.get("fields", {}).values()):
+    review = p.get("review") or {"items": {}}
+    if any(i.get("flag") for i in review.get("items", {}).values()):
         return True
     return p.get("matchedBy") in ("name", "unmatched")
 
 
 def _items_for(packet: dict, manifest: dict | None) -> list[dict]:
-    fields = {f["key"]: f for f in (manifest or {}).get("fields", [])}
+    checks = {c["code"]: c for c in (manifest or {}).get("checks", [])}
     docs = {d["id"]: d.get("label", d["id"]) for d in (manifest or {}).get("docs", [])}
-    items = []
-    for key, fr in (packet.get("review") or {}).get("fields", {}).items():
-        flag = fr.get("flag")
+    out = []
+    for code, ir in (packet.get("review") or {}).get("items", {}).items():
+        flag = ir.get("flag")
         if not flag:
             continue
-        f = fields.get(key, {})
-        src = (f.get("sources") or [{}])[0]
-        items.append({
-            "fieldKey": key,
-            "fieldLabel": f.get("label", key),
-            "document": docs.get(src.get("docId"), "—"),
+        c = checks.get(code, {})
+        src = c.get("source") or {}
+        out.append({
+            "code": code,
+            "fieldLabel": c.get("label", code),
+            "document": docs.get(c.get("evidenceDocId"), "—"),
             "page": (src["page"] + 1) if "page" in src else None,
-            "rosterValue": f.get("expected", ""),
+            "rosterValue": c.get("reference") or "",
             "docValue": src.get("value") or "cần xem",
             "reason": flag.get("reason", ""),
             "note": flag.get("note", ""),
         })
-    return items
+    return out
 
 
 def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
