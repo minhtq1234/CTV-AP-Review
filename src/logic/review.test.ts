@@ -2,17 +2,17 @@ import { test, expect } from 'vitest'
 import { allSeen, packetStatus, calloutAnchor } from './review'
 
 test('allSeen requires every field key seen', () => {
-  const r = { done: false, fields: { a: { seen: true, flag: null } } }
+  const r = { done: false, items: { a: { seen: true, flag: null } } }
   expect(allSeen(r, ['a'])).toBe(true)
   expect(allSeen(r, ['a', 'b'])).toBe(false)
 })
 
 test('packetStatus derivation', () => {
-  const clean = { matchedBy: 'cccd', review: { done: true, fields: {} } } as any
+  const clean = { matchedBy: 'cccd', review: { done: true, items: {} } } as any
   expect(packetStatus(clean)).toBe('clear')
-  expect(packetStatus({ ...clean, review: { done: false, fields: {} } })).toBe('untouched')
+  expect(packetStatus({ ...clean, review: { done: false, items: {} } })).toBe('untouched')
   expect(packetStatus({ ...clean, review: { done: false,
-    fields: { a: { seen: true, flag: null } } } })).toBe('in_review')
+    items: { a: { seen: true, flag: null } } } })).toBe('in_review')
   expect(packetStatus({ ...clean, matchedBy: 'name' })).toBe('needs_resubmit')
 })
 
