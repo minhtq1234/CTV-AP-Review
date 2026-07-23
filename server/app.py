@@ -5,7 +5,7 @@ per-packet CtvFolder manifests + rendered page PNGs the frontend consumes.
 Binds 127.0.0.1 only (run via `uvicorn app:app --host 127.0.0.1`). Each
 upload becomes a durable **case** under `server/data/cases/<id>/` (see
 `cases.py`) — unlike the old temp-dir job store, this survives a backend
-restart: `case.json` holds the metadata + per-packet decisions, and
+restart: `case.json` holds the metadata + per-packet reviews, and
 `packets/<i>/` holds that packet's manifest + rendered pages. Never commit
 `server/data` — see server/README.md for the full PII note.
 """
@@ -27,6 +27,7 @@ import threading
 from cases import CaseStore, progress_of
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
+from report import build_report
 
 app = FastAPI()
 
@@ -53,7 +54,6 @@ store = CaseStore(os.path.join(os.path.dirname(__file__), "data", "cases"))
 _progress: dict[str, dict] = {}
 
 _PAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.png$")
-_VALID_DECISIONS = {"pending", "approved", "rejected"}
 
 
 def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
@@ -124,24 +124,61 @@ async def get_case(cid: str):
     return out
 
 
-class DecisionBody(BaseModel):
-    decision: str
-    rejectReason: str | None = None
+class ReviewBody(BaseModel):
+    done: bool = False
+    fields: dict = {}
 
 
-@app.put("/api/cases/{cid}/packets/{i}/decision")
-async def put_decision(cid: str, i: int, body: DecisionBody):
+@app.put("/api/cases/{cid}/packets/{i}/review")
+async def put_review(cid: str, i: int, body: ReviewBody):
+    updated = store.set_review(cid, i, {"done": body.done, "fields": body.fields})
+    if updated is None:
+        raise HTTPException(status_code=404, detail="case or packet not found")
+    packet = next((p for p in updated["packets"] if p["index"] == i), None)
+    return {"packet": packet, "progress": progress_of(updated["packets"]),
+            "status": updated["status"]}
+
+
+def _load_manifests(cid: str, packets: list[dict]) -> dict:
+    out = {}
+    for p in packets:
+        path = os.path.join(store.case_dir(cid), "packets", str(p["index"]), "manifest.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                out[p["index"]] = json.load(f)
+    return out
+
+
+@app.post("/api/cases/{cid}/report")
+async def post_report(cid: str):
     case = store.get(cid)
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
-    if body.decision not in _VALID_DECISIONS:
-        raise HTTPException(status_code=400, detail="invalid decision")
+    manifests = _load_manifests(cid, case["packets"])
     now = datetime.now(timezone.utc).isoformat()
-    updated = store.set_decision(cid, i, body.decision, body.rejectReason, now=now)
-    if updated is None:
-        raise HTTPException(status_code=404, detail="case not found")
-    packet = next((p for p in updated["packets"] if p["index"] == i), None)
-    return {"packet": packet, "progress": progress_of(updated["packets"]), "status": updated["status"]}
+    report = build_report(case, manifests, generated_at=now)
+    case_dir = store.case_dir(cid)
+    with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
+        f.write(report["markdown"])
+    with open(os.path.join(case_dir, "report.csv"), "w", encoding="utf-8") as f:
+        f.write(report["csv"])
+    return report
+
+
+@app.get("/api/cases/{cid}/report.md")
+async def get_report_md(cid: str):
+    path = os.path.join(store.case_dir(cid), "report.md")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="report not generated")
+    return FileResponse(path, media_type="text/markdown")
+
+
+@app.get("/api/cases/{cid}/report.csv")
+async def get_report_csv(cid: str):
+    path = os.path.join(store.case_dir(cid), "report.csv")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="report not generated")
+    return FileResponse(path, media_type="text/csv")
 
 
 @app.delete("/api/cases/{cid}")
