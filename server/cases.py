@@ -18,41 +18,51 @@ import shutil
 import uuid
 
 
+def needs_resubmit(packet: dict) -> bool:
+    """A packet needs resubmission if any field is flagged, or its roster
+    match is weak (matched by name only, or unmatched)."""
+    review = packet.get("review") or {"fields": {}}
+    if any(f.get("flag") for f in review.get("fields", {}).values()):
+        return True
+    return packet.get("matchedBy") in ("name", "unmatched")
+
+
 def case_status(base_status: str, packets: list[dict]) -> str:
     """Recompute a case's status from its base lifecycle state + packet
-    decisions. `base_status` short-circuits while the pipeline is still
+    review state. `base_status` short-circuits while the pipeline is still
     running or failed; otherwise status is derived from how many packets
-    have a non-"pending" decision.
+    have `review.done` set.
     """
     if base_status in ("processing", "error"):
         return base_status
     if not packets:
         return "ready"
-    decided = sum(1 for p in packets if p["decision"] != "pending")
-    if decided == 0:
+    done = sum(1 for p in packets if (p.get("review") or {}).get("done"))
+    if done == 0:
         return "ready"
-    if decided == len(packets):
+    if done == len(packets):
         return "done"
     return "in_review"
 
 
 def progress_of(packets: list[dict]) -> dict:
-    """`{decided, total, flagged}` — decided = non-pending decisions,
-    flagged = packets whose confidence is "amber"."""
+    """`{done, total, flagged}` — done = packets marked Done,
+    flagged = packets needing resubmission."""
     return {
-        "decided": sum(1 for p in packets if p["decision"] != "pending"),
+        "done": sum(1 for p in packets if (p.get("review") or {}).get("done")),
         "total": len(packets),
-        "flagged": sum(1 for p in packets if p["confidence"] == "amber"),
+        "flagged": sum(1 for p in packets if needs_resubmit(p)),
     }
 
 
 def _ensure_packet_defaults(packet: dict) -> dict:
-    """Fill decision/rejectReason/reviewedAt with their pending defaults if
-    the pipeline output (or a fake test pipeline) didn't already set them."""
+    """Fill review/match defaults if the pipeline (or a fake test pipeline)
+    didn't set them."""
     out = dict(packet)
-    out.setdefault("decision", "pending")
-    out.setdefault("rejectReason", None)
-    out.setdefault("reviewedAt", None)
+    out.setdefault("review", {"done": False, "fields": {}})
+    out.setdefault("matchedBy", "no-roster")
+    out.setdefault("ocrIdentity", {"cccd": "", "name": ""})
+    out.setdefault("rosterIdentity", None)
     return out
 
 
@@ -167,16 +177,19 @@ class CaseStore:
         case["error"] = msg
         self._write(case)
 
-    def set_decision(self, cid: str, index: int, decision: str, reject_reason: str | None, now: str | None) -> dict | None:
+    def set_review(self, cid: str, index: int, review: dict) -> dict | None:
         case = self._idx.get(cid)
         if case is None:
             return None
         for p in case["packets"]:
             if p["index"] == index:
-                p["decision"] = decision
-                p["rejectReason"] = reject_reason
-                p["reviewedAt"] = now
+                p["review"] = {
+                    "done": bool(review.get("done", False)),
+                    "fields": review.get("fields", {}) or {},
+                }
                 break
+        else:
+            return None
         base = case["status"] if case["status"] in ("processing", "error") else "ready"
         case["status"] = case_status(base, case["packets"])
         self._write(case)

@@ -1,21 +1,38 @@
 import json, os, tempfile
-from cases import CaseStore, case_status, progress_of
+from cases import CaseStore, case_status, progress_of, needs_resubmit
 
-def _pkts(decisions):
-    return [{"index": i, "name": f"P{i}", "pages": [i*8, i*8+7], "confidence": "green",
-             "flags": [], "decision": d, "rejectReason": None, "reviewedAt": None}
-            for i, d in enumerate(decisions)]
+def _pkt(index, done=False, flags=None, matched_by="cccd"):
+    fields = {}
+    for k in (flags or []):
+        fields[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
+    return {"index": index, "name": f"P{index}", "pages": [index * 8, index * 8 + 7],
+             "confidence": "green", "matchedBy": matched_by,
+             "ocrIdentity": {"cccd": "", "name": ""},
+             "rosterIdentity": {"cccd": "", "name": ""},
+             "review": {"done": done, "fields": fields}}
 
-def test_case_status_transitions():
-    assert case_status("processing", _pkts([])) == "processing"
-    assert case_status("ready", _pkts(["pending","pending"])) == "ready"
-    assert case_status("ready", _pkts(["approved","pending"])) == "in_review"
-    assert case_status("ready", _pkts(["approved","rejected"])) == "done"
+def _pkts(dones):
+    return [_pkt(i, done=d) for i, d in enumerate(dones)]
 
-def test_progress_counts_decided_and_flagged():
-    pk = _pkts(["approved","pending","pending"])
-    pk[1]["confidence"] = "amber"
-    assert progress_of(pk) == {"decided": 1, "total": 3, "flagged": 1}
+def test_needs_resubmit_on_field_flag():
+    assert needs_resubmit(_pkt(0, flags=["cccd"])) is True
+    assert needs_resubmit(_pkt(0)) is False
+
+def test_needs_resubmit_on_weak_match():
+    assert needs_resubmit(_pkt(0, matched_by="name")) is True
+    assert needs_resubmit(_pkt(0, matched_by="unmatched")) is True
+    assert needs_resubmit(_pkt(0, matched_by="cccd")) is False
+
+def test_case_status_from_done_count():
+    assert case_status("ready", []) == "ready"
+    assert case_status("ready", [_pkt(0), _pkt(1)]) == "ready"
+    assert case_status("ready", [_pkt(0, done=True), _pkt(1)]) == "in_review"
+    assert case_status("ready", [_pkt(0, done=True), _pkt(1, done=True)]) == "done"
+    assert case_status("processing", [_pkt(0, done=True)]) == "processing"
+
+def test_progress_counts_done_and_flagged():
+    pkts = [_pkt(0, done=True, flags=["cccd"]), _pkt(1, done=True), _pkt(2)]
+    assert progress_of(pkts) == {"done": 2, "total": 3, "flagged": 1}
 
 def test_create_list_get_roundtrip_and_reload():
     with tempfile.TemporaryDirectory() as d:
@@ -23,7 +40,7 @@ def test_create_list_get_roundtrip_and_reload():
         cid = s.create(name="Feb batch", pdf_name="feb.pdf", roster_name=None)
         assert s.get(cid)["status"] == "processing"
         s.set_result(cid, summary={"found": 2, "rosterN": 2, "autoMerged": 0},
-                     packets=_pkts(["pending","pending"]))
+                     packets=_pkts([False, False]))
         assert s.get(cid)["status"] == "ready"
         assert len(s.list()) == 1 and s.list()[0]["id"] == cid
         # reload from disk (simulate restart) — persistence survives
@@ -31,17 +48,21 @@ def test_create_list_get_roundtrip_and_reload():
         assert s2.get(cid)["status"] == "ready"
         assert s2.get(cid)["summary"]["found"] == 2
 
-def test_set_decision_updates_status_and_persists():
+def test_set_review_updates_status_and_persists():
     with tempfile.TemporaryDirectory() as d:
         s = CaseStore(d)
         cid = s.create(name="x", pdf_name="x.pdf", roster_name=None)
-        s.set_result(cid, summary=None, packets=_pkts(["pending","pending"]))
-        s.set_decision(cid, 0, "approved", None, now="2026-07-13T00:00:00")
+        s.set_result(cid, summary=None, packets=_pkts([False, False]))
+        s.set_review(cid, 0, {"done": True, "fields": {}})
         assert s.get(cid)["status"] == "in_review"
-        assert s.get(cid)["packets"][0]["decision"] == "approved"
-        s.set_decision(cid, 1, "rejected", "thiếu chữ ký", now="2026-07-13T00:01:00")
+        assert s.get(cid)["packets"][0]["review"]["done"] is True
+        s.set_review(cid, 1, {
+            "done": True,
+            "fields": {"cccd": {"seen": True, "flag": {"reason": "sai", "note": "thiếu chữ ký"}}},
+        })
         assert s.get(cid)["status"] == "done"
-        assert CaseStore(d).get(cid)["packets"][1]["rejectReason"] == "thiếu chữ ký"
+        reloaded = CaseStore(d).get(cid)["packets"][1]["review"]["fields"]["cccd"]
+        assert reloaded["flag"]["note"] == "thiếu chữ ký"
 
 def test_delete_removes_case():
     with tempfile.TemporaryDirectory() as d:
@@ -59,7 +80,7 @@ def _write_raw_case(root: str, cid: str, status: str, error=None) -> None:
     case = {
         "id": cid, "name": "x", "createdAt": "2026-07-13T00:00:00", "status": status,
         "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": error,
-        "packets": _pkts(["pending"]) if status not in ("processing",) else [],
+        "packets": _pkts([False]) if status not in ("processing",) else [],
     }
     with open(os.path.join(case_dir, "case.json"), "w", encoding="utf-8") as f:
         json.dump(case, f, ensure_ascii=False)
