@@ -53,3 +53,22 @@ def test_markdown_and_csv_render():
     lines = r["csv"].splitlines()
     assert lines[0].startswith("CTV,CCCD,Trường,")
     assert any("Số CCCD" in ln for ln in lines[1:])
+
+def test_unread_source_value_falls_back_to_can_xem():
+    # A flagged field whose (first) source has no readable OCR value should
+    # show the "cần xem" placeholder instead of an empty string.
+    case = {"name": "FA.pdf", "packets": [
+        {"index": 0, "name": "Chưa Đọc Được", "matchedBy": "cccd",
+         "ocrIdentity": {"cccd": "555", "name": "Chưa Đọc Được"},
+         "rosterIdentity": {"cccd": "555", "name": "Chưa Đọc Được"},
+         "review": {"done": True, "fields": {
+             "cccd": {"seen": False, "flag": {"reason": "mo", "note": ""}}}}},
+    ]}
+    manifests = {0: {
+        "fields": [{"key": "cccd", "label": "Số CCCD", "expected": "079198004444",
+                    "sources": [{"docId": "contract", "page": 0, "value": ""}]}],
+        "docs": [{"id": "contract", "label": "Hợp đồng dịch vụ"}],
+    }}
+    r = build_report(case, manifests, generated_at="2026-07-23T00:00:00Z")
+    item = r["groups"][0]["items"][0]
+    assert item["docValue"] == "cần xem"

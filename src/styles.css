@@ -13,10 +13,6 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .dot.approved { background: var(--success); } .dot.rejected { background: var(--danger); }
 .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .screen-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border-bottom: 0.5px solid var(--border); background: var(--surface); font-size: 14px; }
-.status-pill { font-size: 12px; padding: 3px 10px; border-radius: 8px; white-space: nowrap; }
-.status-pill.pending { color: var(--warning); background: #fbf1e0; }
-.status-pill.approved { color: var(--success); background: #e7f3ea; }
-.status-pill.rejected { color: var(--danger); background: #fbeaea; }
 .panes { flex: 1; display: flex; min-height: 0; }
 .fields-pane { width: 47%; overflow-y: auto; border-right: 0.5px solid var(--border); background: var(--surface); }
 .doc-pane { width: 53%; position: relative; overflow: hidden; background: var(--mat); display: flex; align-items: center; justify-content: center; }
@@ -216,9 +212,6 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .case-detail-head h2 { margin: 0; font-size: 16px; }
 .case-error-banner { background: #fbeaea; }
 .decision-badge { font-size: 11px; margin-top: 7px; font-weight: 500; }
-.decision-badge.approved { color: var(--success); }
-.decision-badge.rejected { color: var(--danger); }
-.decision-badge.pending { color: var(--text-muted); font-weight: 400; }
 
 .matchkey { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .match-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }

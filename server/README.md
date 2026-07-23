@@ -19,10 +19,13 @@ packet and cascade to the rest). The matched row fills each field's
 manifest is written; an unmatched packet is flagged `"roster-unmatched"`
 instead of being silently paired to the wrong row. `cases.py` is the
 persistent `CaseStore` (JSON-on-disk under `data/cases/<id>/`) each upload
-becomes a durable **case** in; `app.py` is the FastAPI service that runs the
-pipeline on a background thread and exposes cases over HTTP (upload, poll,
-serve manifests + page PNGs, save per-packet review decisions) for the
-frontend's upload flow.
+becomes a durable **case** in; `report.py` is a pure builder
+(`build_report(case, manifests, generated_at)`) that groups the packets
+still needing resubmission and renders the consolidated Markdown/CSV report;
+`app.py` is the FastAPI service that runs the pipeline on a background
+thread and exposes cases over HTTP (upload, poll, serve manifests + page
+PNGs, save per-packet reviews, generate + serve the resubmission report) for
+the frontend's upload flow.
 
 ## Running the tests
 
@@ -62,18 +65,35 @@ service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
   into it, starts the pipeline on a background thread, returns
   `{"case_id": "..."}`.
 - `GET /api/cases` — list of `{id, name, createdAt, status, pdfName,
-  progress: {decided, total, flagged}}`, newest first.
+  progress: {done, total, flagged}}`, newest first.
 - `GET /api/cases/{id}` — the full case: `{id, name, createdAt, status,
   pdfName, rosterName, summary, error, packets, progress}` plus, while
   `status == "processing"`, a `liveProgress: {stage, done, total, detail}`
   (`stage` goes `"splitting"` -> `"ocr"`). `status` is `processing` /
   `ready` / `in_review` / `done` / `error`; each packet in `packets[]` has
-  `{index, name, pages, confidence, flags, decision, rejectReason,
-  reviewedAt, ...}` (`decision` is `pending`/`approved`/`rejected`).
-- `PUT /api/cases/{id}/packets/{i}/decision` — body `{"decision": "...",
-  "rejectReason"?: "..."}`. Persists the packet's decision, recomputes the
-  case status, returns `{packet, progress, status}`. 404 for an unknown
-  case, 400 for an invalid `decision`.
+  `{index, name, pages, confidence, flags, review, matchedBy, ocrIdentity,
+  rosterIdentity, ...}`:
+  - `review: {done, fields: {<fieldKey>: {seen, flag}}}` — `flag` is
+    `null` or `{reason, note}`; `done` is set once the reviewer has
+    worked through every field.
+  - `matchedBy` is how the packet was aligned to the roster:
+    `"cccd"` / `"name"` / `"unmatched"` / `"no-roster"`.
+  - `ocrIdentity: {cccd, name}` is the identity OCR'd off the packet;
+    `rosterIdentity: {cccd, name} | null` is the matched roster row's
+    identity (`null` when `matchedBy` is `"unmatched"`/`"no-roster"`).
+- `PUT /api/cases/{id}/packets/{i}/review` — body `{"done": bool,
+  "fields": {<fieldKey>: {"seen": bool, "flag": null | {"reason", "note"}}}}`.
+  Persists the packet's review state, recomputes the case status, returns
+  `{packet, progress, status}`. 404 for an unknown case or packet.
+- `POST /api/cases/{id}/report` — builds the consolidated resubmission
+  report (`report.build_report`) from the case's packets + their manifests,
+  writes `report.md`/`report.csv` into the case dir, and returns
+  `{groups, markdown, csv}`. Only packets still needing resubmission
+  (a flagged field, or a weak/`"name"`/`"unmatched"` roster match) are
+  included.
+- `GET /api/cases/{id}/report.md` / `GET /api/cases/{id}/report.csv` — the
+  last-generated report file for the case, served as an attachment. 404 if
+  `POST .../report` hasn't been called yet.
 - `DELETE /api/cases/{id}` — removes the case dir + index entry.
 - `GET /api/cases/{id}/packets/{i}/manifest.json` — that packet's
   `CtvFolder` manifest, with every page's `src` rewritten from the on-disk
@@ -83,7 +103,7 @@ service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
   against path traversal, since it's joined onto a directory path.
 
 On startup, `CaseStore` scans `data/cases/*/case.json` and rebuilds its
-index from disk, so cases (and saved decisions) survive a backend restart.
+index from disk, so cases (and saved reviews) survive a backend restart.
 
 ### Example: upload the real file, poll, fetch a manifest
 
@@ -96,8 +116,10 @@ curl -s -F "pdf=@/path/to/scan.pdf" \
 curl -s http://127.0.0.1:8000/api/cases/<case_id>       # poll until status == "ready"
 curl -s http://127.0.0.1:8000/api/cases/<case_id>/packets/0/manifest.json
 curl -s -X PUT -H 'content-type: application/json' \
-     -d '{"decision":"approved"}' \
-     http://127.0.0.1:8000/api/cases/<case_id>/packets/0/decision
+     -d '{"done":true,"fields":{"cccd":{"seen":true,"flag":null}}}' \
+     http://127.0.0.1:8000/api/cases/<case_id>/packets/0/review
+curl -s -X POST http://127.0.0.1:8000/api/cases/<case_id>/report
+curl -s http://127.0.0.1:8000/api/cases/<case_id>/report.md
 ```
 
 ## Roster -> field mapping, and packet alignment

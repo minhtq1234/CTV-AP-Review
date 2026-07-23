@@ -36,7 +36,7 @@ def _items_for(packet: dict, manifest: dict | None) -> list[dict]:
             "document": docs.get(src.get("docId"), "—"),
             "page": (src["page"] + 1) if "page" in src else None,
             "rosterValue": f.get("expected", ""),
-            "docValue": src.get("value", ""),
+            "docValue": src.get("value") or "cần xem",
             "reason": flag.get("reason", ""),
             "note": flag.get("note", ""),
         })
