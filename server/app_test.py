@@ -40,7 +40,7 @@ def test_case_create_list_detail_review(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get("/api/cases").json()[0]["id"] == cid
     # review persists + flips status
-    r = c.put(f"/api/cases/{cid}/packets/0/review", json={"done": True, "fields": {}})
+    r = c.put(f"/api/cases/{cid}/packets/0/review", json={"done": True, "items": {}})
     assert r.status_code == 200
     data = r.json()
     assert data["packet"]["review"]["done"] is True
@@ -54,23 +54,24 @@ def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
 
 def test_review_unknown_case_404():
-    body = {"done": True, "fields": {}}
+    body = {"done": True, "items": {}}
     assert TestClient(app).put("/api/cases/nope/packets/0/review", json=body).status_code == 404
 
 def test_put_review_persists_and_updates_status(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
-    body = {"done": True, "fields": {"cccd": {"seen": True,
+    body = {"done": True, "items": {"A2": {"seen": True,
             "flag": {"reason": "sai", "note": "x"}}}}
     r = c.put(f"/api/cases/{cid}/packets/0/review", json=body)
     assert r.status_code == 200
     data = r.json()
     assert data["packet"]["review"]["done"] is True
+    assert data["packet"]["review"]["items"]["A2"]["flag"]["reason"] == "sai"
     assert data["progress"]["done"] >= 1
 
 def test_report_endpoint_generates_and_persists(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     c.put(f"/api/cases/{cid}/packets/0/review",
-          json={"done": True, "fields": {"cccd": {"seen": True,
+          json={"done": True, "items": {"A2": {"seen": True,
                 "flag": {"reason": "sai", "note": "x"}}}})
     r = c.post(f"/api/cases/{cid}/report")
     assert r.status_code == 200

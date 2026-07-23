@@ -126,12 +126,12 @@ async def get_case(cid: str):
 
 class ReviewBody(BaseModel):
     done: bool = False
-    fields: dict = {}
+    items: dict = {}
 
 
 @app.put("/api/cases/{cid}/packets/{i}/review")
 async def put_review(cid: str, i: int, body: ReviewBody):
-    updated = store.set_review(cid, i, {"done": body.done, "fields": body.fields})
+    updated = store.set_review(cid, i, {"done": body.done, "items": body.items})
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
