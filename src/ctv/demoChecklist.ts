@@ -1,0 +1,82 @@
+import type { CtvFolder, CtvField, EvidenceKind, CheckItem, CheckAutoStatus } from './types'
+
+// Pure builder: maps a synthetic CtvFolder (src/ctv/folders.ts) to the same coded,
+// two-tier checklist shape the backend produces (server/checklist.py's build_checklist),
+// so the offline single-file demo renders through the same ChecklistPanel/FolderReview
+// UI as the live reviewer. No IO here -- just folder.fields/docs -> CheckItem[].
+
+const docByKind = (folder: CtvFolder, kind: EvidenceKind): string | null =>
+  folder.docs.find(d => d.kind === kind)?.id ?? null
+
+const DIACRITIC_SPECIAL: Record<string, string> = { đ: 'd', Đ: 'D' }
+
+function norm(s: string): string {
+  const swapped = (s || '').split('').map(ch => DIACRITIC_SPECIAL[ch] ?? ch).join('')
+  return swapped.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
+}
+
+const digits = (s: string): string => (s || '').replace(/\D/g, '')
+
+// Mirrors checklist.py's _autostatus: digits-only fields (CCCD, phone, amounts) compare on
+// digits alone so currency/format noise ("10.000.000" vs "10.000.000 ₫") doesn't false-mismatch;
+// everything else compares diacritic/case-normalized. No readable source at all -> 'review'.
+function autostatus(reference: string, source: { value: string } | null): CheckAutoStatus {
+  const value = source?.value ?? ''
+  if (!source || !value) return 'review'
+  if (digits(reference) && digits(value)) return digits(reference) === digits(value) ? 'match' : 'mismatch'
+  return norm(reference) === norm(value) ? 'match' : 'mismatch'
+}
+
+// [code, label, folder field key] -- mirrors server/checklist.py's _VALUE table, minus the
+// rows the synthetic folders have no field for (`mst` -> A2; see folders.ts's field keys).
+const VALUE: ReadonlyArray<readonly [string, string, string]> = [
+  ['B1', 'Họ tên khớp bảng kê', 'name'],
+  ['A1', 'Số CCCD khớp giữa chứng từ', 'cccd'],
+  ['B2', 'Phí dịch vụ khớp bảng kê', 'gross'],
+  ['BANK', 'Số tài khoản khớp bảng kê', 'bank_acct'],
+  ['INFO', 'Ngày sinh khớp hồ sơ', 'dob'],
+]
+
+export function demoChecklist(folder: CtvFolder): CheckItem[] {
+  const byKey = new Map(folder.fields.map(f => [f.key, f] as const))
+  const contract = docByKind(folder, 'contract') ?? folder.docs[0]?.id ?? null
+  const cccd: CtvField | undefined = byKey.get('cccd')
+
+  const checks: CheckItem[] = [
+    { code: 'G-DOC', label: 'Đủ chứng từ bắt buộc', tier: 'gate', kind: 'confirm',
+      evidenceDocId: null, reference: null, source: null, autostatus: null },
+    // The demo has no roster to mismatch against (identityOf() in DemoFlow builds both
+    // ocrIdentity and rosterIdentity from the same field), so -- like matchedBy === 'cccd'
+    // in the real checklist -- this gate always reads as a confirmed match.
+    { code: 'G-ID', label: 'Đúng người — CCCD & tên khớp', tier: 'gate', kind: 'identity',
+      evidenceDocId: contract, reference: cccd?.expected ?? '', source: cccd?.sources[0] ?? null,
+      autostatus: 'match' },
+    { code: 'D3', label: 'Cam kết TNCN đúng mẫu năm hiện hành', tier: 'gate', kind: 'confirm',
+      evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
+    { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
+      evidenceDocId: contract, reference: null, source: null, autostatus: null },
+    { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
+      evidenceDocId: docByKind(folder, 'bbnt'), reference: null, source: null, autostatus: null },
+  ]
+
+  for (const [code, label, fieldKey] of VALUE) {
+    const f = byKey.get(fieldKey)
+    if (!f) continue
+    const src = f.sources[0] ?? null
+    checks.push({
+      code, label, tier: 'detail', kind: 'value',
+      evidenceDocId: src?.docId ?? contract,
+      reference: f.expected ?? '', source: src,
+      autostatus: autostatus(f.expected ?? '', src),
+    })
+  }
+
+  checks.push(
+    { code: 'C1', label: 'Nội dung & thời gian khớp BBNT', tier: 'detail', kind: 'confirm',
+      evidenceDocId: docByKind(folder, 'bbnt'), reference: null, source: null, autostatus: null },
+    { code: 'D1', label: 'Thông tin & MST khớp cam kết', tier: 'detail', kind: 'confirm',
+      evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
+  )
+
+  return checks
+}

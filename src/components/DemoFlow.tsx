@@ -3,6 +3,7 @@ import type { CtvFolder } from '../ctv/types'
 import { folders as seedFolders } from '../ctv/folders'
 import type { PacketReview, Identity } from '../upload/api'
 import { packetStatus, PACKET_STATUS_LABEL, type PacketStatusKind } from '../logic/review'
+import { demoChecklist } from '../ctv/demoChecklist'
 import FolderReview from './FolderReview'
 
 // Offline demo entry for the single-file export (chosen in App when window.__ASSETS__
@@ -17,7 +18,7 @@ export default function DemoFlow() {
   const [idx, setIdx] = useState<number | null>(null)
   const [reviews, setReviews] = useState<Record<string, PacketReview>>({})
 
-  const reviewFor = (id: string): PacketReview => reviews[id] ?? { done: false, fields: {} }
+  const reviewFor = (id: string): PacketReview => reviews[id] ?? { done: false, items: {} }
 
   // The demo has no roster; present a clean CCCD match built from each folder's own
   // name + CCCD field so the MatchKeyStrip renders meaningfully.
@@ -78,7 +79,7 @@ export default function DemoFlow() {
       </div>
       <FolderReview
         key={folder.id}
-        folder={folder}
+        folder={{ ...folder, checks: demoChecklist(folder) }}
         review={reviewFor(folder.id)}
         matchedBy="cccd"
         ocrIdentity={identityOf(folder)}
