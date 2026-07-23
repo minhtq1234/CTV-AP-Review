@@ -152,7 +152,7 @@ export default function UploadFlow() {
   }
 
   if (screen === 'detail' && detail) {
-    return <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList} />
+    return <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList} onExport={() => {}} />
   }
 
   if (screen === 'review' && folder) {
