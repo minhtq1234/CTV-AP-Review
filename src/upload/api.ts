@@ -4,6 +4,8 @@
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
 import type { CtvFolder } from '../ctv/types'
 
+export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus } from '../ctv/types'
+
 export const API_BASE = 'http://127.0.0.1:8000'
 
 export type Stage = 'queued' | 'splitting' | 'ocr' | 'done' | 'error' | string
@@ -41,7 +43,7 @@ export interface FieldReview {
 
 export interface PacketReview {
   done: boolean
-  fields: Record<string, FieldReview>
+  items: Record<string, FieldReview>
 }
 
 export interface CaseProgress {
@@ -206,7 +208,7 @@ export function reportUrls(caseId: string) {
 }
 
 export function packetNeedsResubmit(p: PacketMeta): boolean {
-  const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
+  const flagged = Object.values(p.review?.items ?? {}).some(f => f.flag)
   return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
 }
 

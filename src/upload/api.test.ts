@@ -34,12 +34,12 @@ describe('case helpers', () => {
   })
 })
 
-test('packetNeedsResubmit: field flag or weak match', () => {
-  const base = { matchedBy: 'cccd', review: { done: true, fields: {} } } as any
+test('packetNeedsResubmit reads items', () => {
+  const base = { matchedBy: 'cccd', review: { done: true, items: {} } } as any
   expect(packetNeedsResubmit(base)).toBe(false)
   expect(packetNeedsResubmit({ ...base, matchedBy: 'name' })).toBe(true)
   expect(packetNeedsResubmit({ ...base, review: { done: true,
-    fields: { cccd: { seen: true, flag: { reason: 'sai', note: '' } } } } })).toBe(true)
+    items: { A2: { seen: true, flag: { reason: 'sai', note: '' } } } } })).toBe(true)
 })
 
 test('reportUrls point at the backend', () => {
