@@ -1,7 +1,7 @@
 # Design — checklist reviewer rebuild
 
 **Date:** 2026-07-23
-**Status:** draft for review
+**Status:** approved (open points resolved — `tk`/`ngaysinh` included as value checks; C1/D1 included as document-routed confirm items)
 **Inputs:** [`review-checklist.md`](../../review-checklist.md) (the coded checks),
 the Claude-generated reviewer mockup ("Reviewer (offline)"), and the scope decisions
 in that discussion.
@@ -100,6 +100,21 @@ doesn't 1:1 cover the Acc codes — `tk`/`ngaysinh` have no canonical Acc code (
 they're `confirm` items. The builder maps what maps and routes the rest to the right
 document tab. C3, E1 (content consistency) omitted in v1 (Mode B backlog); B4/D2
 temporal checks can be added as `confirm` items later.
+
+### Assist levels (how each check is rendered)
+
+The checklist is **complete** (every v1 check present); the tool's help varies per
+check. This drives the row UI and what the doc pane does on select:
+
+| Level | Behaviour | Checks |
+|-------|-----------|--------|
+| **auto** (`identity`) | tool derives pass/weak from the match key; no reviewer value entry | G-ID |
+| **value-assisted** (`value`) | row shows "Bảng kê: {reference}" + match hint; selecting it auto-focuses the located value on the **scan** with the roster callout | B1, A1, A2, B2, BANK (`tk`), INFO (`ngaysinh`) |
+| **document-routed confirm** (`confirm`) | selecting it opens the relevant **document tab**; reviewer reads & marks Đạt / flags; no pinpoint highlight in v1 (a bbox can be added later without model changes) | G-DOC, D3, B3, C2, C1, D1 |
+
+`autostatus` (match/mismatch/review) is populated only for `value`/`identity`; it is a
+hint, never a verdict. `confirm` items have no autostatus — they start as "cần xem"
+until the reviewer confirms.
 
 ## Backend changes
 
