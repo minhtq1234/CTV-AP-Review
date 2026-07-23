@@ -29,7 +29,7 @@ def _doc_by_kind(docs: list[dict], kind: str) -> str | None:
     return None
 
 _VALUE = [
-    ("B1", "Họ tên khớp bảng kê", "contract", "name"),
+    ("B1", "Họ tên khớp bảng kê", "contract", "hoten"),
     ("A1", "Số CCCD khớp giữa chứng từ", "contract", "cccd"),
     ("A2", "Mã số thuế khớp bảng kê", "contract", "mst"),
     ("B2", "Phí dịch vụ khớp bảng kê", "contract", "phi"),

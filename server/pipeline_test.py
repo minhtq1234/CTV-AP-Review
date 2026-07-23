@@ -200,7 +200,7 @@ def test_packet_meta_no_roster_is_no_roster_with_null_identity(tmp_path, monkeyp
 def _fake_ocr_packet_for_checklist(pdf_path, start, end, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     identity = {"cccd": "048091001309", "name": "Nguyễn Văn A"}
-    fields = [{"key": "name", "expected": "", "sources": []}]
+    fields = [{"key": "hoten", "expected": "", "sources": []}]
     docs = [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ"}]
     return {"folder": {"docs": docs, "fields": fields}, "identity": identity}
 

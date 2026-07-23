@@ -1,7 +1,7 @@
 from checklist import build_checklist
 
 FIELDS = [
-  {"key": "name", "label": "Họ và tên", "expected": "Nguyễn Hoàng Phúc",
+  {"key": "hoten", "label": "Họ và tên", "expected": "Nguyễn Hoàng Phúc",
    "sources": [{"docId": "contract", "page": 0, "value": "Nguyễn Hoàng Phúc", "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]},
   {"key": "mst", "label": "MST", "expected": "095204007694",
    "sources": [{"docId": "contract", "page": 0, "value": "8391246072", "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]},
@@ -40,7 +40,7 @@ def test_weak_match_identity_is_review():
     assert c["G-ID"]["autostatus"] == "review"
 
 def test_name_with_D_stroke_matches():
-    fields = [{"key": "name", "label": "Họ và tên", "expected": "Đặng Văn Đức",
+    fields = [{"key": "hoten", "label": "Họ và tên", "expected": "Đặng Văn Đức",
                "sources": [{"docId": "contract", "page": 0, "value": "ĐẶNG VĂN ĐỨC",
                             "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]}]
     c = {x["code"]: x for x in build_checklist(fields, MATCH, DOCS)}
