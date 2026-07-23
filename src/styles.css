@@ -213,15 +213,17 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .case-error-banner { background: #fbeaea; }
 .decision-badge { font-size: 11px; margin-top: 7px; font-weight: 500; }
 
-.matchkey { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.match-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
-.match-badge.ok { background: #e6f4ea; color: #137333; }
-.match-badge.warn { background: #fef7e0; color: #b06000; }
-.match-badge.bad { background: #fce8e6; color: #c5221f; }
-.match-badge.muted { background: var(--surface-2, #eee); color: var(--text-muted); }
+.matchkey { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.match-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+  padding: 3px 10px; border-radius: 999px; font-weight: 600; line-height: 1.3; white-space: nowrap; }
+.match-badge-icon { font-size: 10px; }
+.match-badge.ok { background: #e7f3ea; color: var(--success); }
+.match-badge.warn { background: #fbf1e0; color: var(--warning); }
+.match-badge.bad { background: #fbeaea; color: var(--danger); }
+.match-badge.muted { background: #f1efe8; color: var(--text-muted); }
 .match-strip { border-collapse: collapse; font-size: 12px; }
 .match-strip th, .match-strip td { padding: 2px 10px; text-align: left; border: 0.5px solid var(--border); }
-.match-strip tr.diff td { background: #fce8e6; color: #c5221f; font-weight: 600; }
+.match-strip tr.diff td { background: #fbeaea; color: var(--danger); font-weight: 600; }
 
 .roster-callout { position: absolute; z-index: 5; pointer-events: none;
   background: #1a73e8; color: #fff; border-radius: 8px; padding: 4px 10px;
