@@ -25,7 +25,7 @@ export default function UploadFlow() {
   const [detail, setDetail] = useState<CaseDetailT | null>(null)
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
   const [folder, setFolder] = useState<CtvFolder | null>(null)
-  const [review, setReviewState] = useState<PacketReview>({ done: false, fields: {} })
+  const [review, setReviewState] = useState<PacketReview>({ done: false, items: {} })
   const [err, setErr] = useState<string | null>(null)
   const [showReport, setShowReport] = useState(false)
 
@@ -114,7 +114,7 @@ export default function UploadFlow() {
     try {
       const f = await fetchPacketManifest(caseId, index)
       const meta = detail?.packets.find(p => p.index === index)
-      setReviewState(meta?.review ?? { done: false, fields: {} })
+      setReviewState(meta?.review ?? { done: false, items: {} })
       setPacketIndex(index); setFolder(f); setScreen('review')
     } catch { setErr(CONN_ERR) }
   }

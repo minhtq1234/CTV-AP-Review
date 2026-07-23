@@ -45,7 +45,7 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
       )}
 
       <div className="case-summary">
-        <span>{packets.length} gói · {packets.filter(packetNeedsResubmit).length} cần gửi lại · {packets.reduce((n, p) => n + Object.values(p.review?.fields ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề</span>
+        <span>{packets.length} gói · {packets.filter(packetNeedsResubmit).length} cần gửi lại · {packets.reduce((n, p) => n + Object.values(p.review?.items ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề</span>
         <button className="btn primary" onClick={onExport}>Xuất báo cáo gửi lại</button>
       </div>
 
