@@ -290,3 +290,35 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .flag-reasons button { font-size:11px; padding:2px 8px; border:0.5px solid var(--border); border-radius:10px; background:var(--surface); cursor:pointer; }
 .flag-reasons button.on { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); color: var(--danger); border-color: var(--danger); }
 .flag-note { font-size:12px; padding:4px 8px; border:0.5px solid var(--border); border-radius:6px; }
+
+/* AI recap popover — overlays the scan pane's top-right, below the toolbar. */
+.recap-pop {
+  position: absolute; top: 8px; right: 8px; z-index: 20;
+  width: min(360px, calc(100% - 16px)); max-height: calc(100% - 16px);
+  display: flex; flex-direction: column;
+  background: var(--surface, #fff); color: var(--text, #1a1a1a);
+  border: 1px solid var(--border, #d9d9d9); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+.recap-pop-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border, #eee);
+}
+.recap-pop-title { font-weight: 600; }
+.recap-pop-x {
+  border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1;
+  padding: 0 4px; color: var(--text-muted, #888);
+}
+.recap-pop-x:hover { color: var(--text, #1a1a1a); }
+.recap-pop-body { padding: 10px 12px; overflow-y: auto; }
+.recap-sec-h { font-weight: 600; margin: 6px 0 4px; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: .03em; font-size: 11px; }
+.recap-bullets { margin: 0 0 6px; padding-left: 18px; }
+.recap-bullets li { margin: 3px 0; }
+.recap-nhandinh { margin: 0; }
+.recap-loading { color: var(--text-muted, #888); font-style: italic; }
+.recap-error { color: var(--danger, #b23); }
+.recap-pop-foot {
+  padding: 8px 12px; border-top: 1px solid var(--border, #eee);
+  color: var(--text-muted, #888); font-size: 11px; font-style: italic;
+}
