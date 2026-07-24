@@ -73,7 +73,7 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
   checks.push(
     { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
       evidenceDocId: contract, reference: null, source: null, autostatus: null,
-      focus: signatureFocus(folder.docs.find(d => d.kind === 'contract')) })
+      focus: signatureFocus(folder.docs.find(d => d.kind === 'contract') ?? folder.docs[0]) })
   const c2doc = bbntForC2(folder)
   if (c2doc) checks.push(
     { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
