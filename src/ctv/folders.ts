@@ -25,6 +25,15 @@ const bbntRecap = (product: string): DocRecap => ({
   nhanDinh: 'Nội dung & thời gian khớp BBNT; không thấy mâu thuẫn — có thể xác nhận C1.',
   disclaimer: RECAP_DISCLAIMER,
 })
+const appendixRecap = (product: string): DocRecap => ({
+  bullets: [
+    `Phụ lục đánh giá SOW/KPI cho sản phẩm ${product}, kỳ Quý I/2026.`,
+    'Các hạng mục KPI đều đạt chỉ tiêu; khối lượng thực hiện khớp cam kết.',
+    'Thời gian thực hiện nằm trong kỳ nghiệm thu.',
+  ],
+  nhanDinh: 'Nội dung Phụ lục phù hợp phạm vi hợp đồng; thời gian khớp — hỗ trợ xác nhận C1.',
+  disclaimer: RECAP_DISCLAIMER,
+})
 
 type FolderRecaps = { contract?: DocRecap; bbnt?: DocRecap }
 const docsFor = (id: string, recaps: FolderRecaps = {}): EvidenceDoc[] => [
@@ -60,7 +69,12 @@ const BB = { name: { x: 325, y: 335, width: 410, height: 34 }, cccd: { x: 325, y
 export const folders: CtvFolder[] = [
   {
     id: 'le-thi-mai-anh', name: 'Lê Thị Mai Anh', product: 'Crossfire: Legends',
-    status: 'pending', exempt: false, docs: docsFor('le-thi-mai-anh', { contract: contractRecap('Crossfire: Legends'), bbnt: bbntRecap('Crossfire: Legends') }),
+    status: 'pending', exempt: false,
+    docs: [
+      ...docsFor('le-thi-mai-anh', { contract: contractRecap('Crossfire: Legends'), bbnt: bbntRecap('Crossfire: Legends') }),
+      { id: 'appendix', kind: 'appendix', label: 'Phụ lục (SOW/KPI)', recap: appendixRecap('Crossfire: Legends'),
+        pages: [{ src: '/folders/le-thi-mai-anh/appendix.svg', ...A4 }] },
+    ],
     fields: [
       { key: 'name', label: 'Họ và tên', group: 'Danh tính', check: 'compare', kind: 'name', expected: 'Lê Thị Mai Anh', sources: [
         { docId: 'id_front', page: 0, value: 'LÊ THỊ MAI ANH', bbox: ID.name, confidence: 0.96 },
