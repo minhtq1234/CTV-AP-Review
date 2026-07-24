@@ -140,7 +140,8 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onSelectPage={p => { setActivePage(p); setFocusBbox(null); setFocusCaption(null) }}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={sel?.label}
-          rosterValue={sel?.kind === 'value' ? sel.reference : null} />
+          rosterValue={sel?.kind === 'value' ? sel.reference : null}
+          disabled={!!refAsset} />
         <ReferenceLightbox src={refAsset?.src ?? null} title={refAsset?.title ?? ''} onClose={() => setRefAsset(null)} />
       </div>
       <ActionBar done={review.done} seenCount={seenCount} total={codes.length}

@@ -22,11 +22,13 @@ interface Props {
   onToggleLock: () => void
   rosterLabel?: string        // focused field label, e.g. "Số CCCD"
   rosterValue?: string | null // focused field's expected (bảng kê) value
+  disabled?: boolean          // true while a modal (e.g. the reference lightbox) sits on top —
+                              // suppresses this component's window-level hotkeys
 }
 
 export default function EvidenceViewer({
   docs, activeDocId, activePage, focusBbox, focusCaption, lockView, viewMode, onSetViewMode,
-  onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue,
+  onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue, disabled,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -101,6 +103,7 @@ export default function EvidenceViewer({
   // Alt +/- to zoom — uses physical key codes so ⌥ on macOS works (⌥- would type an en-dash).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (disabled) return
       if (!e.altKey) return
       const k = e.key
       if (e.code === 'Equal' || k === '=' || k === '+' || k === '≠' || k === '±') { e.preventDefault(); zoom(1.25) }
@@ -108,12 +111,13 @@ export default function EvidenceViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [zoom])
+  }, [zoom, disabled])
 
   // U2: `B` toggles the highlight overlay — ignored while typing in a text field (same
   // input-focus guard used by FolderReview's field/document nav).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (disabled) return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
@@ -121,12 +125,13 @@ export default function EvidenceViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [disabled])
 
   // `V` toggles the roster (bảng kê) value callout — independent of the `B` box toggle above,
   // same input-focus guard.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (disabled) return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
@@ -134,11 +139,12 @@ export default function EvidenceViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [disabled])
 
   // U5: `?` opens/closes the hotkey reference; Escape closes it if open. Same input-focus guard.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (disabled) return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.key === '?' || (e.shiftKey && e.key === '/')) { e.preventDefault(); setShowHelp(v => !v) }
@@ -146,12 +152,13 @@ export default function EvidenceViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [disabled])
 
   // U4: Option/Alt + P toggles pan mode — same physical-key-code guard as Alt +/- above (⌥P
   // types 'π' on a macOS US layout), plus the input-focus guard.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (disabled) return
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey && (e.code === 'KeyP' || e.key === 'p' || e.key === 'P' || e.key === 'π')) {
@@ -161,7 +168,7 @@ export default function EvidenceViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [disabled])
 
   // U4: drag-to-pan while panMode is on — mousedown on the stage captures the frame's current
   // offset, then window-level mousemove/mouseup drag it (window-level so the drag keeps tracking
