@@ -172,7 +172,7 @@ async def post_recap(cid: str, i: int, body: RecapBody):
     try:
         out = greennode.summarize(region)  # ONLY the typed content region is sent
     except greennode.NotConfigured as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     result = {"bullets": out.get("bullets", []),
               "nhanDinh": out.get("nhanDinh", ""),
