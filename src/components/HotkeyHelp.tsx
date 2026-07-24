@@ -4,7 +4,7 @@ interface HotkeyHelpProps { open: boolean; onClose: () => void }
 // list (not a table) so it reads fine at the panel's compact width.
 const ROWS: { keys: string; desc: string }[] = [
   { keys: '↑ / ↓', desc: 'Chuyển mục kiểm tra' },
-  { keys: '← / →', desc: 'Đổi chứng từ (nguồn) của mục đang chọn' },
+  { keys: '← / →', desc: 'Chuyển trang (sang tài liệu kế khi hết trang)' },
   { keys: 'Alt + / Alt −', desc: 'Phóng to / thu nhỏ' },
   { keys: 'B', desc: 'Ẩn / hiện khung tô sáng' },
   { keys: 'F', desc: 'Đánh dấu mục cần gửi lại' },

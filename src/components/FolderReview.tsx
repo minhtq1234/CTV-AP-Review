@@ -3,7 +3,7 @@ import type { Bbox } from '../types'
 import type { CtvFolder } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
-import { clampPage } from '../logic/pageNav'
+import { clampPage, stepPage } from '../logic/pageNav'
 import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
@@ -57,9 +57,8 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   useEffect(() => { if (checks[0]) markSeen(checks[0].code) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hotkeys — input-focus + alt/ctrl/meta guards so browser/OS shortcuts (e.g. ⌘F find) pass
-  // through untouched. `F` flags the selected check; ↑↓ walk the checklist order; ←→ would
-  // step a value check across its sources, but each check has a single source in v1, so that's
-  // just a guarded no-op for now.
+  // through untouched. `F` flags the selected check; ↑↓ walk the checklist order; ←→ step
+  // through pages of the active document, rolling into the adjacent doc at the first/last page.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
@@ -75,14 +74,17 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
         const next = e.key === 'ArrowDown' ? Math.min(i + 1, checks.length - 1) : Math.max(i - 1, 0)
         focusCheck(checks[next].code)
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-        const c = checks.find(x => x.code === selectedCode)
-        const n = c?.source ? 1 : 0
-        if (n < 2) return // single-source checks (v1) — nothing to page through yet
+        e.preventDefault()
+        const dir = e.key === 'ArrowRight' ? 1 : -1
+        const { docId, page } = stepPage(folder.docs, activeDocId, activePage, dir)
+        setActiveDocId(docId)
+        setActivePage(page)
+        setFocusBbox(null)   // paging away from a located value clears its box
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [checks, selectedCode, review])
+  }, [checks, selectedCode, review, folder, activeDocId, activePage])
 
   const sel = checks.find(c => c.code === selectedCode)
   const codes = checks.map(c => c.code)
@@ -111,7 +113,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           rosterValue={sel?.kind === 'value' ? sel.reference : null} />
       </div>
       <ActionBar done={review.done} seenCount={seenCount} total={codes.length}
-        hint="↑↓ mục · ←→ tài liệu · F đánh dấu · B khung · V bảng kê · ⌥P di chuyển · ? phím tắt"
+        hint="↑↓ mục · ←→ trang · F đánh dấu · B khung · V bảng kê · ⌥P di chuyển · ? phím tắt"
         onFinish={() => { if (codes.length > 0 && allSeen(review, codes)) onReview({ ...review, done: true }) }} />
     </div>
   )
