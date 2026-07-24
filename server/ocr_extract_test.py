@@ -790,6 +790,37 @@ def test_segment_docs_first_page_unclassified_defaults_to_contract():
     assert docs[0]["pages"] == [0, 1]
 
 
+def test_classify_page_rejects_nghiem_thu_verb_without_bien_ban():
+    # Real bug (case FA-PM260226080, packets 8 & 12): a contract's payment clause
+    # "...được Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu." OCR'd into a short heading-
+    # shaped line. "nghiệm thu" there is a VERB, not the "BIÊN BẢN NGHIỆM THU"
+    # title -- and a genuine acceptance-minutes title always leads with "Biên
+    # bản". With no "biên bản" present, this must NOT classify as a document.
+    assert classify_page("Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu.") is None
+    # a genuine title (leads with "Biên bản") still classifies, same label:
+    assert classify_page("BIÊN BẢN NGHIỆM THU công việc đã hoàn thành") == \
+        ("bbnt", "Biên bản nghiệm thu")
+
+
+def test_segment_docs_keeps_contract_when_body_prose_mentions_nghiem_thu():
+    # End-to-end of the bug above: a contract body page whose payment clause says
+    # "...đồng ý nghiệm thu" (no "Biên bản") must stay part of the 4-page contract,
+    # not split into a bogus 1-page contract + a "Biên bản nghiệm thu". The
+    # genuinely-titled thanh-lý BBNT after it still opens normally.
+    filler = [f"dòng nội dung điều khoản số {i}" for i in range(6)]
+    pages = [
+        "HỢP ĐỒNG DỊCH VỤ\n" + "\n".join(filler),
+        "\n".join(["Điều 2. Phí Dịch Vụ Và Thanh Toán", "2.1 Phí dịch vụ"]
+                  + filler + ["Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu."]),
+        "\n".join(["Nội dung tiếp theo, không có tiêu đề"] + filler),
+        "BIÊN BẢN THANH LÝ HỢP ĐỒNG\n" + "\n".join(filler),
+    ]
+    docs = segment_docs(pages)
+    assert [d["kind"] for d in docs] == ["contract", "bbnt"]
+    assert docs[0]["pages"] == [0, 1, 2]   # contract keeps its body pages (not split)
+    assert docs[1]["pages"] == [3]
+
+
 if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f): f(); print(f"  ok {n}")

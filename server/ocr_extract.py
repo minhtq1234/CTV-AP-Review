@@ -487,7 +487,14 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
     ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
     ("thanh ly hop dong", "bbnt", "Biên bản thanh lý hợp đồng"),
-    ("nghiem thu", "bbnt", "Biên bản nghiệm thu"),
+    # A BARE "nghiem thu" keyword is deliberately NOT listed: "nghiệm thu" is also
+    # an ordinary verb -- a contract's payment clause reads "...được Bên Sử Dụng
+    # Dịch Vụ đồng ý nghiệm thu", and a short OCR-split body line carrying it was
+    # mis-read as this title, splitting a 4-page contract in two (real bug, case
+    # FA-PM260226080 packets 8/12). Every genuine acceptance-minutes title leads
+    # with "BIÊN BẢN", so "bien ban" below already catches them (same label,
+    # anywhere on a heading-shaped line); the bare verb only ever added the prose
+    # false positive.
     ("bien ban", "bbnt", "Biên bản nghiệm thu"),
     ("ban cam ket", "commitment", "Bản cam kết"),
     ("cam ket", "commitment", "Bản cam kết"),
