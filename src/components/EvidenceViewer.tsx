@@ -13,6 +13,7 @@ interface Props {
   activeDocId: string
   activePage: number
   focusBbox: Bbox | null
+  focusCaption?: string | null   // #7 signature-band caption (soft band instead of the red box)
   lockView: boolean
   viewMode: ViewMode
   onSetViewMode: (m: ViewMode) => void
@@ -24,7 +25,7 @@ interface Props {
 }
 
 export default function EvidenceViewer({
-  docs, activeDocId, activePage, focusBbox, lockView, viewMode, onSetViewMode,
+  docs, activeDocId, activePage, focusBbox, focusCaption, lockView, viewMode, onSetViewMode,
   onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
@@ -238,7 +239,16 @@ export default function EvidenceViewer({
                   style={{ marginLeft: i > 0 ? gap : 0 }} alt="" draggable={false} />
               ))}
             </div>
-            {viewMode === '1' && hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
+            {viewMode === '1' && !focusCaption && hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
+
+            {/* #7 signature landing: a soft dashed band + caption instead of the red value box.
+                Positioned off the highlight-independent box so it shows even when B is toggled off. */}
+            {viewMode === '1' && focusCaption && rosterBox && (
+              <>
+                <div className="doc-hl soft" style={{ left: rosterBox.left, top: rosterBox.top, width: rosterBox.width, height: rosterBox.height }} />
+                <div className="doc-caption" style={{ left: rosterBox.left, top: rosterBox.top - 26 }}>{focusCaption}</div>
+              </>
+            )}
 
             {viewMode === '1' && showRoster && rosterValue && (
               rosterBox

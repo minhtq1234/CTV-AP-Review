@@ -4,7 +4,7 @@ import type { CtvFolder } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
 import { clampPage, stepPage, stepDoc } from '../logic/pageNav'
-import type { ViewMode } from '../logic/viewMode'
+import { viewModeForCheck, type ViewMode } from '../logic/viewMode'
 import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
@@ -26,6 +26,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [activeDocId, setActiveDocId] = useState(checks[0]?.evidenceDocId ?? folder.docs[0].id)
   const [activePage, setActivePage] = useState(checks[0]?.source?.page ?? 0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(checks[0]?.source?.bbox ?? null)
+  const [focusCaption, setFocusCaption] = useState<string | null>(null)
   const [lockView, setLockView] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('1')
   const [refAsset, setRefAsset] = useState<{ src: string; title: string } | null>(null)
@@ -44,21 +45,32 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
     onReview({ ...review, items: { ...review.items, [code]: { seen: true, flag } } })
   }
 
-  // Focus a checklist row: switch the scan pane to its evidence document, and — for a value
-  // check with a located source — jump straight to that page/bbox. Confirm/identity checks
-  // just surface the right document with no highlight (nothing on the page to point at).
+  // Focus a checklist row (#2): switch the scan pane to its evidence document, re-seed the view
+  // mode to this check's default (value/signature land on 1 trang; skim opens continuous), and
+  // land where the check wants — value checks on their detected bbox (red box), signature checks
+  // on their focus band (soft dashed band + caption, no red box), skim/plain confirm on page 0
+  // with no zoom.
   const focusCheck = (code: string) => {
     setSelectedCode(code)
     const c = checks.find(x => x.code === code)
     if (!c) return
-    setActiveDocId(c.evidenceDocId ?? folder.docs[0]?.id ?? '')
-    if (c.kind === 'value' && c.source) { setActivePage(c.source.page); setFocusBbox(c.source.bbox) }
-    else { setFocusBbox(null) }   // confirm/identity → show the doc, no highlight
+    const docId = c.evidenceDocId ?? folder.docs[0]?.id ?? ''
+    setActiveDocId(docId)
+    setViewMode(viewModeForCheck(c))
+    if (c.kind === 'value' && c.source) {          // value -> red box at the detected slot
+      setActivePage(c.source.page); setFocusBbox(c.source.bbox); setFocusCaption(null)
+    } else if (c.focus) {                          // signature (#7) -> soft band + caption
+      setActivePage(c.focus.page); setFocusBbox(c.focus.bbox); setFocusCaption(c.focus.caption)
+    } else {                                        // skim / plain confirm -> no zoom
+      const d = folder.docs.find(x => x.id === docId)
+      setActivePage(clampPage(0, d?.pages.length ?? 0)); setFocusBbox(null); setFocusCaption(null)
+    }
     markSeen(code)
   }
 
-  // Seed the first check as seen on mount, same as focusing it would.
-  useEffect(() => { if (checks[0]) markSeen(checks[0].code) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Open the first check on mount exactly as focusing it would — its default view mode, focus
+  // landing, and seen-marking.
+  useEffect(() => { if (checks[0]) focusCheck(checks[0].code) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hotkeys — input-focus + alt/ctrl/meta guards so browser/OS shortcuts (e.g. ⌘F find) pass
   // through untouched. `F` flags the selected check; ↑↓ walk the checklist order; ←→ step
@@ -68,6 +80,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (refAsset) return   // reference lightbox open — don't flag/navigate the hidden checklist
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
         const cur = review.items[selectedCode]?.flag
@@ -83,20 +96,21 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
         if (viewMode === 'cont') {
           // Continuous scroll already walks pages by wheel/trackpad, so ←→ jumps documents.
           const docId = stepDoc(folder.docs, activeDocId, dir)
-          if (docId !== activeDocId) { setActiveDocId(docId); setActivePage(0); setFocusBbox(null) }
+          if (docId !== activeDocId) { setActiveDocId(docId); setActivePage(0); setFocusBbox(null); setFocusCaption(null) }
         } else {
           const next = stepPage(folder.docs, activeDocId, activePage, dir)
           if (next.docId !== activeDocId || next.page !== activePage) {
             setActiveDocId(next.docId)
             setActivePage(next.page)
             setFocusBbox(null)   // paging away from a located value clears its box
+            setFocusCaption(null)
           }
         }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [checks, selectedCode, review, folder, activeDocId, activePage, viewMode])
+  }, [checks, selectedCode, review, folder, activeDocId, activePage, viewMode, refAsset])
 
   const sel = checks.find(c => c.code === selectedCode)
   const codes = checks.map(c => c.code)
@@ -113,15 +127,16 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onSelect={focusCheck} onToggleFlag={toggleFlag}
           onOpenReference={(src, label) => setRefAsset({ src, title: `Mẫu chuẩn — ${label}` })} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
-          focusBbox={focusBbox} lockView={lockView}
+          focusBbox={focusBbox} focusCaption={focusCaption} lockView={lockView}
           viewMode={viewMode} onSetViewMode={setViewMode}
           onSelectDoc={id => {
             const d = folder.docs.find(x => x.id === id)
             setActiveDocId(id)
             setActivePage(clampPage(0, d?.pages.length ?? 0))
             setFocusBbox(null)
+            setFocusCaption(null)
           }}
-          onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
+          onSelectPage={p => { setActivePage(p); setFocusBbox(null); setFocusCaption(null) }}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={sel?.label}
           rosterValue={sel?.kind === 'value' ? sel.reference : null} />

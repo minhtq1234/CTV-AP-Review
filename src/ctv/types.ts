@@ -28,7 +28,7 @@ export interface CtvSource {
 }
 
 export type CheckTier = 'gate' | 'detail'
-export type CheckKind = 'value' | 'identity' | 'confirm'
+export type CheckKind = 'value' | 'confirm'
 export type CheckAutoStatus = 'match' | 'mismatch' | 'review'
 
 // One row of the reviewer checklist. Built by the backend (server/checklist.py) from
