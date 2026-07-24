@@ -3,7 +3,7 @@ import type { Bbox } from '../types'
 import type { CtvFolder, DocRecap, EvidenceDoc } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
-import { clampPage, stepPage, stepDoc } from '../logic/pageNav'
+import { stepPage, stepDoc } from '../logic/pageNav'
 import { viewModeForCheck, type ViewMode } from '../logic/viewMode'
 import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
@@ -27,9 +27,8 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [activeDocId, setActiveDocId] = useState(checks[0]?.evidenceDocId ?? folder.docs[0].id)
   const [activePage, setActivePage] = useState(checks[0]?.source?.page ?? 0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(checks[0]?.source?.bbox ?? null)
-  const [focusCaption, setFocusCaption] = useState<string | null>(null)
   const [lockView, setLockView] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>(checks[0] ? viewModeForCheck(checks[0]) : '1')
+  const [viewMode, setViewMode] = useState<ViewMode>(checks[0] ? viewModeForCheck(checks[0]) : 'cont')
   const [refAsset, setRefAsset] = useState<{ src: string; title: string } | null>(null)
 
   // Mark a check as seen the first time it's focused — a no-op (no onReview call) if it's
@@ -46,32 +45,26 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
     onReview({ ...review, items: { ...review.items, [code]: { seen: true, flag } } })
   }
 
-  // Focus a checklist row (#2): switch the scan pane to its evidence document, re-seed the view
-  // mode to this check's default (value/signature land on 1 trang; skim opens continuous), and
-  // land where the check wants — value checks on their detected bbox (red box), signature checks
-  // on their focus band (soft dashed band + caption, no red box), skim/plain confirm on page 0
-  // with no zoom.
+  // Focus a checklist row (#2): switch the scan pane to this check's evidence document. A VALUE
+  // check auto-focuses its located field (single page, zoom + red box + pinned bảng-kê value);
+  // signature/glance/confirm checks just open the doc (continuous scroll), no auto-focus. A manual
+  // toolbar toggle (cont/2) holds while the reviewer stays on the same check.
   const focusCheck = (code: string) => {
     const isNewCheck = code !== selectedCode
     setSelectedCode(code)
     const c = checks.find(x => x.code === code)
     if (!c) return
-    const docId = c.evidenceDocId ?? folder.docs[0]?.id ?? ''
-    setActiveDocId(docId)
-    if (isNewCheck) setViewMode(viewModeForCheck(c))   // override holds while staying on the same check
-    if (c.kind === 'value' && c.source) {          // value -> red box at the detected slot
-      setActivePage(c.source.page); setFocusBbox(c.source.bbox); setFocusCaption(null)
-    } else if (c.focus) {                          // signature (#7) -> soft band + caption
-      setActivePage(c.focus.page); setFocusBbox(c.focus.bbox); setFocusCaption(c.focus.caption)
-    } else {                                        // skim / plain confirm -> no zoom
-      const d = folder.docs.find(x => x.id === docId)
-      setActivePage(clampPage(0, d?.pages.length ?? 0)); setFocusBbox(null); setFocusCaption(null)
+    setActiveDocId(c.evidenceDocId ?? folder.docs[0]?.id ?? '')
+    if (isNewCheck) setViewMode(viewModeForCheck(c))
+    if (c.kind === 'value' && c.source) {
+      setActivePage(c.source.page); setFocusBbox(c.source.bbox)
+    } else {
+      setActivePage(0); setFocusBbox(null)
     }
     markSeen(code)
   }
 
-  // Open the first check on mount exactly as focusing it would — its default view mode, focus
-  // landing, and seen-marking.
+  // Open the first check on mount exactly as focusing it would — switch to its doc + mark seen.
   useEffect(() => { if (checks[0]) focusCheck(checks[0].code) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hotkeys — input-focus + alt/ctrl/meta guards so browser/OS shortcuts (e.g. ⌘F find) pass
@@ -98,14 +91,13 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
         if (viewMode === 'cont') {
           // Continuous scroll already walks pages by wheel/trackpad, so ←→ jumps documents.
           const docId = stepDoc(folder.docs, activeDocId, dir)
-          if (docId !== activeDocId) { setActiveDocId(docId); setActivePage(0); setFocusBbox(null); setFocusCaption(null) }
+          if (docId !== activeDocId) { setActiveDocId(docId); setActivePage(0); setFocusBbox(null) }
         } else {
           const next = stepPage(folder.docs, activeDocId, activePage, dir)
           if (next.docId !== activeDocId || next.page !== activePage) {
             setActiveDocId(next.docId)
             setActivePage(next.page)
-            setFocusBbox(null)   // paging away from a located value clears its box
-            setFocusCaption(null)
+            setFocusBbox(null)   // paging away from a located field clears its box
           }
         }
       }
@@ -129,16 +121,10 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onSelect={focusCheck} onToggleFlag={toggleFlag}
           onOpenReference={(src, label) => setRefAsset({ src, title: `Mẫu chuẩn — ${label}` })} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
-          focusBbox={focusBbox} focusCaption={focusCaption} lockView={lockView}
+          focusBbox={focusBbox} lockView={lockView}
           viewMode={viewMode} onSetViewMode={setViewMode} getRecap={getRecap}
-          onSelectDoc={id => {
-            const d = folder.docs.find(x => x.id === id)
-            setActiveDocId(id)
-            setActivePage(clampPage(0, d?.pages.length ?? 0))
-            setFocusBbox(null)
-            setFocusCaption(null)
-          }}
-          onSelectPage={p => { setActivePage(p); setFocusBbox(null); setFocusCaption(null) }}
+          onSelectDoc={id => { setActiveDocId(id); setActivePage(0); setFocusBbox(null) }}
+          onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={sel?.label}
           rosterValue={sel?.kind === 'value' ? sel.reference : null}

@@ -52,14 +52,8 @@ export interface CheckItem {
   reference: string | null
   source: CtvSource | null
   autostatus: CheckAutoStatus | null
-  focus?: CheckFocus | null       // #7 signature landing (no red box)
   referenceAsset?: string          // #6 blank reference-template asset (e.g. Mẫu 08/CK-TNCN)
 }
-
-// A soft "land & look" focus for checks with no detectable bbox (e.g. the
-// signature/seal band of a contract or BBNT). The scan pane navigates to
-// `page` and zooms to `bbox`, drawing `caption` instead of the red value box.
-export interface CheckFocus { page: number; bbox: Bbox; caption: string }
 
 export interface CtvField {
   key: string

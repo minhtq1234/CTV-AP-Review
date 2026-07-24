@@ -98,25 +98,12 @@ DOCS_PAGED = [
      "pages": [{"src": "f", "width": 1000, "height": 1400}]},
 ]
 
-def test_signature_gates_focus_last_page_bottom_band():
+def test_c2_routes_to_thanh_ly_bbnt_when_two_bbnts():
+    # C2 (chữ ký & giáp lai BBNT) opens the thanh-lý minutes when a packet has both,
+    # not the nghiệm-thu. (Signature auto-focus itself was removed — no 'focus' key.)
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS_PAGED))
-    b3 = c["B3"]["focus"]
-    assert b3 is not None
-    assert b3["page"] == 1                       # contract's last page (0-based)
-    assert b3["caption"] == "Khu vực chữ ký & con dấu"
-    assert b3["bbox"]["y"] > 1400 * 0.5          # bottom band
-    assert b3["bbox"]["y"] + b3["bbox"]["height"] <= 1400
-    assert b3["bbox"]["width"] == 1000
-
-def test_c2_focuses_thanh_ly_bbnt_when_two_bbnts():
-    c = _by_code(build_checklist(FIELDS, MATCH, DOCS_PAGED))
-    assert c["C2"]["evidenceDocId"] == "bbnt-1"   # the thanh lý one, not nghiệm thu
-    assert c["C2"]["focus"]["page"] == 1          # its last page
-
-def test_signature_focus_absent_when_doc_has_no_pages():
-    # module-level DOCS has no 'pages' -> no focus computed, no crash
-    c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
-    assert c["B3"].get("focus") in (None,)
+    assert c["C2"]["evidenceDocId"] == "bbnt-1"
+    assert "focus" not in c["C2"]
 
 def test_d3_carries_reference_asset_when_commitment_present():
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))

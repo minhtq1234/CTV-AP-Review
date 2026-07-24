@@ -1,4 +1,4 @@
-import type { CtvFolder, EvidenceKind, CheckItem, CheckAutoStatus, CheckFocus, EvidenceDoc } from './types'
+import type { CtvFolder, EvidenceKind, CheckItem, CheckAutoStatus, EvidenceDoc } from './types'
 
 // Pure builder: maps a synthetic CtvFolder (src/ctv/folders.ts) to the same coded,
 // two-tier checklist shape the backend produces (server/checklist.py's build_checklist),
@@ -16,18 +16,6 @@ function norm(s: string): string {
 }
 
 const digits = (s: string): string => (s || '').replace(/\D/g, '')
-
-const SIGN_CAPTION = 'Khu vực chữ ký & con dấu'
-const SIGN_BAND_FRAC = 0.28
-
-function signatureFocus(doc: EvidenceDoc | undefined): CheckFocus | null {
-  if (!doc || doc.pages.length === 0) return null
-  const last = doc.pages.length - 1
-  const { width: w, height: h } = doc.pages[last]
-  if (!w || !h) return null
-  const band = Math.round(h * SIGN_BAND_FRAC)
-  return { page: last, caption: SIGN_CAPTION, bbox: { x: 0, y: h - band, width: w, height: band } }
-}
 
 const bbntForC2 = (folder: CtvFolder): EvidenceDoc | undefined => {
   const bbnts = folder.docs.filter(d => d.kind === 'bbnt')
@@ -73,13 +61,11 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
       referenceAsset: '/reference/mau-08-ck-tncn-2026.svg' })
   checks.push(
     { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
-      evidenceDocId: contract, reference: null, source: null, autostatus: null,
-      focus: signatureFocus(folder.docs.find(d => d.kind === 'contract') ?? folder.docs[0]) })
+      evidenceDocId: contract, reference: null, source: null, autostatus: null })
   const c2doc = bbntForC2(folder)
   if (c2doc) checks.push(
     { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
-      evidenceDocId: c2doc.id, reference: null, source: null, autostatus: null,
-      focus: signatureFocus(c2doc) })
+      evidenceDocId: c2doc.id, reference: null, source: null, autostatus: null })
 
   for (const [code, label, fieldKey, routedKind] of VALUE) {
     const f = byKey.get(fieldKey)

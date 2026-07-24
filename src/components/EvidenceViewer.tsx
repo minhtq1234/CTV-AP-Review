@@ -14,23 +14,22 @@ interface Props {
   docs: EvidenceDoc[]
   activeDocId: string
   activePage: number
-  focusBbox: Bbox | null
-  focusCaption?: string | null   // #7 signature-band caption (soft band instead of the red box)
+  focusBbox: Bbox | null      // value check's located field — drives the '1'-mode auto-zoom + red box
   lockView: boolean
   viewMode: ViewMode
   onSetViewMode: (m: ViewMode) => void
   onSelectDoc: (id: string) => void
   onSelectPage: (page: number) => void
   onToggleLock: () => void
-  rosterLabel?: string        // focused field label, e.g. "Số CCCD"
-  rosterValue?: string | null // focused field's expected (bảng kê) value
+  rosterLabel?: string        // focused value check's field label, e.g. "Số CCCD"
+  rosterValue?: string | null // focused value check's expected (bảng kê) value
   disabled?: boolean          // true while a modal (e.g. the reference lightbox) sits on top —
                               // suppresses this component's window-level hotkeys
   getRecap?: (doc: EvidenceDoc) => Promise<DocRecap>  // seam: canned (offline) or server (live)
 }
 
 export default function EvidenceViewer({
-  docs, activeDocId, activePage, focusBbox, focusCaption, lockView, viewMode, onSetViewMode,
+  docs, activeDocId, activePage, focusBbox, lockView, viewMode, onSetViewMode,
   onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue, disabled, getRecap,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
@@ -38,8 +37,8 @@ export default function EvidenceViewer({
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
   const [contZoom, setContZoom] = useState(1) // continuous-mode width multiplier (native scroll)
-  const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
-  const [showRoster, setShowRoster] = useState(true) // pin roster value callout, toggled by V
+  const [showHighlight, setShowHighlight] = useState(true) // red locator box (B) — value focus only
+  const [showRoster, setShowRoster] = useState(true) // pinned bảng-kê value callout (V) — value focus only
   const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
   const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
   const [recapOpen, setRecapOpen] = useState(false)
@@ -65,17 +64,17 @@ export default function EvidenceViewer({
     }
   }, [doc, getRecap, recapCache, recapLoading])  // recapLoading in deps: the guard above must see its live value
   const nat = { w: page.width, h: page.height }
-  // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
-  // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
-  // keeps a stable reference across re-renders that don't actually change the source bbox
-  // (e.g. a zoom/pan update) -- otherwise the effect below would re-fit the frame on every render.
+  // Value-focus overlay geometry ('1' mode only): the located field bbox, inflated ~20% on each
+  // side for surrounding context. Memoized so zoom/pan re-renders keep a stable reference and
+  // don't re-trigger the auto-fit effect below.
   const inflated = useMemo(
     () => focusBbox ? inflateBbox(focusBbox, 0.2, nat.w, nat.h) : null,
     [focusBbox, nat.w, nat.h],
   )
 
-  // View-mode geometry. `1`/`cont` show a single page; `2` shows an even-aligned pair laid out
-  // in a row (natCombined = summed widths + gaps, tallest height) so the fit math frames both.
+  // View-mode geometry. `cont` uses native scroll; `2` shows an even-aligned pair laid out
+  // in a row (natCombined = summed widths + gaps, tallest height) so the fit math frames both;
+  // `1` (auto, value focus) shows the single page the located field sits on.
   const isCont = viewMode === 'cont'
   const gap = 16
   const pairStart = viewMode === '2' ? pageIdx - (pageIdx % 2) : pageIdx
@@ -93,14 +92,13 @@ export default function EvidenceViewer({
     return () => ro.disconnect()
   }, [])
 
-  // Auto-fit/zoom to the focused bbox — ONLY in single-page mode. The other modes never
-  // auto-focus (2 trang fits the pair below; Cuộn liên tục uses native scroll).
+  // '1' (value focus): auto-zoom to the located field bbox. Only this mode auto-focuses.
   useLayoutEffect(() => {
     if (viewMode !== '1' || lockView || vp.w === 0) return
     setFrame(loupeFrame(inflated, nat, vp))
   }, [inflated, vp.w, vp.h, activeDocId, pageIdx, lockView, viewMode])
 
-  // 2 trang: fit the current page pair (no bbox zoom) whenever the pair or viewport changes.
+  // 2 trang: fit the current page pair whenever the pair or viewport changes.
   useLayoutEffect(() => {
     if (viewMode !== '2' || lockView || vp.w === 0) return
     setFrame(loupeFrame(null, natCombined, vp))
@@ -110,7 +108,7 @@ export default function EvidenceViewer({
   useLayoutEffect(() => { if (isCont && scrollRef.current) scrollRef.current.scrollTop = 0 }, [isCont, activeDocId])
 
   // Mode-aware zoom: in continuous mode nudge the width multiplier (native scroll handles the
-  // rest); in the transform modes re-scale the frame about the viewport centre.
+  // rest); in the transform modes ('1' / '2') re-scale the frame about the viewport centre.
   const zoom = useCallback((factor: number) => {
     if (isCont) { setContZoom(z => clampZoom(z * factor)); return }
     setFrame(f => {
@@ -133,8 +131,8 @@ export default function EvidenceViewer({
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom, disabled])
 
-  // U2: `B` toggles the highlight overlay — ignored while typing in a text field (same
-  // input-focus guard used by FolderReview's field/document nav).
+  // `B` toggles the red locator box; `V` toggles the pinned bảng-kê value — both matter only in
+  // value focus ('1'). Input-focus + modifier guards so ⌘F etc. pass through untouched.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (disabled) return
@@ -142,20 +140,7 @@ export default function EvidenceViewer({
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setShowHighlight(v => !v) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [disabled])
-
-  // `V` toggles the roster (bảng kê) value callout — independent of the `B` box toggle above,
-  // same input-focus guard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (disabled) return
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-      if (e.altKey || e.ctrlKey || e.metaKey) return
-      if (e.key === 'v' || e.key === 'V') { e.preventDefault(); setShowRoster(v => !v) }
+      else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); setShowRoster(v => !v) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -230,8 +215,8 @@ export default function EvidenceViewer({
     return () => window.removeEventListener('keydown', onKey)
   }, [recapOpen])
 
-  // ⤢ resets the transform to fit the page (single) / pair (2 trang), or the width multiplier
-  // in continuous mode.
+  // ⤢ resets the transform to fit the page ('1') / pair ('2 trang'), or the width multiplier
+  // in continuous mode. (natCombined === nat in '1', so this fits the single page there.)
   const fit = () => {
     if (isCont) { setContZoom(1); return }
     setFrame(loupeFrame(null, natCombined, vp))
@@ -277,16 +262,7 @@ export default function EvidenceViewer({
                   style={{ marginLeft: i > 0 ? gap : 0 }} alt="" draggable={false} />
               ))}
             </div>
-            {viewMode === '1' && !focusCaption && hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
-
-            {/* #7 signature landing: a soft dashed band + caption instead of the red value box.
-                Positioned off the highlight-independent box so it shows even when B is toggled off. */}
-            {viewMode === '1' && focusCaption && rosterBox && (
-              <>
-                <div className="doc-hl soft" style={{ left: rosterBox.left, top: rosterBox.top, width: rosterBox.width, height: rosterBox.height }} />
-                <div className="doc-caption" style={{ left: rosterBox.left, top: rosterBox.top - 26 }}>{focusCaption}</div>
-              </>
-            )}
+            {viewMode === '1' && hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
             {viewMode === '1' && showRoster && rosterValue && (
               rosterBox
@@ -324,9 +300,9 @@ export default function EvidenceViewer({
           <span>{zoomPct}%</span>
           <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
           <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
-            aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>
+            aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B) — khi soi trường dữ liệu">▢</button>
           <button className={showRoster ? 'on' : ''} onClick={() => setShowRoster(v => !v)}
-            aria-label="Ẩn/hiện giá trị bảng kê" title="Giá trị bảng kê (V)">🏷</button>
+            aria-label="Ẩn/hiện giá trị bảng kê" title="Giá trị bảng kê (V) — khi soi trường dữ liệu">🏷</button>
           <button className={panMode ? 'on' : ''} onClick={() => setPanMode(v => !v)}
             aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>

@@ -317,12 +317,6 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .ref-body { overflow: auto; padding: 12px; background: var(--mat); }
 .ref-body img { display: block; width: 100%; height: auto; background: #fff; }
 
-/* #7 signature landing: soft dashed band + pill caption ("Khu vực chữ ký & con dấu"),
-   drawn instead of the red value box for checks that carry a `focus`. */
-.doc-hl.soft { border-style: dashed; border-color: var(--accent); background: rgba(43,108,214,.06); }
-.doc-caption { position: absolute; z-index: 5; background: var(--accent); color: #fff; font-size: 11px;
-  padding: 2px 8px; border-radius: 10px; white-space: nowrap; pointer-events: none; }
-
 /* AI recap popover — overlays the scan pane's top-right, below the toolbar. */
 .recap-pop {
   position: absolute; top: 8px; right: 8px; z-index: 20;

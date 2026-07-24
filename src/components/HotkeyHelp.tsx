@@ -6,13 +6,13 @@ const ROWS: { keys: string; desc: string }[] = [
   { keys: '↑ / ↓', desc: 'Chuyển mục kiểm tra' },
   { keys: '← / →', desc: 'Chuyển trang (sang tài liệu kế khi hết trang)' },
   { keys: 'Alt + / Alt −', desc: 'Phóng to / thu nhỏ' },
-  { keys: 'B', desc: 'Ẩn / hiện khung tô sáng' },
   { keys: 'F', desc: 'Đánh dấu mục cần gửi lại' },
-  { keys: 'V', desc: 'Ẩn/hiện giá trị bảng kê trên chứng từ' },
+  { keys: 'B', desc: 'Ẩn / hiện khung tô sáng (khi soi trường dữ liệu)' },
+  { keys: 'V', desc: 'Ẩn / hiện giá trị bảng kê trên chứng từ (khi soi trường dữ liệu)' },
   { keys: 'Option/Alt + P', desc: 'Bật/tắt di chuyển (pan) — kéo để di chuyển tài liệu' },
   { keys: '🔒', desc: 'Khoá khung nhìn (giữ nguyên khi đổi mục/chứng từ)' },
   { keys: '?', desc: 'Hiện / ẩn danh sách phím tắt này' },
-  { keys: 'Thanh chế độ xem', desc: '1 trang · Cuộn liên tục · 2 trang (trên thanh công cụ)' },
+  { keys: 'Thanh chế độ xem', desc: 'Cuộn liên tục · 2 trang (trên thanh công cụ)' },
 ]
 
 export default function HotkeyHelp({ open, onClose }: HotkeyHelpProps) {
