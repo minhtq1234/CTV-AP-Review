@@ -37,6 +37,8 @@ def _doc_obj_by_kind(docs: list[dict], kind: str) -> dict | None:
 _SIGN_CAPTION = "Khu vực chữ ký & con dấu"
 _SIGN_BAND_FRAC = 0.28   # bottom fraction of the page where sign/seal/giáp-lai sit
 
+_D3_REFERENCE_ASSET = "/reference/mau-08-ck-tncn-2026.svg"   # blank current-year Mẫu 08/CK-TNCN (PII-free)
+
 def _bbnt_for_c2(docs: list[dict]) -> dict | None:
     """C2 focuses the thanh-lý BBNT when a packet has both (nghiệm thu + thanh
     lý); else the only/first BBNT. Distinguished by label (the type enum shares
@@ -102,10 +104,13 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
         if doc is None:
             continue   # #5: routed doc absent -> no dead row
         focus = _signature_focus(doc) if code in ("B3", "C2") else None
-        checks.append({"code": code, "label": label, "tier": "gate", "kind": "confirm",
-                       "evidenceDocId": doc["id"],
-                       "reference": None, "source": None, "autostatus": None,
-                       "focus": focus})
+        check = {"code": code, "label": label, "tier": "gate", "kind": "confirm",
+                 "evidenceDocId": doc["id"],
+                 "reference": None, "source": None, "autostatus": None,
+                 "focus": focus}
+        if code == "D3":
+            check["referenceAsset"] = _D3_REFERENCE_ASSET
+        checks.append(check)
 
     for code, label, kind_doc, fkey in _VALUE:
         f = by_key.get(fkey)

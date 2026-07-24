@@ -44,6 +44,7 @@ export interface CheckItem {
   source: CtvSource | null
   autostatus: CheckAutoStatus | null
   focus?: CheckFocus | null       // #7 signature landing (no red box)
+  referenceAsset?: string          // #6 blank reference-template asset (e.g. Mẫu 08/CK-TNCN)
 }
 
 // A soft "land & look" focus for checks with no detectable bbox (e.g. the

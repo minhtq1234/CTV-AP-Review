@@ -117,3 +117,11 @@ def test_signature_focus_absent_when_doc_has_no_pages():
     # module-level DOCS has no 'pages' -> no focus computed, no crash
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
     assert c["B3"].get("focus") in (None,)
+
+def test_d3_carries_reference_asset_when_commitment_present():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
+    assert c["D3"]["referenceAsset"] == "/reference/mau-08-ck-tncn-2026.svg"
+
+def test_no_reference_asset_on_other_checks():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
+    assert c["B3"].get("referenceAsset") is None

@@ -7,6 +7,7 @@ interface Props {
   selectedCode: string
   onSelect: (code: string) => void
   onToggleFlag: (code: string, flag: FieldFlag | null) => void
+  onOpenReference: (asset: string, label: string) => void
 }
 
 // Three reviewer-progress states only. The tool does NOT surface its own auto-compare
@@ -25,7 +26,7 @@ const DOT_GLYPH: Record<RowStatus, string> = { unseen: '', seen: '✓', flag: '�
 
 const FLAG_REASONS = ['sai', 'thiếu', 'mờ, không đọc được']
 
-export default function ChecklistPanel({ checks, review, selectedCode, onSelect, onToggleFlag }: Props) {
+export default function ChecklistPanel({ checks, review, selectedCode, onSelect, onToggleFlag, onOpenReference }: Props) {
   const gates = checks.filter(c => c.tier === 'gate')
   const detail = checks.filter(c => c.tier === 'detail')
   const total = checks.length
@@ -49,6 +50,11 @@ export default function ChecklistPanel({ checks, review, selectedCode, onSelect,
           <div className="check-label">{c.label}</div>
           {c.kind === 'value' && (
             <div className="check-sub">Bảng kê: {c.reference}</div>
+          )}
+          {c.referenceAsset && (
+            <button className="ref-btn" onClick={e => { e.stopPropagation(); onOpenReference(c.referenceAsset!, c.label) }}>
+              Xem mẫu chuẩn — {(c.referenceAsset.match(/(20\d{2})/)?.[1]) ?? ''}
+            </button>
           )}
           {flagged && sel && (
             <div className="flag-editor" onClick={e => e.stopPropagation()}>

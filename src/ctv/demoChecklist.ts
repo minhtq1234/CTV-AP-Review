@@ -69,7 +69,8 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
   ]
   if (commitment) checks.push(
     { code: 'D3', label: 'Cam kết TNCN đúng mẫu năm hiện hành', tier: 'gate', kind: 'confirm',
-      evidenceDocId: commitment, reference: null, source: null, autostatus: null })
+      evidenceDocId: commitment, reference: null, source: null, autostatus: null,
+      referenceAsset: '/reference/mau-08-ck-tncn-2026.svg' })
   checks.push(
     { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
       evidenceDocId: contract, reference: null, source: null, autostatus: null,

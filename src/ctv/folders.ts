@@ -39,7 +39,8 @@ const BB = { name: { x: 325, y: 335, width: 410, height: 34 }, cccd: { x: 325, y
 export const folders: CtvFolder[] = [
   {
     id: 'le-thi-mai-anh', name: 'Lê Thị Mai Anh', product: 'Crossfire: Legends',
-    status: 'pending', exempt: false, docs: docsFor('le-thi-mai-anh'),
+    status: 'pending', exempt: false,
+    docs: [...docsFor('le-thi-mai-anh'), { id: 'commitment', kind: 'commitment', label: 'Bản cam kết', pages: [{ src: `/folders/le-thi-mai-anh/bancamket.svg`, ...A4 }] }],
     fields: [
       { key: 'name', label: 'Họ và tên', group: 'Danh tính', check: 'compare', kind: 'name', expected: 'Lê Thị Mai Anh', sources: [
         { docId: 'id_front', page: 0, value: 'LÊ THỊ MAI ANH', bbox: ID.name, confidence: 0.96 },

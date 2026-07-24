@@ -13,7 +13,7 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .dot.approved { background: var(--success); } .dot.rejected { background: var(--danger); }
 .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .screen-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border-bottom: 0.5px solid var(--border); background: var(--surface); font-size: 14px; }
-.panes { flex: 1; display: flex; min-height: 0; }
+.panes { flex: 1; display: flex; min-height: 0; position: relative; }
 .fields-pane { width: 47%; overflow-y: auto; border-right: 0.5px solid var(--border); background: var(--surface); }
 .doc-pane { width: 53%; position: relative; overflow: hidden; background: var(--mat); display: flex; align-items: center; justify-content: center; }
 .frow { padding: 10px 12px; border-bottom: 0.5px solid var(--border); cursor: pointer; font-size: 13px; }
@@ -290,3 +290,18 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .flag-reasons button { font-size:11px; padding:2px 8px; border:0.5px solid var(--border); border-radius:10px; background:var(--surface); cursor:pointer; }
 .flag-reasons button.on { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); color: var(--danger); border-color: var(--danger); }
 .flag-note { font-size:12px; padding:4px 8px; border:0.5px solid var(--border); border-radius:6px; }
+
+/* ReferenceLightbox (#6): "Xem mẫu chuẩn" button on a checklist row + the modal it opens,
+   layered over .panes (which is the positioned ancestor for the backdrop's inset:0). */
+.ref-btn { margin-top: 6px; font-size: 12px; padding: 3px 10px; border: 0.5px solid var(--accent);
+  color: var(--accent); background: transparent; border-radius: 6px; cursor: pointer; }
+.ref-btn:hover { background: #eaf1fb; }
+.ref-backdrop { position: absolute; inset: 0; background: rgba(15,23,32,.55); z-index: 20;
+  display: flex; align-items: center; justify-content: center; }
+.ref-panel { background: var(--surface); border-radius: 10px; width: min(70%, 760px); max-height: 88%;
+  display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.35); overflow: hidden; }
+.ref-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px;
+  border-bottom: 0.5px solid var(--border); }
+.ref-close { border: 0; background: transparent; font-size: 16px; cursor: pointer; }
+.ref-body { overflow: auto; padding: 12px; background: var(--mat); }
+.ref-body img { display: block; width: 100%; height: auto; background: #fff; }

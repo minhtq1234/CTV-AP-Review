@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1414" width="1000" height="1414">
+  <rect width="1000" height="1414" fill="#ffffff"/>
+  <rect x="40" y="40" width="920" height="1334" fill="none" stroke="#c8d0da" stroke-width="2"/>
+  <text x="500" y="120" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#1f2d3d">Mẫu 08/CK-TNCN</text>
+  <text x="500" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#5b6a7d">Bản cam kết thuế thu nhập cá nhân — Mẫu chuẩn (trống)</text>
+  <text x="500" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" fill="#9aa7b4">Năm 2026 · bản tham chiếu · dữ liệu trống</text>
+  <g stroke="#e3e8ee" stroke-width="1.5">
+    <line x1="80" y1="300" x2="920" y2="300"/><line x1="80" y1="360" x2="920" y2="360"/>
+    <line x1="80" y1="420" x2="920" y2="420"/><line x1="80" y1="480" x2="920" y2="480"/>
+    <line x1="80" y1="540" x2="920" y2="540"/><line x1="80" y1="600" x2="920" y2="600"/>
+  </g>
+  <!-- TODO(acc): replace this placeholder with the real blank current-year Mẫu 08/CK-TNCN (must stay PII-free). -->
+</svg>

@@ -8,6 +8,7 @@ import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
 import MatchKeyStrip from './MatchKeyStrip'
+import ReferenceLightbox from './ReferenceLightbox'
 
 interface Props {
   folder: CtvFolder
@@ -25,6 +26,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [activePage, setActivePage] = useState(checks[0]?.source?.page ?? 0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(checks[0]?.source?.bbox ?? null)
   const [lockView, setLockView] = useState(false)
+  const [refAsset, setRefAsset] = useState<{ src: string; title: string } | null>(null)
 
   // Mark a check as seen the first time it's focused — a no-op (no onReview call) if it's
   // already seen, so re-focusing / the mount-seed effect below never loops.
@@ -100,7 +102,8 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
       </header>
       <div className="panes">
         <ChecklistPanel checks={checks} review={review} selectedCode={selectedCode}
-          onSelect={focusCheck} onToggleFlag={toggleFlag} />
+          onSelect={focusCheck} onToggleFlag={toggleFlag}
+          onOpenReference={(src, label) => setRefAsset({ src, title: `Mẫu chuẩn — ${label}` })} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
           focusBbox={focusBbox} lockView={lockView}
           onSelectDoc={id => {
@@ -113,6 +116,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={sel?.label}
           rosterValue={sel?.kind === 'value' ? sel.reference : null} />
+        <ReferenceLightbox src={refAsset?.src ?? null} title={refAsset?.title ?? ''} onClose={() => setRefAsset(null)} />
       </div>
       <ActionBar done={review.done} seenCount={seenCount} total={codes.length}
         hint="↑↓ mục · ←→ trang · F đánh dấu · B khung · V bảng kê · ⌥P di chuyển · ? phím tắt"
