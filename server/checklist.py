@@ -54,14 +54,6 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
     checks.append({"code": "G-DOC", "label": "Đủ chứng từ bắt buộc", "tier": "gate",
                    "kind": "confirm", "evidenceDocId": None,
                    "reference": None, "source": None, "autostatus": None})
-    matched_by = match.get("matchedBy", "no-roster")
-    checks.append({"code": "G-ID", "label": "Đúng người — CCCD & tên khớp", "tier": "gate",
-                   "kind": "identity", "evidenceDocId": contract,
-                   "reference": (match.get("rosterIdentity") or {}).get("cccd", ""),
-                   "source": ({"docId": contract, "page": 0,
-                               "value": (match.get("ocrIdentity") or {}).get("cccd", ""),
-                               "bbox": None, "confidence": 1.0} if contract else None),
-                   "autostatus": "match" if matched_by == "cccd" else "review"})
     for code, label, kind_doc in _CONFIRM_GATES:
         checks.append({"code": code, "label": label, "tier": "gate", "kind": "confirm",
                        "evidenceDocId": contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc),

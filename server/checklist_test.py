@@ -17,9 +17,10 @@ def _by_code(checks): return {c["code"]: c for c in checks}
 def test_emits_gates_first_then_detail_in_order():
     checks = build_checklist(FIELDS, MATCH, DOCS)
     codes = [c["code"] for c in checks]
-    assert codes[:5] == ["G-DOC", "G-ID", "D3", "B3", "C2"]
-    assert set(codes[5:]) <= {"B1","A1","A2","B2","BANK","INFO","C1","D1"}
-    assert all(c["tier"] == "gate" for c in checks[:5])
+    assert codes[:4] == ["G-DOC", "D3", "B3", "C2"]
+    assert "G-ID" not in codes
+    assert set(codes[4:]) <= {"B1", "A1", "A2", "B2", "BANK", "INFO", "C1", "D1"}
+    assert all(c["tier"] == "gate" for c in checks[:4])
 
 def test_value_check_carries_reference_source_and_autostatus():
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
@@ -28,16 +29,12 @@ def test_value_check_carries_reference_source_and_autostatus():
     assert c["A2"]["autostatus"] == "mismatch"
     assert c["B2"]["autostatus"] == "review"
 
-def test_identity_and_confirm_kinds():
+def test_confirm_kinds_and_routing():
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
-    assert c["G-ID"]["kind"] == "identity" and c["G-ID"]["autostatus"] == "match"
+    assert "G-ID" not in c
     assert c["B3"]["kind"] == "confirm" and c["B3"]["evidenceDocId"] == "contract"
     assert c["C2"]["evidenceDocId"] == "bbnt" and c["D3"]["evidenceDocId"] == "camket"
     assert c["G-DOC"]["evidenceDocId"] is None
-
-def test_weak_match_identity_is_review():
-    c = _by_code(build_checklist(FIELDS, {**MATCH, "matchedBy": "name"}, DOCS))
-    assert c["G-ID"]["autostatus"] == "review"
 
 def test_name_with_D_stroke_matches():
     fields = [{"key": "hoten", "label": "Họ và tên", "expected": "Đặng Văn Đức",

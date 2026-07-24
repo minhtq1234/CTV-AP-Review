@@ -217,7 +217,8 @@ def test_manifest_carries_checks(tmp_path, monkeypatch):
     manifest_path = os.path.join(str(tmp_path), "packets", "0", "manifest.json")
     m = json.load(open(manifest_path, encoding="utf-8"))
     codes = [c["code"] for c in m["checks"]]
-    assert codes[:2] == ["G-DOC", "G-ID"]
+    assert codes[0] == "G-DOC"
+    assert "G-ID" not in codes
     assert "B1" in codes
 
 

@@ -1,4 +1,4 @@
-import type { CtvFolder, CtvField, EvidenceKind, CheckItem, CheckAutoStatus } from './types'
+import type { CtvFolder, EvidenceKind, CheckItem, CheckAutoStatus } from './types'
 
 // Pure builder: maps a synthetic CtvFolder (src/ctv/folders.ts) to the same coded,
 // two-tier checklist shape the backend produces (server/checklist.py's build_checklist),
@@ -40,17 +40,10 @@ const VALUE: ReadonlyArray<readonly [string, string, string]> = [
 export function demoChecklist(folder: CtvFolder): CheckItem[] {
   const byKey = new Map(folder.fields.map(f => [f.key, f] as const))
   const contract = docByKind(folder, 'contract') ?? folder.docs[0]?.id ?? null
-  const cccd: CtvField | undefined = byKey.get('cccd')
 
   const checks: CheckItem[] = [
     { code: 'G-DOC', label: 'Đủ chứng từ bắt buộc', tier: 'gate', kind: 'confirm',
       evidenceDocId: null, reference: null, source: null, autostatus: null },
-    // The demo has no roster to mismatch against (identityOf() in DemoFlow builds both
-    // ocrIdentity and rosterIdentity from the same field), so -- like matchedBy === 'cccd'
-    // in the real checklist -- this gate always reads as a confirmed match.
-    { code: 'G-ID', label: 'Đúng người — CCCD & tên khớp', tier: 'gate', kind: 'identity',
-      evidenceDocId: contract, reference: cccd?.expected ?? '', source: cccd?.sources[0] ?? null,
-      autostatus: 'match' },
     { code: 'D3', label: 'Cam kết TNCN đúng mẫu năm hiện hành', tier: 'gate', kind: 'confirm',
       evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
     { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
