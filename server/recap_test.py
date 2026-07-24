@@ -43,3 +43,13 @@ def test_greennode_unconfigured_by_default(monkeypatch):
     assert greennode.is_configured() is False
     with pytest.raises(greennode.NotConfigured):
         greennode.summarize("bất kỳ nội dung nào")
+
+
+def test_greennode_configured_but_live_call_not_wired(monkeypatch):
+    # Both creds set → is_configured() is True, but the live call is still a TODO,
+    # so summarize() must keep raising NotConfigured (the endpoint maps that to 503).
+    monkeypatch.setenv("GREENNODE_API_URL", "https://greennode.example/api")
+    monkeypatch.setenv("GREENNODE_API_KEY", "test-key")
+    assert greennode.is_configured() is True
+    with pytest.raises(greennode.NotConfigured):
+        greennode.summarize("nội dung vùng đã gõ")
