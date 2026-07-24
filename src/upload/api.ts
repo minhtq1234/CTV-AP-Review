@@ -2,9 +2,9 @@
 // upload a scanned PDF (+ optional roster) as a durable **case**, list/inspect
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, DocRecap } from '../ctv/types'
 
-export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus } from '../ctv/types'
+export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus, DocRecap } from '../ctv/types'
 
 export const API_BASE = 'http://127.0.0.1:8000'
 
@@ -222,6 +222,22 @@ export async function fetchPacketManifest(caseId: string, index: number): Promis
   if (!res.ok) throw new Error(`fetchPacketManifest: HTTP ${res.status}`)
   const json = (await res.json()) as CtvFolder
   return withAbsolutePageSrc(json, API_BASE)
+}
+
+// POST the doc id; the server sends only that doc's typed content region to GreenNode
+// and returns the recap (or 503 when GreenNode isn't wired — surfaced as the popover error).
+export async function fetchDocRecap(caseId: string, index: number, docId: string): Promise<DocRecap> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/recap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ docId }),
+  })
+  if (!res.ok) {
+    let detail = ''
+    try { detail = (await res.json())?.detail ?? '' } catch { /* non-JSON body */ }
+    throw new Error(detail || `Không tạo được bản tóm tắt (HTTP ${res.status}).`)
+  }
+  return res.json()
 }
 
 // "12/32 đã xong" (+ " · 3 cần gửi lại" when there's at least one flagged packet).

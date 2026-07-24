@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CtvFolder } from '../ctv/types'
-import { listCases, getCase, createCase, setReview, deleteCase, fetchPacketManifest } from '../upload/api'
+import { listCases, getCase, createCase, setReview, deleteCase, fetchPacketManifest, fetchDocRecap } from '../upload/api'
 import type { CaseSummary, CaseDetail as CaseDetailT, Progress, PacketReview } from '../upload/api'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
@@ -201,6 +201,9 @@ export default function UploadFlow() {
           matchedBy={meta?.matchedBy ?? 'no-roster'}
           ocrIdentity={meta?.ocrIdentity ?? { cccd: '', name: '' }}
           rosterIdentity={meta?.rosterIdentity ?? null}
+          getRecap={caseId && packetIndex != null
+            ? doc => fetchDocRecap(caseId, packetIndex, doc.id)
+            : undefined}
           onReview={r => { setReviewState(r); flushReview(r) }}
         />
       </div>
