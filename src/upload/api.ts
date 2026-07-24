@@ -233,9 +233,12 @@ export async function fetchDocRecap(caseId: string, index: number, docId: string
     body: JSON.stringify({ docId }),
   })
   if (!res.ok) {
-    let detail = ''
-    try { detail = (await res.json())?.detail ?? '' } catch { /* non-JSON body */ }
-    throw new Error(detail || `Không tạo được bản tóm tắt (HTTP ${res.status}).`)
+    // Keep server-side jargon (env-var names, "TODO", English detail) out of the popover.
+    // 503 = GreenNode not wired yet (the documented TODO); anything else is an unexpected error.
+    const msg = res.status === 503
+      ? 'Tính năng AI tóm tắt chưa sẵn sàng trên máy chủ này.'
+      : `Không tạo được bản tóm tắt (HTTP ${res.status}).`
+    throw new Error(msg)
   }
   return res.json()
 }
