@@ -36,6 +36,20 @@ def test_confirm_kinds_and_routing():
     assert c["C2"]["evidenceDocId"] == "bbnt" and c["D3"]["evidenceDocId"] == "camket"
     assert c["G-DOC"]["evidenceDocId"] is None
 
+def test_value_check_prefers_source_on_its_routed_doc():
+    # hoten located on BOTH bbnt (readable) and contract (unread slot); B1 routes
+    # to 'contract', so it must pick the contract source, not sources[0].
+    fields = [{"key": "hoten", "label": "Họ và tên", "expected": "Nguyễn Hoàng Phúc",
+               "sources": [
+                   {"docId": "bbnt", "page": 2, "value": "Nguyễn Hoàng Phúc",
+                    "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9},
+                   {"docId": "contract", "page": 0, "value": "",
+                    "bbox": {"x":5,"y":5,"width":9,"height":3}, "confidence": 0.0},
+               ]}]
+    c = {x["code"]: x for x in build_checklist(fields, MATCH, DOCS)}
+    assert c["B1"]["evidenceDocId"] == "contract"
+    assert c["B1"]["source"]["docId"] == "contract"
+
 def test_name_with_D_stroke_matches():
     fields = [{"key": "hoten", "label": "Họ và tên", "expected": "Đặng Văn Đức",
                "sources": [{"docId": "contract", "page": 0, "value": "ĐẶNG VĂN ĐỨC",

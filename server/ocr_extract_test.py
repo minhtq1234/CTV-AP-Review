@@ -2,6 +2,7 @@ from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
     classify_page, segment_docs, locate_field, _upright_rotation,
+    _hits_for_doc,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -505,6 +506,37 @@ def test_find_name_prose_mention_still_produces_no_source():
         W("đồng", 180, 50, 35, 18), W("ý", 220, 50, 15, 18), W("rằng", 240, 50, 30, 18),
     ]]
     assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
+
+
+# ---------------------------------------------------------------------------
+# Guard: `_hits_for_doc` (the real entry point `extract_fields`/`ocr_packet`
+# use) must still box a located "cần xem" name slot at the contract's
+# all-caps supplier label even with trailing "(Ký, ghi rõ ...)" boilerplate
+# and unread handwriting below it -- pins the precondition that
+# build_checklist's routed-source fix (server/checklist.py) relies on: the
+# contract DOES get a hoten source from find_name's geometric fallback, it's
+# just not always the one a bare `sources[0]` pick lands on.
+# ---------------------------------------------------------------------------
+
+def _word(text, x, y, w=40, h=20, conf=90):
+    return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
+
+_HOTEN_SPEC = next(s for s in FIELD_SPECS if s["key"] == "hoten")
+
+def test_name_gets_located_slot_on_contract_supplier_label():
+    # All-caps supplier label with trailing "(Ký, ghi rõ ...)" and unread
+    # handwriting below -> hoten still gets a boxed, value-less slot here.
+    page0 = [
+        _word("BÊN", 100, 500), _word("CUNG", 150, 500), _word("ỨNG", 210, 500),
+        _word("DỊCH", 260, 500), _word("VỤ", 320, 500),
+        _word("(Ký,", 380, 500), _word("ghi", 430, 500), _word("rõ", 470, 500),
+    ]
+    hits = _hits_for_doc(_HOTEN_SPEC, {0: page0})
+    assert hits, "expected a located name slot on the contract page"
+    page_idx, hit = hits[0]
+    assert page_idx == 0 and hit["value"] == "" and hit["confidence"] == 0.0
+    assert hit["bbox"]["width"] > 0 and hit["bbox"]["x"] >= 320  # right of the label
+
 
 def test_build_manifest_shape():
     fields = extract_fields({}, {"name": "X"})

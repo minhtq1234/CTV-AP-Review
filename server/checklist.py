@@ -66,9 +66,11 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
         f = by_key.get(fkey)
         if not f:
             continue
-        src = (f.get("sources") or [None])[0]
+        sources = f.get("sources") or []
+        routed = contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)
+        src = next((s for s in sources if s and s.get("docId") == routed), None) or (sources[0] if sources else None)
         checks.append({"code": code, "label": label, "tier": "detail", "kind": "value",
-                       "evidenceDocId": (src or {}).get("docId") or (contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)),
+                       "evidenceDocId": (src or {}).get("docId") or routed,
                        "reference": f.get("expected", ""), "source": src,
                        "autostatus": _autostatus(f.get("expected", ""), src)})
     for code, label, kind_doc in _CONFIRM_DETAIL:

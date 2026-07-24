@@ -27,14 +27,17 @@ function autostatus(reference: string, source: { value: string } | null): CheckA
   return norm(reference) === norm(value) ? 'match' : 'mismatch'
 }
 
-// [code, label, folder field key] -- mirrors server/checklist.py's _VALUE table, minus the
-// rows the synthetic folders have no field for (`mst` -> A2; see folders.ts's field keys).
-const VALUE: ReadonlyArray<readonly [string, string, string]> = [
-  ['B1', 'Họ tên khớp bảng kê', 'name'],
-  ['A1', 'Số CCCD khớp giữa chứng từ', 'cccd'],
-  ['B2', 'Phí dịch vụ khớp bảng kê', 'gross'],
-  ['BANK', 'Số tài khoản khớp bảng kê', 'bank_acct'],
-  ['INFO', 'Ngày sinh khớp hồ sơ', 'dob'],
+// [code, label, folder field key, routed doc kind] -- mirrors server/checklist.py's _VALUE
+// table, minus the rows the synthetic folders have no field for (`mst` -> A2; see
+// folders.ts's field keys). The routed kind is what a document-routed value check (e.g. B1's
+// "họ tên") prefers a source from -- so, say, a typed BBNT source never outranks the
+// contract's own (possibly unread) slot just by being sources[0].
+const VALUE: ReadonlyArray<readonly [string, string, string, EvidenceKind]> = [
+  ['B1', 'Họ tên khớp bảng kê', 'name', 'contract'],
+  ['A1', 'Số CCCD khớp giữa chứng từ', 'cccd', 'contract'],
+  ['B2', 'Phí dịch vụ khớp bảng kê', 'gross', 'contract'],
+  ['BANK', 'Số tài khoản khớp bảng kê', 'bank_acct', 'contract'],
+  ['INFO', 'Ngày sinh khớp hồ sơ', 'dob', 'contract'],
 ]
 
 export function demoChecklist(folder: CtvFolder): CheckItem[] {
@@ -57,10 +60,11 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
     { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
       evidenceDocId: bbnt, reference: null, source: null, autostatus: null })
 
-  for (const [code, label, fieldKey] of VALUE) {
+  for (const [code, label, fieldKey, routedKind] of VALUE) {
     const f = byKey.get(fieldKey)
     if (!f) continue
-    const src = f.sources[0] ?? null
+    const routed = docByKind(folder, routedKind) ?? contract
+    const src = f.sources.find(s => s.docId === routed) ?? f.sources[0] ?? null
     checks.push({
       code, label, tier: 'detail', kind: 'value',
       evidenceDocId: src?.docId ?? contract,
