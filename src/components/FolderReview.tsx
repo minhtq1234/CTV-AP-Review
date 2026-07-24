@@ -76,10 +76,12 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
         e.preventDefault()
         const dir = e.key === 'ArrowRight' ? 1 : -1
-        const { docId, page } = stepPage(folder.docs, activeDocId, activePage, dir)
-        setActiveDocId(docId)
-        setActivePage(page)
-        setFocusBbox(null)   // paging away from a located value clears its box
+        const next = stepPage(folder.docs, activeDocId, activePage, dir)
+        if (next.docId !== activeDocId || next.page !== activePage) {
+          setActiveDocId(next.docId)
+          setActivePage(next.page)
+          setFocusBbox(null)   // paging away from a located value clears its box
+        }
       }
     }
     window.addEventListener('keydown', onKey)

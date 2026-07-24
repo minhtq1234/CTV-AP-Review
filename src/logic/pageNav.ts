@@ -25,7 +25,7 @@ export function stepPage(
   if (dir === 1) {
     if (p < last) return { docId: doc.id, page: p + 1 }
     if (di < docs.length - 1) return { docId: docs[di + 1].id, page: 0 }
-    return { docId: doc.id, page: last }               // at the very end
+    return { docId: doc.id, page: Math.max(0, last) }   // at the very end
   } else {
     if (p > 0) return { docId: doc.id, page: p - 1 }
     if (di > 0) {
