@@ -6,6 +6,14 @@ import type { Bbox, CaseStatus, FieldKind } from '../types'
 // from 'pit' (Tra cứu thuế), which it used to share a kind with before #010.
 export type EvidenceKind = 'id_front' | 'id_back' | 'contract' | 'commitment' | 'pit' | 'bbnt' | 'appendix'
 
+// AI recap of a content-bearing doc (Tóm tắt + Nhận định + footer disclaimer). An
+// assist, never a verdict — displaying it never marks or flags a check.
+export interface DocRecap {
+  bullets: string[]   // Tóm tắt — 2–3 plain bullets
+  nhanDinh: string    // Nhận định — a tentative conclusion
+  disclaimer: string  // footer disclaimer
+}
+
 export interface DocPage { src: string; width: number; height: number } // natural px
 
 export interface EvidenceDoc {
@@ -13,6 +21,7 @@ export interface EvidenceDoc {
   kind: EvidenceKind
   label: string
   pages: DocPage[]
+  recap?: DocRecap   // canned recap baked into synthetic demo packets (offline export)
 }
 
 export type CheckGroup = 'Danh tính' | 'Ngân hàng' | 'Thanh toán' | 'Chính sách' | 'Chứng từ' | 'Chuyến đi'

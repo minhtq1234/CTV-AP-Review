@@ -125,3 +125,18 @@ def test_d3_carries_reference_asset_when_commitment_present():
 def test_no_reference_asset_on_other_checks():
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
     assert c["B3"].get("referenceAsset") is None
+
+DOCS_WITH_APPENDIX = [
+    {"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ"},
+    {"id": "bbnt", "kind": "bbnt", "label": "Biên bản nghiệm thu"},
+    {"id": "pluc", "kind": "appendix", "label": "Phụ lục"},
+]
+
+def test_c1_routes_to_appendix_when_present():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS_WITH_APPENDIX))
+    assert c["C1"]["evidenceDocId"] == "pluc"
+    assert c["C1"]["kind"] == "confirm" and c["C1"]["tier"] == "detail"
+
+def test_c1_falls_back_to_bbnt_when_no_appendix():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
+    assert c["C1"]["evidenceDocId"] == "bbnt"

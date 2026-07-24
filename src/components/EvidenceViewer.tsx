@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Bbox, Frame } from '../types'
-import type { EvidenceDoc } from '../ctv/types'
+import type { DocRecap, EvidenceDoc } from '../ctv/types'
 import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
 import { calloutAnchor } from '../logic/review'
 import { clampPage } from '../logic/pageNav'
 import { ViewMode, VIEW_MODES, clampZoom } from '../logic/viewMode'
+import { isContentBearing } from '../logic/recap'
 import { assetUrl } from '../assets'
 import HotkeyHelp from './HotkeyHelp'
+import RecapPopover from './RecapPopover'
 
 interface Props {
   docs: EvidenceDoc[]
@@ -24,11 +26,12 @@ interface Props {
   rosterValue?: string | null // focused field's expected (bảng kê) value
   disabled?: boolean          // true while a modal (e.g. the reference lightbox) sits on top —
                               // suppresses this component's window-level hotkeys
+  getRecap?: (doc: EvidenceDoc) => Promise<DocRecap>  // seam: canned (offline) or server (live)
 }
 
 export default function EvidenceViewer({
   docs, activeDocId, activePage, focusBbox, focusCaption, lockView, viewMode, onSetViewMode,
-  onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue, disabled,
+  onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue, disabled, getRecap,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -39,11 +42,28 @@ export default function EvidenceViewer({
   const [showRoster, setShowRoster] = useState(true) // pin roster value callout, toggled by V
   const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
   const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
+  const [recapOpen, setRecapOpen] = useState(false)
+  const [recapLoading, setRecapLoading] = useState(false)
+  const [recapError, setRecapError] = useState<string | null>(null)
+  const [recapCache, setRecapCache] = useState<Record<string, DocRecap>>({})
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
   const pageCount = doc.pages.length
   const pageIdx = clampPage(activePage, pageCount)   // never out of range
   const page = doc.pages[pageIdx] ?? doc.pages[0]
+  const openRecap = useCallback(async () => {
+    setRecapOpen(true); setRecapError(null)
+    if (recapCache[doc.id] || recapLoading || !getRecap) return  // cached → instant; already loading / no resolver → don't refetch
+    setRecapLoading(true)
+    try {
+      const r = await getRecap(doc)
+      setRecapCache(m => ({ ...m, [doc.id]: r }))
+    } catch (e) {
+      setRecapError(e instanceof Error ? e.message : 'Không tạo được bản tóm tắt.')
+    } finally {
+      setRecapLoading(false)
+    }
+  }, [doc, getRecap, recapCache, recapLoading])  // recapLoading in deps: the guard above must see its live value
   const nat = { w: page.width, h: page.height }
   // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
   // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
@@ -199,6 +219,17 @@ export default function EvidenceViewer({
     }
   }, [panMode])
 
+  // Close the recap when the active document changes — a recap is per-doc.
+  useEffect(() => { setRecapOpen(false); setRecapError(null); setRecapLoading(false) }, [activeDocId])
+
+  // Escape closes the recap while it's open.
+  useEffect(() => {
+    if (!recapOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setRecapOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [recapOpen])
+
   // ⤢ resets the transform to fit the page (single) / pair (2 trang), or the width multiplier
   // in continuous mode.
   const fit = () => {
@@ -300,7 +331,17 @@ export default function EvidenceViewer({
             aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
           <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
           <button onClick={() => setShowHelp(v => !v)} aria-label="Danh sách phím tắt" title="Phím tắt (?)">?</button>
+          {getRecap && isContentBearing(doc.kind) && (
+            <button className={recapOpen ? 'on' : ''} onClick={openRecap}
+              aria-label="AI tóm tắt tài liệu" title="AI tóm tắt tài liệu">✨</button>
+          )}
         </div>
+
+        {recapOpen && (
+          <RecapPopover loading={recapLoading} error={recapError}
+            recap={recapCache[doc.id] ?? null} docLabel={doc.label}
+            onClose={() => setRecapOpen(false)} />
+        )}
       </div>
       <HotkeyHelp open={showHelp} onClose={() => setShowHelp(false)} />
     </section>

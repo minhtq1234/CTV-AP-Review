@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, DocRecap, EvidenceDoc } from '../ctv/types'
 import { folders as seedFolders } from '../ctv/folders'
 import type { PacketReview, Identity } from '../upload/api'
 import { packetStatus, PACKET_STATUS_LABEL, type PacketStatusKind } from '../logic/review'
 import { demoChecklist } from '../ctv/demoChecklist'
+import { RECAP_DISCLAIMER } from '../logic/recap'
 import FolderReview from './FolderReview'
 
 // Offline demo entry for the single-file export (chosen in App when window.__ASSETS__
@@ -63,6 +64,17 @@ export default function DemoFlow() {
   const prev = idx > 0 ? idx - 1 : null
   const next = idx < folders.length - 1 ? idx + 1 : null
   const folder = folders[idx]
+
+  // Canned recap: read the recap baked into the synthetic doc, behind a short delay
+  // so the popover shows its spinner. No network, PII-free — this is what the offline
+  // export demonstrates. Live GreenNode drops in behind the same getRecap seam (UploadFlow).
+  const cannedRecap = (doc: EvidenceDoc): Promise<DocRecap> =>
+    new Promise(resolve => setTimeout(() => resolve(doc.recap ?? {
+      bullets: ['Chưa có bản tóm tắt mẫu cho tài liệu này.'],
+      nhanDinh: 'Không có nhận định.',
+      disclaimer: RECAP_DISCLAIMER,
+    }), 500))
+
   return (
     <div className="review-flow">
       <div className="review-back-bar">
@@ -85,6 +97,7 @@ export default function DemoFlow() {
         ocrIdentity={identityOf(folder)}
         rosterIdentity={identityOf(folder)}
         onReview={r => setReviews(m => ({ ...m, [folder.id]: r }))}
+        getRecap={cannedRecap}
       />
     </div>
   )

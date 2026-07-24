@@ -1,4 +1,5 @@
-import type { EvidenceDoc, CtvFolder } from './types'
+import type { DocRecap, EvidenceDoc, CtvFolder } from './types'
+import { RECAP_DISCLAIMER } from '../logic/recap'
 
 // Hand-made folders: synthetic evidence documents (public/folders/<id>/*.svg) plus the
 // Excel-row "claimed" values and seeded AI extractions. Each field is cross-checked against
@@ -6,10 +7,39 @@ import type { EvidenceDoc, CtvFolder } from './types'
 const CARD = { width: 1010, height: 636 }
 const A4 = { width: 1010, height: 1400 }
 
-const docsFor = (id: string): EvidenceDoc[] => [
+const contractRecap = (product: string): DocRecap => ({
+  bullets: [
+    `Hợp đồng cung ứng dịch vụ CTV cho sản phẩm ${product}.`,
+    'Phạm vi: cung ứng dịch vụ theo thoả thuận; phí chi trả một lần.',
+    'Trang cuối có mục chữ ký & con dấu của hai bên.',
+  ],
+  nhanDinh: 'Nội dung hợp đồng phù hợp phạm vi CTV; chưa thấy mâu thuẫn với bảng kê.',
+  disclaimer: RECAP_DISCLAIMER,
+})
+const bbntRecap = (product: string): DocRecap => ({
+  bullets: [
+    `Biên bản nghiệm thu dịch vụ ${product}.`,
+    'Xác nhận đã hoàn thành khối lượng công việc trong kỳ.',
+    'Thời gian nghiệm thu nằm trong kỳ thanh toán.',
+  ],
+  nhanDinh: 'Nội dung & thời gian khớp BBNT; không thấy mâu thuẫn — có thể xác nhận C1.',
+  disclaimer: RECAP_DISCLAIMER,
+})
+const appendixRecap = (product: string): DocRecap => ({
+  bullets: [
+    `Phụ lục đánh giá SOW/KPI cho sản phẩm ${product}, kỳ Quý I/2026.`,
+    'Các hạng mục KPI đều đạt chỉ tiêu; khối lượng thực hiện khớp cam kết.',
+    'Thời gian thực hiện nằm trong kỳ nghiệm thu.',
+  ],
+  nhanDinh: 'Nội dung Phụ lục phù hợp phạm vi hợp đồng; thời gian khớp — hỗ trợ xác nhận C1.',
+  disclaimer: RECAP_DISCLAIMER,
+})
+
+type FolderRecaps = { contract?: DocRecap; bbnt?: DocRecap }
+const docsFor = (id: string, recaps: FolderRecaps = {}): EvidenceDoc[] => [
   { id: 'id_front', kind: 'id_front', label: 'CCCD mặt trước', pages: [{ src: `/folders/${id}/cccd-front.svg`, ...CARD }] },
   { id: 'id_back', kind: 'id_back', label: 'CCCD mặt sau', pages: [{ src: `/folders/${id}/cccd-back.svg`, ...CARD }] },
-  { id: 'contract', kind: 'contract', label: 'Hợp đồng (5 trang)', pages: [
+  { id: 'contract', kind: 'contract', label: 'Hợp đồng (5 trang)', recap: recaps.contract, pages: [
     { src: `/folders/${id}/contract.svg`, ...A4 },
     { src: '/folders/_shared/contract-2.svg', ...A4 },
     { src: '/folders/_shared/contract-3.svg', ...A4 },
@@ -17,7 +47,7 @@ const docsFor = (id: string): EvidenceDoc[] => [
     { src: `/folders/${id}/contract-5.svg`, ...A4 },
   ] },
   { id: 'pit', kind: 'pit', label: 'Tờ khai PIT', pages: [{ src: `/folders/${id}/pit.svg`, ...A4 }] },
-  { id: 'bbnt', kind: 'bbnt', label: 'Biên bản nghiệm thu', pages: [{ src: `/folders/${id}/bbnt.svg`, ...A4 }] },
+  { id: 'bbnt', kind: 'bbnt', label: 'Biên bản nghiệm thu', recap: recaps.bbnt, pages: [{ src: `/folders/${id}/bbnt.svg`, ...A4 }] },
 ]
 
 // box coordinates per document layout (natural px)
@@ -40,7 +70,12 @@ export const folders: CtvFolder[] = [
   {
     id: 'le-thi-mai-anh', name: 'Lê Thị Mai Anh', product: 'Crossfire: Legends',
     status: 'pending', exempt: false,
-    docs: [...docsFor('le-thi-mai-anh'), { id: 'commitment', kind: 'commitment', label: 'Bản cam kết', pages: [{ src: `/folders/le-thi-mai-anh/bancamket.svg`, ...A4 }] }],
+    docs: [
+      ...docsFor('le-thi-mai-anh', { contract: contractRecap('Crossfire: Legends'), bbnt: bbntRecap('Crossfire: Legends') }),
+      { id: 'commitment', kind: 'commitment', label: 'Bản cam kết', pages: [{ src: `/folders/le-thi-mai-anh/bancamket.svg`, ...A4 }] },
+      { id: 'appendix', kind: 'appendix', label: 'Phụ lục (SOW/KPI)', recap: appendixRecap('Crossfire: Legends'),
+        pages: [{ src: '/folders/le-thi-mai-anh/appendix.svg', ...A4 }] },
+    ],
     fields: [
       { key: 'name', label: 'Họ và tên', group: 'Danh tính', check: 'compare', kind: 'name', expected: 'Lê Thị Mai Anh', sources: [
         { docId: 'id_front', page: 0, value: 'LÊ THỊ MAI ANH', bbox: ID.name, confidence: 0.96 },
@@ -79,7 +114,7 @@ export const folders: CtvFolder[] = [
   },
   {
     id: 'tran-minh-khoa', name: 'Trần Minh Khoa', product: 'Play Together',
-    status: 'pending', exempt: false, docs: docsFor('tran-minh-khoa'),
+    status: 'pending', exempt: false, docs: docsFor('tran-minh-khoa', { contract: contractRecap('Play Together'), bbnt: bbntRecap('Play Together') }),
     fields: [
       { key: 'name', label: 'Họ và tên', group: 'Danh tính', check: 'compare', kind: 'name', expected: 'Trần Minh Khoa', sources: [
         { docId: 'id_front', page: 0, value: 'TRẦN MINH KHOA', bbox: ID.name, confidence: 0.96 },
@@ -118,7 +153,7 @@ export const folders: CtvFolder[] = [
   },
   {
     id: 'pham-quoc-hung', name: 'Phạm Quốc Hưng', product: 'Danh Tướng 3Q',
-    status: 'pending', exempt: true, docs: docsFor('pham-quoc-hung'),
+    status: 'pending', exempt: true, docs: docsFor('pham-quoc-hung', { contract: contractRecap('Danh Tướng 3Q'), bbnt: bbntRecap('Danh Tướng 3Q') }),
     fields: [
       { key: 'name', label: 'Họ và tên', group: 'Danh tính', check: 'compare', kind: 'name', expected: 'Phạm Quốc Hưng', sources: [
         { docId: 'id_front', page: 0, value: 'PHẠM QUỐC HƯNG', bbox: ID.name, confidence: 0.95 },

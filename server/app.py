@@ -25,6 +25,8 @@ from pydantic import BaseModel
 import threading
 
 import checklist
+import greennode
+import recap
 from cases import CaseStore, progress_of
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
@@ -138,6 +140,47 @@ async def put_review(cid: str, i: int, body: ReviewBody):
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
     return {"packet": packet, "progress": progress_of(updated["packets"]),
             "status": updated["status"]}
+
+
+class RecapBody(BaseModel):
+    docId: str
+
+
+@app.post("/api/cases/{cid}/packets/{i}/recap")
+async def post_recap(cid: str, i: int, body: RecapBody):
+    """AI recap of one content-bearing doc. Sends ONLY that doc's typed content
+    region to GreenNode (see recap.content_region_for); caches the result in the
+    manifest so repeat views are instant. 503 when GreenNode isn't wired — the
+    offline export uses the canned recap instead."""
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    path = os.path.join(store.case_dir(cid), "packets", str(i), "manifest.json")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="manifest not found")
+    with open(path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    cached = (manifest.get("recaps") or {}).get(body.docId)
+    if cached:
+        return cached
+
+    region = recap.content_region_for(manifest, body.docId)
+    if region is None:
+        raise HTTPException(status_code=404, detail="no typed content region for this doc")
+
+    try:
+        out = greennode.summarize(region)  # ONLY the typed content region is sent
+    except greennode.NotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    result = {"bullets": out.get("bullets", []),
+              "nhanDinh": out.get("nhanDinh", ""),
+              "disclaimer": recap.DISCLAIMER}
+    manifest.setdefault("recaps", {})[body.docId] = result
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return result
 
 
 def _load_manifests(cid: str, packets: list[dict]) -> dict:

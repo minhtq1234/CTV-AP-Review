@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bbox } from '../types'
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, DocRecap, EvidenceDoc } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
 import { clampPage, stepPage, stepDoc } from '../logic/pageNav'
@@ -18,9 +18,10 @@ interface Props {
   ocrIdentity: Identity
   rosterIdentity: Identity | null
   onReview: (review: PacketReview) => void
+  getRecap?: (doc: EvidenceDoc) => Promise<DocRecap>  // seam: forwarded to the doc pane
 }
 
-export default function FolderReview({ folder, review, matchedBy, ocrIdentity, rosterIdentity, onReview }: Props) {
+export default function FolderReview({ folder, review, matchedBy, ocrIdentity, rosterIdentity, onReview, getRecap }: Props) {
   const checks = folder.checks ?? []
   const [selectedCode, setSelectedCode] = useState(checks[0]?.code ?? '')
   const [activeDocId, setActiveDocId] = useState(checks[0]?.evidenceDocId ?? folder.docs[0].id)
@@ -129,7 +130,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onOpenReference={(src, label) => setRefAsset({ src, title: `Mẫu chuẩn — ${label}` })} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
           focusBbox={focusBbox} focusCaption={focusCaption} lockView={lockView}
-          viewMode={viewMode} onSetViewMode={setViewMode}
+          viewMode={viewMode} onSetViewMode={setViewMode} getRecap={getRecap}
           onSelectDoc={id => {
             const d = folder.docs.find(x => x.id === id)
             setActiveDocId(id)

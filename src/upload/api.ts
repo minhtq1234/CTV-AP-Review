@@ -2,9 +2,9 @@
 // upload a scanned PDF (+ optional roster) as a durable **case**, list/inspect
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, DocRecap } from '../ctv/types'
 
-export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus } from '../ctv/types'
+export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus, DocRecap } from '../ctv/types'
 
 export const API_BASE = 'http://127.0.0.1:8000'
 
@@ -222,6 +222,25 @@ export async function fetchPacketManifest(caseId: string, index: number): Promis
   if (!res.ok) throw new Error(`fetchPacketManifest: HTTP ${res.status}`)
   const json = (await res.json()) as CtvFolder
   return withAbsolutePageSrc(json, API_BASE)
+}
+
+// POST the doc id; the server sends only that doc's typed content region to GreenNode
+// and returns the recap (or 503 when GreenNode isn't wired — surfaced as the popover error).
+export async function fetchDocRecap(caseId: string, index: number, docId: string): Promise<DocRecap> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/recap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ docId }),
+  })
+  if (!res.ok) {
+    // Keep server-side jargon (env-var names, "TODO", English detail) out of the popover.
+    // 503 = GreenNode not wired yet (the documented TODO); anything else is an unexpected error.
+    const msg = res.status === 503
+      ? 'Tính năng AI tóm tắt chưa sẵn sàng trên máy chủ này.'
+      : `Không tạo được bản tóm tắt (HTTP ${res.status}).`
+    throw new Error(msg)
+  }
+  return res.json()
 }
 
 // "12/32 đã xong" (+ " · 3 cần gửi lại" when there's at least one flagged packet).
