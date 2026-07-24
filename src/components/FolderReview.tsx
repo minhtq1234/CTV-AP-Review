@@ -28,7 +28,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(checks[0]?.source?.bbox ?? null)
   const [focusCaption, setFocusCaption] = useState<string | null>(null)
   const [lockView, setLockView] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('1')
+  const [viewMode, setViewMode] = useState<ViewMode>(checks[0] ? viewModeForCheck(checks[0]) : '1')
   const [refAsset, setRefAsset] = useState<{ src: string; title: string } | null>(null)
 
   // Mark a check as seen the first time it's focused — a no-op (no onReview call) if it's
@@ -51,12 +51,13 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   // on their focus band (soft dashed band + caption, no red box), skim/plain confirm on page 0
   // with no zoom.
   const focusCheck = (code: string) => {
+    const isNewCheck = code !== selectedCode
     setSelectedCode(code)
     const c = checks.find(x => x.code === code)
     if (!c) return
     const docId = c.evidenceDocId ?? folder.docs[0]?.id ?? ''
     setActiveDocId(docId)
-    setViewMode(viewModeForCheck(c))
+    if (isNewCheck) setViewMode(viewModeForCheck(c))   // override holds while staying on the same check
     if (c.kind === 'value' && c.source) {          // value -> red box at the detected slot
       setActivePage(c.source.page); setFocusBbox(c.source.bbox); setFocusCaption(null)
     } else if (c.focus) {                          // signature (#7) -> soft band + caption
