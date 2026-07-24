@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bbox } from '../types'
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, DocRecap, EvidenceDoc } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
 import ChecklistPanel from './ChecklistPanel'
@@ -15,9 +15,10 @@ interface Props {
   ocrIdentity: Identity
   rosterIdentity: Identity | null
   onReview: (review: PacketReview) => void
+  getRecap?: (doc: EvidenceDoc) => Promise<DocRecap>  // seam: forwarded to the doc pane
 }
 
-export default function FolderReview({ folder, review, matchedBy, ocrIdentity, rosterIdentity, onReview }: Props) {
+export default function FolderReview({ folder, review, matchedBy, ocrIdentity, rosterIdentity, onReview, getRecap }: Props) {
   const checks = folder.checks ?? []
   const [selectedCode, setSelectedCode] = useState(checks[0]?.code ?? '')
   const [activeDocId, setActiveDocId] = useState(checks[0]?.evidenceDocId ?? folder.docs[0].id)
@@ -97,7 +98,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
         <ChecklistPanel checks={checks} review={review} selectedCode={selectedCode}
           onSelect={focusCheck} onToggleFlag={toggleFlag} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
-          focusBbox={focusBbox} lockView={lockView}
+          focusBbox={focusBbox} lockView={lockView} getRecap={getRecap}
           onSelectDoc={id => { setActiveDocId(id); setFocusBbox(null) }}
           onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
           onToggleLock={() => setLockView(v => !v)}
