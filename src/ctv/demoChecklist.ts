@@ -73,7 +73,9 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
 
   checks.push(
     { code: 'C1', label: 'Nội dung & thời gian khớp BBNT', tier: 'detail', kind: 'confirm',
-      evidenceDocId: docByKind(folder, 'bbnt'), reference: null, source: null, autostatus: null },
+      // Content lives in the Phụ lục when present, else the BBNT body. Single check.
+      evidenceDocId: docByKind(folder, 'appendix') ?? docByKind(folder, 'bbnt'),
+      reference: null, source: null, autostatus: null },
     { code: 'D1', label: 'Thông tin & MST khớp cam kết', tier: 'detail', kind: 'confirm',
       evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
   )

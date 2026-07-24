@@ -77,7 +77,12 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                        "reference": f.get("expected", ""), "source": src,
                        "autostatus": _autostatus(f.get("expected", ""), src)})
     for code, label, kind_doc in _CONFIRM_DETAIL:
+        doc_id = _doc_by_kind(docs, kind_doc)
+        if code == "C1":
+            # Content lives in the Phụ lục (typed SOW/KPI/Actual) when present;
+            # fall back to the BBNT body otherwise. One check either way (no split).
+            doc_id = _doc_by_kind(docs, "appendix") or doc_id
         checks.append({"code": code, "label": label, "tier": "detail", "kind": "confirm",
-                       "evidenceDocId": _doc_by_kind(docs, kind_doc),
+                       "evidenceDocId": doc_id,
                        "reference": None, "source": None, "autostatus": None})
     return checks
