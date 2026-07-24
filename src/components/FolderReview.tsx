@@ -3,6 +3,7 @@ import type { Bbox } from '../types'
 import type { CtvFolder } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
+import { clampPage } from '../logic/pageNav'
 import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
@@ -98,7 +99,12 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onSelect={focusCheck} onToggleFlag={toggleFlag} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
           focusBbox={focusBbox} lockView={lockView}
-          onSelectDoc={id => { setActiveDocId(id); setFocusBbox(null) }}
+          onSelectDoc={id => {
+            const d = folder.docs.find(x => x.id === id)
+            setActiveDocId(id)
+            setActivePage(clampPage(0, d?.pages.length ?? 0))
+            setFocusBbox(null)
+          }}
           onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={sel?.label}

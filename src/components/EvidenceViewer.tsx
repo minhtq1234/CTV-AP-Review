@@ -3,6 +3,7 @@ import type { Bbox, Frame } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
 import { calloutAnchor } from '../logic/review'
+import { clampPage } from '../logic/pageNav'
 import { assetUrl } from '../assets'
 import HotkeyHelp from './HotkeyHelp'
 
@@ -32,7 +33,9 @@ export default function EvidenceViewer({
   const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
-  const page = doc.pages[activePage] ?? doc.pages[0]
+  const pageCount = doc.pages.length
+  const pageIdx = clampPage(activePage, pageCount)   // never out of range
+  const page = doc.pages[pageIdx] ?? doc.pages[0]
   const nat = { w: page.width, h: page.height }
   // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
   // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
@@ -159,7 +162,6 @@ export default function EvidenceViewer({
   // Roster callout anchors off the field box regardless of the `B` highlight toggle — `V` is
   // an independent on/off switch, so it must not depend on `hl` (which goes null when B is off).
   const rosterBox = inflated ? boxToViewport(inflated, frame) : null
-  const pageCount = doc.pages.length
 
   return (
     <section className="ev">
@@ -201,9 +203,9 @@ export default function EvidenceViewer({
 
         {pageCount > 1 && (
           <div className="doc-pager">
-            <button disabled={activePage === 0} onClick={() => onSelectPage(activePage - 1)} aria-label="Trang trước">‹</button>
-            <span>{activePage + 1} / {pageCount}</span>
-            <button disabled={activePage === pageCount - 1} onClick={() => onSelectPage(activePage + 1)} aria-label="Trang sau">›</button>
+            <button disabled={pageIdx === 0} onClick={() => onSelectPage(pageIdx - 1)} aria-label="Trang trước">‹</button>
+            <span>{pageIdx + 1} / {pageCount}</span>
+            <button disabled={pageIdx === pageCount - 1} onClick={() => onSelectPage(pageIdx + 1)} aria-label="Trang sau">›</button>
           </div>
         )}
 
