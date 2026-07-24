@@ -3,7 +3,8 @@ import type { Bbox } from '../types'
 import type { CtvFolder } from '../ctv/types'
 import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
 import { allSeen } from '../logic/review'
-import { clampPage, stepPage } from '../logic/pageNav'
+import { clampPage, stepPage, stepDoc } from '../logic/pageNav'
+import type { ViewMode } from '../logic/viewMode'
 import ChecklistPanel from './ChecklistPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
@@ -26,6 +27,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [activePage, setActivePage] = useState(checks[0]?.source?.page ?? 0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(checks[0]?.source?.bbox ?? null)
   const [lockView, setLockView] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('1')
   const [refAsset, setRefAsset] = useState<{ src: string; title: string } | null>(null)
 
   // Mark a check as seen the first time it's focused — a no-op (no onReview call) if it's
@@ -78,17 +80,23 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
         e.preventDefault()
         const dir = e.key === 'ArrowRight' ? 1 : -1
-        const next = stepPage(folder.docs, activeDocId, activePage, dir)
-        if (next.docId !== activeDocId || next.page !== activePage) {
-          setActiveDocId(next.docId)
-          setActivePage(next.page)
-          setFocusBbox(null)   // paging away from a located value clears its box
+        if (viewMode === 'cont') {
+          // Continuous scroll already walks pages by wheel/trackpad, so ←→ jumps documents.
+          const docId = stepDoc(folder.docs, activeDocId, dir)
+          if (docId !== activeDocId) { setActiveDocId(docId); setActivePage(0); setFocusBbox(null) }
+        } else {
+          const next = stepPage(folder.docs, activeDocId, activePage, dir)
+          if (next.docId !== activeDocId || next.page !== activePage) {
+            setActiveDocId(next.docId)
+            setActivePage(next.page)
+            setFocusBbox(null)   // paging away from a located value clears its box
+          }
         }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [checks, selectedCode, review, folder, activeDocId, activePage])
+  }, [checks, selectedCode, review, folder, activeDocId, activePage, viewMode])
 
   const sel = checks.find(c => c.code === selectedCode)
   const codes = checks.map(c => c.code)
@@ -106,6 +114,7 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           onOpenReference={(src, label) => setRefAsset({ src, title: `Mẫu chuẩn — ${label}` })} />
         <EvidenceViewer docs={folder.docs} activeDocId={activeDocId} activePage={activePage}
           focusBbox={focusBbox} lockView={lockView}
+          viewMode={viewMode} onSetViewMode={setViewMode}
           onSelectDoc={id => {
             const d = folder.docs.find(x => x.id === id)
             setActiveDocId(id)

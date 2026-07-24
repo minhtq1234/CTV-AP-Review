@@ -4,6 +4,7 @@ import type { EvidenceDoc } from '../ctv/types'
 import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
 import { calloutAnchor } from '../logic/review'
 import { clampPage } from '../logic/pageNav'
+import { ViewMode, VIEW_MODES, clampZoom } from '../logic/viewMode'
 import { assetUrl } from '../assets'
 import HotkeyHelp from './HotkeyHelp'
 
@@ -13,6 +14,8 @@ interface Props {
   activePage: number
   focusBbox: Bbox | null
   lockView: boolean
+  viewMode: ViewMode
+  onSetViewMode: (m: ViewMode) => void
   onSelectDoc: (id: string) => void
   onSelectPage: (page: number) => void
   onToggleLock: () => void
@@ -21,12 +24,14 @@ interface Props {
 }
 
 export default function EvidenceViewer({
-  docs, activeDocId, activePage, focusBbox, lockView, onSelectDoc, onSelectPage, onToggleLock,
-  rosterLabel, rosterValue,
+  docs, activeDocId, activePage, focusBbox, lockView, viewMode, onSetViewMode,
+  onSelectDoc, onSelectPage, onToggleLock, rosterLabel, rosterValue,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const [vp, setVp] = useState({ w: 0, h: 0 })
   const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
+  const [contZoom, setContZoom] = useState(1) // continuous-mode width multiplier (native scroll)
   const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
   const [showRoster, setShowRoster] = useState(true) // pin roster value callout, toggled by V
   const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
@@ -46,6 +51,18 @@ export default function EvidenceViewer({
     [focusBbox, nat.w, nat.h],
   )
 
+  // View-mode geometry. `1`/`cont` show a single page; `2` shows an even-aligned pair laid out
+  // in a row (natCombined = summed widths + gaps, tallest height) so the fit math frames both.
+  const isCont = viewMode === 'cont'
+  const gap = 16
+  const pairStart = viewMode === '2' ? pageIdx - (pageIdx % 2) : pageIdx
+  const step = viewMode === '2' ? 2 : 1
+  const pagesInView = viewMode === '2' ? doc.pages.slice(pairStart, pairStart + 2) : [page]
+  const natCombined = viewMode === '2'
+    ? { w: pagesInView.reduce((s, p) => s + p.width, 0) + gap * (pagesInView.length - 1),
+        h: Math.max(...pagesInView.map(p => p.height)) }
+    : nat
+
   useLayoutEffect(() => {
     const el = ref.current!
     const ro = new ResizeObserver(() => setVp({ w: el.clientWidth, h: el.clientHeight }))
@@ -53,16 +70,32 @@ export default function EvidenceViewer({
     return () => ro.disconnect()
   }, [])
 
+  // Auto-fit/zoom to the focused bbox — ONLY in single-page mode. The other modes never
+  // auto-focus (2 trang fits the pair below; Cuộn liên tục uses native scroll).
   useLayoutEffect(() => {
-    if (lockView || vp.w === 0) return
+    if (viewMode !== '1' || lockView || vp.w === 0) return
     setFrame(loupeFrame(inflated, nat, vp))
-  }, [inflated, vp.w, vp.h, activeDocId, activePage, lockView])
+  }, [inflated, vp.w, vp.h, activeDocId, pageIdx, lockView, viewMode])
 
-  const zoom = useCallback((factor: number) => setFrame(f => {
-    const s = Math.max(0.1, Math.min(6, f.scale * factor))
-    const cx = (vp.w / 2 - f.tx) / f.scale, cy = (vp.h / 2 - f.ty) / f.scale
-    return { scale: s, tx: vp.w / 2 - cx * s, ty: vp.h / 2 - cy * s }
-  }), [vp.w, vp.h])
+  // 2 trang: fit the current page pair (no bbox zoom) whenever the pair or viewport changes.
+  useLayoutEffect(() => {
+    if (viewMode !== '2' || lockView || vp.w === 0) return
+    setFrame(loupeFrame(null, natCombined, vp))
+  }, [viewMode, pairStart, activeDocId, vp.w, vp.h, lockView])
+
+  // Cuộn liên tục: reset the native scroll to the top when entering the mode or changing doc.
+  useLayoutEffect(() => { if (isCont && scrollRef.current) scrollRef.current.scrollTop = 0 }, [isCont, activeDocId])
+
+  // Mode-aware zoom: in continuous mode nudge the width multiplier (native scroll handles the
+  // rest); in the transform modes re-scale the frame about the viewport centre.
+  const zoom = useCallback((factor: number) => {
+    if (isCont) { setContZoom(z => clampZoom(z * factor)); return }
+    setFrame(f => {
+      const s = Math.max(0.1, Math.min(6, f.scale * factor))
+      const cx = (vp.w / 2 - f.tx) / f.scale, cy = (vp.h / 2 - f.ty) / f.scale
+      return { scale: s, tx: vp.w / 2 - cx * s, ty: vp.h / 2 - cy * s }
+    })
+  }, [vp.w, vp.h, isCont])
 
   // Alt +/- to zoom — uses physical key codes so ⌥ on macOS works (⌥- would type an en-dash).
   useEffect(() => {
@@ -131,7 +164,8 @@ export default function EvidenceViewer({
 
   // U4: drag-to-pan while panMode is on — mousedown on the stage captures the frame's current
   // offset, then window-level mousemove/mouseup drag it (window-level so the drag keeps tracking
-  // even if the cursor leaves the stage bounds mid-drag).
+  // even if the cursor leaves the stage bounds mid-drag). No-op in continuous mode (native
+  // scroll instead — the stage isn't rendered, so mousedown never fires there).
   const onStageMouseDown = (e: React.MouseEvent) => {
     if (!panMode) return
     e.preventDefault()
@@ -157,11 +191,17 @@ export default function EvidenceViewer({
     }
   }, [panMode])
 
-  const fit = () => setFrame(loupeFrame(null, nat, vp))
+  // ⤢ resets the transform to fit the page (single) / pair (2 trang), or the width multiplier
+  // in continuous mode.
+  const fit = () => {
+    if (isCont) { setContZoom(1); return }
+    setFrame(loupeFrame(null, natCombined, vp))
+  }
   const hl = showHighlight && inflated ? boxToViewport(inflated, frame) : null
   // Roster callout anchors off the field box regardless of the `B` highlight toggle — `V` is
   // an independent on/off switch, so it must not depend on `hl` (which goes null when B is off).
   const rosterBox = inflated ? boxToViewport(inflated, frame) : null
+  const zoomPct = Math.round((isCont ? contZoom : frame.scale) * 100)
 
   return (
     <section className="ev">
@@ -175,44 +215,65 @@ export default function EvidenceViewer({
           </button>
         ))}
       </div>
-      <div className={panMode ? 'ev-stage panning' : 'ev-stage'} ref={ref} onMouseDown={onStageMouseDown}>
-        <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-          <img src={assetUrl(page.src)} width={nat.w} height={nat.h} alt="" draggable={false} />
+      <div className="ev-view" ref={ref}>
+        <div className="ev-modes">
+          {VIEW_MODES.map(m => (
+            <button key={m.mode} className={m.mode === viewMode ? 'on' : ''}
+              onClick={() => onSetViewMode(m.mode)}>{m.label}</button>
+          ))}
         </div>
-        {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
-        {showRoster && rosterValue && (
-          rosterBox
-            ? (() => {
-                const CALLOUT_H = 52
-                const a = calloutAnchor(rosterBox, CALLOUT_H, vp.h)
-                return (
-                  <div className={`roster-callout ${a.placement}`} style={{ left: a.left, top: a.top }}>
-                    <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
-                    <div className="roster-callout-val">{rosterValue}</div>
-                  </div>
-                )
-              })()
-            : (
-                <div className="roster-callout corner">
-                  <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
-                  <div className="roster-callout-val">{rosterValue}</div>
-                </div>
-              )
+        {isCont ? (
+          <div className="ev-scroll" ref={scrollRef}>
+            {doc.pages.map((p, i) => (
+              <img key={i} className="cont-page" src={assetUrl(p.src)}
+                style={{ width: (vp.w * 0.92) * contZoom, height: 'auto' }} alt="" draggable={false} />
+            ))}
+          </div>
+        ) : (
+          <div className={panMode ? 'ev-stage panning' : 'ev-stage'} onMouseDown={onStageMouseDown}>
+            <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
+              {pagesInView.map((p, i) => (
+                <img key={i} src={assetUrl(p.src)} width={p.width} height={p.height}
+                  style={{ marginLeft: i > 0 ? gap : 0 }} alt="" draggable={false} />
+              ))}
+            </div>
+            {viewMode === '1' && hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
+
+            {viewMode === '1' && showRoster && rosterValue && (
+              rosterBox
+                ? (() => {
+                    const CALLOUT_H = 52
+                    const a = calloutAnchor(rosterBox, CALLOUT_H, vp.h)
+                    return (
+                      <div className={`roster-callout ${a.placement}`} style={{ left: a.left, top: a.top }}>
+                        <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                        <div className="roster-callout-val">{rosterValue}</div>
+                      </div>
+                    )
+                  })()
+                : (
+                    <div className="roster-callout corner">
+                      <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                      <div className="roster-callout-val">{rosterValue}</div>
+                    </div>
+                  )
+            )}
+          </div>
         )}
 
-        {pageCount > 1 && (
+        {!isCont && pageCount > 1 && (
           <div className="doc-pager">
-            <button disabled={pageIdx === 0} onClick={() => onSelectPage(pageIdx - 1)} aria-label="Trang trước">‹</button>
-            <span>{pageIdx + 1} / {pageCount}</span>
-            <button disabled={pageIdx === pageCount - 1} onClick={() => onSelectPage(pageIdx + 1)} aria-label="Trang sau">›</button>
+            <button disabled={pairStart === 0} onClick={() => onSelectPage(Math.max(0, pageIdx - step))} aria-label="Trang trước">‹</button>
+            <span>{viewMode === '2' ? `${pairStart + 1}–${Math.min(pairStart + 2, pageCount)} / ${pageCount}` : `${pageIdx + 1} / ${pageCount}`}</span>
+            <button disabled={pairStart + step >= pageCount} onClick={() => onSelectPage(Math.min(pageCount - 1, pageIdx + step))} aria-label="Trang sau">›</button>
           </div>
         )}
 
         <div className="doc-tools">
           <button onClick={fit} aria-label="Vừa khung">⤢</button>
           <button onClick={() => zoom(0.8)} aria-label="Thu nhỏ">−</button>
-          <span>{Math.round(frame.scale * 100)}%</span>
+          <span>{zoomPct}%</span>
           <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
           <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
             aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>

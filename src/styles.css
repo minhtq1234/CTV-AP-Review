@@ -19,7 +19,7 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .frow { padding: 10px 12px; border-bottom: 0.5px solid var(--border); cursor: pointer; font-size: 13px; }
 .frow.sel { background: #eaf1fb; }
 
-.doc-page { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.doc-page { position: absolute; top: 0; left: 0; transform-origin: 0 0; display: flex; align-items: flex-start; }
 .doc-page img { display: block; }
 .doc-hl { position: absolute; border: 2px solid var(--danger); border-radius: 3px;
   background: rgba(192,57,43,0.10); pointer-events: none; }
@@ -99,6 +99,17 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
    :not(.on) so the active tab always keeps the accent treatment below regardless of kind. */
 .ev-tab:hover:not(.on) { border-color: var(--accent); color: var(--accent); }
 .ev-tab.on { border-color: var(--accent); color: #fff; background: var(--accent); font-weight: 600; }
+/* Task 8: stable wrapper for all three view modes — the ResizeObserver observes THIS (not the
+   transform stage, which is absent in continuous mode) so the viewport size stays valid. */
+.ev-view { flex: 1; position: relative; min-height: 0; display: flex; }
+.ev-modes { position: absolute; top: 10px; left: 10px; z-index: 3; display: flex; gap: 2px;
+  background: var(--surface); border: 0.5px solid var(--border); border-radius: 8px; padding: 2px; }
+.ev-modes button { border: 0; background: transparent; cursor: pointer; font-size: 12px;
+  padding: 3px 8px; border-radius: 6px; color: var(--text-muted); white-space: nowrap; }
+.ev-modes button.on { background: var(--accent); color: #fff; }
+.ev-scroll { flex: 1; overflow: auto; background: var(--mat); padding: 16px; display: flex;
+  flex-direction: column; align-items: center; gap: 16px; }
+.cont-page { display: block; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.15); max-width: none; }
 .ev-stage { flex: 1; position: relative; overflow: hidden; background: var(--mat); }
 /* U4: pan mode shows a grab cursor and blocks text selection while dragging the page. */
 .ev-stage.panning { cursor: grab; user-select: none; }

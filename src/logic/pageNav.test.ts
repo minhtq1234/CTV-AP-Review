@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampPage, stepPage } from './pageNav'
+import { clampPage, stepPage, stepDoc } from './pageNav'
 
 describe('clampPage', () => {
   it('clamps a stale high index down to the last page', () => {
@@ -37,5 +37,14 @@ describe('stepPage', () => {
   })
   it('stays put at the very last page going forward', () => {
     expect(stepPage(DOCS, 'c', 2, +1)).toEqual({ docId: 'c', page: 2 })
+  })
+})
+
+describe('stepDoc', () => {
+  it('moves to the next document', () => { expect(stepDoc(DOCS, 'a', +1)).toBe('b') })
+  it('moves to the previous document', () => { expect(stepDoc(DOCS, 'b', -1)).toBe('a') })
+  it('clamps at the ends', () => {
+    expect(stepDoc(DOCS, 'a', -1)).toBe('a')
+    expect(stepDoc(DOCS, 'c', +1)).toBe('c')
   })
 })

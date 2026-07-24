@@ -12,6 +12,7 @@ const ROWS: { keys: string; desc: string }[] = [
   { keys: 'Option/Alt + P', desc: 'Bật/tắt di chuyển (pan) — kéo để di chuyển tài liệu' },
   { keys: '🔒', desc: 'Khoá khung nhìn (giữ nguyên khi đổi mục/chứng từ)' },
   { keys: '?', desc: 'Hiện / ẩn danh sách phím tắt này' },
+  { keys: 'Thanh chế độ xem', desc: '1 trang · Cuộn liên tục · 2 trang (trên thanh công cụ)' },
 ]
 
 export default function HotkeyHelp({ open, onClose }: HotkeyHelpProps) {

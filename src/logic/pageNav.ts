@@ -35,3 +35,9 @@ export function stepPage(
     return { docId: doc.id, page: 0 }                   // at the very start
   }
 }
+
+/** Step to the adjacent document id (clamped at the ends). */
+export function stepDoc(docs: EvidenceDoc[], activeDocId: string, dir: 1 | -1): string {
+  const i = Math.max(0, docs.findIndex(d => d.id === activeDocId))
+  return docs[Math.max(0, Math.min(i + dir, docs.length - 1))].id
+}
