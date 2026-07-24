@@ -84,3 +84,36 @@ def test_bbnt_routed_checks_omitted_when_no_bbnt():
     codes = [c["code"] for c in build_checklist(FIELDS, MATCH, docs)]
     assert "C2" not in codes   # C2 routes to bbnt; none present -> omitted
     assert "B3" in codes       # B3 routes to contract (present) -> kept
+
+DOCS_PAGED = [
+    {"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ",
+     "pages": [{"src": "a", "width": 1000, "height": 1400},
+               {"src": "b", "width": 1000, "height": 1400}]},
+    {"id": "bbnt-0", "kind": "bbnt", "label": "Biên bản nghiệm thu",
+     "pages": [{"src": "c", "width": 1000, "height": 1400}]},
+    {"id": "bbnt-1", "kind": "bbnt", "label": "Biên bản thanh lý hợp đồng",
+     "pages": [{"src": "d", "width": 1000, "height": 1400},
+               {"src": "e", "width": 1000, "height": 1400}]},
+    {"id": "camket", "kind": "commitment", "label": "Bản cam kết",
+     "pages": [{"src": "f", "width": 1000, "height": 1400}]},
+]
+
+def test_signature_gates_focus_last_page_bottom_band():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS_PAGED))
+    b3 = c["B3"]["focus"]
+    assert b3 is not None
+    assert b3["page"] == 1                       # contract's last page (0-based)
+    assert b3["caption"] == "Khu vực chữ ký & con dấu"
+    assert b3["bbox"]["y"] > 1400 * 0.5          # bottom band
+    assert b3["bbox"]["y"] + b3["bbox"]["height"] <= 1400
+    assert b3["bbox"]["width"] == 1000
+
+def test_c2_focuses_thanh_ly_bbnt_when_two_bbnts():
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS_PAGED))
+    assert c["C2"]["evidenceDocId"] == "bbnt-1"   # the thanh lý one, not nghiệm thu
+    assert c["C2"]["focus"]["page"] == 1          # its last page
+
+def test_signature_focus_absent_when_doc_has_no_pages():
+    # module-level DOCS has no 'pages' -> no focus computed, no crash
+    c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
+    assert c["B3"].get("focus") in (None,)

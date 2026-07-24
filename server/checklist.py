@@ -28,6 +28,44 @@ def _doc_by_kind(docs: list[dict], kind: str) -> str | None:
             return d["id"]
     return None
 
+def _doc_obj_by_kind(docs: list[dict], kind: str) -> dict | None:
+    for d in docs:
+        if d.get("kind") == kind:
+            return d
+    return None
+
+_SIGN_CAPTION = "Khu vực chữ ký & con dấu"
+_SIGN_BAND_FRAC = 0.28   # bottom fraction of the page where sign/seal/giáp-lai sit
+
+def _bbnt_for_c2(docs: list[dict]) -> dict | None:
+    """C2 focuses the thanh-lý BBNT when a packet has both (nghiệm thu + thanh
+    lý); else the only/first BBNT. Distinguished by label (the type enum shares
+    'bbnt' for both)."""
+    bbnts = [d for d in docs if d.get("kind") == "bbnt"]
+    if not bbnts:
+        return None
+    for d in bbnts:
+        if "thanh ly" in _norm(d.get("label", "")):
+            return d
+    return bbnts[0]
+
+def _signature_focus(doc: dict | None) -> dict | None:
+    """Last page + bottom-band bbox + soft caption for a signature gate, or
+    None if the doc is missing or carries no page geometry."""
+    if not doc:
+        return None
+    pages = doc.get("pages") or []
+    if not pages:
+        return None
+    last = len(pages) - 1
+    p = pages[last]
+    w, h = p.get("width", 0), p.get("height", 0)
+    if not (w and h):
+        return None
+    band = round(h * _SIGN_BAND_FRAC)
+    return {"page": last, "caption": _SIGN_CAPTION,
+            "bbox": {"x": 0, "y": h - band, "width": w, "height": band}}
+
 _VALUE = [
     ("B1", "Họ tên khớp bảng kê", "contract", "hoten"),
     ("A1", "Số CCCD khớp giữa chứng từ", "contract", "cccd"),
@@ -55,12 +93,19 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                    "kind": "confirm", "evidenceDocId": None,
                    "reference": None, "source": None, "autostatus": None})
     for code, label, kind_doc in _CONFIRM_GATES:
-        doc_id = contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)
-        if doc_id is None:
-            continue   # #5: document-routed check with no evidence doc -> no dead row
+        if code == "C2":
+            doc = _bbnt_for_c2(docs)
+        elif kind_doc == "contract":
+            doc = _doc_obj_by_kind(docs, "contract") or (docs[0] if docs else None)
+        else:
+            doc = _doc_obj_by_kind(docs, kind_doc)
+        if doc is None:
+            continue   # #5: routed doc absent -> no dead row
+        focus = _signature_focus(doc) if code in ("B3", "C2") else None
         checks.append({"code": code, "label": label, "tier": "gate", "kind": "confirm",
-                       "evidenceDocId": doc_id,
-                       "reference": None, "source": None, "autostatus": None})
+                       "evidenceDocId": doc["id"],
+                       "reference": None, "source": None, "autostatus": None,
+                       "focus": focus})
 
     for code, label, kind_doc, fkey in _VALUE:
         f = by_key.get(fkey)

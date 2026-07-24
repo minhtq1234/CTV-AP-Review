@@ -1,4 +1,4 @@
-import type { CtvFolder, EvidenceKind, CheckItem, CheckAutoStatus } from './types'
+import type { CtvFolder, EvidenceKind, CheckItem, CheckAutoStatus, CheckFocus, EvidenceDoc } from './types'
 
 // Pure builder: maps a synthetic CtvFolder (src/ctv/folders.ts) to the same coded,
 // two-tier checklist shape the backend produces (server/checklist.py's build_checklist),
@@ -16,6 +16,23 @@ function norm(s: string): string {
 }
 
 const digits = (s: string): string => (s || '').replace(/\D/g, '')
+
+const SIGN_CAPTION = 'Khu vực chữ ký & con dấu'
+const SIGN_BAND_FRAC = 0.28
+
+function signatureFocus(doc: EvidenceDoc | undefined): CheckFocus | null {
+  if (!doc || doc.pages.length === 0) return null
+  const last = doc.pages.length - 1
+  const { width: w, height: h } = doc.pages[last]
+  if (!w || !h) return null
+  const band = Math.round(h * SIGN_BAND_FRAC)
+  return { page: last, caption: SIGN_CAPTION, bbox: { x: 0, y: h - band, width: w, height: band } }
+}
+
+const bbntForC2 = (folder: CtvFolder): EvidenceDoc | undefined => {
+  const bbnts = folder.docs.filter(d => d.kind === 'bbnt')
+  return bbnts.find(d => norm(d.label).includes('thanh ly')) ?? bbnts[0]
+}
 
 // Mirrors checklist.py's _autostatus: digits-only fields (CCCD, phone, amounts) compare on
 // digits alone so currency/format noise ("10.000.000" vs "10.000.000 ₫") doesn't false-mismatch;
@@ -55,10 +72,13 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
       evidenceDocId: commitment, reference: null, source: null, autostatus: null })
   checks.push(
     { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
-      evidenceDocId: contract, reference: null, source: null, autostatus: null })
-  if (bbnt) checks.push(
+      evidenceDocId: contract, reference: null, source: null, autostatus: null,
+      focus: signatureFocus(folder.docs.find(d => d.kind === 'contract')) })
+  const c2doc = bbntForC2(folder)
+  if (c2doc) checks.push(
     { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
-      evidenceDocId: bbnt, reference: null, source: null, autostatus: null })
+      evidenceDocId: c2doc.id, reference: null, source: null, autostatus: null,
+      focus: signatureFocus(c2doc) })
 
   for (const [code, label, fieldKey, routedKind] of VALUE) {
     const f = byKey.get(fieldKey)
