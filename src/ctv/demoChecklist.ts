@@ -67,7 +67,7 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
     const src = f.sources.find(s => s.docId === routed) ?? f.sources[0] ?? null
     checks.push({
       code, label, tier: 'detail', kind: 'value',
-      evidenceDocId: src?.docId ?? contract,
+      evidenceDocId: src?.docId ?? routed,
       reference: f.expected ?? '', source: src,
       autostatus: autostatus(f.expected ?? '', src),
     })
