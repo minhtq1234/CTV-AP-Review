@@ -42,7 +42,7 @@ export default function EvidenceViewer({
   const page = doc.pages[activePage] ?? doc.pages[0]
   const openRecap = useCallback(async () => {
     setRecapOpen(true); setRecapError(null)
-    if (recapCache[doc.id] || !getRecap) return  // cached → instant; no resolver → nothing to fetch
+    if (recapCache[doc.id] || recapLoading || !getRecap) return  // cached → instant; already loading / no resolver → don't refetch
     setRecapLoading(true)
     try {
       const r = await getRecap(doc)
@@ -52,7 +52,7 @@ export default function EvidenceViewer({
     } finally {
       setRecapLoading(false)
     }
-  }, [doc, getRecap, recapCache])
+  }, [doc, getRecap, recapCache, recapLoading])  // recapLoading in deps: the guard above must see its live value
   const nat = { w: page.width, h: page.height }
   // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
   // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
