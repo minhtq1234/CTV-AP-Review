@@ -40,17 +40,22 @@ const VALUE: ReadonlyArray<readonly [string, string, string]> = [
 export function demoChecklist(folder: CtvFolder): CheckItem[] {
   const byKey = new Map(folder.fields.map(f => [f.key, f] as const))
   const contract = docByKind(folder, 'contract') ?? folder.docs[0]?.id ?? null
+  const commitment = docByKind(folder, 'commitment')
+  const bbnt = docByKind(folder, 'bbnt')
 
   const checks: CheckItem[] = [
     { code: 'G-DOC', label: 'Đủ chứng từ bắt buộc', tier: 'gate', kind: 'confirm',
       evidenceDocId: null, reference: null, source: null, autostatus: null },
-    { code: 'D3', label: 'Cam kết TNCN đúng mẫu năm hiện hành', tier: 'gate', kind: 'confirm',
-      evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
-    { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
-      evidenceDocId: contract, reference: null, source: null, autostatus: null },
-    { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
-      evidenceDocId: docByKind(folder, 'bbnt'), reference: null, source: null, autostatus: null },
   ]
+  if (commitment) checks.push(
+    { code: 'D3', label: 'Cam kết TNCN đúng mẫu năm hiện hành', tier: 'gate', kind: 'confirm',
+      evidenceDocId: commitment, reference: null, source: null, autostatus: null })
+  checks.push(
+    { code: 'B3', label: 'Hợp đồng đủ chữ ký & con dấu', tier: 'gate', kind: 'confirm',
+      evidenceDocId: contract, reference: null, source: null, autostatus: null })
+  if (bbnt) checks.push(
+    { code: 'C2', label: 'BBNT đủ chữ ký, con dấu & giáp lai', tier: 'gate', kind: 'confirm',
+      evidenceDocId: bbnt, reference: null, source: null, autostatus: null })
 
   for (const [code, label, fieldKey] of VALUE) {
     const f = byKey.get(fieldKey)
@@ -64,12 +69,12 @@ export function demoChecklist(folder: CtvFolder): CheckItem[] {
     })
   }
 
-  checks.push(
+  if (bbnt) checks.push(
     { code: 'C1', label: 'Nội dung & thời gian khớp BBNT', tier: 'detail', kind: 'confirm',
-      evidenceDocId: docByKind(folder, 'bbnt'), reference: null, source: null, autostatus: null },
+      evidenceDocId: bbnt, reference: null, source: null, autostatus: null })
+  if (commitment) checks.push(
     { code: 'D1', label: 'Thông tin & MST khớp cam kết', tier: 'detail', kind: 'confirm',
-      evidenceDocId: docByKind(folder, 'commitment'), reference: null, source: null, autostatus: null },
-  )
+      evidenceDocId: commitment, reference: null, source: null, autostatus: null })
 
   return checks
 }

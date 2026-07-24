@@ -55,8 +55,11 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                    "kind": "confirm", "evidenceDocId": None,
                    "reference": None, "source": None, "autostatus": None})
     for code, label, kind_doc in _CONFIRM_GATES:
+        doc_id = contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)
+        if doc_id is None:
+            continue   # #5: document-routed check with no evidence doc -> no dead row
         checks.append({"code": code, "label": label, "tier": "gate", "kind": "confirm",
-                       "evidenceDocId": contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc),
+                       "evidenceDocId": doc_id,
                        "reference": None, "source": None, "autostatus": None})
 
     for code, label, kind_doc, fkey in _VALUE:
@@ -69,7 +72,10 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                        "reference": f.get("expected", ""), "source": src,
                        "autostatus": _autostatus(f.get("expected", ""), src)})
     for code, label, kind_doc in _CONFIRM_DETAIL:
+        doc_id = _doc_by_kind(docs, kind_doc)
+        if doc_id is None:
+            continue   # #5
         checks.append({"code": code, "label": label, "tier": "detail", "kind": "confirm",
-                       "evidenceDocId": _doc_by_kind(docs, kind_doc),
+                       "evidenceDocId": doc_id,
                        "reference": None, "source": None, "autostatus": None})
     return checks

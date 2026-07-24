@@ -52,3 +52,21 @@ def test_contract_routed_checks_fall_back_to_first_doc():
     # "contract" in FIELDS, which always wins the `or` short-circuit regardless
     # of the fallback fix, so it can't discriminate this behavior.
     assert c["B2"]["evidenceDocId"] == "only"
+
+DOCS_NO_COMMIT = [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ"},
+                  {"id": "bbnt", "kind": "bbnt", "label": "Biên bản nghiệm thu"}]
+
+def test_omits_commitment_routed_checks_when_no_commitment_doc():
+    codes = [c["code"] for c in build_checklist(FIELDS, MATCH, DOCS_NO_COMMIT)]
+    assert "D3" not in codes and "D1" not in codes
+    assert codes[:3] == ["G-DOC", "B3", "C2"]      # D3 gate drops out of the gate run
+
+def test_keeps_commitment_routed_checks_when_commitment_present():
+    codes = [c["code"] for c in build_checklist(FIELDS, MATCH, DOCS)]  # DOCS has 'camket'
+    assert "D3" in codes and "D1" in codes
+
+def test_bbnt_routed_checks_omitted_when_no_bbnt():
+    docs = [{"id": "contract", "kind": "contract", "label": "x"}]
+    codes = [c["code"] for c in build_checklist(FIELDS, MATCH, docs)]
+    assert "C2" not in codes   # C2 routes to bbnt; none present -> omitted
+    assert "B3" in codes       # B3 routes to contract (present) -> kept
