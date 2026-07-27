@@ -149,6 +149,28 @@ def test_reconciles_orphaned_processing_case_to_error_on_load():
         assert reloaded["status"] == "error"
         assert reloaded["error"] == "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
 
+def test_reconciled_processing_case_also_normalizes_existing_packet_reviews(tmp_path):
+    cid = "orphan-with-packet"
+    case_dir = tmp_path / cid
+    case_dir.mkdir()
+    case = {
+        "id": cid, "name": "x", "createdAt": None, "status": "processing",
+        "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": None,
+        "packets": [{
+            "index": 0, "confidence": "green", "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": "", "name": ""},
+            "rosterIdentity": None,
+            "review": {"done": False, "fields": {}},
+        }],
+    }
+    (case_dir / "case.json").write_text(json.dumps(case), encoding="utf-8")
+
+    loaded = CaseStore(str(tmp_path)).get(cid)
+    assert loaded["status"] == "error"
+    assert loaded["packets"][0]["review"] == {
+        "done": False, "fields": {}, "rejection": None,
+    }
+
 
 def test_reconcile_leaves_other_statuses_untouched():
     # Every other lifecycle status (including a GENUINE pipeline error, whose

@@ -120,6 +120,16 @@ class CaseStore:
                     case = json.load(f)
             except Exception:  # noqa: BLE001 - skip corrupt/partial files, don't crash startup
                 continue
+            changed = False
+            for i, p in enumerate(case.get("packets", [])):
+                had_review = "review" in p
+                normalized = _ensure_packet_defaults(p)
+                if not had_review:
+                    for k in ("decision", "rejectReason", "reviewedAt"):
+                        normalized.pop(k, None)
+                if normalized != p:
+                    case["packets"][i] = normalized
+                    changed = True
             if case.get("status") == "processing":
                 # #007: a case still "processing" on disk has no live worker --
                 # the process that was running its pipeline is gone (this is a
@@ -131,16 +141,6 @@ class CaseStore:
                 case["error"] = "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
                 self._write(case)
             else:
-                changed = False
-                for i, p in enumerate(case.get("packets", [])):
-                    had_review = "review" in p
-                    normalized = _ensure_packet_defaults(p)
-                    if not had_review:
-                        for k in ("decision", "rejectReason", "reviewedAt"):
-                            normalized.pop(k, None)
-                    if normalized != p:
-                        case["packets"][i] = normalized
-                        changed = True
                 if changed:
                     self._write(case)   # persist migration (also indexes)
                 else:
