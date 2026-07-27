@@ -23,6 +23,7 @@ describe('complete-document evidence viewer', () => {
         activePage={1}
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
+        overviewMode={false}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
         rosterLabel="Synthetic field"
@@ -43,6 +44,7 @@ describe('complete-document evidence viewer', () => {
         activePage={2}
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
+        overviewMode={false}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
       />,
@@ -58,6 +60,7 @@ describe('complete-document evidence viewer', () => {
         activePage={0}
         focusBbox={null}
         lockView={false}
+        overviewMode={false}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
       />,
@@ -74,5 +77,52 @@ describe('complete-document evidence viewer', () => {
     ]) {
       expect(html).toContain(`aria-label="${label}"`)
     }
+  })
+
+  it('renders Overview at 100% in paired mode without field overlays', () => {
+    const html = renderToStaticMarkup(
+      <EvidenceViewer
+        docs={docs}
+        activeDocId="doc"
+        activePage={1}
+        focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
+        lockView={false}
+        overviewMode
+        onSelectDoc={() => undefined}
+        onToggleLock={() => undefined}
+        rosterLabel="Synthetic field"
+        rosterValue="Synthetic value"
+      />,
+    )
+
+    expect(html).toContain('data-view-presentation="overview"')
+    expect(html).toContain('class="ev-document paired"')
+    expect(html).toContain('class="zoom-value">100%</span>')
+    expect(html).not.toContain('document-focus-anchor')
+    expect(html).not.toContain('doc-hl-fill')
+    expect(html).not.toContain('roster-callout')
+  })
+
+  it('keeps bbox and roster callout in field mode', () => {
+    const html = renderToStaticMarkup(
+      <EvidenceViewer
+        docs={docs}
+        activeDocId="doc"
+        activePage={1}
+        focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
+        lockView={false}
+        overviewMode={false}
+        onSelectDoc={() => undefined}
+        onToggleLock={() => undefined}
+        rosterLabel="Phí dịch vụ"
+        rosterValue="6.111.111 ₫"
+      />,
+    )
+
+    expect(html).toContain('data-view-presentation="field"')
+    expect(html).toContain('document-focus-anchor')
+    expect(html).toContain('doc-hl-fill')
+    expect(html).toContain('Bảng kê — Phí dịch vụ')
+    expect(html).toContain('6.111.111 ₫')
   })
 })

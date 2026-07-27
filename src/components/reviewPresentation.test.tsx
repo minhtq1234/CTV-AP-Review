@@ -246,6 +246,9 @@ describe('review presentation', () => {
 
     expect(onReview).not.toHaveBeenCalled()
     expect(html).toContain('data-review-selection="overview"')
+    expect(html).toContain('data-view-presentation="overview"')
+    expect(html).toContain('class="ev-document paired"')
+    expect(html).toContain('class="zoom-value">100%</span>')
     expect(html).toContain('0/1 đã xem')
     expect(html).not.toContain('roster-callout')
   })

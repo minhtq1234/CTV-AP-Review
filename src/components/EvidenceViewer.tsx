@@ -22,6 +22,7 @@ interface Props {
   activePage: number
   focusBbox: Bbox | null
   lockView: boolean
+  overviewMode: boolean
   onSelectDoc: (id: string) => void
   onToggleLock: () => void
   rosterLabel?: string
@@ -39,6 +40,7 @@ export default function EvidenceViewer({
   activePage,
   focusBbox,
   lockView,
+  overviewMode,
   onSelectDoc,
   onToggleLock,
   rosterLabel,
@@ -53,7 +55,9 @@ export default function EvidenceViewer({
     scrollLeft: number
     scrollTop: number
   } | null>(null)
-  const [viewMode, setViewMode] = useState<DocumentViewMode>('single')
+  const [viewMode, setViewMode] = useState<DocumentViewMode>(
+    overviewMode ? 'paired' : 'single',
+  )
   const [zoomLevel, setZoomLevel] = useState(1)
   const [showHighlight, setShowHighlight] = useState(true)
   const [showRoster, setShowRoster] = useState(true)
@@ -67,13 +71,31 @@ export default function EvidenceViewer({
   const pageGroups = groupPageIndexes(pageCount, viewMode)
 
   const focusedBox = useMemo(() => {
-    if (!focusBbox || !doc?.pages[pageIndex]) return null
+    if (overviewMode || !focusBbox || !doc?.pages[pageIndex]) return null
     const page = doc.pages[pageIndex]
     return inflateBbox(focusBbox, 0.2, page.width, page.height)
-  }, [focusBbox, doc, pageIndex])
+  }, [overviewMode, focusBbox, doc, pageIndex])
 
   useEffect(() => {
-    if (lockView) return
+    if (!overviewMode) return
+    setViewMode('paired')
+    setZoomLevel(1)
+  }, [overviewMode])
+
+  useEffect(() => {
+    if (!overviewMode) return
+    const animationFrame = requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo?.({
+        left: 0,
+        top: 0,
+        behavior: 'instant',
+      })
+    })
+    return () => cancelAnimationFrame(animationFrame)
+  }, [overviewMode, activeDocId])
+
+  useEffect(() => {
+    if (overviewMode || lockView) return
     const scroll = scrollRef.current
     const pageElement = pageRefs.current[pageIndex]
     const page = doc?.pages[pageIndex]
@@ -85,10 +107,10 @@ export default function EvidenceViewer({
       page.width,
       scroll.clientHeight,
     ))
-  }, [activeDocId, pageIndex, focusedBox, viewMode, lockView, doc])
+  }, [activeDocId, pageIndex, focusedBox, viewMode, overviewMode, lockView, doc])
 
   useEffect(() => {
-    if (lockView) return
+    if (overviewMode || lockView) return
     const animationFrame = requestAnimationFrame(() => {
       const target = focusedBox ? focusAnchorRef.current : pageRefs.current[pageIndex]
       target?.scrollIntoView({
@@ -98,7 +120,7 @@ export default function EvidenceViewer({
       })
     })
     return () => cancelAnimationFrame(animationFrame)
-  }, [activeDocId, pageIndex, focusedBox, viewMode, zoomLevel, lockView])
+  }, [activeDocId, pageIndex, focusedBox, viewMode, zoomLevel, overviewMode, lockView])
 
   const zoom = useCallback((factor: number) => {
     setZoomLevel(current => Math.max(0.5, Math.min(4, current * factor)))
@@ -209,7 +231,10 @@ export default function EvidenceViewer({
   }
 
   return (
-    <section className="ev">
+    <section
+      className="ev"
+      data-view-presentation={overviewMode ? 'overview' : 'field'}
+    >
       <div className="ev-tabs">
         {docs.map(candidate => (
           <button
@@ -271,7 +296,7 @@ export default function EvidenceViewer({
                           style={focusStyle}
                         >
                           {showHighlight && <div className="doc-hl-fill" />}
-                          {showRoster && rosterValue && (
+                          {!overviewMode && showRoster && rosterValue && (
                             <div className="roster-callout attached">
                               <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
                               <div className="roster-callout-val">{rosterValue}</div>
@@ -279,7 +304,7 @@ export default function EvidenceViewer({
                           )}
                         </div>
                       )}
-                      {isFocusedPage && !focusStyle && showRoster && rosterValue && (
+                      {isFocusedPage && !focusStyle && !overviewMode && showRoster && rosterValue && (
                         <div className="roster-callout corner">
                           <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
                           <div className="roster-callout-val">{rosterValue}</div>

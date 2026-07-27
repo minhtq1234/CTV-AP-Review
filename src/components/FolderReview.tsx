@@ -192,6 +192,7 @@ export default function FolderReview({
           activePage={activePage}
           focusBbox={focusBbox}
           lockView={lockView}
+          overviewMode={selection.kind === 'overview'}
           onSelectDoc={onSelectDoc}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={selField?.label}
