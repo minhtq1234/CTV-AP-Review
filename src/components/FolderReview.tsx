@@ -2,23 +2,32 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Bbox } from '../types'
 import type { CtvFolder } from '../ctv/types'
 import { rankFolder } from '../ctv/checks'
-import type { PacketReview, FieldFlag, MatchedBy, Identity } from '../upload/api'
+import type { PacketReview, FieldFlag } from '../upload/api'
 import { allSeen } from '../logic/review'
+import {
+  rejectedReview,
+  undoRejectedReview,
+} from '../logic/packetRejection'
 import FolderFieldsPanel from './FolderFieldsPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
-import MatchKeyStrip from './MatchKeyStrip'
+import PacketRejectionDialog from './PacketRejectionDialog'
 
 interface Props {
   folder: CtvFolder
   review: PacketReview
-  matchedBy: MatchedBy
-  ocrIdentity: Identity
-  rosterIdentity: Identity | null
   onReview: (review: PacketReview) => void
+  onCommitReview: (review: PacketReview) => Promise<void>
 }
 
-export default function FolderReview({ folder, review, matchedBy, ocrIdentity, rosterIdentity, onReview }: Props) {
+const SAVE_ERROR = 'Không lưu được. Vui lòng thử lại.'
+
+export default function FolderReview({
+  folder,
+  review,
+  onReview,
+  onCommitReview,
+}: Props) {
   const ranked = useMemo(() => rankFolder(folder), [folder])
   const first = ranked[0]?.field
   const [selectedKey, setSelectedKey] = useState(first?.key ?? '')
@@ -27,6 +36,9 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const [activePage, setActivePage] = useState(first?.sources[0]?.page ?? 0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(first?.sources[0]?.bbox ?? null)
   const [lockView, setLockView] = useState(false)
+  const [rejectionDialogOpen, setRejectionDialogOpen] = useState(false)
+  const [rejectionSaving, setRejectionSaving] = useState(false)
+  const [rejectionError, setRejectionError] = useState<string | null>(null)
 
   // Mark a field as seen the first time it's focused — a no-op (no onReview call) if it's
   // already seen, so re-focusing / the mount-seed effect below never loops.
@@ -68,7 +80,10 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (el && (
+        ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName)
+        || el.closest('.packet-rejection-dialog')
+      )) return
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
         const i = ranked.findIndex(r => r.field.key === selectedKey)
@@ -92,7 +107,10 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      if (el && (
+        ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName)
+        || el.closest('.packet-rejection-dialog')
+      )) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
@@ -108,21 +126,32 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
   const fieldKeys = folder.fields.map(f => f.key)
   const seenCount = fieldKeys.filter(k => review.fields[k]?.seen).length
 
+  const commitPacketReview = async (candidate: PacketReview) => {
+    setRejectionSaving(true)
+    setRejectionError(null)
+    try {
+      await onCommitReview(candidate)
+      setRejectionDialogOpen(false)
+    } catch {
+      setRejectionError(SAVE_ERROR)
+    } finally {
+      setRejectionSaving(false)
+    }
+  }
+
   return (
     <div className="screen">
-      <header className="screen-head">
-        <div><strong>{folder.heading ?? 'Hồ sơ CTV'} · {folder.name}</strong> — {folder.product}</div>
-        <MatchKeyStrip matchedBy={matchedBy} ocr={ocrIdentity} roster={rosterIdentity} />
-      </header>
       <div className="panes">
         <FolderFieldsPanel
           ranked={ranked}
-          docs={folder.docs}
           selectedKey={selectedKey}
           onSelect={key => focusAt(key, 0)}
-          onFocusSource={focusAt}
           review={review}
           onToggleFlag={toggleFlag}
+          onOpenPacketRejection={() => {
+            setRejectionError(null)
+            setRejectionDialogOpen(true)
+          }}
         />
         <EvidenceViewer
           docs={folder.docs}
@@ -131,7 +160,6 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
           focusBbox={focusBbox}
           lockView={lockView}
           onSelectDoc={onSelectDoc}
-          onSelectPage={p => { setActivePage(p); setFocusBbox(null) }}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={selField?.label}
           rosterValue={selField?.expected ?? null}
@@ -144,6 +172,23 @@ export default function FolderReview({ folder, review, matchedBy, ocrIdentity, r
         hint="↑↓ chuyển trường · ←→ đổi chứng từ · F đánh dấu · B khung · V giá trị bảng kê · ⌥P di chuyển · ? phím tắt"
         onFinish={() => { if (allSeen(review, fieldKeys)) onReview({ ...review, done: true }) }}
       />
+      {rejectionDialogOpen && (
+        <PacketRejectionDialog
+          rejection={review.rejection}
+          saving={rejectionSaving}
+          error={rejectionError}
+          onCancel={() => {
+            setRejectionError(null)
+            setRejectionDialogOpen(false)
+          }}
+          onSubmit={rejection => {
+            void commitPacketReview(rejectedReview(review, rejection))
+          }}
+          onUndo={review.rejection
+            ? () => { void commitPacketReview(undoRejectedReview(review, fieldKeys)) }
+            : undefined}
+        />
+      )}
     </div>
   )
 }

@@ -1,69 +1,83 @@
-import type { Verdict } from '../types'
-import type { EvidenceDoc } from '../ctv/types'
-import type { FieldVerdict, RankedCtv } from '../ctv/checks'
-import { counts } from '../ctv/checks'
+import type { RankedCtv } from '../ctv/checks'
 import type { PacketReview, FieldFlag } from '../upload/api'
+import { PACKET_REJECTION_OPTIONS } from '../logic/packetRejection'
 
 interface Props {
   ranked: RankedCtv[]
-  docs: EvidenceDoc[]
   selectedKey: string
   onSelect: (key: string) => void
-  onFocusSource: (fieldKey: string, sourceIdx: number) => void
   review: PacketReview
   onToggleFlag: (fieldKey: string, flag: FieldFlag | null) => void
+  onOpenPacketRejection: () => void
 }
 
-// Field-level chip: the 4 hint verdicts, plus the neutral "review" state (#004) -- a field
-// with no readable source at all is "cần xem", never rendered as a red exception.
-const FIELD_CHIP: Record<FieldVerdict, { cls: string; glyph: string }> = {
-  mismatch: { cls: 'v-mismatch', glyph: '✗' },
-  low_conf: { cls: 'v-low', glyph: '!' },
-  fuzzy: { cls: 'v-fuzzy', glyph: '~' },
-  match: { cls: 'v-match', glyph: '✓' },
-  review: { cls: 'v-review', glyph: 'cần xem' },
-}
-
-// Source-level chip: only for READABLE sources -- an 'unread' source never looks this up
-// (rendered separately below as a neutral "cần xem · <doc>" chip, no verdict glyph).
-const SRC_CHIP: Record<Verdict, { cls: string; glyph: string }> = {
-  mismatch: { cls: 'v-mismatch', glyph: '✗' },
-  low_conf: { cls: 'v-low', glyph: '!' },
-  fuzzy: { cls: 'v-fuzzy', glyph: '~' },
-  match: { cls: 'v-match', glyph: '✓' },
-}
-
-export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect, onFocusSource, review, onToggleFlag }: Props) {
-  const c = counts(ranked)
-  const label = (id: string) => docs.find(d => d.id === id)?.label ?? id
+export default function FolderFieldsPanel({
+  ranked,
+  selectedKey,
+  onSelect,
+  review,
+  onToggleFlag,
+  onOpenPacketRejection,
+}: Props) {
   const total = ranked.length
   const seen = ranked.filter(r => review.fields[r.field.key]?.seen).length
   return (
     <aside className="fields-pane">
       <div className="fields-summary">
         <span>{ranked.length} mục kiểm tra</span>
-        {c.mismatch > 0 && <span className="s-mismatch">● {c.mismatch} lệch</span>}
-        {c.review > 0 && <span className="s-review">● {c.review} cần xem</span>}
-        {c.low_conf > 0 && <span className="s-low">● {c.low_conf} tin cậy thấp</span>}
         <span className="seen-progress">{seen}/{total} đã xem</span>
       </div>
+      {review.rejection ? (
+        <section className="packet-rejection-summary" aria-label="Đã từ chối">
+          <div className="packet-rejection-summary-head">
+            <strong>Đã từ chối</strong>
+            <button type="button" onClick={onOpenPacketRejection}>
+              Sửa lý do
+            </button>
+          </div>
+          <ul>
+            {PACKET_REJECTION_OPTIONS
+              .filter(option => review.rejection?.reasons.includes(option.value))
+              .map(option => <li key={option.value}>{option.label}</li>)}
+          </ul>
+          {review.rejection.note && (
+            <p className="packet-rejection-summary-note">
+              {review.rejection.note}
+            </p>
+          )}
+        </section>
+      ) : (
+        <div className="packet-rejection-entry">
+          <button
+            type="button"
+            className="packet-rejection-open"
+            onClick={onOpenPacketRejection}
+          >
+            Từ chối gói hồ sơ
+          </button>
+        </div>
+      )}
       {ranked.map(r => {
-        const chip = FIELD_CHIP[r.verdict]
         const sel = r.field.key === selectedKey
+        const viewed = !!review.fields[r.field.key]?.seen
         return (
           <div key={r.field.key} className={`cfield ${sel ? 'sel' : ''}`} onClick={() => onSelect(r.field.key)}>
             <div className="cfield-head">
-              <span className={`seen-dot ${review.fields[r.field.key]?.seen ? 'on' : ''}`} />
-              <span className={`chip ${chip.cls}`}>{chip.glyph}</span>
+              <span className={`view-status ${viewed ? 'viewed' : 'not-viewed'}`}>
+                {viewed ? 'Đã xem' : 'Chưa xem'}
+              </span>
               <span className="flabel">{r.field.label}</span>
               <span className="ftag">{r.field.group}</span>
               <button className={`flag-btn ${review.fields[r.field.key]?.flag ? 'on' : ''}`}
                 title="Đánh dấu cần gửi lại (F)"
                 onClick={e => {
                   e.stopPropagation()
+                  onSelect(r.field.key)
                   const cur = review.fields[r.field.key]?.flag
                   onToggleFlag(r.field.key, cur ? null : { reason: '', note: '' })
-                }}>⚑</button>
+                }}>
+                {review.fields[r.field.key]?.flag ? 'Bỏ đánh dấu' : '⚑ Đánh dấu'}
+              </button>
             </div>
             <div className="cfield-exp">Kê khai (Excel): <b>{r.field.expected}</b></div>
             {review.fields[r.field.key]?.flag && sel && (
@@ -80,31 +94,6 @@ export default function FolderFieldsPanel({ ranked, docs, selectedKey, onSelect,
                   value={review.fields[r.field.key]!.flag!.note}
                   onChange={e => onToggleFlag(r.field.key,
                     { ...review.fields[r.field.key]!.flag!, note: e.target.value })} />
-              </div>
-            )}
-            {r.sources.length > 0 && (
-              <div className="cfield-src">
-                <span className="cfield-src-lbl">Đối chiếu:</span>
-                {r.sources.map((sr, i) => {
-                  // Located but unreadable (handwritten/illegible) -- still a navigable chip
-                  // pointing at the region, but neutral: it never renders as an exception.
-                  if (sr.verdict === 'unread') {
-                    return (
-                      <button key={i} className="srcchip unread" title="Chưa đọc được — cần kiểm tra bằng mắt"
-                        onClick={e => { e.stopPropagation(); onFocusSource(r.field.key, i) }}>
-                        cần xem · {label(sr.source.docId)}
-                      </button>
-                    )
-                  }
-                  const sc = SRC_CHIP[sr.verdict]
-                  return (
-                    <button key={i} className={`srcchip ${sc.cls}`} title={sr.source.value}
-                      onClick={e => { e.stopPropagation(); onFocusSource(r.field.key, i) }}>
-                      <span className="srcchip-g">{sc.glyph}</span> {label(sr.source.docId)}
-                      {sr.verdict === 'mismatch' && <span className="srcbad">: {sr.source.value}</span>}
-                    </button>
-                  )
-                })}
               </div>
             )}
           </div>

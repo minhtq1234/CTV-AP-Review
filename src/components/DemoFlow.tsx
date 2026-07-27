@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import type { CtvFolder } from '../ctv/types'
 import { folders as seedFolders } from '../ctv/folders'
-import type { PacketReview, Identity } from '../upload/api'
+import { normalizePacketReview, type PacketReview } from '../upload/api'
 import { packetStatus, PACKET_STATUS_LABEL, type PacketStatusKind } from '../logic/review'
 import FolderReview from './FolderReview'
+import ReviewHeader from './ReviewHeader'
 
 // Offline demo entry for the single-file export (chosen in App when window.__ASSETS__
 // is present). The live app is a *client* of the FastAPI backend (upload → split → OCR),
@@ -17,14 +17,9 @@ export default function DemoFlow() {
   const [idx, setIdx] = useState<number | null>(null)
   const [reviews, setReviews] = useState<Record<string, PacketReview>>({})
 
-  const reviewFor = (id: string): PacketReview => reviews[id] ?? { done: false, fields: {} }
-
-  // The demo has no roster; present a clean CCCD match built from each folder's own
-  // name + CCCD field so the MatchKeyStrip renders meaningfully.
-  const identityOf = (f: CtvFolder): Identity => ({
-    name: f.name,
-    cccd: f.fields.find(x => x.key === 'cccd')?.expected ?? '',
-  })
+  const reviewFor = (id: string): PacketReview => (
+    reviews[id] ?? normalizePacketReview(undefined)
+  )
 
   const statusClass: Record<PacketStatusKind, string> = {
     untouched: 'ready', in_review: 'processing', clear: 'done', needs_resubmit: 'error',
@@ -62,28 +57,31 @@ export default function DemoFlow() {
   const prev = idx > 0 ? idx - 1 : null
   const next = idx < folders.length - 1 ? idx + 1 : null
   const folder = folders[idx]
+  const pageCount = folder.docs.reduce((sum, doc) => sum + doc.pages.length, 0)
   return (
     <div className="review-flow">
-      <div className="review-back-bar">
-        <button className="btn" onClick={() => setIdx(null)}>← Danh sách demo</button>
-        <div className="review-nav">
-          <button className="btn" disabled={prev == null}
-            title={prev != null ? `Gói trước: ${folders[prev].name}` : undefined}
-            onClick={() => prev != null && setIdx(prev)}>← Gói trước</button>
-          <span className="review-nav-pos">Gói {idx + 1} / {folders.length}</span>
-          <button className="btn" disabled={next == null}
-            title={next != null ? `Gói sau: ${folders[next].name}` : undefined}
-            onClick={() => next != null && setIdx(next)}>Gói sau →</button>
-        </div>
-      </div>
+      <ReviewHeader
+        name={folder.name}
+        product={folder.product}
+        pages={[0, Math.max(0, pageCount - 1)]}
+        matchedBy="cccd"
+        position={idx}
+        count={folders.length}
+        canPrevious={prev != null}
+        canNext={next != null}
+        onBack={() => setIdx(null)}
+        onPrevious={() => prev != null && setIdx(prev)}
+        onNext={() => next != null && setIdx(next)}
+        backLabel="Danh sách demo"
+      />
       <FolderReview
         key={folder.id}
         folder={folder}
         review={reviewFor(folder.id)}
-        matchedBy="cccd"
-        ocrIdentity={identityOf(folder)}
-        rosterIdentity={identityOf(folder)}
         onReview={r => setReviews(m => ({ ...m, [folder.id]: r }))}
+        onCommitReview={async r => {
+          setReviews(current => ({ ...current, [folder.id]: r }))
+        }}
       />
     </div>
   )

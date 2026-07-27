@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { Bbox, Frame } from '../types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
+import type { Bbox } from '../types'
 import type { EvidenceDoc } from '../ctv/types'
-import { boxToViewport, inflateBbox, loupeFrame } from '../logic/loupe'
-import { calloutAnchor } from '../logic/review'
+import { inflateBbox } from '../logic/loupe'
+import {
+  DOCUMENT_VIEW_MODES,
+  bboxPercentStyle,
+  clampPageIndex,
+  groupPageIndexes,
+  type DocumentViewMode,
+} from '../logic/documentView'
 import { assetUrl } from '../assets'
 import HotkeyHelp from './HotkeyHelp'
 
@@ -13,136 +20,154 @@ interface Props {
   focusBbox: Bbox | null
   lockView: boolean
   onSelectDoc: (id: string) => void
-  onSelectPage: (page: number) => void
   onToggleLock: () => void
-  rosterLabel?: string        // focused field label, e.g. "Số CCCD"
-  rosterValue?: string | null // focused field's expected (bảng kê) value
+  rosterLabel?: string
+  rosterValue?: string | null
+}
+
+const inputHasFocus = (target: EventTarget | null) => {
+  const element = target as HTMLElement | null
+  return element?.tagName === 'INPUT' || element?.tagName === 'TEXTAREA'
 }
 
 export default function EvidenceViewer({
-  docs, activeDocId, activePage, focusBbox, lockView, onSelectDoc, onSelectPage, onToggleLock,
-  rosterLabel, rosterValue,
+  docs,
+  activeDocId,
+  activePage,
+  focusBbox,
+  lockView,
+  onSelectDoc,
+  onToggleLock,
+  rosterLabel,
+  rosterValue,
 }: Props) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [vp, setVp] = useState({ w: 0, h: 0 })
-  const [frame, setFrame] = useState<Frame>({ scale: 1, tx: 0, ty: 0 })
-  const [showHighlight, setShowHighlight] = useState(true) // U2: toggle the red bbox overlay
-  const [showRoster, setShowRoster] = useState(true) // pin roster value callout, toggled by V
-  const [panMode, setPanMode] = useState(false) // U4: drag-to-pan toggle
-  const [showHelp, setShowHelp] = useState(false) // U5: hotkey reference overlay
-  const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
-  const doc = docs.find(d => d.id === activeDocId) ?? docs[0]
-  const page = doc.pages[activePage] ?? doc.pages[0]
-  const nat = { w: page.width, h: page.height }
-  // U1: highlight (and the loupe frame it drives) is drawn ~20% larger on each side than the
-  // raw field bbox, so the boxed area includes a bit of surrounding context. Memoized so it
-  // keeps a stable reference across re-renders that don't actually change the source bbox
-  // (e.g. a zoom/pan update) -- otherwise the effect below would re-fit the frame on every render.
-  const inflated = useMemo(
-    () => focusBbox ? inflateBbox(focusBbox, 0.2, nat.w, nat.h) : null,
-    [focusBbox, nat.w, nat.h],
-  )
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const dragRef = useRef<{
+    x: number
+    y: number
+    scrollLeft: number
+    scrollTop: number
+  } | null>(null)
+  const [viewMode, setViewMode] = useState<DocumentViewMode>('single')
+  const [zoomLevel, setZoomLevel] = useState(1)
+  const [showHighlight, setShowHighlight] = useState(true)
+  const [showRoster, setShowRoster] = useState(true)
+  const [panMode, setPanMode] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
 
-  useLayoutEffect(() => {
-    const el = ref.current!
-    const ro = new ResizeObserver(() => setVp({ w: el.clientWidth, h: el.clientHeight }))
-    ro.observe(el)
-    return () => ro.disconnect()
+  const doc = docs.find(candidate => candidate.id === activeDocId) ?? docs[0]
+  const pageCount = doc?.pages.length ?? 0
+  const pageIndex = clampPageIndex(activePage, pageCount)
+  const pageGroups = groupPageIndexes(pageCount, viewMode)
+
+  const focusedBox = useMemo(() => {
+    if (!focusBbox || !doc?.pages[pageIndex]) return null
+    const page = doc.pages[pageIndex]
+    return inflateBbox(focusBbox, 0.2, page.width, page.height)
+  }, [focusBbox, doc, pageIndex])
+
+  useEffect(() => {
+    if (lockView) return
+    pageRefs.current[pageIndex]?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    })
+  }, [activeDocId, pageIndex, focusedBox, viewMode, lockView])
+
+  const zoom = useCallback((factor: number) => {
+    setZoomLevel(current => Math.max(0.5, Math.min(4, current * factor)))
   }, [])
 
-  useLayoutEffect(() => {
-    if (lockView || vp.w === 0) return
-    setFrame(loupeFrame(inflated, nat, vp))
-  }, [inflated, vp.w, vp.h, activeDocId, activePage, lockView])
-
-  const zoom = useCallback((factor: number) => setFrame(f => {
-    const s = Math.max(0.1, Math.min(6, f.scale * factor))
-    const cx = (vp.w / 2 - f.tx) / f.scale, cy = (vp.h / 2 - f.ty) / f.scale
-    return { scale: s, tx: vp.w / 2 - cx * s, ty: vp.h / 2 - cy * s }
-  }), [vp.w, vp.h])
-
-  // Alt +/- to zoom — uses physical key codes so ⌥ on macOS works (⌥- would type an en-dash).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey) return
-      const k = e.key
-      if (e.code === 'Equal' || k === '=' || k === '+' || k === '≠' || k === '±') { e.preventDefault(); zoom(1.25) }
-      else if (e.code === 'Minus' || k === '-' || k === '_' || k === '–' || k === '—') { e.preventDefault(); zoom(0.8) }
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.altKey) return
+      const key = event.key
+      if (event.code === 'Equal' || key === '=' || key === '+' || key === '≠' || key === '±') {
+        event.preventDefault()
+        zoom(1.25)
+      } else if (
+        event.code === 'Minus'
+        || key === '-'
+        || key === '_'
+        || key === '–'
+        || key === '—'
+      ) {
+        event.preventDefault()
+        zoom(0.8)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom])
 
-  // U2: `B` toggles the highlight overlay — ignored while typing in a text field (same
-  // input-focus guard used by FolderReview's field/document nav).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-      if (e.altKey || e.ctrlKey || e.metaKey) return
-      if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setShowHighlight(v => !v) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  // `V` toggles the roster (bảng kê) value callout — independent of the `B` box toggle above,
-  // same input-focus guard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-      if (e.altKey || e.ctrlKey || e.metaKey) return
-      if (e.key === 'v' || e.key === 'V') { e.preventDefault(); setShowRoster(v => !v) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  // U5: `?` opens/closes the hotkey reference; Escape closes it if open. Same input-focus guard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-      if (e.key === '?' || (e.shiftKey && e.key === '/')) { e.preventDefault(); setShowHelp(v => !v) }
-      else if (e.key === 'Escape') setShowHelp(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  // U4: Option/Alt + P toggles pan mode — same physical-key-code guard as Alt +/- above (⌥P
-  // types 'π' on a macOS US layout), plus the input-focus guard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-      if (e.altKey && (e.code === 'KeyP' || e.key === 'p' || e.key === 'P' || e.key === 'π')) {
-        e.preventDefault()
-        setPanMode(v => !v)
+    const onKey = (event: KeyboardEvent) => {
+      if (inputHasFocus(event.target)) return
+      if (event.altKey || event.ctrlKey || event.metaKey) return
+      if (event.key === 'b' || event.key === 'B') {
+        event.preventDefault()
+        setShowHighlight(value => !value)
+      } else if (event.key === 'v' || event.key === 'V') {
+        event.preventDefault()
+        setShowRoster(value => !value)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // U4: drag-to-pan while panMode is on — mousedown on the stage captures the frame's current
-  // offset, then window-level mousemove/mouseup drag it (window-level so the drag keeps tracking
-  // even if the cursor leaves the stage bounds mid-drag).
-  const onStageMouseDown = (e: React.MouseEvent) => {
-    if (!panMode) return
-    e.preventDefault()
-    dragRef.current = { x: e.clientX, y: e.clientY, tx: frame.tx, ty: frame.ty }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (inputHasFocus(event.target)) return
+      if (event.key === '?' || (event.shiftKey && event.key === '/')) {
+        event.preventDefault()
+        setShowHelp(value => !value)
+      } else if (event.key === 'Escape') {
+        setShowHelp(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (inputHasFocus(event.target)) return
+      if (event.altKey && (
+        event.code === 'KeyP'
+        || event.key === 'p'
+        || event.key === 'P'
+        || event.key === 'π'
+      )) {
+        event.preventDefault()
+        setPanMode(value => !value)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const onPanStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!panMode || !scrollRef.current) return
+    event.preventDefault()
+    dragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: scrollRef.current.scrollLeft,
+      scrollTop: scrollRef.current.scrollTop,
+    }
   }
 
   useEffect(() => {
     if (!panMode) return
-    const onMove = (e: MouseEvent) => {
-      const d = dragRef.current
-      if (!d) return
-      const tx = d.tx + (e.clientX - d.x)
-      const ty = d.ty + (e.clientY - d.y)
-      setFrame(f => ({ ...f, tx, ty }))
+    const onMove = (event: MouseEvent) => {
+      const start = dragRef.current
+      const scroll = scrollRef.current
+      if (!start || !scroll) return
+      scroll.scrollLeft = start.scrollLeft - (event.clientX - start.x)
+      scroll.scrollTop = start.scrollTop - (event.clientY - start.y)
     }
     const onUp = () => { dragRef.current = null }
     window.addEventListener('mousemove', onMove)
@@ -154,72 +179,139 @@ export default function EvidenceViewer({
     }
   }, [panMode])
 
-  const fit = () => setFrame(loupeFrame(null, nat, vp))
-  const hl = showHighlight && inflated ? boxToViewport(inflated, frame) : null
-  // Roster callout anchors off the field box regardless of the `B` highlight toggle — `V` is
-  // an independent on/off switch, so it must not depend on `hl` (which goes null when B is off).
-  const rosterBox = inflated ? boxToViewport(inflated, frame) : null
-  const pageCount = doc.pages.length
+  if (!doc) return null
+
+  const documentStyle: CSSProperties = {
+    width: `${92 * zoomLevel}%`,
+  }
 
   return (
     <section className="ev">
       <div className="ev-tabs">
-        {docs.map(d => (
-          // U3: the active document tab stands out (solid accent); the others stay neutral —
-          // clearer than tinting every tab its own colour (see `.ev-tab.on` in styles.css).
-          <button key={d.id} className={`ev-tab${d.id === doc.id ? ' on' : ''}`}
-            onClick={() => onSelectDoc(d.id)}>
-            {d.label}
+        {docs.map(candidate => (
+          <button
+            key={candidate.id}
+            className={`ev-tab${candidate.id === doc.id ? ' on' : ''}`}
+            onClick={() => onSelectDoc(candidate.id)}
+          >
+            {candidate.label}
           </button>
         ))}
       </div>
-      <div className={panMode ? 'ev-stage panning' : 'ev-stage'} ref={ref} onMouseDown={onStageMouseDown}>
-        <div className="doc-page" style={{ transform: `translate(${frame.tx}px, ${frame.ty}px) scale(${frame.scale})` }}>
-          <img src={assetUrl(page.src)} width={nat.w} height={nat.h} alt="" draggable={false} />
+
+      <div className="ev-view">
+        <div className="ev-modes" role="group" aria-label="Chế độ xem tài liệu">
+          {DOCUMENT_VIEW_MODES.map(option => (
+            <button
+              key={option.mode}
+              className={viewMode === option.mode ? 'on' : ''}
+              onClick={() => setViewMode(option.mode)}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
-        {hl && <div className="doc-hl" style={{ left: hl.left, top: hl.top, width: hl.width, height: hl.height }} />}
 
-        {showRoster && rosterValue && (
-          rosterBox
-            ? (() => {
-                const CALLOUT_H = 52
-                const a = calloutAnchor(rosterBox, CALLOUT_H, vp.h)
-                return (
-                  <div className={`roster-callout ${a.placement}`} style={{ left: a.left, top: a.top }}>
-                    <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
-                    <div className="roster-callout-val">{rosterValue}</div>
-                  </div>
-                )
-              })()
-            : (
-                <div className="roster-callout corner">
-                  <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
-                  <div className="roster-callout-val">{rosterValue}</div>
-                </div>
-              )
-        )}
-
-        {pageCount > 1 && (
-          <div className="doc-pager">
-            <button disabled={activePage === 0} onClick={() => onSelectPage(activePage - 1)} aria-label="Trang trước">‹</button>
-            <span>{activePage + 1} / {pageCount}</span>
-            <button disabled={activePage === pageCount - 1} onClick={() => onSelectPage(activePage + 1)} aria-label="Trang sau">›</button>
+        <div
+          className={`ev-scroll${panMode ? ' panning' : ''}`}
+          ref={scrollRef}
+          onMouseDown={onPanStart}
+        >
+          <div className={`ev-document ${viewMode}`} style={documentStyle}>
+            {pageGroups.map((indexes, rowIndex) => (
+              <div className="document-page-row" key={rowIndex}>
+                {indexes.map(index => {
+                  const page = doc.pages[index]
+                  const isFocusedPage = index === pageIndex
+                  const focusStyle = isFocusedPage && focusedBox
+                    ? bboxPercentStyle(focusedBox, page.width, page.height)
+                    : null
+                  return (
+                    <div
+                      className="document-page"
+                      data-page-index={index}
+                      data-active-page={isFocusedPage ? 'true' : undefined}
+                      key={index}
+                      ref={element => { pageRefs.current[index] = element }}
+                    >
+                      <img
+                        src={assetUrl(page.src)}
+                        width={page.width}
+                        height={page.height}
+                        alt=""
+                        draggable={false}
+                      />
+                      {focusStyle && (
+                        <div className="document-focus-anchor" style={focusStyle}>
+                          {showHighlight && <div className="doc-hl-fill" />}
+                          {showRoster && rosterValue && (
+                            <div className="roster-callout attached">
+                              <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                              <div className="roster-callout-val">{rosterValue}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {isFocusedPage && !focusStyle && showRoster && rosterValue && (
+                        <div className="roster-callout corner">
+                          <div className="roster-callout-lbl">Bảng kê — {rosterLabel}</div>
+                          <div className="roster-callout-val">{rosterValue}</div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
           </div>
-        )}
+        </div>
 
         <div className="doc-tools">
-          <button onClick={fit} aria-label="Vừa khung">⤢</button>
-          <button onClick={() => zoom(0.8)} aria-label="Thu nhỏ">−</button>
-          <span>{Math.round(frame.scale * 100)}%</span>
-          <button onClick={() => zoom(1.25)} aria-label="Phóng to">+</button>
-          <button className={showHighlight ? 'on' : ''} onClick={() => setShowHighlight(v => !v)}
-            aria-label="Ẩn/hiện khung tô sáng" title="Ẩn/hiện khung (B)">▢</button>
-          <button className={showRoster ? 'on' : ''} onClick={() => setShowRoster(v => !v)}
-            aria-label="Ẩn/hiện giá trị bảng kê" title="Giá trị bảng kê (V)">🏷</button>
-          <button className={panMode ? 'on' : ''} onClick={() => setPanMode(v => !v)}
-            aria-label="Di chuyển (pan)" title="Di chuyển (⌥P)">✋</button>
-          <button className={lockView ? 'on' : ''} onClick={onToggleLock} aria-label="Khoá khung nhìn">🔒</button>
-          <button onClick={() => setShowHelp(v => !v)} aria-label="Danh sách phím tắt" title="Phím tắt (?)">?</button>
+          <button onClick={() => setZoomLevel(1)} aria-label="Vừa khung" title="Vừa khung">⤢</button>
+          <span className="tool-divider" aria-hidden="true" />
+          <button onClick={() => zoom(0.8)} aria-label="Thu nhỏ" title="Thu nhỏ (⌥−)">−</button>
+          <span className="zoom-value">{Math.round(zoomLevel * 100)}%</span>
+          <button onClick={() => zoom(1.25)} aria-label="Phóng to" title="Phóng to (⌥+)">+</button>
+          <span className="tool-divider" aria-hidden="true" />
+          <button
+            className={showHighlight ? 'on' : ''}
+            onClick={() => setShowHighlight(value => !value)}
+            aria-label="Ẩn/hiện khung tô sáng"
+            title="Ẩn/hiện khung (B)"
+          >
+            ▢
+          </button>
+          <button
+            className={showRoster ? 'on' : ''}
+            onClick={() => setShowRoster(value => !value)}
+            aria-label="Ẩn/hiện giá trị bảng kê"
+            title="Giá trị bảng kê (V)"
+          >
+            🏷
+          </button>
+          <button
+            className={panMode ? 'on' : ''}
+            onClick={() => setPanMode(value => !value)}
+            aria-label="Di chuyển (pan)"
+            title="Di chuyển (⌥P)"
+          >
+            ✋
+          </button>
+          <button
+            className={lockView ? 'on' : ''}
+            onClick={onToggleLock}
+            aria-label="Khoá khung nhìn"
+            title="Khoá khung nhìn"
+          >
+            🔒
+          </button>
+          <button
+            onClick={() => setShowHelp(value => !value)}
+            aria-label="Danh sách phím tắt"
+            title="Phím tắt (?)"
+          >
+            ?
+          </button>
         </div>
       </div>
       <HotkeyHelp open={showHelp} onClose={() => setShowHelp(false)} />

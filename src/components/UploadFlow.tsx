@@ -1,16 +1,29 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CtvFolder } from '../ctv/types'
-import { listCases, getCase, createCase, setReview, deleteCase, fetchPacketManifest } from '../upload/api'
+import {
+  listCases,
+  getCase,
+  createCase,
+  setReview,
+  deleteCase,
+  fetchPacketManifest,
+  normalizePacketReview,
+} from '../upload/api'
 import type { CaseSummary, CaseDetail as CaseDetailT, Progress, PacketReview } from '../upload/api'
+import {
+  createReviewSaveQueue,
+  type ReviewSaveContext,
+} from '../logic/reviewSaveQueue'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
 import CaseDetail from './CaseDetail'
 import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
+import ReviewHeader from './ReviewHeader'
 
 type Screen = 'list' | 'upload' | 'detail' | 'review'
 
-const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8000).'
+const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8001).'
 
 // The "Tải hồ sơ" flow. After an upload we return straight to the case list —
 // processing happens in the background and shows as an inline progress bar on the
@@ -25,9 +38,21 @@ export default function UploadFlow() {
   const [detail, setDetail] = useState<CaseDetailT | null>(null)
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
   const [folder, setFolder] = useState<CtvFolder | null>(null)
-  const [review, setReviewState] = useState<PacketReview>({ done: false, fields: {} })
+  const [review, setReviewState] = useState<PacketReview>(
+    normalizePacketReview(undefined),
+  )
   const [err, setErr] = useState<string | null>(null)
   const [showReport, setShowReport] = useState(false)
+  const activeReviewRef = useRef<{
+    caseId: string | null
+    packetIndex: number | null
+  }>({ caseId: null, packetIndex: null })
+  activeReviewRef.current = { caseId, packetIndex }
+  const [reviewSaveQueue] = useState(() => createReviewSaveQueue(
+    (context: ReviewSaveContext, candidate: PacketReview) => (
+      setReview(context.caseId, context.packetIndex, candidate)
+    ),
+  ))
 
   const refreshList = async () => {
     try { setCases(await listCases()) } catch { setErr(CONN_ERR) }
@@ -114,24 +139,51 @@ export default function UploadFlow() {
     try {
       const f = await fetchPacketManifest(caseId, index)
       const meta = detail?.packets.find(p => p.index === index)
-      setReviewState(meta?.review ?? { done: false, fields: {} })
+      setReviewState(normalizePacketReview(meta?.review))
       setPacketIndex(index); setFolder(f); setScreen('review')
     } catch { setErr(CONN_ERR) }
   }
 
-  // Persist review changes (seen fields, flags, done) as the reviewer works
-  // through a packet, and keep case detail (grid + prev/next + progress) in sync.
-  const flushReview = async (r: PacketReview) => {
-    if (!caseId || packetIndex == null) return
-    try {
-      const res = await setReview(caseId, packetIndex, r)
-      setDetail(d => d && ({
-        ...d,
-        packets: d.packets.map(p => p.index === packetIndex ? res.packet : p),
-        status: res.status,
-        progress: res.progress,
-      }))
-    } catch { setErr(CONN_ERR) }
+  const currentReviewContext = (): ReviewSaveContext | null => (
+    caseId && packetIndex != null ? { caseId, packetIndex } : null
+  )
+
+  const applyReviewResult = (
+    context: ReviewSaveContext,
+    res: Awaited<ReturnType<typeof setReview>>,
+    publishReview: boolean,
+  ) => {
+    setDetail(current => current?.id === context.caseId ? ({
+      ...current,
+      packets: current.packets.map(packet => (
+        packet.index === context.packetIndex ? res.packet : packet
+      )),
+      status: res.status,
+      progress: res.progress,
+    }) : current)
+    if (
+      publishReview
+      && activeReviewRef.current.caseId === context.caseId
+      && activeReviewRef.current.packetIndex === context.packetIndex
+    ) {
+      setReviewState(res.packet.review)
+    }
+  }
+
+  const saveOptimisticReview = (candidate: PacketReview) => {
+    const context = currentReviewContext()
+    if (!context) return
+    setReviewState(candidate)
+    void reviewSaveQueue.enqueue(context, candidate)
+      .then(res => applyReviewResult(context, res, false))
+      .catch(() => setErr(CONN_ERR))
+  }
+
+  const commitTransactionalReview = async (candidate: PacketReview) => {
+    const context = currentReviewContext()
+    if (!context) throw new Error('review packet is not active')
+    const res = await reviewSaveQueue.enqueue(context, candidate)
+    applyReviewResult(context, res, true)
   }
 
   if (err) {
@@ -172,36 +224,25 @@ export default function UploadFlow() {
     const meta = detail?.packets.find(p => p.index === packetIndex)
     return (
       <div className="review-flow">
-        <div className="review-back-bar">
-          <button className="btn" onClick={() => setScreen('detail')}>← Quay lại hồ sơ</button>
-          <div className="review-nav">
-            <button
-              className="btn"
-              disabled={!prev}
-              title={prev ? `Gói trước: ${prev.name || 'chưa khớp tên'}` : undefined}
-              onClick={() => prev && onOpenPacket(prev.index)}
-            >
-              ← Gói trước
-            </button>
-            <span className="review-nav-pos">{pos >= 0 ? `Gói ${pos + 1} / ${packets.length}` : ''}</span>
-            <button
-              className="btn"
-              disabled={!next}
-              title={next ? `Gói sau: ${next.name || 'chưa khớp tên'}` : undefined}
-              onClick={() => next && onOpenPacket(next.index)}
-            >
-              Gói sau →
-            </button>
-          </div>
-        </div>
+        <ReviewHeader
+          name={folder.name}
+          product={folder.product}
+          pages={meta?.pages ?? [0, Math.max(0, folder.docs.reduce((sum, doc) => sum + doc.pages.length, 0) - 1)]}
+          matchedBy={meta?.matchedBy ?? 'no-roster'}
+          position={Math.max(0, pos)}
+          count={packets.length}
+          canPrevious={!!prev}
+          canNext={!!next}
+          onBack={() => setScreen('detail')}
+          onPrevious={() => prev && onOpenPacket(prev.index)}
+          onNext={() => next && onOpenPacket(next.index)}
+        />
         <FolderReview
           key={packetIndex ?? folder.id}
           folder={folder}
           review={review}
-          matchedBy={meta?.matchedBy ?? 'no-roster'}
-          ocrIdentity={meta?.ocrIdentity ?? { cccd: '', name: '' }}
-          rosterIdentity={meta?.rosterIdentity ?? null}
-          onReview={r => { setReviewState(r); flushReview(r) }}
+          onReview={saveOptimisticReview}
+          onCommitReview={commitTransactionalReview}
         />
       </div>
     )

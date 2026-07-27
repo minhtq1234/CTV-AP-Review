@@ -1,10 +1,11 @@
-// Client for the case-management backend (server/app.py, http://127.0.0.1:8000):
+// Client for the isolated v1 backend. Port 8001 keeps its field-keyed case data
+// separate from the v2 checklist backend on port 8000.
 // upload a scanned PDF (+ optional roster) as a durable **case**, list/inspect
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
 import type { CtvFolder } from '../ctv/types'
 
-export const API_BASE = 'http://127.0.0.1:8000'
+export const API_BASE = 'http://127.0.0.1:8001'
 
 export type Stage = 'queued' | 'splitting' | 'ocr' | 'done' | 'error' | string
 

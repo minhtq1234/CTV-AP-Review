@@ -1,0 +1,45 @@
+import type { Bbox } from '../types'
+
+export type DocumentViewMode = 'single' | 'paired'
+
+export const DOCUMENT_VIEW_MODES: ReadonlyArray<{
+  mode: DocumentViewMode
+  label: string
+}> = [
+  { mode: 'single', label: '1 trang' },
+  { mode: 'paired', label: '2 trang' },
+]
+
+export function groupPageIndexes(
+  pageCount: number,
+  mode: DocumentViewMode,
+): number[][] {
+  const indexes = Array.from({ length: Math.max(0, pageCount) }, (_, index) => index)
+  if (mode === 'single') return indexes.map(index => [index])
+
+  const rows: number[][] = []
+  for (let index = 0; index < indexes.length; index += 2) {
+    rows.push(indexes.slice(index, index + 2))
+  }
+  return rows
+}
+
+export function clampPageIndex(page: number, pageCount: number): number {
+  if (pageCount <= 0) return 0
+  return Math.max(0, Math.min(page, pageCount - 1))
+}
+
+export function bboxPercentStyle(
+  bbox: Bbox,
+  pageWidth: number,
+  pageHeight: number,
+): { left: string; top: string; width: string; height: string } {
+  const width = pageWidth || 1
+  const height = pageHeight || 1
+  return {
+    left: `${(bbox.x / width) * 100}%`,
+    top: `${(bbox.y / height) * 100}%`,
+    width: `${(bbox.width / width) * 100}%`,
+    height: `${(bbox.height / height) * 100}%`,
+  }
+}
