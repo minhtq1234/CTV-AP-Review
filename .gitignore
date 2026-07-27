@@ -9,3 +9,4 @@ splitter/*.html
 public/folders/_ocr-real
 __pycache__
 server/data
+.worktrees/
