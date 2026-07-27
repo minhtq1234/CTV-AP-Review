@@ -39,9 +39,23 @@ export interface FieldReview {
   flag: FieldFlag | null
 }
 
+export const PACKET_REJECTION_REASONS = [
+  'missing_documents',
+  'wrong_template',
+  'missing_signature',
+] as const
+
+export type PacketRejectionReason = typeof PACKET_REJECTION_REASONS[number]
+
+export interface PacketRejection {
+  reasons: PacketRejectionReason[]
+  note: string
+}
+
 export interface PacketReview {
   done: boolean
   fields: Record<string, FieldReview>
+  rejection: PacketRejection | null
 }
 
 export interface CaseProgress {
@@ -140,7 +154,14 @@ export async function listCases(): Promise<CaseSummary[]> {
 export async function getCase(caseId: string): Promise<CaseDetail> {
   const res = await fetch(`${API_BASE}/api/cases/${caseId}`)
   if (!res.ok) throw new Error(`getCase: HTTP ${res.status}`)
-  return res.json()
+  const detail = await res.json() as CaseDetail
+  return {
+    ...detail,
+    packets: detail.packets.map(packet => ({
+      ...packet,
+      review: normalizePacketReview(packet.review),
+    })),
+  }
 }
 
 export async function createCase(pdf: File, roster?: File): Promise<{ case_id: string }> {
@@ -163,7 +184,28 @@ export async function setReview(
     body: JSON.stringify(review),
   })
   if (!res.ok) throw new Error(`setReview: HTTP ${res.status}`)
-  return res.json()
+  const result = await res.json() as {
+    packet: PacketMeta
+    progress: CaseProgress
+    status: CaseState
+  }
+  return {
+    ...result,
+    packet: {
+      ...result.packet,
+      review: normalizePacketReview(result.packet.review),
+    },
+  }
+}
+
+export function normalizePacketReview(
+  review: Partial<PacketReview> | null | undefined,
+): PacketReview {
+  return {
+    done: Boolean(review?.done),
+    fields: review?.fields ?? {},
+    rejection: review?.rejection ?? null,
+  }
 }
 
 export interface ReportItem {
@@ -207,7 +249,10 @@ export function reportUrls(caseId: string) {
 
 export function packetNeedsResubmit(p: PacketMeta): boolean {
   const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
-  return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
+  return Boolean(p.review?.rejection)
+    || flagged
+    || p.matchedBy === 'name'
+    || p.matchedBy === 'unmatched'
 }
 
 export async function deleteCase(caseId: string): Promise<void> {

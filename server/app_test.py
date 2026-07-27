@@ -67,6 +67,44 @@ def test_put_review_persists_and_updates_status(tmp_path, monkeypatch):
     assert data["packet"]["review"]["done"] is True
     assert data["progress"]["done"] >= 1
 
+def test_put_review_defaults_rejection_to_null(tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    r = c.put(f"/api/cases/{cid}/packets/0/review",
+              json={"done": False, "fields": {}})
+    assert r.status_code == 200
+    assert r.json()["packet"]["review"]["rejection"] is None
+
+def test_put_review_validates_and_roundtrips_multiple_rejection_reasons(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    url = f"/api/cases/{cid}/packets/0/review"
+    assert c.put(url, json={
+        "done": False, "fields": {},
+        "rejection": {"reasons": [], "note": ""},
+    }).status_code == 422
+    assert c.put(url, json={
+        "done": False, "fields": {},
+        "rejection": {"reasons": ["not_a_reason"], "note": ""},
+    }).status_code == 422
+
+    r = c.put(url, json={
+        "done": False,
+        "fields": {"name": {"seen": True, "flag": None}},
+        "rejection": {
+            "reasons": ["missing_signature", "missing_documents"],
+            "note": "  bổ sung  ",
+        },
+    })
+    assert r.status_code == 200
+    assert r.json()["packet"]["review"] == {
+        "done": True,
+        "fields": {"name": {"seen": True, "flag": None}},
+        "rejection": {
+            "reasons": ["missing_documents", "missing_signature"],
+            "note": "bổ sung",
+        },
+    }
+
 def test_report_endpoint_generates_and_persists(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     c.put(f"/api/cases/{cid}/packets/0/review",

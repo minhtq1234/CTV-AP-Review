@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 import threading
 
 from cases import CaseStore, progress_of
@@ -124,14 +125,34 @@ async def get_case(cid: str):
     return out
 
 
+PacketRejectionReason = Literal[
+    "missing_documents",
+    "wrong_template",
+    "missing_signature",
+]
+
+
+class PacketRejectionBody(BaseModel):
+    reasons: list[PacketRejectionReason] = Field(min_length=1)
+    note: str = ""
+
+    @field_validator("reasons")
+    @classmethod
+    def reasons_must_be_unique(cls, reasons):
+        if len(reasons) != len(set(reasons)):
+            raise ValueError("rejection reasons must be unique")
+        return reasons
+
+
 class ReviewBody(BaseModel):
     done: bool = False
-    fields: dict = {}
+    fields: dict = Field(default_factory=dict)
+    rejection: PacketRejectionBody | None = None
 
 
 @app.put("/api/cases/{cid}/packets/{i}/review")
 async def put_review(cid: str, i: int, body: ReviewBody):
-    updated = store.set_review(cid, i, {"done": body.done, "fields": body.fields})
+    updated = store.set_review(cid, i, body.model_dump())
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)

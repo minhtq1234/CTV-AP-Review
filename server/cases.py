@@ -18,6 +18,31 @@ import shutil
 import uuid
 
 
+REJECTION_REASON_ORDER = (
+    "missing_documents",
+    "wrong_template",
+    "missing_signature",
+)
+
+
+def normalize_review(review: dict | None) -> dict:
+    """Return the complete additive review shape and enforce rejection rules."""
+    source = review or {}
+    rejection = source.get("rejection")
+    if rejection is not None:
+        selected = set(rejection.get("reasons") or [])
+        reasons = [reason for reason in REJECTION_REASON_ORDER if reason in selected]
+        rejection = {
+            "reasons": reasons,
+            "note": str(rejection.get("note") or "").strip(),
+        } if reasons else None
+    return {
+        "done": True if rejection else bool(source.get("done", False)),
+        "fields": source.get("fields", {}) or {},
+        "rejection": rejection,
+    }
+
+
 def needs_resubmit(packet: dict) -> bool:
     """A packet needs resubmission if any field is flagged, or its roster
     match is weak (matched by name only, or unmatched)."""
@@ -59,7 +84,7 @@ def _ensure_packet_defaults(packet: dict) -> dict:
     """Fill review/match defaults if the pipeline (or a fake test pipeline)
     didn't set them."""
     out = dict(packet)
-    out.setdefault("review", {"done": False, "fields": {}})
+    out["review"] = normalize_review(out.get("review"))
     out.setdefault("matchedBy", "no-roster")
     out.setdefault("ocrIdentity", {"cccd": "", "name": ""})
     out.setdefault("rosterIdentity", None)
@@ -104,21 +129,15 @@ class CaseStore:
                 case["error"] = "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
                 self._write(case)
             else:
-                # #Task2: migrate legacy packets (pre-review-model, i.e. before
-                # the `decision`/`rejectReason`/`reviewedAt` fields were
-                # replaced by `review={"done","fields"}` + match meta) so
-                # cases persisted before that change don't crash the new
-                # code. Only touches packets actually missing `review`
-                # (idempotent — a second load is a no-op).
                 changed = False
-                for p in case.get("packets", []):
-                    if "review" not in p:
-                        p["review"] = {"done": False, "fields": {}}
+                for i, p in enumerate(case.get("packets", [])):
+                    had_review = "review" in p
+                    normalized = _ensure_packet_defaults(p)
+                    if not had_review:
                         for k in ("decision", "rejectReason", "reviewedAt"):
-                            p.pop(k, None)
-                        p.setdefault("matchedBy", "no-roster")
-                        p.setdefault("ocrIdentity", {"cccd": "", "name": ""})
-                        p.setdefault("rosterIdentity", None)
+                            normalized.pop(k, None)
+                    if normalized != p:
+                        case["packets"][i] = normalized
                         changed = True
                 if changed:
                     self._write(case)   # persist migration (also indexes)
@@ -202,10 +221,7 @@ class CaseStore:
             return None
         for p in case["packets"]:
             if p["index"] == index:
-                p["review"] = {
-                    "done": bool(review.get("done", False)),
-                    "fields": review.get("fields", {}) or {},
-                }
+                p["review"] = normalize_review(review)
                 break
         else:
             return None
