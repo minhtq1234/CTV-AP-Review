@@ -595,14 +595,23 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   justify-content: space-between;
   gap: 12px;
 }
-.overview-row-head > div {
+.overview-selection-control {
   display: grid;
+  flex: 1 1 auto;
   gap: 3px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
 }
-.overview-row-head > div > strong {
+.overview-selection-control > strong {
   font-size: 14px;
 }
-.overview-row-head > div > span {
+.overview-selection-control > span {
   color: var(--text-muted);
   font-size: 12px;
 }

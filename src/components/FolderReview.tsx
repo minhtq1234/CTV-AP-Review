@@ -109,6 +109,7 @@ export default function FolderReview({
       )) return
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
+        if (selection.kind === 'overview' && e.key === 'ArrowUp') return
         const nextSelection = moveVerticalSelection(
           selection,
           ranked.map(row => row.field.key),

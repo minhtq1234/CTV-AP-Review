@@ -206,38 +206,74 @@ describe('FolderReview mounted Overview interactions', () => {
     })
   })
 
-  it('exposes Overview as a selected control operable with Enter and Space', () => {
+  it('uses a native selected Overview control separate from rejection actions', () => {
     renderReview()
 
     const overviewRow = container.querySelector('.overview-row')!
-    expect(overviewRow.getAttribute('role')).toBe('button')
-    expect(overviewRow.getAttribute('aria-label')).toBe('Tổng quan')
-    expect(overviewRow.getAttribute('tabindex')).toBe('0')
-    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+    const overviewControl = overviewRow.querySelector('.overview-selection-control')!
+    const rejectionButton = Array.from(overviewRow.querySelectorAll('button'))
+      .find(button => button.textContent === 'Từ chối hồ sơ')!
+
+    expect(overviewControl).not.toBeNull()
+    if (!overviewControl) return
+    expect(overviewControl.tagName).toBe('BUTTON')
+    expect(overviewControl.getAttribute('type')).toBe('button')
+    expect(overviewControl.getAttribute('aria-label')).toBe('Tổng quan')
+    expect(overviewControl.getAttribute('aria-pressed')).toBe('true')
+    expect(overviewControl.contains(rejectionButton)).toBe(false)
+    expect(overviewControl.parentElement).toBe(rejectionButton.parentElement)
+    expect(overviewRow.getAttribute('role')).toBeNull()
+    expect(overviewRow.getAttribute('tabindex')).toBeNull()
 
     press('ArrowDown')
-    expect(overviewRow.getAttribute('aria-pressed')).toBe('false')
+    expect(overviewControl.getAttribute('aria-pressed')).toBe('false')
+    click(overviewControl)
 
-    act(() => {
-      overviewRow.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter',
-        bubbles: true,
-        cancelable: true,
-      }))
-    })
     expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
-    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+    expect(overviewControl.getAttribute('aria-pressed')).toBe('true')
+  })
 
-    press('ArrowDown')
-    act(() => {
-      overviewRow.dispatchEvent(new KeyboardEvent('keydown', {
-        key: ' ',
-        bubbles: true,
-        cancelable: true,
-      }))
+  it('keeps the persisted-rejection edit action outside the Overview control', () => {
+    renderReview({
+      done: true,
+      fields: { 'field-a': { seen: true, flag: null } },
+      rejection: { reasons: ['missing_documents'], note: 'Synthetic note' },
     })
+
+    const overviewControl = container.querySelector('.overview-selection-control')!
+    const editButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Sửa lý do')!
+
+    expect(overviewControl).not.toBeNull()
+    if (!overviewControl) return
+    expect(overviewControl.tagName).toBe('BUTTON')
+    expect(overviewControl.contains(editButton)).toBe(false)
+  })
+
+  it('keeps manual Overview state unchanged when ArrowUp is pressed in Overview', () => {
+    renderReview(emptyReview, multiPageFolder)
+
+    click(documentModeButton('1 trang')!)
+    click(container.querySelector('[aria-label="Phóng to"]')!)
+    const appendixTab = Array.from(container.querySelectorAll('.ev-tab'))
+      .find(button => button.textContent === 'Synthetic appendix')
+    click(appendixTab!)
+
+    const scroll = viewerScroll()
+    scroll.scrollLeft = 140
+    scroll.scrollTop = 110
+    scrollToSpy.mockClear()
+    press('ArrowUp')
+
     expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
-    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/appendix-1.svg')
+    expect(viewerHasMode('single')).toBe(true)
+    expect(viewerZoom()).toBe('125%')
+    expect(scroll.scrollLeft).toBe(140)
+    expect(scroll.scrollTop).toBe(110)
+    expect(scrollToSpy).not.toHaveBeenCalled()
+    expect(container.querySelector('.document-focus-anchor')).toBeNull()
+    expect(container.querySelector('.roster-callout')).toBeNull()
   })
 
   it('preserves manual Overview controls across tabs and resets the preset on re-entry', () => {

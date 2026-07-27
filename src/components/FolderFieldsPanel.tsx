@@ -34,23 +34,22 @@ export default function FolderFieldsPanel({
       <section
         className={`overview-row${selection.kind === 'overview' ? ' sel' : ''}`}
         data-review-selection={selection.kind === 'overview' ? 'overview' : undefined}
-        role="button"
-        aria-label="Tổng quan"
-        aria-pressed={selection.kind === 'overview'}
-        tabIndex={0}
         onClick={onSelectOverview}
-        onKeyDown={event => {
-          if (event.target !== event.currentTarget) return
-          if (event.key !== 'Enter' && event.key !== ' ') return
-          event.preventDefault()
-          onSelectOverview()
-        }}
       >
         <div className="overview-row-head">
-          <div>
+          <button
+            type="button"
+            className="overview-selection-control"
+            aria-label="Tổng quan"
+            aria-pressed={selection.kind === 'overview'}
+            onClick={event => {
+              event.stopPropagation()
+              onSelectOverview()
+            }}
+          >
             <strong>Tổng quan</strong>
             <span>Xem nhanh toàn bộ chứng từ</span>
-          </div>
+          </button>
           {!review.rejection && (
             <button
               type="button"
