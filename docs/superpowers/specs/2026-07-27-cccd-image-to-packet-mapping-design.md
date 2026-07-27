@@ -69,8 +69,10 @@ useful exact-only workflow before building durable storage and UI.
 - local reviewer ground truth for a manual audit.
 
 The supplied workbook alone can measure extraction, side classification,
-pairing, region location, and OCR. A final routing go/no-go decision requires
-the corresponding roster.
+pairing, region location, and OCR. The corresponding roster is required to
+measure exact identity-routing coverage. The spike does not rerun packet PDF
+processing; the full build separately requires an exact roster identity to
+resolve to exactly one processed packet before attachment.
 
 ### Spike Scope
 
@@ -134,8 +136,8 @@ spike.
 
 Placement coverage uses one fixed denominator:
 
-`expected mappable packets` = processed packets linked to one unique roster row
-whose roster CCCD contains exactly 12 digits.
+`expected mappable identities` = unique roster rows whose normalized roster
+CCCD contains exactly 12 digits.
 
 An absent card, failed extraction, unreadable number, or unresolved mapping
 therefore lowers coverage rather than disappearing from the metric.
@@ -146,8 +148,8 @@ Proceed to the full build only when one spike run demonstrates:
 
 - 100% extraction of supported PNG/JPEG drawing instances;
 - zero incorrect automatic front/back pairs;
-- zero incorrect automatic packet attachments;
-- at least 85% exact automatic packet placement;
+- zero incorrect automatic candidate-to-roster matches;
+- at least 85% exact automatic roster placement;
 - at least 95% covered by exact automatic placement plus unique one-click
   name suggestions; and
 - no more than 5% requiring packet search/manual assignment.
@@ -783,7 +785,7 @@ artifacts.
 1. The corresponding roster is available.
 2. Supported drawings extract completely.
 3. Manual audit finds zero false pairs and zero false automatic attachments.
-4. Exact auto-placement is at least 85%.
+4. Exact candidate-to-roster placement is at least 85%.
 5. Auto-placement plus one-click suggestions is at least 95%.
 6. Manual packet search is no more than 5%.
 7. All thresholds pass before the full build begins.
