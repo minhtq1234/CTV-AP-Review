@@ -1,8 +1,13 @@
 import { isValidElement } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { RankedCtv } from '../ctv/checks'
+import {
+  fieldSelection,
+  overviewSelection,
+  type ReviewSelection,
+} from '../logic/reviewSelection'
 import type { MatchedBy, PacketReview } from '../upload/api'
 import FolderFieldsPanel from './FolderFieldsPanel'
 import FolderReview from './FolderReview'
@@ -71,11 +76,16 @@ const financialRow: RankedCtv = {
   }],
 }
 
-const renderPanel = (review: PacketReview, rows: RankedCtv[] = ranked) => renderToStaticMarkup(
+const renderPanel = (
+  review: PacketReview,
+  rows: RankedCtv[] = ranked,
+  selection: ReviewSelection = fieldSelection('field-a'),
+) => renderToStaticMarkup(
   <FolderFieldsPanel
     ranked={rows}
-    selectedKey="field-a"
-    onSelect={() => undefined}
+    selection={selection}
+    onSelectOverview={() => undefined}
+    onSelectField={() => undefined}
     review={review}
     onToggleFlag={() => undefined}
     onOpenPacketRejection={() => undefined}
@@ -131,8 +141,9 @@ describe('flat field panel', () => {
     let flaggedKey = ''
     const tree = FolderFieldsPanel({
       ranked,
-      selectedKey: '',
-      onSelect: key => { selectedKey = key },
+      selection: fieldSelection('field-a'),
+      onSelectOverview: () => undefined,
+      onSelectField: key => { selectedKey = key },
       review: { done: false, fields: {}, rejection: null },
       onToggleFlag: key => { flaggedKey = key },
       onOpenPacketRejection: () => undefined,
@@ -166,11 +177,21 @@ describe('flat field panel', () => {
     expect(flaggedKey).toBe('field-a')
   })
 
-  it('renders the packet rejection entry point before detailed fields', () => {
-    const html = renderPanel({ done: false, fields: {}, rejection: null })
-    expect(html).toContain('Từ chối gói hồ sơ')
-    expect(html.indexOf('Từ chối gói hồ sơ'))
-      .toBeLessThan(html.indexOf('Trường mẫu'))
+  it('renders selected Overview first without changing field totals', () => {
+    const html = renderPanel(
+      { done: false, fields: {}, rejection: null },
+      ranked,
+      overviewSelection(),
+    )
+
+    expect(html).toContain('data-review-selection="overview"')
+    expect(html).toContain('Tổng quan')
+    expect(html).toContain('Xem nhanh toàn bộ chứng từ')
+    expect(html).toContain('Từ chối hồ sơ')
+    expect(html.indexOf('Tổng quan')).toBeLessThan(html.indexOf('Trường mẫu'))
+    expect(html).toContain('1 mục kiểm tra')
+    expect(html).toContain('0/1 đã xem')
+    expect(html).not.toContain('Từ chối gói hồ sơ')
   })
 
   it('renders a persistent rejection summary without disabling fields', () => {
@@ -199,6 +220,36 @@ describe('flat field panel', () => {
 })
 
 describe('review presentation', () => {
+  it('opens on Overview without publishing a field review', () => {
+    const onReview = vi.fn()
+    const html = renderToStaticMarkup(
+      <FolderReview
+        folder={{
+          id: 'synthetic-overview',
+          name: 'Synthetic CTV',
+          product: 'Synthetic Product',
+          status: 'pending',
+          exempt: false,
+          docs: [{
+            id: 'contract',
+            kind: 'contract',
+            label: 'Synthetic contract',
+            pages: [{ src: '/synthetic.svg', width: 1000, height: 1400 }],
+          }],
+          fields: [ranked[0].field],
+        }}
+        review={{ done: false, fields: {}, rejection: null }}
+        onReview={onReview}
+        onCommitReview={async () => undefined}
+      />,
+    )
+
+    expect(onReview).not.toHaveBeenCalled()
+    expect(html).toContain('data-review-selection="overview"')
+    expect(html).toContain('0/1 đã xem')
+    expect(html).not.toContain('roster-callout')
+  })
+
   it('uses the same formatted amount in the field row and bbox callout', () => {
     const field = financialRow.field
     const html = renderToStaticMarkup(
@@ -222,8 +273,9 @@ describe('review presentation', () => {
         onCommitReview={async () => undefined}
       />,
     )
-    expect(html.match(/6\.111\.111 ₫/g)).toHaveLength(2)
+    expect(html.match(/6\.111\.111 ₫/g)).toHaveLength(1)
     expect(html).not.toContain('>6111111<')
+    expect(html).not.toContain('roster-callout')
   })
 })
 

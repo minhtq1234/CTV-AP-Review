@@ -4,6 +4,13 @@ import type { CtvFolder } from '../ctv/types'
 import { rankFolder } from '../ctv/checks'
 import type { PacketReview, FieldFlag } from '../upload/api'
 import { allSeen } from '../logic/review'
+import {
+  fieldSelection,
+  moveVerticalSelection,
+  overviewSelection,
+  selectedFieldKey,
+  type ReviewSelection,
+} from '../logic/reviewSelection'
 import { formatRosterValue } from '../logic/reviewValue'
 import {
   rejectedReview,
@@ -30,19 +37,19 @@ export default function FolderReview({
   onCommitReview,
 }: Props) {
   const ranked = useMemo(() => rankFolder(folder), [folder])
-  const first = ranked[0]?.field
-  const [selectedKey, setSelectedKey] = useState(first?.key ?? '')
-  const [srcIdx, setSrcIdx] = useState(0)
-  const [activeDocId, setActiveDocId] = useState(first?.sources[0]?.docId ?? folder.docs[0].id)
-  const [activePage, setActivePage] = useState(first?.sources[0]?.page ?? 0)
-  const [focusBbox, setFocusBbox] = useState<Bbox | null>(first?.sources[0]?.bbox ?? null)
+  const [selection, setSelection] = useState<ReviewSelection>(
+    overviewSelection,
+  )
+  const [activeDocId, setActiveDocId] = useState(folder.docs[0]?.id ?? '')
+  const [activePage, setActivePage] = useState(0)
+  const [focusBbox, setFocusBbox] = useState<Bbox | null>(null)
   const [lockView, setLockView] = useState(false)
   const [rejectionDialogOpen, setRejectionDialogOpen] = useState(false)
   const [rejectionSaving, setRejectionSaving] = useState(false)
   const [rejectionError, setRejectionError] = useState<string | null>(null)
 
-  // Mark a field as seen the first time it's focused — a no-op (no onReview call) if it's
-  // already seen, so re-focusing / the mount-seed effect below never loops.
+  // Mark a field as seen the first time it is explicitly focused — a no-op (no onReview call)
+  // if it's already seen, so re-focusing it never loops.
   const markSeen = (key: string) => {
     if (review.fields[key]?.seen) return
     onReview({
@@ -51,19 +58,22 @@ export default function FolderReview({
     })
   }
 
-  // Seed the first ranked field as seen on mount, same as focusing it would.
-  useEffect(() => { if (first) markSeen(first.key) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
   const toggleFlag = (key: string, flag: FieldFlag | null) => {
     onReview({ ...review, fields: { ...review.fields, [key]: { seen: true, flag } } })
   }
 
-  // Focus the idx-th source (document) of a field, or clear the highlight if it has none.
-  const focusAt = (key: string, idx: number) => {
-    setSelectedKey(key)
-    setSrcIdx(idx)
+  const selectOverview = () => {
+    setSelection(overviewSelection())
+    setActiveDocId(folder.docs[0]?.id ?? '')
+    setActivePage(0)
+    setFocusBbox(null)
+  }
+
+  // Focus the sourceIndex-th source (document) of a field, or clear the highlight if it has none.
+  const focusAt = (key: string, sourceIndex: number) => {
+    setSelection(fieldSelection(key, sourceIndex))
     markSeen(key)
-    const s = folder.fields.find(f => f.key === key)?.sources[idx]
+    const s = folder.fields.find(f => f.key === key)?.sources[sourceIndex]
     if (s) { setActiveDocId(s.docId); setActivePage(s.page); setFocusBbox(s.bbox) }
     else setFocusBbox(null)
   }
@@ -73,8 +83,18 @@ export default function FolderReview({
   // walking a field across its documents is one click per doc, eye always guided. Only clear
   // the highlight when the field genuinely has no source there.
   const onSelectDoc = (id: string) => {
-    const idx = folder.fields.find(f => f.key === selectedKey)?.sources.findIndex(s => s.docId === id) ?? -1
-    if (idx >= 0) focusAt(selectedKey, idx)
+    if (selection.kind === 'overview') {
+      setActiveDocId(id)
+      setActivePage(0)
+      setFocusBbox(null)
+      return
+    }
+
+    const sourceIndex = folder.fields
+      .find(field => field.key === selection.key)
+      ?.sources.findIndex(source => source.docId === id) ?? -1
+
+    if (sourceIndex >= 0) focusAt(selection.key, sourceIndex)
     else { setActiveDocId(id); setActivePage(0); setFocusBbox(null) }
   }
 
@@ -87,20 +107,27 @@ export default function FolderReview({
       )) return
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
-        const i = ranked.findIndex(r => r.field.key === selectedKey)
-        const next = e.key === 'ArrowDown' ? Math.min(i + 1, ranked.length - 1) : Math.max(i - 1, 0)
-        focusAt(ranked[next].field.key, 0) // new field → first source
+        const nextSelection = moveVerticalSelection(
+          selection,
+          ranked.map(row => row.field.key),
+          e.key === 'ArrowDown' ? 'down' : 'up',
+        )
+        if (nextSelection.kind === 'overview') selectOverview()
+        else focusAt(nextSelection.key, nextSelection.sourceIndex)
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-        const n = folder.fields.find(f => f.key === selectedKey)?.sources.length ?? 0
+        if (selection.kind === 'overview') return
+        const n = folder.fields.find(f => f.key === selection.key)?.sources.length ?? 0
         if (n < 2) return // nothing to step through
         e.preventDefault()
-        const next = e.key === 'ArrowRight' ? Math.min(srcIdx + 1, n - 1) : Math.max(srcIdx - 1, 0)
-        focusAt(selectedKey, next) // same field → next document
+        const next = e.key === 'ArrowRight'
+          ? Math.min(selection.sourceIndex + 1, n - 1)
+          : Math.max(selection.sourceIndex - 1, 0)
+        focusAt(selection.key, next) // same field → next document
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ranked, selectedKey, srcIdx, folder])
+  }, [ranked, selection, folder])
 
   // `F` toggles a flag on the currently selected field — separate from the arrow-nav effect
   // above, same input-focus guard, plus skipping modified keystrokes so browser/OS shortcuts
@@ -114,16 +141,20 @@ export default function FolderReview({
       )) return
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (e.key === 'f' || e.key === 'F') {
+        if (selection.kind === 'overview') return
         e.preventDefault()
-        const cur = review.fields[selectedKey]?.flag
-        toggleFlag(selectedKey, cur ? null : { reason: '', note: '' })
+        const cur = review.fields[selection.key]?.flag
+        toggleFlag(selection.key, cur ? null : { reason: '', note: '' })
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [review, selectedKey])
+  }, [review, selection])
 
-  const selField = folder.fields.find(f => f.key === selectedKey)
+  const selectedKey = selectedFieldKey(selection)
+  const selField = selectedKey
+    ? folder.fields.find(field => field.key === selectedKey)
+    : undefined
   const fieldKeys = folder.fields.map(f => f.key)
   const seenCount = fieldKeys.filter(k => review.fields[k]?.seen).length
 
@@ -145,8 +176,9 @@ export default function FolderReview({
       <div className="panes">
         <FolderFieldsPanel
           ranked={ranked}
-          selectedKey={selectedKey}
-          onSelect={key => focusAt(key, 0)}
+          selection={selection}
+          onSelectOverview={selectOverview}
+          onSelectField={key => focusAt(key, 0)}
           review={review}
           onToggleFlag={toggleFlag}
           onOpenPacketRejection={() => {

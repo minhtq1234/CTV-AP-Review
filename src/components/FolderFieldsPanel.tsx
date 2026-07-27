@@ -1,12 +1,14 @@
 import type { RankedCtv } from '../ctv/checks'
 import type { PacketReview, FieldFlag } from '../upload/api'
 import { PACKET_REJECTION_OPTIONS } from '../logic/packetRejection'
+import type { ReviewSelection } from '../logic/reviewSelection'
 import { formatRosterValue } from '../logic/reviewValue'
 
 interface Props {
   ranked: RankedCtv[]
-  selectedKey: string
-  onSelect: (key: string) => void
+  selection: ReviewSelection
+  onSelectOverview: () => void
+  onSelectField: (key: string) => void
   review: PacketReview
   onToggleFlag: (fieldKey: string, flag: FieldFlag | null) => void
   onOpenPacketRejection: () => void
@@ -14,8 +16,9 @@ interface Props {
 
 export default function FolderFieldsPanel({
   ranked,
-  selectedKey,
-  onSelect,
+  selection,
+  onSelectOverview,
+  onSelectField,
   review,
   onToggleFlag,
   onOpenPacketRejection,
@@ -28,41 +31,64 @@ export default function FolderFieldsPanel({
         <span>{ranked.length} mục kiểm tra</span>
         <span className="seen-progress">{seen}/{total} đã xem</span>
       </div>
-      {review.rejection ? (
-        <section className="packet-rejection-summary" aria-label="Đã từ chối">
-          <div className="packet-rejection-summary-head">
-            <strong>Đã từ chối</strong>
-            <button type="button" onClick={onOpenPacketRejection}>
-              Sửa lý do
-            </button>
+      <section
+        className={`overview-row${selection.kind === 'overview' ? ' sel' : ''}`}
+        data-review-selection={selection.kind === 'overview' ? 'overview' : undefined}
+        onClick={onSelectOverview}
+      >
+        <div className="overview-row-head">
+          <div>
+            <strong>Tổng quan</strong>
+            <span>Xem nhanh toàn bộ chứng từ</span>
           </div>
-          <ul>
-            {PACKET_REJECTION_OPTIONS
-              .filter(option => review.rejection?.reasons.includes(option.value))
-              .map(option => <li key={option.value}>{option.label}</li>)}
-          </ul>
-          {review.rejection.note && (
-            <p className="packet-rejection-summary-note">
-              {review.rejection.note}
-            </p>
+          {!review.rejection && (
+            <button
+              type="button"
+              className="overview-rejection-open"
+              onClick={event => {
+                event.stopPropagation()
+                onSelectOverview()
+                onOpenPacketRejection()
+              }}
+            >
+              Từ chối hồ sơ
+            </button>
           )}
-        </section>
-      ) : (
-        <div className="packet-rejection-entry">
-          <button
-            type="button"
-            className="packet-rejection-open"
-            onClick={onOpenPacketRejection}
-          >
-            Từ chối gói hồ sơ
-          </button>
         </div>
-      )}
+        {review.rejection && (
+          <div className="packet-rejection-summary" aria-label="Đã từ chối">
+            <div className="packet-rejection-summary-head">
+              <strong>Đã từ chối</strong>
+              <button
+                type="button"
+                onClick={event => {
+                  event.stopPropagation()
+                  onSelectOverview()
+                  onOpenPacketRejection()
+                }}
+              >
+                Sửa lý do
+              </button>
+            </div>
+            <ul>
+              {PACKET_REJECTION_OPTIONS
+                .filter(option => review.rejection?.reasons.includes(option.value))
+                .map(option => <li key={option.value}>{option.label}</li>)}
+            </ul>
+            {review.rejection.note && (
+              <p className="packet-rejection-summary-note">
+                {review.rejection.note}
+              </p>
+            )}
+          </div>
+        )}
+      </section>
       {ranked.map(r => {
-        const sel = r.field.key === selectedKey
+        const sel = selection.kind === 'field'
+          && r.field.key === selection.key
         const viewed = !!review.fields[r.field.key]?.seen
         return (
-          <div key={r.field.key} className={`cfield ${sel ? 'sel' : ''}`} onClick={() => onSelect(r.field.key)}>
+          <div key={r.field.key} className={`cfield ${sel ? 'sel' : ''}`} onClick={() => onSelectField(r.field.key)}>
             <div className="cfield-head">
               <span className={`view-status ${viewed ? 'viewed' : 'not-viewed'}`}>
                 {viewed ? 'Đã xem' : 'Chưa xem'}
@@ -73,7 +99,7 @@ export default function FolderFieldsPanel({
                 title="Đánh dấu cần gửi lại (F)"
                 onClick={e => {
                   e.stopPropagation()
-                  onSelect(r.field.key)
+                  onSelectField(r.field.key)
                   const cur = review.fields[r.field.key]?.flag
                   onToggleFlag(r.field.key, cur ? null : { reason: '', note: '' })
                 }}>
