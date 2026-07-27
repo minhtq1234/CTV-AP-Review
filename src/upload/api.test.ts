@@ -1,4 +1,4 @@
-import { describe, it, expect, test } from 'vitest'
+import { afterEach, describe, it, expect, test, vi } from 'vitest'
 import {
   stageLabel,
   progressPct,
@@ -8,7 +8,12 @@ import {
   normalizePacketReview,
   reportUrls,
   API_BASE,
+  getCase,
 } from './api'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('upload api helpers', () => {
   it('maps stages to Vietnamese labels', () => {
@@ -64,4 +69,45 @@ test('normalizePacketReview adds the additive legacy default', () => {
 
 test('reportUrls point at the backend', () => {
   expect(reportUrls('abc').md).toBe(`${API_BASE}/api/cases/abc/report.md`)
+})
+
+test('getCase normalizes missing and present review field counts', async () => {
+  const packet = {
+    index: 0,
+    name: 'Synthetic Person',
+    pages: [0, 1],
+    confidence: 'green',
+    flags: [],
+    matchedBy: 'cccd',
+    ocrIdentity: { cccd: 'synthetic', name: 'Synthetic Person' },
+    rosterIdentity: { cccd: 'synthetic', name: 'Synthetic Person' },
+    review: { done: false, fields: {}, rejection: null },
+  }
+  const detail = {
+    id: 'synthetic-case',
+    name: 'Synthetic Case',
+    createdAt: null,
+    status: 'ready',
+    pdfName: 'synthetic.pdf',
+    rosterName: null,
+    summary: null,
+    error: null,
+    progress: { done: 0, total: 1, flagged: 0 },
+  }
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ...detail, packets: [packet] }),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ...detail,
+        packets: [{ ...packet, reviewFieldCount: 6 }],
+      }),
+    })
+  vi.stubGlobal('fetch', fetchMock)
+
+  expect((await getCase('synthetic-case')).packets[0].reviewFieldCount).toBe(0)
+  expect((await getCase('synthetic-case')).packets[0].reviewFieldCount).toBe(6)
 })

@@ -77,6 +77,7 @@ export interface PacketMeta {
   ocrIdentity: Identity
   rosterIdentity: Identity | null
   review: PacketReview
+  reviewFieldCount: number
 }
 
 // The pipeline's split/OCR summary — key names mirror server/pipeline.py's
@@ -158,10 +159,7 @@ export async function getCase(caseId: string): Promise<CaseDetail> {
   const detail = await res.json() as CaseDetail
   return {
     ...detail,
-    packets: detail.packets.map(packet => ({
-      ...packet,
-      review: normalizePacketReview(packet.review),
-    })),
+    packets: detail.packets.map(normalizePacketMeta),
   }
 }
 
@@ -192,10 +190,17 @@ export async function setReview(
   }
   return {
     ...result,
-    packet: {
-      ...result.packet,
-      review: normalizePacketReview(result.packet.review),
-    },
+    packet: normalizePacketMeta(result.packet),
+  }
+}
+
+function normalizePacketMeta(packet: PacketMeta): PacketMeta {
+  return {
+    ...packet,
+    reviewFieldCount: Number.isFinite(packet.reviewFieldCount)
+      ? Math.max(0, Math.trunc(packet.reviewFieldCount))
+      : 0,
+    review: normalizePacketReview(packet.review),
   }
 }
 

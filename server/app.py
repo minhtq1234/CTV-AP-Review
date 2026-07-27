@@ -71,6 +71,25 @@ def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
     return out
 
 
+def _review_field_count(cid: str, index: int) -> int:
+    path = os.path.join(
+        store.case_dir(cid), "packets", str(index), "manifest.json",
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            fields = json.load(f).get("fields")
+        return len(fields) if isinstance(fields, list) else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _packet_for_response(cid: str, packet: dict) -> dict:
+    return {
+        **packet,
+        "reviewFieldCount": _review_field_count(cid, packet["index"]),
+    }
+
+
 def _run_case(cid: str, pdf_path: str, roster_path: str | None) -> None:
     case_dir = store.case_dir(cid)
 
@@ -119,6 +138,9 @@ async def get_case(cid: str):
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
     out = dict(case)
+    out["packets"] = [
+        _packet_for_response(cid, packet) for packet in case["packets"]
+    ]
     out["progress"] = progress_of(case["packets"])
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]
@@ -156,7 +178,8 @@ async def put_review(cid: str, i: int, body: ReviewBody):
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
-    return {"packet": packet, "progress": progress_of(updated["packets"]),
+    return {"packet": _packet_for_response(cid, packet),
+            "progress": progress_of(updated["packets"]),
             "status": updated["status"]}
 
 

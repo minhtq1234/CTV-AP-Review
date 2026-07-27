@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import json
 import app as appmod
 from app import app, rewrite_manifest_urls
 
@@ -49,6 +50,31 @@ def test_case_create_list_detail_review(tmp_path, monkeypatch):
     # delete
     assert c.delete(f"/api/cases/{cid}").status_code == 200
     assert c.get("/api/cases").json() == []
+
+def test_case_and_review_responses_derive_field_count_without_persisting(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    packet_dir = tmp_path / cid / "packets" / "0"
+    packet_dir.mkdir(parents=True)
+    (packet_dir / "manifest.json").write_text(json.dumps({
+        "fields": [{"key": "synthetic-a"}, {"key": "synthetic-b"}],
+    }), encoding="utf-8")
+
+    detail = c.get(f"/api/cases/{cid}").json()
+    assert detail["packets"][0]["reviewFieldCount"] == 2
+
+    updated = c.put(
+        f"/api/cases/{cid}/packets/0/review",
+        json={"done": False, "fields": {}, "rejection": None},
+    ).json()
+    assert updated["packet"]["reviewFieldCount"] == 2
+    assert "reviewFieldCount" not in appmod.store.get(cid)["packets"][0]
+
+def test_case_response_uses_zero_field_count_when_manifest_is_missing(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    detail = c.get(f"/api/cases/{cid}").json()
+    assert detail["packets"][0]["reviewFieldCount"] == 0
 
 def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
