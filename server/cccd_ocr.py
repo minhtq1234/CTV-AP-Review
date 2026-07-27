@@ -64,9 +64,13 @@ def _contains_phrase(words: list[OcrWord], phrase: str) -> tuple[bool, float]:
 def _marker_groups(words: list[OcrWord], phrases: tuple[str, ...]) -> list[float]:
     groups = []
     for phrase in phrases:
-        found, confidence = _contains_phrase(words, phrase)
-        if found:
-            groups.append(confidence)
+        confidences = [
+            confidence for line in _group_words_into_lines(words)
+            if (found := _contains_phrase(line, phrase))[0]
+            for confidence in [found[1]]
+        ]
+        if confidences:
+            groups.append(max(confidences))
     return groups
 
 
@@ -205,20 +209,45 @@ def _region_digits(image: Image.Image, bbox: dict[str, int]) -> tuple[str, float
 
 def _name_from_words(words: list[OcrWord]) -> tuple[str, float]:
     """Extract a suggested name only from words immediately after its label."""
-    for line in _group_words_into_lines(words):
+    lines = _group_words_into_lines(words)
+    for line_index, line in enumerate(lines):
         found, _ = _contains_phrase(line, "ho va ten")
         if not found:
             continue
         label = _name_label_span(line)
-        candidates = [
-            word for word in line[label[1]:]
-            if word.confidence >= .5 and not _digits(word) and _clean_token(word.text)
-        ]
+        candidates = _name_value_words(line[label[1]:])
+        if not candidates and line_index + 1 < len(lines) and _next_line_is_name_value(
+            line, label, lines[line_index + 1],
+        ):
+            candidates = _name_value_words(lines[line_index + 1])
         if candidates:
             return " ".join(word.text.strip(" :;,.\t\n") for word in candidates), min(
                 word.confidence for word in candidates
             )
     return "", 0.0
+
+
+def _name_value_words(words: list[OcrWord]) -> list[OcrWord]:
+    return [
+        word for word in words
+        if word.confidence >= .5 and not _digits(word) and _clean_token(word.text)
+    ]
+
+
+def _next_line_is_name_value(
+    label_line: list[OcrWord], label: tuple[int, int], next_line: list[OcrWord],
+) -> bool:
+    label_words = label_line[label[0]:label[1]]
+    label_left = min(word.x for word in label_words)
+    label_right = max(word.x + word.width for word in label_words)
+    label_width = label_right - label_left
+    label_bottom = max(word.y + word.height for word in label_words)
+    next_left = min(word.x for word in next_line)
+    vertical_gap = min(word.y for word in next_line) - label_bottom
+    return (
+        -40 <= next_left - label_left <= label_width + 40
+        and 0 <= vertical_gap <= max(40, 2 * max(word.height for word in label_words))
+    )
 
 
 def _name_label_span(line: list[OcrWord]) -> tuple[int, int]:

@@ -50,6 +50,18 @@ def test_unknown_image_without_two_independent_marker_groups():
     assert classify_side(words) == ("unknown", 0.0)
 
 
+def test_cross_line_marker_fragments_do_not_classify_a_side():
+    words = [
+        OcrWord("Họ", 20, 20, 20, 18, .97),
+        OcrWord("và", 20, 60, 20, 18, .97),
+        OcrWord("tên:", 20, 100, 35, 18, .97),
+        OcrWord("Ngày", 20, 160, 40, 18, .97),
+        OcrWord("sinh:", 20, 200, 35, 18, .97),
+    ]
+
+    assert classify_side(words) == ("unknown", 0.0)
+
+
 def test_digits_elsewhere_without_number_label_produce_no_region():
     words = [OcrWord("01/02/2026", 20, 100, 100, 18, .99)]
 
@@ -80,6 +92,19 @@ FRONT_WORDS = [
     OcrWord("và", 45, 130, 20, 18, .95),
     OcrWord("tên:", 70, 130, 35, 18, .95),
 ]
+
+
+def test_name_from_words_reads_spatially_adjacent_next_line_value():
+    words = [
+        OcrWord("Họ", 20, 40, 20, 18, .95),
+        OcrWord("và", 45, 40, 20, 18, .95),
+        OcrWord("tên:", 70, 40, 35, 18, .95),
+        OcrWord("Nguyen", 20, 80, 55, 18, .91),
+        OcrWord("Van", 80, 80, 35, 18, .91),
+        OcrWord("A", 120, 80, 15, 18, .91),
+    ]
+
+    assert co._name_from_words(words) == ("Nguyen Van A", .91)
 
 
 def test_analyze_drawing_reads_digits_only_from_located_crop(tmp_path, monkeypatch):
