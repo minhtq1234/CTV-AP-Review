@@ -223,11 +223,8 @@ def test_extract_fields_assembles_manifest_fields():
         "bbnt": {0: [
             # MSTTNCN (individual tax-id marker, spaced-box digits), not the
             # bare "Mã số thuế" the company block also uses -- see
-            # test_mst_field_ignores_bare_company_label. Real Vietnamese
-            # individuals' MSTTNCN commonly equals their CCCD, hence the same
-            # digit string as the "Căn cước" line below -- this doc also
-            # legitimately cross-confirms the cccd field via that shared
-            # "msttncn" anchor (cccd's own FIELD_SPEC already lists it).
+            # test_mst_field_ignores_bare_company_label. It must remain tax
+            # evidence even when its digits happen to equal the CCCD below.
             W("MSTTNCN", 10, 40, 70, 18), W(":", 85, 40, 10, 18),
             *[W(d, 120 + i * 15, 40, 12, 18, conf=93) for i, d in enumerate("048091001309")],
 
@@ -273,19 +270,12 @@ def test_extract_fields_assembles_manifest_fields():
     assert by_key["hoten"]["sources"][0]["value"] == "Nguyễn Văn A"
     assert by_key["hoten"]["sources"][0]["docId"] == "bbnt"
 
-    # cccd's own FIELD_SPEC anchors on "msttncn" too (an individual's MSTTNCN
-    # commonly equals their CCCD), so bbnt legitimately confirms it via two
-    # different lines ("Căn cước" + "MSTTNCN") -- but both are the SAME
-    # document agreeing with itself, so they dedupe to bbnt's single
-    # highest-confidence hit (the "MSTTNCN" line, conf 0.93). tra_cuu_mst is
-    # a different document, so it stays as its own, distinct source: 2
-    # sources total, one per confirming document.
+    # CCCD evidence comes only from an identity-card/passport label. The
+    # matching MSTTNCN values remain separate tax evidence.
     assert by_key["cccd"]["expected"] == "048091001309"
-    assert len(by_key["cccd"]["sources"]) == 2
-    assert {s["docId"] for s in by_key["cccd"]["sources"]} == {"bbnt", "tra_cuu_mst"}
-    assert all(s["value"] == "048091001309" for s in by_key["cccd"]["sources"])
-    bbnt_cccd_source = next(s for s in by_key["cccd"]["sources"] if s["docId"] == "bbnt")
-    assert abs(bbnt_cccd_source["confidence"] - 0.93) < 1e-6
+    assert len(by_key["cccd"]["sources"]) == 1
+    assert by_key["cccd"]["sources"][0]["docId"] == "bbnt"
+    assert by_key["cccd"]["sources"][0]["value"] == "048091001309"
 
     # phi has no OCR hit anywhere -> single empty/low-confidence fallback source,
     # so it reads as an exception in the reviewer rather than silently vanishing.
@@ -295,13 +285,9 @@ def test_extract_fields_assembles_manifest_fields():
     assert by_key["phi"]["sources"][0]["confidence"] == 0.0
 
 
-def test_extract_fields_dedupes_same_doc_same_value_sources():
-    # Two different lines within the SAME document both yield a hit for the
-    # same field (e.g. a "Căn cước" line + an "MSTTNCN" line both showing the
-    # CCCD digits) -- a document contributes exactly ONE source per field
-    # (the best hit -- see extract_fields/_best_hit, #004), not one per
-    # confirming line, so the reviewer's "checked in N documents" count
-    # reflects documents, not incidental duplicate lines.
+def test_extract_fields_keeps_cccd_separate_from_same_value_msttncn():
+    # The tax ID can equal the CCCD numerically, but a tax label is not CCCD
+    # evidence and must not replace the lower-confidence identity-card hit.
     words_by_doc = {
         "bbnt": {0: [
             W("Căn", 10, 40, 25, 18), W("cước", 40, 40, 30, 18),
@@ -316,7 +302,7 @@ def test_extract_fields_dedupes_same_doc_same_value_sources():
     only = by_key["cccd"]["sources"][0]
     assert only["docId"] == "bbnt"
     assert only["value"] == "048091001309"
-    assert abs(only["confidence"] - 0.97) < 1e-6  # kept the higher-confidence hit
+    assert abs(only["confidence"] - 0.80) < 1e-6
 
 
 def test_extract_fields_emits_unread_source_for_doc_with_label_but_no_readable_value():

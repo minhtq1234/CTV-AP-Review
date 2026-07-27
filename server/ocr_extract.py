@@ -652,7 +652,10 @@ FIELD_SPECS = [
     },
     {
         "key": "cccd", "label": "Số CCCD", "group": "Danh tính", "kind": "text",
-        "anchors": ["can cuoc", "so cccd", "msttncn"],
+        # Keep identity-card evidence separate from the individual's tax ID.
+        # Tesseract commonly drops the final consonant in the two-line
+        # "Căn cước/Hộ chiếu số" label and renders printed "CCCD" with an œ.
+        "anchors": ["can cuoc", "can cuoc ho", "can cuo ho", "so cccd", "cccd so", "cœccd so"],
         "patterns": [PATTERNS["CCCD_SPACED"], PATTERNS["MST"]], "roster_key": "cccd",
     },
     {
