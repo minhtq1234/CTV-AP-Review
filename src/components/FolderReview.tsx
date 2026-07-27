@@ -40,6 +40,7 @@ export default function FolderReview({
   const [selection, setSelection] = useState<ReviewSelection>(
     overviewSelection,
   )
+  const [overviewResetVersion, setOverviewResetVersion] = useState(0)
   const [activeDocId, setActiveDocId] = useState(folder.docs[0]?.id ?? '')
   const [activePage, setActivePage] = useState(0)
   const [focusBbox, setFocusBbox] = useState<Bbox | null>(null)
@@ -64,6 +65,7 @@ export default function FolderReview({
 
   const selectOverview = () => {
     setSelection(overviewSelection())
+    setOverviewResetVersion(version => version + 1)
     setActiveDocId(folder.docs[0]?.id ?? '')
     setActivePage(0)
     setFocusBbox(null)
@@ -193,6 +195,7 @@ export default function FolderReview({
           focusBbox={focusBbox}
           lockView={lockView}
           overviewMode={selection.kind === 'overview'}
+          overviewResetVersion={overviewResetVersion}
           onSelectDoc={onSelectDoc}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={selField?.label}

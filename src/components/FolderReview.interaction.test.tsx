@@ -165,6 +165,81 @@ const configureFocusedFieldGeometry = () => {
 }
 
 describe('FolderReview mounted Overview interactions', () => {
+  it('resets the complete Overview preset when the selected row is clicked again', () => {
+    renderReview(emptyReview, multiPageFolder)
+
+    click(documentModeButton('1 trang')!)
+    click(container.querySelector('[aria-label="Phóng to"]')!)
+    const appendixTab = Array.from(container.querySelectorAll('.ev-tab'))
+      .find(button => button.textContent === 'Synthetic appendix')
+    click(appendixTab!)
+
+    const scroll = viewerScroll()
+    scroll.scrollLeft = 240
+    scroll.scrollTop = 180
+    scrollToSpy.mockClear()
+    scrollIntoViewSpy.mockClear()
+    click(container.querySelector('.overview-row')!)
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/contract-1.svg')
+    expect(viewerHasMode('paired')).toBe(true)
+    expect(container.querySelectorAll('.document-page-row')).toHaveLength(2)
+    expect(viewerZoom()).toBe('100%')
+    expect(scrollToSpy).toHaveBeenLastCalledWith({
+      left: 0,
+      top: 0,
+      behavior: 'instant',
+    })
+    expect(container.querySelector('.document-focus-anchor')).toBeNull()
+    expect(container.querySelector('.roster-callout')).toBeNull()
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled()
+
+    scroll.scrollLeft = 75
+    scroll.scrollTop = 90
+    scrollToSpy.mockClear()
+    click(container.querySelector('.overview-row')!)
+
+    expect(scrollToSpy).toHaveBeenLastCalledWith({
+      left: 0,
+      top: 0,
+      behavior: 'instant',
+    })
+  })
+
+  it('exposes Overview as a selected control operable with Enter and Space', () => {
+    renderReview()
+
+    const overviewRow = container.querySelector('.overview-row')!
+    expect(overviewRow.getAttribute('role')).toBe('button')
+    expect(overviewRow.getAttribute('aria-label')).toBe('Tổng quan')
+    expect(overviewRow.getAttribute('tabindex')).toBe('0')
+    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+
+    press('ArrowDown')
+    expect(overviewRow.getAttribute('aria-pressed')).toBe('false')
+
+    act(() => {
+      overviewRow.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }))
+    })
+    expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
+    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+
+    press('ArrowDown')
+    act(() => {
+      overviewRow.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ' ',
+        bubbles: true,
+        cancelable: true,
+      }))
+    })
+    expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
+    expect(overviewRow.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('preserves manual Overview controls across tabs and resets the preset on re-entry', () => {
     renderReview(emptyReview, multiPageFolder)
 

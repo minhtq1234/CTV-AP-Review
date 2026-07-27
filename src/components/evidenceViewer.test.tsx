@@ -24,6 +24,7 @@ describe('complete-document evidence viewer', () => {
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
         overviewMode={false}
+        overviewResetVersion={0}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
         rosterLabel="Synthetic field"
@@ -45,6 +46,7 @@ describe('complete-document evidence viewer', () => {
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
         overviewMode={false}
+        overviewResetVersion={0}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
       />,
@@ -61,6 +63,7 @@ describe('complete-document evidence viewer', () => {
         focusBbox={null}
         lockView={false}
         overviewMode={false}
+        overviewResetVersion={0}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
       />,
@@ -88,6 +91,7 @@ describe('complete-document evidence viewer', () => {
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
         overviewMode
+        overviewResetVersion={0}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
         rosterLabel="Synthetic field"
@@ -112,6 +116,7 @@ describe('complete-document evidence viewer', () => {
         focusBbox={{ x: 100, y: 200, width: 300, height: 40 }}
         lockView={false}
         overviewMode={false}
+        overviewResetVersion={0}
         onSelectDoc={() => undefined}
         onToggleLock={() => undefined}
         rosterLabel="Phí dịch vụ"

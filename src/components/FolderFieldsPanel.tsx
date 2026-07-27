@@ -34,7 +34,17 @@ export default function FolderFieldsPanel({
       <section
         className={`overview-row${selection.kind === 'overview' ? ' sel' : ''}`}
         data-review-selection={selection.kind === 'overview' ? 'overview' : undefined}
+        role="button"
+        aria-label="Tổng quan"
+        aria-pressed={selection.kind === 'overview'}
+        tabIndex={0}
         onClick={onSelectOverview}
+        onKeyDown={event => {
+          if (event.target !== event.currentTarget) return
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          onSelectOverview()
+        }}
       >
         <div className="overview-row-head">
           <div>

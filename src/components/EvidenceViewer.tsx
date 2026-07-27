@@ -23,6 +23,7 @@ interface Props {
   focusBbox: Bbox | null
   lockView: boolean
   overviewMode: boolean
+  overviewResetVersion: number
   onSelectDoc: (id: string) => void
   onToggleLock: () => void
   rosterLabel?: string
@@ -41,6 +42,7 @@ export default function EvidenceViewer({
   focusBbox,
   lockView,
   overviewMode,
+  overviewResetVersion,
   onSelectDoc,
   onToggleLock,
   rosterLabel,
@@ -80,7 +82,7 @@ export default function EvidenceViewer({
     if (!overviewMode) return
     setViewMode('paired')
     setZoomLevel(1)
-  }, [overviewMode])
+  }, [overviewMode, overviewResetVersion])
 
   useEffect(() => {
     if (!overviewMode) return
@@ -92,7 +94,7 @@ export default function EvidenceViewer({
       })
     })
     return () => cancelAnimationFrame(animationFrame)
-  }, [overviewMode, activeDocId])
+  }, [overviewMode, overviewResetVersion, activeDocId])
 
   useEffect(() => {
     if (overviewMode || lockView) return
