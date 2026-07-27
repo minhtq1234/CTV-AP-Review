@@ -427,8 +427,8 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   flex-direction: column;
   gap: 18px;
   min-width: 240px;
+  padding-block: 45vh;
   margin: 0 auto;
-  transition: width .16s ease;
 }
 .document-page-row {
   display: flex;

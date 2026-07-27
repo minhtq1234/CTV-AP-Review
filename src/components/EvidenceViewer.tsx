@@ -5,6 +5,7 @@ import type { EvidenceDoc } from '../ctv/types'
 import { inflateBbox } from '../logic/loupe'
 import {
   DOCUMENT_VIEW_MODES,
+  autofocusZoomLevel,
   bboxPercentStyle,
   clampPageIndex,
   groupPageIndexes,
@@ -43,6 +44,7 @@ export default function EvidenceViewer({
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const focusAnchorRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{
     x: number
     y: number
@@ -69,12 +71,31 @@ export default function EvidenceViewer({
 
   useEffect(() => {
     if (lockView) return
-    pageRefs.current[pageIndex]?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'center',
-      inline: 'nearest',
+    const scroll = scrollRef.current
+    const pageElement = pageRefs.current[pageIndex]
+    const page = doc?.pages[pageIndex]
+    if (!focusedBox || !scroll || !pageElement || !page) return
+
+    setZoomLevel(current => autofocusZoomLevel(
+      focusedBox,
+      pageElement.getBoundingClientRect().width / current,
+      page.width,
+      scroll.clientHeight,
+    ))
+  }, [activeDocId, pageIndex, focusedBox, viewMode, lockView, doc])
+
+  useEffect(() => {
+    if (lockView) return
+    const animationFrame = requestAnimationFrame(() => {
+      const target = focusedBox ? focusAnchorRef.current : pageRefs.current[pageIndex]
+      target?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: focusedBox ? 'center' : 'nearest',
+      })
     })
-  }, [activeDocId, pageIndex, focusedBox, viewMode, lockView])
+    return () => cancelAnimationFrame(animationFrame)
+  }, [activeDocId, pageIndex, focusedBox, viewMode, zoomLevel, lockView])
 
   const zoom = useCallback((factor: number) => {
     setZoomLevel(current => Math.max(0.5, Math.min(4, current * factor)))
@@ -242,7 +263,11 @@ export default function EvidenceViewer({
                         draggable={false}
                       />
                       {focusStyle && (
-                        <div className="document-focus-anchor" style={focusStyle}>
+                        <div
+                          className="document-focus-anchor"
+                          ref={focusAnchorRef}
+                          style={focusStyle}
+                        >
                           {showHighlight && <div className="doc-hl-fill" />}
                           {showRoster && rosterValue && (
                             <div className="roster-callout attached">

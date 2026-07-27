@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DOCUMENT_VIEW_MODES,
+  autofocusZoomLevel,
   bboxPercentStyle,
   clampPageIndex,
   groupPageIndexes,
@@ -24,6 +25,15 @@ describe('document view modes', () => {
 })
 
 describe('document focus geometry', () => {
+  it('magnifies a small selected bbox toward a readable share of the viewport', () => {
+    expect(autofocusZoomLevel(
+      { width: 200, height: 20 },
+      500,
+      1000,
+      600,
+    )).toBe(2)
+  })
+
   it('clamps a target page into the active document', () => {
     expect(clampPageIndex(-2, 3)).toBe(0)
     expect(clampPageIndex(9, 3)).toBe(2)

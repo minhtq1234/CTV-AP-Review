@@ -29,6 +29,20 @@ export function clampPageIndex(page: number, pageCount: number): number {
   return Math.max(0, Math.min(page, pageCount - 1))
 }
 
+export function autofocusZoomLevel(
+  bbox: Pick<Bbox, 'width' | 'height'>,
+  renderedPageWidth: number,
+  naturalPageWidth: number,
+  viewportHeight: number,
+): number {
+  if (bbox.height <= 0 || renderedPageWidth <= 0 || naturalPageWidth <= 0 || viewportHeight <= 0) {
+    return 1
+  }
+  const renderedBboxHeight = bbox.height * (renderedPageWidth / naturalPageWidth)
+  const targetHeight = viewportHeight * 0.14
+  return Math.max(1.1, Math.min(2, targetHeight / renderedBboxHeight))
+}
+
 export function bboxPercentStyle(
   bbox: Bbox,
   pageWidth: number,
