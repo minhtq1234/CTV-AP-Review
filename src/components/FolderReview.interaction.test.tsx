@@ -123,11 +123,17 @@ const renderReview = (review = emptyReview, reviewFolder = folder) => {
   return onReview
 }
 
-const press = (key: string) => {
+const pressOn = (target: Element, key: string) => {
   act(() => {
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    target.dispatchEvent(new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+    }))
   })
 }
+
+const press = (key: string) => pressOn(document.body, key)
 
 const click = (element: Element) => {
   act(() => {
@@ -233,6 +239,26 @@ describe('FolderReview mounted Overview interactions', () => {
     expect(overviewControl.getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('moves from the focused Overview control to the first field with ArrowDown', () => {
+    const onReview = renderReview()
+    const overviewControl = container.querySelector(
+      '.overview-selection-control',
+    ) as HTMLButtonElement
+
+    act(() => overviewControl.focus())
+    expect(document.activeElement).toBe(overviewControl)
+    pressOn(overviewControl, 'ArrowDown')
+
+    const selectedField = container.querySelector('.cfield.sel')
+    expect(selectedField).not.toBeNull()
+    expect(selectedField?.textContent).toContain('Trường mẫu')
+    expect(onReview).toHaveBeenCalledWith({
+      done: false,
+      fields: { 'field-a': { seen: true, flag: null } },
+      rejection: null,
+    })
+  })
+
   it('keeps the persisted-rejection edit action outside the Overview control', () => {
     renderReview({
       done: true,
@@ -263,7 +289,7 @@ describe('FolderReview mounted Overview interactions', () => {
     scroll.scrollLeft = 140
     scroll.scrollTop = 110
     scrollToSpy.mockClear()
-    press('ArrowUp')
+    pressOn(container.querySelector('.overview-selection-control')!, 'ArrowUp')
 
     expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
     expect(container.querySelector('img')?.getAttribute('src')).toBe('/appendix-1.svg')
@@ -367,8 +393,9 @@ describe('FolderReview mounted Overview interactions', () => {
     expect(container.querySelector('.roster-callout')).toBeNull()
     expect(onReview).not.toHaveBeenCalled()
 
-    press('ArrowRight')
-    press('f')
+    const overviewControl = container.querySelector('.overview-selection-control')!
+    pressOn(overviewControl, 'ArrowRight')
+    pressOn(overviewControl, 'f')
 
     expect(onReview).not.toHaveBeenCalled()
     expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()

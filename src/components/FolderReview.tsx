@@ -103,8 +103,12 @@ export default function FolderReview({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
+      const fromOverviewControl = !!el?.closest('.overview-selection-control')
       if (el && (
-        ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName)
+        (
+          ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName)
+          && !fromOverviewControl
+        )
         || el.closest('.packet-rejection-dialog')
       )) return
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
