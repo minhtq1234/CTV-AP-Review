@@ -29,6 +29,10 @@ export function clampPageIndex(page: number, pageCount: number): number {
   return Math.max(0, Math.min(page, pageCount - 1))
 }
 
+export function isDocumentPanEnabled(manualPan: boolean, zoomLevel: number): boolean {
+  return manualPan || zoomLevel > 1
+}
+
 export function autofocusZoomLevel(
   bbox: Pick<Bbox, 'width' | 'height'>,
   renderedPageWidth: number,

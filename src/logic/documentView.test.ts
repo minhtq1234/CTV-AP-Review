@@ -5,6 +5,7 @@ import {
   bboxPercentStyle,
   clampPageIndex,
   groupPageIndexes,
+  isDocumentPanEnabled,
 } from './documentView'
 
 describe('document view modes', () => {
@@ -25,6 +26,11 @@ describe('document view modes', () => {
 })
 
 describe('document focus geometry', () => {
+  it('enables drag pan automatically when autofocus has magnified the document', () => {
+    expect(isDocumentPanEnabled(false, 2)).toBe(true)
+    expect(isDocumentPanEnabled(false, 1)).toBe(false)
+  })
+
   it('magnifies a small selected bbox toward a readable share of the viewport', () => {
     expect(autofocusZoomLevel(
       { width: 200, height: 20 },

@@ -9,6 +9,7 @@ import {
   bboxPercentStyle,
   clampPageIndex,
   groupPageIndexes,
+  isDocumentPanEnabled,
   type DocumentViewMode,
 } from '../logic/documentView'
 import { assetUrl } from '../assets'
@@ -57,6 +58,7 @@ export default function EvidenceViewer({
   const [showRoster, setShowRoster] = useState(true)
   const [panMode, setPanMode] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const panEnabled = isDocumentPanEnabled(panMode, zoomLevel)
 
   const doc = docs.find(candidate => candidate.id === activeDocId) ?? docs[0]
   const pageCount = doc?.pages.length ?? 0
@@ -171,7 +173,7 @@ export default function EvidenceViewer({
   }, [])
 
   const onPanStart = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!panMode || !scrollRef.current) return
+    if (!panEnabled || !scrollRef.current) return
     event.preventDefault()
     dragRef.current = {
       x: event.clientX,
@@ -182,7 +184,7 @@ export default function EvidenceViewer({
   }
 
   useEffect(() => {
-    if (!panMode) return
+    if (!panEnabled) return
     const onMove = (event: MouseEvent) => {
       const start = dragRef.current
       const scroll = scrollRef.current
@@ -198,7 +200,7 @@ export default function EvidenceViewer({
       window.removeEventListener('mouseup', onUp)
       dragRef.current = null
     }
-  }, [panMode])
+  }, [panEnabled])
 
   if (!doc) return null
 
@@ -234,7 +236,7 @@ export default function EvidenceViewer({
         </div>
 
         <div
-          className={`ev-scroll${panMode ? ' panning' : ''}`}
+          className={`ev-scroll${panEnabled ? ' panning' : ''}`}
           ref={scrollRef}
           onMouseDown={onPanStart}
         >
