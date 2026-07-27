@@ -110,16 +110,16 @@ index from disk, so cases (and saved reviews) survive a backend restart.
 ```bash
 curl -s -F "pdf=@/path/to/scan.pdf" \
         -F "roster=@/path/to/roster.xlsx" \
-        http://127.0.0.1:8000/api/cases
+        http://127.0.0.1:8001/api/cases
 # => {"case_id": "..."}
 
-curl -s http://127.0.0.1:8000/api/cases/<case_id>       # poll until status == "ready"
-curl -s http://127.0.0.1:8000/api/cases/<case_id>/packets/0/manifest.json
+curl -s http://127.0.0.1:8001/api/cases/<case_id>       # poll until status == "ready"
+curl -s http://127.0.0.1:8001/api/cases/<case_id>/packets/0/manifest.json
 curl -s -X PUT -H 'content-type: application/json' \
      -d '{"done":true,"fields":{"cccd":{"seen":true,"flag":null}}}' \
-     http://127.0.0.1:8000/api/cases/<case_id>/packets/0/review
-curl -s -X POST http://127.0.0.1:8000/api/cases/<case_id>/report
-curl -s http://127.0.0.1:8000/api/cases/<case_id>/report.md
+     http://127.0.0.1:8001/api/cases/<case_id>/packets/0/review
+curl -s -X POST http://127.0.0.1:8001/api/cases/<case_id>/report
+curl -s http://127.0.0.1:8001/api/cases/<case_id>/report.md
 ```
 
 ## Roster -> field mapping, and packet alignment
