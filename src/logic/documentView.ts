@@ -33,6 +33,17 @@ export function isDocumentPanEnabled(manualPan: boolean, zoomLevel: number): boo
   return manualPan || zoomLevel > 1
 }
 
+export function dragScrollTarget(
+  start: { x: number; y: number; scrollLeft: number; scrollTop: number },
+  current: { x: number; y: number },
+): ScrollToOptions {
+  return {
+    left: start.scrollLeft - (current.x - start.x),
+    top: start.scrollTop - (current.y - start.y),
+    behavior: 'instant',
+  }
+}
+
 export function autofocusZoomLevel(
   bbox: Pick<Bbox, 'width' | 'height'>,
   renderedPageWidth: number,

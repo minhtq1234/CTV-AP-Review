@@ -8,6 +8,7 @@ import {
   autofocusZoomLevel,
   bboxPercentStyle,
   clampPageIndex,
+  dragScrollTarget,
   groupPageIndexes,
   isDocumentPanEnabled,
   type DocumentViewMode,
@@ -189,8 +190,7 @@ export default function EvidenceViewer({
       const start = dragRef.current
       const scroll = scrollRef.current
       if (!start || !scroll) return
-      scroll.scrollLeft = start.scrollLeft - (event.clientX - start.x)
-      scroll.scrollTop = start.scrollTop - (event.clientY - start.y)
+      scroll.scrollTo(dragScrollTarget(start, { x: event.clientX, y: event.clientY }))
     }
     const onUp = () => { dragRef.current = null }
     window.addEventListener('mousemove', onMove)

@@ -4,6 +4,7 @@ import {
   autofocusZoomLevel,
   bboxPercentStyle,
   clampPageIndex,
+  dragScrollTarget,
   groupPageIndexes,
   isDocumentPanEnabled,
 } from './documentView'
@@ -26,6 +27,13 @@ describe('document view modes', () => {
 })
 
 describe('document focus geometry', () => {
+  it('uses instant scroll updates while dragging instead of smooth animations', () => {
+    expect(dragScrollTarget(
+      { x: 300, y: 250, scrollLeft: 120, scrollTop: 80 },
+      { x: 200, y: 200 },
+    )).toEqual({ left: 220, top: 130, behavior: 'instant' })
+  })
+
   it('enables drag pan automatically when autofocus has magnified the document', () => {
     expect(isDocumentPanEnabled(false, 2)).toBe(true)
     expect(isDocumentPanEnabled(false, 1)).toBe(false)
