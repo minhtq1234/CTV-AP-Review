@@ -1,7 +1,11 @@
 import { useState } from 'react'
 import { folders as seedFolders } from '../ctv/folders'
 import { normalizePacketReview, type PacketReview } from '../upload/api'
-import { packetStatus, PACKET_STATUS_LABEL, type PacketStatusKind } from '../logic/review'
+import {
+  packetDashboardStatus,
+  PACKET_DASHBOARD_LABELS,
+  type PacketDashboardStatus,
+} from '../logic/packetDashboard'
 import FolderReview from './FolderReview'
 import ReviewHeader from './ReviewHeader'
 
@@ -21,8 +25,11 @@ export default function DemoFlow() {
     reviews[id] ?? normalizePacketReview(undefined)
   )
 
-  const statusClass: Record<PacketStatusKind, string> = {
-    untouched: 'ready', in_review: 'processing', clear: 'done', needs_resubmit: 'error',
+  const statusClass: Record<PacketDashboardStatus, string> = {
+    unseen: 'ready',
+    reviewing: 'processing',
+    completed: 'done',
+    flagged: 'error',
   }
 
   if (idx == null) {
@@ -37,14 +44,14 @@ export default function DemoFlow() {
         </p>
         <div className="case-rows">
           {folders.map((f, i) => {
-            const st = packetStatus({ matchedBy: 'cccd', review: reviewFor(f.id) })
+            const st = packetDashboardStatus({ review: reviewFor(f.id) })
             return (
               <div key={f.id} className="case-row" onClick={() => setIdx(i)}>
                 <div className="case-row-main">
                   <span className="case-row-name">{f.name}</span>
                   <span className="case-row-date">{f.product}</span>
                 </div>
-                <span className={`case-pill ${statusClass[st]}`}>{PACKET_STATUS_LABEL[st]}</span>
+                <span className={`case-pill ${statusClass[st]}`}>{PACKET_DASHBOARD_LABELS[st]}</span>
                 <span className="case-row-progress">{f.docs.length} chứng từ</span>
               </div>
             )
