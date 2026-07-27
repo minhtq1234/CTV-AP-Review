@@ -74,6 +74,17 @@ def test_zero_distance_alternatives_are_not_paired():
     assert all("ambiguous-pair" in candidate.issues for candidate in out)
 
 
+def test_pairs_a_coincident_nearest_side_when_the_other_choice_is_farther():
+    front = analyzed("f1", "front", anchor=(1, 0, 10, 1))
+    nearest_back = analyzed("b1", "back", anchor=(1, 0, 10, 1))
+    farther_back = analyzed("b2", "back", anchor=(1, 3, 10, 4))
+
+    out = pair_drawings([farther_back, front, nearest_back])
+
+    paired = next(candidate for candidate in out if candidate.front and candidate.front.drawing.id == "f1")
+    assert paired.back.drawing.id == "b1"
+
+
 def test_pairs_at_the_inclusive_twenty_percent_margin():
     front = analyzed("f1", "front", anchor=(0, 0, 10, 2))
     nearest_back = analyzed("b1", "back", anchor=(0, 2, 10, 4))
