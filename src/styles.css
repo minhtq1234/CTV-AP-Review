@@ -641,6 +641,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   background: #fff3f2;
   color: #9f271e;
 }
+.overview-row .packet-rejection-summary {
+  margin: 10px 0 0;
+}
 .packet-rejection-summary-head {
   display: flex;
   align-items: center;
