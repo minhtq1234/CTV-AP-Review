@@ -430,6 +430,7 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   padding-block: 45vh;
   margin: 0 auto;
 }
+.ev[data-view-presentation="overview"] .ev-document { padding-block: 0; }
 .document-page-row {
   display: flex;
   align-items: flex-start;

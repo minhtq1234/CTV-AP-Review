@@ -171,6 +171,16 @@ const configureFocusedFieldGeometry = () => {
 }
 
 describe('FolderReview mounted Overview interactions', () => {
+  it('removes the field-autofocus spacer only while Overview is active', () => {
+    renderReview(emptyReview, multiPageFolder)
+
+    const document = container.querySelector('.ev-document')!
+    expect(getComputedStyle(document).paddingBlock).toBe('0')
+
+    press('ArrowDown')
+    expect(getComputedStyle(document).paddingBlock).toBe('45vh')
+  })
+
   it('resets the complete Overview preset when the selected row is clicked again', () => {
     renderReview(emptyReview, multiPageFolder)
 
