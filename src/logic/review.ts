@@ -8,7 +8,10 @@ export function allSeen(review: PacketReview, fieldKeys: string[]): boolean {
 
 function needsResubmit(p: Pick<PacketMeta, 'matchedBy' | 'review'>): boolean {
   const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
-  return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
+  return Boolean(p.review?.rejection)
+    || flagged
+    || p.matchedBy === 'name'
+    || p.matchedBy === 'unmatched'
 }
 
 export function packetStatus(p: Pick<PacketMeta, 'matchedBy' | 'review'>): PacketStatusKind {

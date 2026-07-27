@@ -219,12 +219,19 @@ export interface ReportItem {
   note: string
 }
 
+export interface PacketRejectionReportEntry {
+  reasons: PacketRejectionReason[]
+  reasonLabels: string[]
+  note: string
+}
+
 export interface ReportGroup {
   index: number
   name: string
   cccd: string
   matchedBy: MatchedBy
   identityIssue: boolean
+  packetRejection: PacketRejectionReportEntry | null
   items: ReportItem[]
 }
 

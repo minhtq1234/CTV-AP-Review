@@ -1,7 +1,7 @@
 import json, os, tempfile
 from cases import CaseStore, case_status, progress_of, needs_resubmit
 
-def _pkt(index, done=False, flags=None, matched_by="cccd"):
+def _pkt(index, done=False, flags=None, matched_by="cccd", rejection=None):
     fields = {}
     for k in (flags or []):
         fields[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
@@ -9,7 +9,7 @@ def _pkt(index, done=False, flags=None, matched_by="cccd"):
              "confidence": "green", "matchedBy": matched_by,
              "ocrIdentity": {"cccd": "", "name": ""},
              "rosterIdentity": {"cccd": "", "name": ""},
-             "review": {"done": done, "fields": fields}}
+             "review": {"done": done, "fields": fields, "rejection": rejection}}
 
 def _pkts(dones):
     return [_pkt(i, done=d) for i, d in enumerate(dones)]
@@ -33,6 +33,18 @@ def test_case_status_from_done_count():
 def test_progress_counts_done_and_flagged():
     pkts = [_pkt(0, done=True, flags=["cccd"]), _pkt(1, done=True), _pkt(2)]
     assert progress_of(pkts) == {"done": 2, "total": 3, "flagged": 1}
+
+def test_rejection_counts_as_completed_and_needs_resubmission_once():
+    rejection = {"reasons": ["missing_documents"], "note": ""}
+    rejected = _pkt(0, done=True, rejection=rejection)
+    rejected_with_flag = _pkt(
+        1, done=True, flags=["cccd"], rejection=rejection,
+    )
+    assert needs_resubmit(rejected) is True
+    assert progress_of([rejected]) == {"done": 1, "total": 1, "flagged": 1}
+    assert progress_of([rejected_with_flag]) == {
+        "done": 1, "total": 1, "flagged": 1,
+    }
 
 def test_new_packet_review_defaults_include_null_rejection():
     with tempfile.TemporaryDirectory() as d:

@@ -72,3 +72,75 @@ def test_unread_source_value_falls_back_to_can_xem():
     r = build_report(case, manifests, generated_at="2026-07-23T00:00:00Z")
     item = r["groups"][0]["items"][0]
     assert item["docValue"] == "cần xem"
+
+def test_packet_rejection_is_structured_once_before_field_issue():
+    case = {
+        "name": "Synthetic batch",
+        "packets": [{
+            "index": 0,
+            "name": "Synthetic Reviewer",
+            "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": "000", "name": "Synthetic Reviewer"},
+            "rosterIdentity": {"cccd": "000", "name": "Synthetic Reviewer"},
+            "review": {
+                "done": True,
+                "rejection": {
+                    "reasons": ["missing_documents", "missing_signature"],
+                    "note": "Bổ sung bộ hồ sơ",
+                },
+                "fields": {
+                    "cccd": {
+                        "seen": True,
+                        "flag": {"reason": "sai", "note": "kiểm tra lại"},
+                    },
+                },
+            },
+        }],
+    }
+    manifests = {
+        0: {
+            "fields": [{
+                "key": "cccd",
+                "label": "Số CCCD",
+                "expected": "000",
+                "sources": [{"docId": "contract", "page": 0, "value": "001"}],
+            }],
+            "docs": [{"id": "contract", "label": "Hợp đồng"}],
+        },
+    }
+    report = build_report(case, manifests, generated_at="2026-07-27T00:00:00Z")
+    group = report["groups"][0]
+    assert group["packetRejection"] == {
+        "reasons": ["missing_documents", "missing_signature"],
+        "reasonLabels": ["Thiếu chứng từ", "Thiếu chữ ký"],
+        "note": "Bổ sung bộ hồ sơ",
+    }
+    assert report["markdown"].index("Từ chối gói hồ sơ") < \
+        report["markdown"].index("Số CCCD")
+    assert report["markdown"].count("Từ chối gói hồ sơ") == 1
+    rows = report["csv"].splitlines()
+    assert "Từ chối gói hồ sơ" in rows[1]
+    assert "Thiếu chứng từ; Thiếu chữ ký" in rows[1]
+    assert sum("Từ chối gói hồ sơ" in row for row in rows) == 1
+
+def test_packet_rejection_optional_note_is_omitted_from_markdown():
+    case = {
+        "name": "Synthetic batch",
+        "packets": [{
+            "index": 0, "name": "Synthetic Reviewer", "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": "", "name": ""},
+            "rosterIdentity": None,
+            "review": {
+                "done": True,
+                "fields": {},
+                "rejection": {
+                    "reasons": ["wrong_template"],
+                    "note": "",
+                },
+            },
+        }],
+    }
+    report = build_report(case, {}, generated_at="2026-07-27T00:00:00Z")
+    assert len(report["groups"]) == 1
+    assert "Chứng từ không đúng mẫu" in report["markdown"]
+    assert "Ghi chú:" not in report["markdown"]

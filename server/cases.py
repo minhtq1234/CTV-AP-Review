@@ -47,6 +47,8 @@ def needs_resubmit(packet: dict) -> bool:
     """A packet needs resubmission if any field is flagged, or its roster
     match is weak (matched by name only, or unmatched)."""
     review = packet.get("review") or {"fields": {}}
+    if review.get("rejection"):
+        return True
     if any(f.get("flag") for f in review.get("fields", {}).values()):
         return True
     return packet.get("matchedBy") in ("name", "unmatched")
