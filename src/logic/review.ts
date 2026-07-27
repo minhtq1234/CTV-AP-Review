@@ -2,18 +2,21 @@ import type { PacketReview, PacketMeta } from '../upload/api'
 
 export type PacketStatusKind = 'untouched' | 'in_review' | 'clear' | 'needs_resubmit'
 
-export function allSeen(review: PacketReview, codes: string[]): boolean {
-  return codes.every(k => review.items[k]?.seen === true)
+export function allSeen(review: PacketReview, fieldKeys: string[]): boolean {
+  return fieldKeys.every(k => review.fields[k]?.seen === true)
 }
 
 function needsResubmit(p: Pick<PacketMeta, 'matchedBy' | 'review'>): boolean {
-  const flagged = Object.values(p.review?.items ?? {}).some(f => f.flag)
-  return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
+  const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
+  return Boolean(p.review?.rejection)
+    || flagged
+    || p.matchedBy === 'name'
+    || p.matchedBy === 'unmatched'
 }
 
 export function packetStatus(p: Pick<PacketMeta, 'matchedBy' | 'review'>): PacketStatusKind {
   if (!p.review?.done) {
-    return Object.values(p.review?.items ?? {}).some(f => f.seen) ? 'in_review' : 'untouched'
+    return Object.values(p.review?.fields ?? {}).some(f => f.seen) ? 'in_review' : 'untouched'
   }
   return needsResubmit(p) ? 'needs_resubmit' : 'clear'
 }

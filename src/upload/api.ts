@@ -1,12 +1,11 @@
-// Client for the case-management backend (server/app.py, http://127.0.0.1:8000):
+// Client for the isolated v1 backend. Port 8001 keeps its field-keyed case data
+// separate from the v2 checklist backend on port 8000.
 // upload a scanned PDF (+ optional roster) as a durable **case**, list/inspect
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
-import type { CtvFolder, DocRecap } from '../ctv/types'
+import type { CtvFolder } from '../ctv/types'
 
-export type { CheckItem, CheckTier, CheckKind, CheckAutoStatus, DocRecap } from '../ctv/types'
-
-export const API_BASE = 'http://127.0.0.1:8000'
+export const API_BASE = 'http://127.0.0.1:8001'
 
 export type Stage = 'queued' | 'splitting' | 'ocr' | 'done' | 'error' | string
 
@@ -41,9 +40,23 @@ export interface FieldReview {
   flag: FieldFlag | null
 }
 
+export const PACKET_REJECTION_REASONS = [
+  'missing_documents',
+  'wrong_template',
+  'missing_signature',
+] as const
+
+export type PacketRejectionReason = typeof PACKET_REJECTION_REASONS[number]
+
+export interface PacketRejection {
+  reasons: PacketRejectionReason[]
+  note: string
+}
+
 export interface PacketReview {
   done: boolean
-  items: Record<string, FieldReview>
+  fields: Record<string, FieldReview>
+  rejection: PacketRejection | null
 }
 
 export interface CaseProgress {
@@ -142,7 +155,14 @@ export async function listCases(): Promise<CaseSummary[]> {
 export async function getCase(caseId: string): Promise<CaseDetail> {
   const res = await fetch(`${API_BASE}/api/cases/${caseId}`)
   if (!res.ok) throw new Error(`getCase: HTTP ${res.status}`)
-  return res.json()
+  const detail = await res.json() as CaseDetail
+  return {
+    ...detail,
+    packets: detail.packets.map(packet => ({
+      ...packet,
+      review: normalizePacketReview(packet.review),
+    })),
+  }
 }
 
 export async function createCase(pdf: File, roster?: File): Promise<{ case_id: string }> {
@@ -165,7 +185,28 @@ export async function setReview(
     body: JSON.stringify(review),
   })
   if (!res.ok) throw new Error(`setReview: HTTP ${res.status}`)
-  return res.json()
+  const result = await res.json() as {
+    packet: PacketMeta
+    progress: CaseProgress
+    status: CaseState
+  }
+  return {
+    ...result,
+    packet: {
+      ...result.packet,
+      review: normalizePacketReview(result.packet.review),
+    },
+  }
+}
+
+export function normalizePacketReview(
+  review: Partial<PacketReview> | null | undefined,
+): PacketReview {
+  return {
+    done: Boolean(review?.done),
+    fields: review?.fields ?? {},
+    rejection: review?.rejection ?? null,
+  }
 }
 
 export interface ReportItem {
@@ -179,12 +220,19 @@ export interface ReportItem {
   note: string
 }
 
+export interface PacketRejectionReportEntry {
+  reasons: PacketRejectionReason[]
+  reasonLabels: string[]
+  note: string
+}
+
 export interface ReportGroup {
   index: number
   name: string
   cccd: string
   matchedBy: MatchedBy
   identityIssue: boolean
+  packetRejection: PacketRejectionReportEntry | null
   items: ReportItem[]
 }
 
@@ -208,8 +256,11 @@ export function reportUrls(caseId: string) {
 }
 
 export function packetNeedsResubmit(p: PacketMeta): boolean {
-  const flagged = Object.values(p.review?.items ?? {}).some(f => f.flag)
-  return flagged || p.matchedBy === 'name' || p.matchedBy === 'unmatched'
+  const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
+  return Boolean(p.review?.rejection)
+    || flagged
+    || p.matchedBy === 'name'
+    || p.matchedBy === 'unmatched'
 }
 
 export async function deleteCase(caseId: string): Promise<void> {
@@ -222,25 +273,6 @@ export async function fetchPacketManifest(caseId: string, index: number): Promis
   if (!res.ok) throw new Error(`fetchPacketManifest: HTTP ${res.status}`)
   const json = (await res.json()) as CtvFolder
   return withAbsolutePageSrc(json, API_BASE)
-}
-
-// POST the doc id; the server sends only that doc's typed content region to GreenNode
-// and returns the recap (or 503 when GreenNode isn't wired — surfaced as the popover error).
-export async function fetchDocRecap(caseId: string, index: number, docId: string): Promise<DocRecap> {
-  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/recap`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ docId }),
-  })
-  if (!res.ok) {
-    // Keep server-side jargon (env-var names, "TODO", English detail) out of the popover.
-    // 503 = GreenNode not wired yet (the documented TODO); anything else is an unexpected error.
-    const msg = res.status === 503
-      ? 'Tính năng AI tóm tắt chưa sẵn sàng trên máy chủ này.'
-      : `Không tạo được bản tóm tắt (HTTP ${res.status}).`
-    throw new Error(msg)
-  }
-  return res.json()
 }
 
 // "12/32 đã xong" (+ " · 3 cần gửi lại" when there's at least one flagged packet).

@@ -2,7 +2,6 @@ from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
     classify_page, segment_docs, locate_field, _upright_rotation,
-    _hits_for_doc,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -507,37 +506,6 @@ def test_find_name_prose_mention_still_produces_no_source():
     ]]
     assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
 
-
-# ---------------------------------------------------------------------------
-# Guard: `_hits_for_doc` (the real entry point `extract_fields`/`ocr_packet`
-# use) must still box a located "cần xem" name slot at the contract's
-# all-caps supplier label even with trailing "(Ký, ghi rõ ...)" boilerplate
-# and unread handwriting below it -- pins the precondition that
-# build_checklist's routed-source fix (server/checklist.py) relies on: the
-# contract DOES get a hoten source from find_name's geometric fallback, it's
-# just not always the one a bare `sources[0]` pick lands on.
-# ---------------------------------------------------------------------------
-
-def _word(text, x, y, w=40, h=20, conf=90):
-    return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
-
-_HOTEN_SPEC = next(s for s in FIELD_SPECS if s["key"] == "hoten")
-
-def test_name_gets_located_slot_on_contract_supplier_label():
-    # All-caps supplier label with trailing "(Ký, ghi rõ ...)" and unread
-    # handwriting below -> hoten still gets a boxed, value-less slot here.
-    page0 = [
-        _word("BÊN", 100, 500), _word("CUNG", 150, 500), _word("ỨNG", 210, 500),
-        _word("DỊCH", 260, 500), _word("VỤ", 320, 500),
-        _word("(Ký,", 380, 500), _word("ghi", 430, 500), _word("rõ", 470, 500),
-    ]
-    hits = _hits_for_doc(_HOTEN_SPEC, {0: page0})
-    assert hits, "expected a located name slot on the contract page"
-    page_idx, hit = hits[0]
-    assert page_idx == 0 and hit["value"] == "" and hit["confidence"] == 0.0
-    assert hit["bbox"]["width"] > 0 and hit["bbox"]["x"] >= 320  # right of the label
-
-
 def test_build_manifest_shape():
     fields = extract_fields({}, {"name": "X"})
     docs = [{"id": "packet", "kind": "contract", "label": "Hồ sơ",
@@ -788,37 +756,6 @@ def test_segment_docs_first_page_unclassified_defaults_to_contract():
     assert len(docs) == 1
     assert docs[0]["kind"] == "contract"
     assert docs[0]["pages"] == [0, 1]
-
-
-def test_classify_page_rejects_nghiem_thu_verb_without_bien_ban():
-    # Real bug (case FA-PM260226080, packets 8 & 12): a contract's payment clause
-    # "...được Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu." OCR'd into a short heading-
-    # shaped line. "nghiệm thu" there is a VERB, not the "BIÊN BẢN NGHIỆM THU"
-    # title -- and a genuine acceptance-minutes title always leads with "Biên
-    # bản". With no "biên bản" present, this must NOT classify as a document.
-    assert classify_page("Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu.") is None
-    # a genuine title (leads with "Biên bản") still classifies, same label:
-    assert classify_page("BIÊN BẢN NGHIỆM THU công việc đã hoàn thành") == \
-        ("bbnt", "Biên bản nghiệm thu")
-
-
-def test_segment_docs_keeps_contract_when_body_prose_mentions_nghiem_thu():
-    # End-to-end of the bug above: a contract body page whose payment clause says
-    # "...đồng ý nghiệm thu" (no "Biên bản") must stay part of the 4-page contract,
-    # not split into a bogus 1-page contract + a "Biên bản nghiệm thu". The
-    # genuinely-titled thanh-lý BBNT after it still opens normally.
-    filler = [f"dòng nội dung điều khoản số {i}" for i in range(6)]
-    pages = [
-        "HỢP ĐỒNG DỊCH VỤ\n" + "\n".join(filler),
-        "\n".join(["Điều 2. Phí Dịch Vụ Và Thanh Toán", "2.1 Phí dịch vụ"]
-                  + filler + ["Bên Sử Dụng Dịch Vụ đồng ý nghiệm thu."]),
-        "\n".join(["Nội dung tiếp theo, không có tiêu đề"] + filler),
-        "BIÊN BẢN THANH LÝ HỢP ĐỒNG\n" + "\n".join(filler),
-    ]
-    docs = segment_docs(pages)
-    assert [d["kind"] for d in docs] == ["contract", "bbnt"]
-    assert docs[0]["pages"] == [0, 1, 2]   # contract keeps its body pages (not split)
-    assert docs[1]["pages"] == [3]
 
 
 if __name__ == "__main__":

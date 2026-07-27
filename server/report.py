@@ -12,35 +12,55 @@ _MATCH_NOTE = {
     "unmatched": "Không khớp được với bảng kê — cần xác minh đúng người.",
 }
 
+_REJECTION_REASON_LABELS = {
+    "missing_documents": "Thiếu chứng từ",
+    "wrong_template": "Chứng từ không đúng mẫu",
+    "missing_signature": "Thiếu chữ ký",
+}
+
 
 def _needs_resubmit(p: dict) -> bool:
-    review = p.get("review") or {"items": {}}
-    if any(i.get("flag") for i in review.get("items", {}).values()):
+    review = p.get("review") or {"fields": {}}
+    if review.get("rejection"):
+        return True
+    if any(f.get("flag") for f in review.get("fields", {}).values()):
         return True
     return p.get("matchedBy") in ("name", "unmatched")
 
 
 def _items_for(packet: dict, manifest: dict | None) -> list[dict]:
-    checks = {c["code"]: c for c in (manifest or {}).get("checks", [])}
+    fields = {f["key"]: f for f in (manifest or {}).get("fields", [])}
     docs = {d["id"]: d.get("label", d["id"]) for d in (manifest or {}).get("docs", [])}
-    out = []
-    for code, ir in (packet.get("review") or {}).get("items", {}).items():
-        flag = ir.get("flag")
+    items = []
+    for key, fr in (packet.get("review") or {}).get("fields", {}).items():
+        flag = fr.get("flag")
         if not flag:
             continue
-        c = checks.get(code, {})
-        src = c.get("source") or {}
-        out.append({
-            "code": code,
-            "fieldLabel": c.get("label", code),
-            "document": docs.get(c.get("evidenceDocId"), "—"),
+        f = fields.get(key, {})
+        src = (f.get("sources") or [{}])[0]
+        items.append({
+            "fieldKey": key,
+            "fieldLabel": f.get("label", key),
+            "document": docs.get(src.get("docId"), "—"),
             "page": (src["page"] + 1) if "page" in src else None,
-            "rosterValue": c.get("reference") or "",
+            "rosterValue": f.get("expected", ""),
             "docValue": src.get("value") or "cần xem",
             "reason": flag.get("reason", ""),
             "note": flag.get("note", ""),
         })
-    return out
+    return items
+
+
+def _packet_rejection(packet: dict) -> dict | None:
+    rejection = (packet.get("review") or {}).get("rejection")
+    if not rejection:
+        return None
+    reasons = rejection.get("reasons") or []
+    return {
+        "reasons": reasons,
+        "reasonLabels": [_REJECTION_REASON_LABELS[r] for r in reasons],
+        "note": rejection.get("note", ""),
+    }
 
 
 def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
@@ -55,6 +75,7 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
             "cccd": ident.get("cccd", ""),
             "matchedBy": p.get("matchedBy", "no-roster"),
             "identityIssue": p.get("matchedBy") in ("name", "unmatched"),
+            "packetRejection": _packet_rejection(p),
             "items": _items_for(p, manifests.get(p["index"])),
         })
 
@@ -62,6 +83,13 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
           f"_Tạo lúc: {generated_at}_", ""]
     for g in groups:
         md.append(f"## {g['name']} — CCCD {g['cccd']}")
+        if g["packetRejection"]:
+            rejection = g["packetRejection"]
+            note = f" — Ghi chú: {rejection['note']}" if rejection["note"] else ""
+            md.append(
+                f"- **Từ chối gói hồ sơ** — "
+                f"{'; '.join(rejection['reasonLabels'])}{note}"
+            )
         if g["identityIssue"]:
             md.append(f"> ⚠ {_MATCH_NOTE.get(g['matchedBy'], '')}")
         for it in g["items"]:
@@ -77,6 +105,12 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
     w.writerow(["CTV", "CCCD", "Trường", "Chứng từ", "Trang",
                 "Bảng kê", "Chứng từ đọc được", "Lý do", "Ghi chú"])
     for g in groups:
+        if g["packetRejection"]:
+            rejection = g["packetRejection"]
+            w.writerow([
+                g["name"], g["cccd"], "Từ chối gói hồ sơ", "", "", "", "",
+                "; ".join(rejection["reasonLabels"]), rejection["note"],
+            ])
         if g["identityIssue"] and not g["items"]:
             w.writerow([g["name"], g["cccd"], "Định danh", "", "", "", "",
                         g["matchedBy"], _MATCH_NOTE.get(g["matchedBy"], "")])

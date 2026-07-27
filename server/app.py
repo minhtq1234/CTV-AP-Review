@@ -21,12 +21,10 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 import threading
 
-import checklist
-import greennode
-import recap
 from cases import CaseStore, progress_of
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
@@ -127,60 +125,39 @@ async def get_case(cid: str):
     return out
 
 
+PacketRejectionReason = Literal[
+    "missing_documents",
+    "wrong_template",
+    "missing_signature",
+]
+
+
+class PacketRejectionBody(BaseModel):
+    reasons: list[PacketRejectionReason] = Field(min_length=1)
+    note: str = ""
+
+    @field_validator("reasons")
+    @classmethod
+    def reasons_must_be_unique(cls, reasons):
+        if len(reasons) != len(set(reasons)):
+            raise ValueError("rejection reasons must be unique")
+        return reasons
+
+
 class ReviewBody(BaseModel):
     done: bool = False
-    items: dict = {}
+    fields: dict = Field(default_factory=dict)
+    rejection: PacketRejectionBody | None = None
 
 
 @app.put("/api/cases/{cid}/packets/{i}/review")
 async def put_review(cid: str, i: int, body: ReviewBody):
-    updated = store.set_review(cid, i, {"done": body.done, "items": body.items})
+    updated = store.set_review(cid, i, body.model_dump())
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
     return {"packet": packet, "progress": progress_of(updated["packets"]),
             "status": updated["status"]}
-
-
-class RecapBody(BaseModel):
-    docId: str
-
-
-@app.post("/api/cases/{cid}/packets/{i}/recap")
-async def post_recap(cid: str, i: int, body: RecapBody):
-    """AI recap of one content-bearing doc. Sends ONLY that doc's typed content
-    region to GreenNode (see recap.content_region_for); caches the result in the
-    manifest so repeat views are instant. 503 when GreenNode isn't wired — the
-    offline export uses the canned recap instead."""
-    case = store.get(cid)
-    if case is None:
-        raise HTTPException(status_code=404, detail="case not found")
-    path = os.path.join(store.case_dir(cid), "packets", str(i), "manifest.json")
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="manifest not found")
-    with open(path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
-
-    cached = (manifest.get("recaps") or {}).get(body.docId)
-    if cached:
-        return cached
-
-    region = recap.content_region_for(manifest, body.docId)
-    if region is None:
-        raise HTTPException(status_code=404, detail="no typed content region for this doc")
-
-    try:
-        out = greennode.summarize(region)  # ONLY the typed content region is sent
-    except greennode.NotConfigured as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-    result = {"bullets": out.get("bullets", []),
-              "nhanDinh": out.get("nhanDinh", ""),
-              "disclaimer": recap.DISCLAIMER}
-    manifest.setdefault("recaps", {})[body.docId] = result
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-    return result
 
 
 def _load_manifests(cid: str, packets: list[dict]) -> dict:
@@ -241,20 +218,6 @@ async def get_manifest(cid: str, i: int):
         raise HTTPException(status_code=404, detail="manifest not found")
     with open(path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    if not manifest.get("checks"):
-        # Pre-v2 manifest (OCR'd before the coded checklist existed) --
-        # build it on the fly from this manifest's own fields/docs + the
-        # packet's match meta rather than serving (and having the reviewer
-        # render) an empty checklist. Not persisted back to disk: cheap
-        # + pure, so recomputing per GET is simpler than a migration.
-        packet = next((p for p in case["packets"] if p["index"] == i), {})
-        manifest["checks"] = checklist.build_checklist(
-            manifest.get("fields", []),
-            {"matchedBy": packet.get("matchedBy", "no-roster"),
-             "ocrIdentity": packet.get("ocrIdentity") or {"cccd": "", "name": ""},
-             "rosterIdentity": packet.get("rosterIdentity")},
-            manifest.get("docs", []),
-        )
     base = f"/api/cases/{cid}/packets/{i}"
     return JSONResponse(rewrite_manifest_urls(manifest, base))
 

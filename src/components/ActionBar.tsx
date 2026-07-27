@@ -8,7 +8,7 @@ interface ActionBarProps {
 
 export default function ActionBar({ done, seenCount, total, hint, onFinish }: ActionBarProps) {
   const remaining = total - seenCount
-  const canFinish = total > 0 && remaining <= 0
+  const canFinish = remaining <= 0
   if (done) {
     return (
       <div className="action-bar">

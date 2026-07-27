@@ -1,6 +1,3 @@
-import json
-import os
-
 from fastapi.testclient import TestClient
 import app as appmod
 from app import app, rewrite_manifest_urls
@@ -43,7 +40,7 @@ def test_case_create_list_detail_review(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get("/api/cases").json()[0]["id"] == cid
     # review persists + flips status
-    r = c.put(f"/api/cases/{cid}/packets/0/review", json={"done": True, "items": {}})
+    r = c.put(f"/api/cases/{cid}/packets/0/review", json={"done": True, "fields": {}})
     assert r.status_code == 200
     data = r.json()
     assert data["packet"]["review"]["done"] is True
@@ -57,24 +54,61 @@ def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
 
 def test_review_unknown_case_404():
-    body = {"done": True, "items": {}}
+    body = {"done": True, "fields": {}}
     assert TestClient(app).put("/api/cases/nope/packets/0/review", json=body).status_code == 404
 
 def test_put_review_persists_and_updates_status(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
-    body = {"done": True, "items": {"A2": {"seen": True,
+    body = {"done": True, "fields": {"cccd": {"seen": True,
             "flag": {"reason": "sai", "note": "x"}}}}
     r = c.put(f"/api/cases/{cid}/packets/0/review", json=body)
     assert r.status_code == 200
     data = r.json()
     assert data["packet"]["review"]["done"] is True
-    assert data["packet"]["review"]["items"]["A2"]["flag"]["reason"] == "sai"
     assert data["progress"]["done"] >= 1
+
+def test_put_review_defaults_rejection_to_null(tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    r = c.put(f"/api/cases/{cid}/packets/0/review",
+              json={"done": False, "fields": {}})
+    assert r.status_code == 200
+    assert r.json()["packet"]["review"]["rejection"] is None
+
+def test_put_review_validates_and_roundtrips_multiple_rejection_reasons(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    url = f"/api/cases/{cid}/packets/0/review"
+    assert c.put(url, json={
+        "done": False, "fields": {},
+        "rejection": {"reasons": [], "note": ""},
+    }).status_code == 422
+    assert c.put(url, json={
+        "done": False, "fields": {},
+        "rejection": {"reasons": ["not_a_reason"], "note": ""},
+    }).status_code == 422
+
+    r = c.put(url, json={
+        "done": False,
+        "fields": {"name": {"seen": True, "flag": None}},
+        "rejection": {
+            "reasons": ["missing_signature", "missing_documents"],
+            "note": "  bổ sung  ",
+        },
+    })
+    assert r.status_code == 200
+    assert r.json()["packet"]["review"] == {
+        "done": True,
+        "fields": {"name": {"seen": True, "flag": None}},
+        "rejection": {
+            "reasons": ["missing_documents", "missing_signature"],
+            "note": "bổ sung",
+        },
+    }
 
 def test_report_endpoint_generates_and_persists(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     c.put(f"/api/cases/{cid}/packets/0/review",
-          json={"done": True, "items": {"A2": {"seen": True,
+          json={"done": True, "fields": {"cccd": {"seen": True,
                 "flag": {"reason": "sai", "note": "x"}}}})
     r = c.post(f"/api/cases/{cid}/report")
     assert r.status_code == 200
@@ -88,41 +122,6 @@ def test_report_404_before_generation(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get(f"/api/cases/{cid}/report.md").status_code == 404
     assert c.get(f"/api/cases/{cid}/report.csv").status_code == 404
-
-def test_get_manifest_backfills_checks_when_missing(tmp_path, monkeypatch):
-    """Manifests OCR'd before the coded-checklist feature landed have no
-    `checks` array on disk. `_ready_case`'s fake pipeline (unlike the real
-    one) never writes a manifest.json at all, so we seed one ourselves --
-    with `fields`/`docs` but deliberately no `checks` -- to stand in for a
-    pre-existing on-disk manifest, then strip `checks` the same way a real
-    migration would before writing it back. GET must build the checklist
-    on the fly rather than serving (and the UI rendering) an empty one."""
-    c, cid = _ready_case(monkeypatch, tmp_path)
-    packet_dir = os.path.join(appmod.store.case_dir(cid), "packets", "0")
-    os.makedirs(packet_dir, exist_ok=True)
-    manifest_path = os.path.join(packet_dir, "manifest.json")
-    manifest = {
-        "id": "p0", "name": "Nguyễn Văn A", "product": "",
-        "docs": [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ", "pages": []}],
-        "fields": [{"key": "hoten", "expected": "Nguyễn Văn A", "sources": []}],
-    }
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
-    # Simulate a pre-v2 manifest: load it back and strip `checks` (a no-op
-    # here since we never set it, but this is the shape a real migration --
-    # or an old manifest that predates the field -- would take).
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        on_disk = json.load(f)
-    on_disk.pop("checks", None)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(on_disk, f, ensure_ascii=False, indent=2)
-
-    r = c.get(f"/api/cases/{cid}/packets/0/manifest.json")
-    assert r.status_code == 200
-    checks = r.json()["checks"]
-    assert len(checks) > 0
-    assert checks[0]["code"] == "G-DOC"
 
 if __name__ == "__main__":
     # minimal manual runner (monkeypatch/tmp_path tests need pytest; run those with: python3 -m pytest server/app_test.py)

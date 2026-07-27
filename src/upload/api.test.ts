@@ -5,6 +5,7 @@ import {
   withAbsolutePageSrc,
   caseProgressLabel,
   packetNeedsResubmit,
+  normalizePacketReview,
   reportUrls,
   API_BASE,
 } from './api'
@@ -34,12 +35,31 @@ describe('case helpers', () => {
   })
 })
 
-test('packetNeedsResubmit reads items', () => {
-  const base = { matchedBy: 'cccd', review: { done: true, items: {} } } as any
+test('packetNeedsResubmit: field flag or weak match', () => {
+  const base = {
+    matchedBy: 'cccd',
+    review: { done: true, fields: {}, rejection: null },
+  } as any
   expect(packetNeedsResubmit(base)).toBe(false)
   expect(packetNeedsResubmit({ ...base, matchedBy: 'name' })).toBe(true)
   expect(packetNeedsResubmit({ ...base, review: { done: true,
-    items: { A2: { seen: true, flag: { reason: 'sai', note: '' } } } } })).toBe(true)
+    fields: { cccd: { seen: true, flag: { reason: 'sai', note: '' } } },
+    rejection: null } })).toBe(true)
+  expect(packetNeedsResubmit({
+    ...base,
+    review: {
+      done: true,
+      fields: {},
+      rejection: { reasons: ['missing_documents'], note: '' },
+    },
+  })).toBe(true)
+})
+
+test('normalizePacketReview adds the additive legacy default', () => {
+  expect(normalizePacketReview({ done: true, fields: {} } as any))
+    .toEqual({ done: true, fields: {}, rejection: null })
+  expect(normalizePacketReview(undefined))
+    .toEqual({ done: false, fields: {}, rejection: null })
 })
 
 test('reportUrls point at the backend', () => {

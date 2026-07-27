@@ -1,4 +1,3 @@
-import json
 import os
 
 import pipeline as pl
@@ -185,41 +184,6 @@ def test_packet_meta_no_roster_is_no_roster_with_null_identity(tmp_path, monkeyp
         assert p["matchedBy"] == "no-roster"
         assert p["rosterIdentity"] is None
         assert set(p["ocrIdentity"]) == {"cccd", "name"}
-
-
-# ---------------------------------------------------------------------------
-# run_pipeline: manifest carries the coded checklist (Task 2)
-#
-# Reuses `_install_fake_detection` for the packet split, but swaps in a
-# dedicated OCR fake (one "name"-keyed field + a contract doc, matching
-# checklist_test.py's own FIELDS convention) so `checklist.build_checklist`
-# has a gate doc to route confirm-checks to and a field to build the B1
-# value-check from.
-# ---------------------------------------------------------------------------
-
-def _fake_ocr_packet_for_checklist(pdf_path, start, end, out_dir):
-    os.makedirs(out_dir, exist_ok=True)
-    identity = {"cccd": "048091001309", "name": "Nguyễn Văn A"}
-    fields = [{"key": "hoten", "expected": "", "sources": []}]
-    docs = [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ"}]
-    return {"folder": {"docs": docs, "fields": fields}, "identity": identity}
-
-
-def test_manifest_carries_checks(tmp_path, monkeypatch):
-    _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
-    monkeypatch.setattr(pl.oc, "ocr_packet", _fake_ocr_packet_for_checklist)
-
-    pl.run_pipeline(
-        str(tmp_path / "input.pdf"), "roster.xlsx", str(tmp_path), lambda *a: None,
-    )
-
-    manifest_path = os.path.join(str(tmp_path), "packets", "0", "manifest.json")
-    m = json.load(open(manifest_path, encoding="utf-8"))
-    codes = [c["code"] for c in m["checks"]]
-    assert codes[0] == "G-DOC"
-    assert "G-ID" not in codes
-    assert "B1" in codes
 
 
 if __name__ == "__main__":

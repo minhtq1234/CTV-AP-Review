@@ -3,16 +3,15 @@ interface HotkeyHelpProps { open: boolean; onClose: () => void }
 // U5: the full hotkey reference — `?` opens/closes this from EvidenceViewer. Kept as a plain
 // list (not a table) so it reads fine at the panel's compact width.
 const ROWS: { keys: string; desc: string }[] = [
-  { keys: '↑ / ↓', desc: 'Chuyển mục kiểm tra' },
-  { keys: '← / →', desc: 'Chuyển trang (sang tài liệu kế khi hết trang)' },
+  { keys: '↑ / ↓', desc: 'Chuyển trường' },
+  { keys: '← / →', desc: 'Đổi chứng từ (nguồn) của trường đang chọn' },
   { keys: 'Alt + / Alt −', desc: 'Phóng to / thu nhỏ' },
-  { keys: 'F', desc: 'Đánh dấu mục cần gửi lại' },
-  { keys: 'B', desc: 'Ẩn / hiện khung tô sáng (khi soi trường dữ liệu)' },
-  { keys: 'V', desc: 'Ẩn / hiện giá trị bảng kê trên chứng từ (khi soi trường dữ liệu)' },
+  { keys: 'B', desc: 'Ẩn / hiện khung tô sáng' },
+  { keys: 'F', desc: 'Đánh dấu trường cần gửi lại' },
+  { keys: 'V', desc: 'Ẩn/hiện giá trị bảng kê trên chứng từ' },
   { keys: 'Option/Alt + P', desc: 'Bật/tắt di chuyển (pan) — kéo để di chuyển tài liệu' },
-  { keys: '🔒', desc: 'Khoá khung nhìn (giữ nguyên khi đổi mục/chứng từ)' },
+  { keys: '🔒', desc: 'Khoá khung nhìn (giữ nguyên khi đổi trường/chứng từ)' },
   { keys: '?', desc: 'Hiện / ẩn danh sách phím tắt này' },
-  { keys: 'Thanh chế độ xem', desc: 'Cuộn liên tục · 2 trang (trên thanh công cụ)' },
 ]
 
 export default function HotkeyHelp({ open, onClose }: HotkeyHelpProps) {

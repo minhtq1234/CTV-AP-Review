@@ -18,11 +18,38 @@ import shutil
 import uuid
 
 
+REJECTION_REASON_ORDER = (
+    "missing_documents",
+    "wrong_template",
+    "missing_signature",
+)
+
+
+def normalize_review(review: dict | None) -> dict:
+    """Return the complete additive review shape and enforce rejection rules."""
+    source = review or {}
+    rejection = source.get("rejection")
+    if rejection is not None:
+        selected = set(rejection.get("reasons") or [])
+        reasons = [reason for reason in REJECTION_REASON_ORDER if reason in selected]
+        rejection = {
+            "reasons": reasons,
+            "note": str(rejection.get("note") or "").strip(),
+        } if reasons else None
+    return {
+        "done": True if rejection else bool(source.get("done", False)),
+        "fields": source.get("fields", {}) or {},
+        "rejection": rejection,
+    }
+
+
 def needs_resubmit(packet: dict) -> bool:
-    """A packet needs resubmission if any checklist item is flagged, or its
-    roster match is weak (matched by name only, or unmatched)."""
-    review = packet.get("review") or {"items": {}}
-    if any(i.get("flag") for i in review.get("items", {}).values()):
+    """A packet needs resubmission if any field is flagged, or its roster
+    match is weak (matched by name only, or unmatched)."""
+    review = packet.get("review") or {"fields": {}}
+    if review.get("rejection"):
+        return True
+    if any(f.get("flag") for f in review.get("fields", {}).values()):
         return True
     return packet.get("matchedBy") in ("name", "unmatched")
 
@@ -59,7 +86,7 @@ def _ensure_packet_defaults(packet: dict) -> dict:
     """Fill review/match defaults if the pipeline (or a fake test pipeline)
     didn't set them."""
     out = dict(packet)
-    out.setdefault("review", {"done": False, "items": {}})
+    out["review"] = normalize_review(out.get("review"))
     out.setdefault("matchedBy", "no-roster")
     out.setdefault("ocrIdentity", {"cccd": "", "name": ""})
     out.setdefault("rosterIdentity", None)
@@ -93,6 +120,16 @@ class CaseStore:
                     case = json.load(f)
             except Exception:  # noqa: BLE001 - skip corrupt/partial files, don't crash startup
                 continue
+            changed = False
+            for i, p in enumerate(case.get("packets", [])):
+                had_review = "review" in p
+                normalized = _ensure_packet_defaults(p)
+                if not had_review:
+                    for k in ("decision", "rejectReason", "reviewedAt"):
+                        normalized.pop(k, None)
+                if normalized != p:
+                    case["packets"][i] = normalized
+                    changed = True
             if case.get("status") == "processing":
                 # #007: a case still "processing" on disk has no live worker --
                 # the process that was running its pipeline is gone (this is a
@@ -104,32 +141,6 @@ class CaseStore:
                 case["error"] = "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
                 self._write(case)
             else:
-                # #Task2/#Task3: migrate legacy packets so cases persisted
-                # before the review model settled don't crash the new code.
-                # Two generations of legacy shape are handled:
-                #  - pre-review-model packets (before `decision`/
-                #    `rejectReason`/`reviewedAt` were replaced by
-                #    `review={"done", ...}` + match meta): missing `review`
-                #    entirely.
-                #  - field-keyed review (`review={"done","fields"}`, from
-                #    before the checklist rework): has `review` but it still
-                #    carries `fields` instead of `items`. Old field-keys
-                #    don't map to check-codes, so this resets to an empty
-                #    checklist rather than trying to translate keys.
-                # Idempotent — a second load is a no-op either way.
-                changed = False
-                for p in case.get("packets", []):
-                    if "review" not in p:
-                        p["review"] = {"done": False, "items": {}}
-                        for k in ("decision", "rejectReason", "reviewedAt"):
-                            p.pop(k, None)
-                        p.setdefault("matchedBy", "no-roster")
-                        p.setdefault("ocrIdentity", {"cccd": "", "name": ""})
-                        p.setdefault("rosterIdentity", None)
-                        changed = True
-                    elif "fields" in p["review"] or "items" not in p["review"]:
-                        p["review"] = {"done": p["review"].get("done", False), "items": {}}
-                        changed = True
                 if changed:
                     self._write(case)   # persist migration (also indexes)
                 else:
@@ -212,10 +223,7 @@ class CaseStore:
             return None
         for p in case["packets"]:
             if p["index"] == index:
-                p["review"] = {
-                    "done": bool(review.get("done", False)),
-                    "items": review.get("items", {}) or {},
-                }
+                p["review"] = normalize_review(review)
                 break
         else:
             return None

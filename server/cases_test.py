@@ -1,15 +1,15 @@
 import json, os, tempfile
 from cases import CaseStore, case_status, progress_of, needs_resubmit
 
-def _pkt(index, done=False, flags=None, matched_by="cccd"):
-    items = {}
+def _pkt(index, done=False, flags=None, matched_by="cccd", rejection=None):
+    fields = {}
     for k in (flags or []):
-        items[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
+        fields[k] = {"seen": True, "flag": {"reason": "sai", "note": ""}}
     return {"index": index, "name": f"P{index}", "pages": [index * 8, index * 8 + 7],
              "confidence": "green", "matchedBy": matched_by,
              "ocrIdentity": {"cccd": "", "name": ""},
              "rosterIdentity": {"cccd": "", "name": ""},
-             "review": {"done": done, "items": items}}
+             "review": {"done": done, "fields": fields, "rejection": rejection}}
 
 def _pkts(dones):
     return [_pkt(i, done=d) for i, d in enumerate(dones)]
@@ -34,6 +34,30 @@ def test_progress_counts_done_and_flagged():
     pkts = [_pkt(0, done=True, flags=["cccd"]), _pkt(1, done=True), _pkt(2)]
     assert progress_of(pkts) == {"done": 2, "total": 3, "flagged": 1}
 
+def test_rejection_counts_as_completed_and_needs_resubmission_once():
+    rejection = {"reasons": ["missing_documents"], "note": ""}
+    rejected = _pkt(0, done=True, rejection=rejection)
+    rejected_with_flag = _pkt(
+        1, done=True, flags=["cccd"], rejection=rejection,
+    )
+    assert needs_resubmit(rejected) is True
+    assert progress_of([rejected]) == {"done": 1, "total": 1, "flagged": 1}
+    assert progress_of([rejected_with_flag]) == {
+        "done": 1, "total": 1, "flagged": 1,
+    }
+
+def test_new_packet_review_defaults_include_null_rejection():
+    with tempfile.TemporaryDirectory() as d:
+        s = CaseStore(d)
+        cid = s.create(name="x", pdf_name="x.pdf", roster_name=None)
+        s.set_result(cid, summary=None, packets=[{
+            "index": 0, "name": "Synthetic", "pages": [0, 1],
+            "confidence": "green", "flags": [],
+        }])
+        assert s.get(cid)["packets"][0]["review"] == {
+            "done": False, "fields": {}, "rejection": None,
+        }
+
 def test_create_list_get_roundtrip_and_reload():
     with tempfile.TemporaryDirectory() as d:
         s = CaseStore(d)
@@ -53,16 +77,39 @@ def test_set_review_updates_status_and_persists():
         s = CaseStore(d)
         cid = s.create(name="x", pdf_name="x.pdf", roster_name=None)
         s.set_result(cid, summary=None, packets=_pkts([False, False]))
-        s.set_review(cid, 0, {"done": True, "items": {}})
+        s.set_review(cid, 0, {"done": True, "fields": {}})
         assert s.get(cid)["status"] == "in_review"
         assert s.get(cid)["packets"][0]["review"]["done"] is True
         s.set_review(cid, 1, {
             "done": True,
-            "items": {"A2": {"seen": True, "flag": {"reason": "sai", "note": ""}}},
+            "fields": {"cccd": {"seen": True, "flag": {"reason": "sai", "note": "thiếu chữ ký"}}},
         })
         assert s.get(cid)["status"] == "done"
-        reloaded = CaseStore(d).get(cid)["packets"][1]["review"]["items"]["A2"]
-        assert reloaded["flag"]["reason"] == "sai"
+        reloaded = CaseStore(d).get(cid)["packets"][1]["review"]["fields"]["cccd"]
+        assert reloaded["flag"]["note"] == "thiếu chữ ký"
+
+def test_set_review_normalizes_and_roundtrips_packet_rejection():
+    with tempfile.TemporaryDirectory() as d:
+        s = CaseStore(d)
+        cid = s.create(name="x", pdf_name="x.pdf", roster_name=None)
+        s.set_result(cid, summary=None, packets=_pkts([False]))
+        s.set_review(cid, 0, {
+            "done": False,
+            "fields": {"name": {"seen": True, "flag": None}},
+            "rejection": {
+                "reasons": ["missing_signature", "missing_documents"],
+                "note": "  bổ sung  ",
+            },
+        })
+        review = CaseStore(d).get(cid)["packets"][0]["review"]
+        assert review == {
+            "done": True,
+            "fields": {"name": {"seen": True, "flag": None}},
+            "rejection": {
+                "reasons": ["missing_documents", "missing_signature"],
+                "note": "bổ sung",
+            },
+        }
 
 def test_delete_removes_case():
     with tempfile.TemporaryDirectory() as d:
@@ -102,6 +149,28 @@ def test_reconciles_orphaned_processing_case_to_error_on_load():
         assert reloaded["status"] == "error"
         assert reloaded["error"] == "Xử lý bị gián đoạn — vui lòng xoá và tải lại."
 
+def test_reconciled_processing_case_also_normalizes_existing_packet_reviews(tmp_path):
+    cid = "orphan-with-packet"
+    case_dir = tmp_path / cid
+    case_dir.mkdir()
+    case = {
+        "id": cid, "name": "x", "createdAt": None, "status": "processing",
+        "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": None,
+        "packets": [{
+            "index": 0, "confidence": "green", "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": "", "name": ""},
+            "rosterIdentity": None,
+            "review": {"done": False, "fields": {}},
+        }],
+    }
+    (case_dir / "case.json").write_text(json.dumps(case), encoding="utf-8")
+
+    loaded = CaseStore(str(tmp_path)).get(cid)
+    assert loaded["status"] == "error"
+    assert loaded["packets"][0]["review"] == {
+        "done": False, "fields": {}, "rejection": None,
+    }
+
 
 def test_reconcile_leaves_other_statuses_untouched():
     # Every other lifecycle status (including a GENUINE pipeline error, whose
@@ -131,31 +200,32 @@ def test_load_migrates_old_decision_packets(tmp_path):
     (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
     store = CaseStore(str(tmp_path))
     p = store.get(cid)["packets"][0]
-    assert p["review"] == {"done": False, "items": {}}
+    assert p["review"] == {"done": False, "fields": {}, "rejection": None}
     assert "decision" not in p and "rejectReason" not in p and "reviewedAt" not in p
     assert p["matchedBy"] == "no-roster"
 
-
-def test_progress_and_needs_resubmit_use_items():
-    from cases import needs_resubmit, progress_of
-    flagged = {"index": 0, "confidence": "green", "matchedBy": "cccd",
-               "review": {"done": True, "items": {"A2": {"seen": True, "flag": {"reason": "sai", "note": ""}}}}}
-    clean = {"index": 1, "confidence": "green", "matchedBy": "cccd", "review": {"done": True, "items": {}}}
-    assert needs_resubmit(flagged) is True and needs_resubmit(clean) is False
-    assert progress_of([flagged, clean]) == {"done": 2, "total": 2, "flagged": 1}
-
-
-def test_load_migrates_fields_to_items(tmp_path):
-    cid = "old"
+def test_load_adds_null_rejection_to_existing_review_without_changing_fields(tmp_path):
+    cid = "existing-review"
     d = tmp_path / cid
     d.mkdir()
-    old = {"id": cid, "name": "x", "createdAt": None, "status": "in_review", "pdfName": "x.pdf",
-           "rosterName": None, "summary": None, "error": None,
-           "packets": [{"index": 0, "confidence": "green", "matchedBy": "cccd",
-                        "review": {"done": False, "fields": {"hoten": {"seen": True, "flag": None}}}}]}
-    (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
-    p = CaseStore(str(tmp_path)).get(cid)["packets"][0]
-    assert p["review"] == {"done": False, "items": {}} and "fields" not in p["review"]
+    fields = {"name": {"seen": True, "flag": {"reason": "sai", "note": "x"}}}
+    case = {
+        "id": cid, "name": "x", "createdAt": None, "status": "in_review",
+        "pdfName": "x.pdf", "rosterName": None, "summary": None, "error": None,
+        "packets": [{
+            "index": 0, "confidence": "green", "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": "", "name": ""},
+            "rosterIdentity": None,
+            "review": {"done": True, "fields": fields},
+        }],
+    }
+    (d / "case.json").write_text(json.dumps(case), encoding="utf-8")
+    packet = CaseStore(str(tmp_path)).get(cid)["packets"][0]
+    assert packet["review"] == {
+        "done": True, "fields": fields, "rejection": None,
+    }
+    persisted = json.loads((d / "case.json").read_text(encoding="utf-8"))
+    assert persisted["packets"][0]["review"]["rejection"] is None
 
 
 if __name__ == "__main__":
