@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { RankedCtv } from '../ctv/checks'
 import type { MatchedBy, PacketReview } from '../upload/api'
 import FolderFieldsPanel from './FolderFieldsPanel'
+import FolderReview from './FolderReview'
 import MatchKeyStrip from './MatchKeyStrip'
 import ReviewHeader from './ReviewHeader'
 
@@ -39,6 +40,37 @@ const ranked: RankedCtv[] = [{
   }],
 }]
 
+const financialRow: RankedCtv = {
+  field: {
+    key: 'phi',
+    label: 'Phí dịch vụ',
+    group: 'Thanh toán',
+    check: 'compare',
+    kind: 'number',
+    expected: '6111111',
+    sources: [{
+      docId: 'contract',
+      page: 0,
+      value: '6.111.111',
+      bbox: { x: 100, y: 200, width: 180, height: 30 },
+      confidence: 0.9,
+    }],
+  },
+  index: 0,
+  verdict: 'match',
+  actual: '6.111.111',
+  sources: [{
+    verdict: 'match',
+    source: {
+      docId: 'contract',
+      page: 0,
+      value: '6.111.111',
+      bbox: { x: 100, y: 200, width: 180, height: 30 },
+      confidence: 0.9,
+    },
+  }],
+}
+
 const renderPanel = (review: PacketReview, rows: RankedCtv[] = ranked) => renderToStaticMarkup(
   <FolderFieldsPanel
     ranked={rows}
@@ -51,6 +83,15 @@ const renderPanel = (review: PacketReview, rows: RankedCtv[] = ranked) => render
 )
 
 describe('flat field panel', () => {
+  it('formats a financial Excel value as Vietnamese đồng', () => {
+    const html = renderPanel(
+      { done: false, fields: {}, rejection: null },
+      [financialRow],
+    )
+    expect(html).toContain('Kê khai (Excel): <b>6.111.111 ₫</b>')
+    expect(html).not.toContain('<b>6111111</b>')
+  })
+
   it('keeps the field row but removes repetitive source pills', () => {
     const html = renderPanel({ done: false, fields: {}, rejection: null })
     expect(html).toContain('Trường mẫu')
@@ -154,6 +195,35 @@ describe('flat field panel', () => {
     expect(html).toContain('Trường mẫu')
     expect(html).toContain('Bỏ đánh dấu')
     expect(html).not.toContain('disabled=""')
+  })
+})
+
+describe('review presentation', () => {
+  it('uses the same formatted amount in the field row and bbox callout', () => {
+    const field = financialRow.field
+    const html = renderToStaticMarkup(
+      <FolderReview
+        folder={{
+          id: 'synthetic',
+          name: 'Synthetic CTV',
+          product: 'Synthetic Product',
+          status: 'pending',
+          exempt: false,
+          docs: [{
+            id: 'contract',
+            kind: 'contract',
+            label: 'Synthetic contract',
+            pages: [{ src: '/synthetic.svg', width: 1000, height: 1400 }],
+          }],
+          fields: [field],
+        }}
+        review={{ done: false, fields: {}, rejection: null }}
+        onReview={() => undefined}
+        onCommitReview={async () => undefined}
+      />,
+    )
+    expect(html.match(/6\.111\.111 ₫/g)).toHaveLength(2)
+    expect(html).not.toContain('>6111111<')
   })
 })
 

@@ -1,6 +1,7 @@
 import type { RankedCtv } from '../ctv/checks'
 import type { PacketReview, FieldFlag } from '../upload/api'
 import { PACKET_REJECTION_OPTIONS } from '../logic/packetRejection'
+import { formatRosterValue } from '../logic/reviewValue'
 
 interface Props {
   ranked: RankedCtv[]
@@ -79,7 +80,7 @@ export default function FolderFieldsPanel({
                 {review.fields[r.field.key]?.flag ? 'Bỏ đánh dấu' : '⚑ Đánh dấu'}
               </button>
             </div>
-            <div className="cfield-exp">Kê khai (Excel): <b>{r.field.expected}</b></div>
+            <div className="cfield-exp">Kê khai (Excel): <b>{formatRosterValue(r.field)}</b></div>
             {review.fields[r.field.key]?.flag && sel && (
               <div className="flag-editor" onClick={e => e.stopPropagation()}>
                 <div className="flag-reasons">

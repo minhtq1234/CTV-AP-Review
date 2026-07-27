@@ -4,6 +4,7 @@ import type { CtvFolder } from '../ctv/types'
 import { rankFolder } from '../ctv/checks'
 import type { PacketReview, FieldFlag } from '../upload/api'
 import { allSeen } from '../logic/review'
+import { formatRosterValue } from '../logic/reviewValue'
 import {
   rejectedReview,
   undoRejectedReview,
@@ -162,7 +163,7 @@ export default function FolderReview({
           onSelectDoc={onSelectDoc}
           onToggleLock={() => setLockView(v => !v)}
           rosterLabel={selField?.label}
-          rosterValue={selField?.expected ?? null}
+          rosterValue={selField ? formatRosterValue(selField) : null}
         />
       </div>
       <ActionBar
