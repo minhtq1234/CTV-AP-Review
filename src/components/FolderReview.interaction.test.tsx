@@ -50,9 +50,34 @@ const folder: CtvFolder = {
 
 const emptyReview: PacketReview = { done: false, fields: {}, rejection: null }
 
+const multiPageFolder: CtvFolder = {
+  ...folder,
+  id: 'multi-page-interaction-folder',
+  docs: [
+    {
+      ...folder.docs[0],
+      pages: [
+        { src: '/contract-1.svg', width: 1000, height: 1400 },
+        { src: '/contract-2.svg', width: 1000, height: 1400 },
+        { src: '/contract-3.svg', width: 1000, height: 1400 },
+      ],
+    },
+    {
+      ...folder.docs[1],
+      pages: [
+        { src: '/appendix-1.svg', width: 1000, height: 1400 },
+        { src: '/appendix-2.svg', width: 1000, height: 1400 },
+        { src: '/appendix-3.svg', width: 1000, height: 1400 },
+      ],
+    },
+  ],
+}
+
 let root: Root
 let container: HTMLDivElement
 let styleElement: HTMLStyleElement
+let scrollIntoViewSpy: ReturnType<typeof vi.fn>
+let scrollToSpy: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -61,7 +86,13 @@ beforeEach(() => {
   })
   vi.stubGlobal('cancelAnimationFrame', () => undefined)
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  HTMLElement.prototype.scrollIntoView = () => undefined
+  scrollIntoViewSpy = vi.fn()
+  scrollToSpy = vi.fn(function (this: HTMLElement, options: ScrollToOptions) {
+    this.scrollLeft = options.left ?? this.scrollLeft
+    this.scrollTop = options.top ?? this.scrollTop
+  })
+  HTMLElement.prototype.scrollIntoView = scrollIntoViewSpy
+  HTMLElement.prototype.scrollTo = scrollToSpy
   styleElement = document.createElement('style')
   styleElement.textContent = styles
   document.head.append(styleElement)
@@ -77,12 +108,12 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const renderReview = (review = emptyReview) => {
+const renderReview = (review = emptyReview, reviewFolder = folder) => {
   const onReview = vi.fn()
   act(() => {
     root.render(
       <FolderReview
-        folder={folder}
+        folder={reviewFolder}
         review={review}
         onReview={onReview}
         onCommitReview={async () => undefined}
@@ -104,7 +135,120 @@ const click = (element: Element) => {
   })
 }
 
+const documentModeButton = (label: string) => Array.from(
+  container.querySelectorAll('.ev-modes button'),
+).find(button => button.textContent === label)
+
+const viewerScroll = () => container.querySelector('.ev-scroll') as HTMLDivElement
+
+const viewerZoom = () => container.querySelector('.zoom-value')?.textContent
+
+const viewerHasMode = (mode: 'single' | 'paired') => container
+  .querySelector('.ev-document')
+  ?.classList.contains(mode)
+
+const configureFocusedFieldGeometry = () => {
+  const scroll = viewerScroll()
+  Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 1000 })
+  const page = container.querySelector('.document-page[data-page-index="0"]') as HTMLDivElement
+  vi.spyOn(page, 'getBoundingClientRect').mockReturnValue({
+    bottom: 1400,
+    height: 1400,
+    left: 0,
+    right: 920,
+    toJSON: () => ({}),
+    top: 0,
+    width: 920,
+    x: 0,
+    y: 0,
+  })
+}
+
 describe('FolderReview mounted Overview interactions', () => {
+  it('preserves manual Overview controls across tabs and resets the preset on re-entry', () => {
+    renderReview(emptyReview, multiPageFolder)
+
+    expect(viewerHasMode('paired')).toBe(true)
+    expect(container.querySelectorAll('.document-page-row')).toHaveLength(2)
+    expect(viewerZoom()).toBe('100%')
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled()
+
+    click(documentModeButton('1 trang')!)
+    click(container.querySelector('[aria-label="Phóng to"]')!)
+
+    expect(viewerHasMode('single')).toBe(true)
+    expect(container.querySelectorAll('.document-page-row')).toHaveLength(3)
+    expect(viewerZoom()).toBe('125%')
+
+    const scroll = viewerScroll()
+    scroll.scrollLeft = 300
+    scroll.scrollTop = 200
+    scrollToSpy.mockClear()
+    act(() => {
+      scroll.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true, clientX: 320, clientY: 240,
+      }))
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 260, clientY: 210 }))
+      window.dispatchEvent(new MouseEvent('mouseup'))
+    })
+    expect(scrollToSpy).toHaveBeenLastCalledWith({ left: 360, top: 230, behavior: 'instant' })
+
+    scroll.scrollLeft = 45
+    scroll.scrollTop = 60
+    scrollToSpy.mockClear()
+    const appendixTab = Array.from(container.querySelectorAll('.ev-tab'))
+      .find(button => button.textContent === 'Synthetic appendix')
+    click(appendixTab!)
+
+    expect(scrollToSpy).toHaveBeenLastCalledWith({ left: 0, top: 0, behavior: 'instant' })
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/appendix-1.svg')
+    expect(viewerHasMode('single')).toBe(true)
+    expect(viewerZoom()).toBe('125%')
+
+    press('ArrowDown')
+    click(container.querySelector('[aria-label="Phóng to"]')!)
+    expect(viewerZoom()).toBe('125%')
+    scroll.scrollLeft = 90
+    scroll.scrollTop = 120
+    scrollToSpy.mockClear()
+    press('ArrowUp')
+
+    expect(container.querySelector('[data-review-selection="overview"]')).not.toBeNull()
+    expect(viewerHasMode('paired')).toBe(true)
+    expect(container.querySelectorAll('.document-page-row')).toHaveLength(2)
+    expect(viewerZoom()).toBe('100%')
+    expect(scrollToSpy).toHaveBeenLastCalledWith({ left: 0, top: 0, behavior: 'instant' })
+  })
+
+  it('autofocuses and focus-scrolls an unlocked field but not Overview', () => {
+    renderReview(emptyReview, multiPageFolder)
+    configureFocusedFieldGeometry()
+
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled()
+    press('ArrowDown')
+
+    expect(container.querySelector('.document-focus-anchor')).not.toBeNull()
+    expect(viewerZoom()).toBe('200%')
+    expect(scrollIntoViewSpy).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+      inline: 'center',
+    })
+  })
+
+  it('does not autofocus or focus-scroll a locked field', () => {
+    renderReview(emptyReview, multiPageFolder)
+    click(container.querySelector('[aria-label="Khoá khung nhìn"]')!)
+    configureFocusedFieldGeometry()
+    scrollIntoViewSpy.mockClear()
+
+    press('ArrowDown')
+
+    expect(container.querySelector('.document-focus-anchor')).not.toBeNull()
+    expect(viewerZoom()).toBe('100%')
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled()
+  })
+
   it('opens on Overview without publishing a field review and guards field shortcuts', () => {
     const onReview = renderReview()
 
