@@ -192,6 +192,8 @@ def _decode_and_store(archive, records, issues, drawing_instances, output_dir):
         total_image_bytes += len(content)
         try:
             width, height = _image_size(content, extension)
+        except CccdWorkbookError:
+            raise
         except ValueError:
             issues.append(ExtractionIssue("unsupported-media", drawing_id))
             continue
@@ -258,7 +260,9 @@ def _png_size(content):
         raise ValueError("invalid png signature")
     offset = 8
     width = height = None
-    idat_chunks = []
+    expected_scanline_bytes = None
+    decoded_scanline_bytes = 0
+    decompressor = None
     while offset < len(content):
         if offset + 12 > len(content):
             raise ValueError("truncated png chunk")
@@ -280,15 +284,99 @@ def _png_size(content):
             height = int.from_bytes(data[4:8], "big")
             if width == 0 or height == 0:
                 raise ValueError("invalid png dimensions")
+            if width * height > MAX_PIXELS:
+                raise CccdWorkbookError("pixel-limit")
+            expected_scanline_bytes = _png_scanline_payload_size(
+                width, height, data[8], data[9], data[10], data[11], data[12]
+            )
+            decompressor = zlib.decompressobj()
         elif chunk_type == b"IDAT":
-            idat_chunks.append(data)
+            decoded_scanline_bytes = _decompress_png_idat(
+                decompressor, data, decoded_scanline_bytes, expected_scanline_bytes
+            )
         elif chunk_type == b"IEND":
-            if length != 0 or not idat_chunks or crc_end != len(content):
+            if (
+                length != 0
+                or decompressor is None
+                or not decompressor.eof
+                or decoded_scanline_bytes != expected_scanline_bytes
+                or crc_end != len(content)
+            ):
                 raise ValueError("invalid png termination")
-            zlib.decompress(b"".join(idat_chunks))
             return width, height
         offset = crc_end
     raise ValueError("missing png termination")
+
+
+def _png_scanline_payload_size(width, height, bit_depth, color_type, compression, image_filter, interlace):
+    channels_by_color_type = {
+        0: 1,
+        2: 3,
+        3: 1,
+        4: 2,
+        6: 4,
+    }
+    allowed_bit_depths = {
+        0: {1, 2, 4, 8, 16},
+        2: {8, 16},
+        3: {1, 2, 4, 8},
+        4: {8, 16},
+        6: {8, 16},
+    }
+    if (
+        color_type not in channels_by_color_type
+        or bit_depth not in allowed_bit_depths[color_type]
+        or compression != 0
+        or image_filter != 0
+        or interlace not in {0, 1}
+    ):
+        raise ValueError("invalid png header")
+    bits_per_pixel = channels_by_color_type[color_type] * bit_depth
+
+    def pass_size(pass_width, pass_height):
+        if pass_width <= 0 or pass_height <= 0:
+            return 0
+        row_bytes = (pass_width * bits_per_pixel + 7) // 8
+        return pass_height * (row_bytes + 1)
+
+    if interlace == 0:
+        return pass_size(width, height)
+
+    adam7 = (
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    )
+    return sum(
+        pass_size(
+            (width - start_x + step_x - 1) // step_x if width > start_x else 0,
+            (height - start_y + step_y - 1) // step_y if height > start_y else 0,
+        )
+        for start_x, start_y, step_x, step_y in adam7
+    )
+
+
+def _decompress_png_idat(decompressor, data, decoded_size, expected_size):
+    pending = data
+    while pending:
+        previous_pending_size = len(pending)
+        try:
+            output = decompressor.decompress(
+                pending, min(64 * 1024, expected_size - decoded_size + 1)
+            )
+        except zlib.error as error:
+            raise ValueError("invalid png compressed data") from error
+        decoded_size += len(output)
+        if decoded_size > expected_size or decompressor.unused_data:
+            raise ValueError("invalid png scanline payload")
+        pending = decompressor.unconsumed_tail
+        if pending and len(pending) == previous_pending_size and not output:
+            raise ValueError("invalid png compressed data")
+    return decoded_size
 
 
 def _jpeg_size(content):

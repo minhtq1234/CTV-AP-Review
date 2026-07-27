@@ -1,6 +1,8 @@
 import base64
 import os
+import struct
 import zipfile
+import zlib
 
 import pytest
 
@@ -19,6 +21,23 @@ def _png(_label):
 
 def _truncated_png():
     return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 8
+
+
+def _png_with_scanlines(scanlines):
+    def chunk(kind, content):
+        return (
+            struct.pack(">I", len(content))
+            + kind
+            + content
+            + struct.pack(">I", zlib.crc32(kind + content) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(scanlines))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _jpeg(_label):
@@ -136,6 +155,12 @@ def _malicious_or_invalid_xlsx(tmp_path, fixture):
     if fixture == "truncated-png":
         _write_synthetic_xlsx(book, [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _truncated_png())])])
         return book
+    if fixture == "png-excess-output":
+        _write_synthetic_xlsx(book, [("Cards", [(
+            "rId1", "xl/media/image1.png", (0, 0, 1, 1),
+            _png_with_scanlines(b"\x00\xff\xff\xff\xffunexpected"),
+        )])])
+        return book
 
     _write_synthetic_xlsx(book, [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _png("safe"))])])
     if fixture == "external-image-rel":
@@ -174,6 +199,7 @@ def _malicious_or_invalid_xlsx(tmp_path, fixture):
     ("path-traversal-rel", "invalid-target"),
     ("unsupported-gif", "unsupported-media"),
     ("truncated-png", "unsupported-media"),
+    ("png-excess-output", "unsupported-media"),
     ("malformed-drawing", "malformed-drawing"),
     ("malformed-anchor", "malformed-drawing"),
 ])
@@ -211,6 +237,19 @@ def test_drawing_ids_stay_unique_after_an_invalid_instance(tmp_path):
 
     assert [drawing.id for drawing in result.drawings] == ["drawing-0002", "drawing-0003"]
     assert len({drawing.stored_path for drawing in result.drawings}) == 2
+
+
+def test_png_with_the_expected_scanline_payload_is_accepted(tmp_path):
+    book = tmp_path / "valid-png.xlsx"
+    _write_synthetic_xlsx(book, [("Cards", [(
+        "rId1", "xl/media/image1.png", (0, 0, 1, 1),
+        _png_with_scanlines(b"\x00\xff\xff\xff\xff"),
+    )])])
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert [(drawing.width, drawing.height) for drawing in result.drawings] == [(1, 1)]
+    assert result.issues == []
 
 
 def _one_image_book(tmp_path, *, count=1):
