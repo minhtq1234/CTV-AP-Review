@@ -9,12 +9,16 @@ from cccd_workbook import CccdWorkbookError, extract_drawings
 
 
 _PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+8WvF1wAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="
 )
 
 
 def _png(_label):
     return _PNG
+
+
+def _truncated_png():
+    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 8
 
 
 def _jpeg(_label):
@@ -129,6 +133,9 @@ def _malicious_or_invalid_xlsx(tmp_path, fixture):
     if fixture == "unsupported-gif":
         _write_synthetic_xlsx(book, [("Cards", [("rId1", "xl/media/image1.gif", (0, 0, 1, 1), b"GIF89a")])])
         return book
+    if fixture == "truncated-png":
+        _write_synthetic_xlsx(book, [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _truncated_png())])])
+        return book
 
     _write_synthetic_xlsx(book, [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _png("safe"))])])
     if fixture == "external-image-rel":
@@ -166,6 +173,7 @@ def _malicious_or_invalid_xlsx(tmp_path, fixture):
     ("external-image-rel", "external-relationship"),
     ("path-traversal-rel", "invalid-target"),
     ("unsupported-gif", "unsupported-media"),
+    ("truncated-png", "unsupported-media"),
     ("malformed-drawing", "malformed-drawing"),
     ("malformed-anchor", "malformed-drawing"),
 ])
@@ -223,9 +231,36 @@ def test_workbook_limit_is_a_hard_failure(tmp_path, monkeypatch):
         extract_drawings(str(book), str(tmp_path / "out"))
 
 
+def test_default_limits_match_the_spike_ceilings():
+    assert cccd_workbook.MAX_WORKBOOK_BYTES == 100 * 1024 * 1024
+    assert cccd_workbook.MAX_DRAWINGS == 500
+    assert cccd_workbook.MAX_IMAGE_BYTES == 25 * 1024 * 1024
+    assert cccd_workbook.MAX_TOTAL_IMAGE_BYTES == 500 * 1024 * 1024
+    assert cccd_workbook.MAX_PIXELS == 40_000_000
+
+
 def test_drawing_count_limit_is_a_hard_failure(tmp_path, monkeypatch):
     book = _one_image_book(tmp_path, count=2)
     monkeypatch.setattr(cccd_workbook, "MAX_DRAWINGS", 1)
+
+    with pytest.raises(CccdWorkbookError, match="drawing-limit"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+def test_drawing_count_limit_stops_before_later_anchor_is_decoded(tmp_path, monkeypatch):
+    book = _one_image_book(tmp_path, count=2)
+    monkeypatch.setattr(cccd_workbook, "MAX_DRAWINGS", 1)
+    original = cccd_workbook._anchor_value
+    calls = 0
+
+    def reject_later_anchor(*args):
+        nonlocal calls
+        calls += 1
+        if calls > 4:
+            raise AssertionError("later anchor was decoded after drawing limit")
+        return original(*args)
+
+    monkeypatch.setattr(cccd_workbook, "_anchor_value", reject_later_anchor)
 
     with pytest.raises(CccdWorkbookError, match="drawing-limit"):
         extract_drawings(str(book), str(tmp_path / "out"))

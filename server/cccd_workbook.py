@@ -8,12 +8,13 @@ import posixpath
 from pathlib import PurePosixPath
 import zipfile
 from xml.etree import ElementTree as ET
+import zlib
 
 
-MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
-MAX_DRAWINGS = 100
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_TOTAL_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_WORKBOOK_BYTES = 100 * 1024 * 1024
+MAX_DRAWINGS = 500
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_TOTAL_IMAGE_BYTES = 500 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 
 
@@ -77,7 +78,11 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
             for drawing_part in _drawing_parts_for_sheet(archive, sheet_part):
                 try:
                     drawing_records, drawing_issues, instance_count = _drawing_records(
-                        archive, sheet_name, drawing_part, drawing_instances + 1
+                        archive,
+                        sheet_name,
+                        drawing_part,
+                        drawing_instances + 1,
+                        MAX_DRAWINGS - drawing_instances,
                     )
                 except ET.ParseError:
                     issues.append(ExtractionIssue("malformed-drawing", None))
@@ -113,44 +118,51 @@ def _drawing_parts_for_sheet(archive, sheet_part):
     return parts
 
 
-def _drawing_records(archive, sheet_name, drawing_part, next_id):
-    drawing = ET.fromstring(archive.read(drawing_part))
+def _drawing_records(archive, sheet_name, drawing_part, next_id, remaining_capacity):
     rels = _relationships(archive, drawing_part)
     records = []
     issues = []
-    for index, element in enumerate(drawing.findall(f".//{_DRAWING_NS}twoCellAnchor"), start=1):
-        drawing_id = f"drawing-{next_id + index - 1:04d}"
-        try:
-            anchor = Anchor(
-                sheet_name,
-                _anchor_value(element, "from", "row"),
-                _anchor_value(element, "from", "col"),
-                _anchor_value(element, "to", "row"),
-                _anchor_value(element, "to", "col"),
-            )
-        except (AttributeError, TypeError, ValueError):
-            issues.append(ExtractionIssue("malformed-drawing", drawing_id))
-            continue
-        blip = element.find(f".//{{http://schemas.openxmlformats.org/drawingml/2006/main}}blip")
-        if blip is None:
-            issues.append(ExtractionIssue("malformed-drawing", drawing_id))
-            continue
-        embed = blip.attrib.get(f"{_DOC_REL_NS}embed")
-        rel = rels.get(embed)
-        if not rel or rel["type"] != _IMAGE_REL_TYPE:
-            issues.append(ExtractionIssue("malformed-drawing", drawing_id))
-            continue
-        try:
-            media_part = _resolve_relationship_target(drawing_part, rel)
-        except CccdWorkbookError as error:
-            issues.append(ExtractionIssue(str(error), drawing_id))
-            continue
-        records.append((
-            drawing_id,
-            anchor,
-            media_part,
-        ))
-    return records, issues, len(drawing.findall(f".//{_DRAWING_NS}twoCellAnchor"))
+    instance_count = 0
+    with archive.open(drawing_part) as drawing_stream:
+        for _, element in ET.iterparse(drawing_stream, events=("end",)):
+            if element.tag != f"{_DRAWING_NS}twoCellAnchor":
+                continue
+            instance_count += 1
+            if instance_count > remaining_capacity:
+                raise CccdWorkbookError("drawing-limit")
+            drawing_id = f"drawing-{next_id + instance_count - 1:04d}"
+            try:
+                anchor = Anchor(
+                    sheet_name,
+                    _anchor_value(element, "from", "row"),
+                    _anchor_value(element, "from", "col"),
+                    _anchor_value(element, "to", "row"),
+                    _anchor_value(element, "to", "col"),
+                )
+            except (AttributeError, TypeError, ValueError):
+                issues.append(ExtractionIssue("malformed-drawing", drawing_id))
+                element.clear()
+                continue
+            blip = element.find(f".//{{http://schemas.openxmlformats.org/drawingml/2006/main}}blip")
+            if blip is None:
+                issues.append(ExtractionIssue("malformed-drawing", drawing_id))
+                element.clear()
+                continue
+            embed = blip.attrib.get(f"{_DOC_REL_NS}embed")
+            rel = rels.get(embed)
+            if not rel or rel["type"] != _IMAGE_REL_TYPE:
+                issues.append(ExtractionIssue("malformed-drawing", drawing_id))
+                element.clear()
+                continue
+            try:
+                media_part = _resolve_relationship_target(drawing_part, rel)
+            except CccdWorkbookError as error:
+                issues.append(ExtractionIssue(str(error), drawing_id))
+                element.clear()
+                continue
+            records.append((drawing_id, anchor, media_part))
+            element.clear()
+    return records, issues, instance_count
 
 
 def _anchor_value(element, side, value):
@@ -234,11 +246,49 @@ def _extension_for(media_part):
 
 
 def _image_size(content, extension):
-    if extension == "png" and len(content) >= 24 and content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return int.from_bytes(content[16:20], "big"), int.from_bytes(content[20:24], "big")
+    if extension == "png":
+        return _png_size(content)
     if extension == "jpg" and content.startswith(b"\xff\xd8"):
         return _jpeg_size(content)
     raise ValueError("unsupported image bytes")
+
+
+def _png_size(content):
+    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("invalid png signature")
+    offset = 8
+    width = height = None
+    idat_chunks = []
+    while offset < len(content):
+        if offset + 12 > len(content):
+            raise ValueError("truncated png chunk")
+        length = int.from_bytes(content[offset:offset + 4], "big")
+        chunk_type = content[offset + 4:offset + 8]
+        data_start = offset + 8
+        data_end = data_start + length
+        crc_end = data_end + 4
+        if crc_end > len(content):
+            raise ValueError("truncated png chunk")
+        data = content[data_start:data_end]
+        expected_crc = int.from_bytes(content[data_end:crc_end], "big")
+        if (zlib.crc32(chunk_type + data) & 0xFFFFFFFF) != expected_crc:
+            raise ValueError("invalid png crc")
+        if width is None:
+            if chunk_type != b"IHDR" or length != 13:
+                raise ValueError("missing png header")
+            width = int.from_bytes(data[0:4], "big")
+            height = int.from_bytes(data[4:8], "big")
+            if width == 0 or height == 0:
+                raise ValueError("invalid png dimensions")
+        elif chunk_type == b"IDAT":
+            idat_chunks.append(data)
+        elif chunk_type == b"IEND":
+            if length != 0 or not idat_chunks or crc_end != len(content):
+                raise ValueError("invalid png termination")
+            zlib.decompress(b"".join(idat_chunks))
+            return width, height
+        offset = crc_end
+    raise ValueError("missing png termination")
 
 
 def _jpeg_size(content):
