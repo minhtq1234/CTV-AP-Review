@@ -63,6 +63,28 @@ def test_ambiguous_neighbor_is_not_paired():
     assert "ambiguous-pair" in candidate.issues
 
 
+def test_zero_distance_alternatives_are_not_paired():
+    front = analyzed("f1", "front", anchor=(1, 0, 10, 1))
+    first_back = analyzed("b1", "back", anchor=(1, 0, 10, 1))
+    second_back = analyzed("b2", "back", anchor=(1, 0, 10, 1))
+
+    out = pair_drawings([second_back, front, first_back])
+
+    assert not any(candidate.front and candidate.back for candidate in out)
+    assert all("ambiguous-pair" in candidate.issues for candidate in out)
+
+
+def test_pairs_at_the_inclusive_twenty_percent_margin():
+    front = analyzed("f1", "front", anchor=(0, 0, 10, 2))
+    nearest_back = analyzed("b1", "back", anchor=(0, 2, 10, 4))
+    next_back = analyzed("b2", "back", anchor=(0, 3, 10, 9))
+
+    out = pair_drawings([next_back, front, nearest_back])
+
+    paired = next(candidate for candidate in out if candidate.front and candidate.front.drawing.id == "f1")
+    assert paired.back.drawing.id == "b1"
+
+
 def test_same_side_images_remain_separate():
     first = analyzed("f1", "front", anchor=(1, 0, 10, 1))
     second = analyzed("f2", "front", anchor=(1, 1, 10, 2))
@@ -110,6 +132,26 @@ def test_incomplete_and_unknown_images_are_preserved_for_manual_handling():
         ("card-b1", None, "b1", ("missing-front",)),
         ("card-f1", "f1", None, ("missing-back",)),
         ("card-u1", None, None, ("unknown-side",)),
+    ]
+
+
+def test_single_front_without_a_back_remains_unpaired():
+    front = analyzed("f1", "front", anchor=(1, 0, 10, 1))
+
+    out = pair_drawings([front])
+
+    assert [_ids(candidate) for candidate in out] == [
+        ("card-f1", "f1", None, ("missing-back",)),
+    ]
+
+
+def test_single_back_without_a_front_remains_unpaired():
+    back = analyzed("b1", "back", anchor=(1, 1, 10, 2))
+
+    out = pair_drawings([back])
+
+    assert [_ids(candidate) for candidate in out] == [
+        ("card-b1", None, "b1", ("missing-front",)),
     ]
 
 

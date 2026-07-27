@@ -133,4 +133,4 @@ def _anchor_center_distance(first: Anchor, second: Anchor) -> float:
 
 
 def _has_margin(best: float, alternatives: list[float]) -> bool:
-    return not alternatives or best <= min(alternatives) * 0.8
+    return not alternatives or (best > 0 and best <= min(alternatives) * 0.8)
