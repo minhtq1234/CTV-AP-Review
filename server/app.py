@@ -77,7 +77,8 @@ def _review_field_count(cid: str, index: int) -> int:
     )
     try:
         with open(path, "r", encoding="utf-8") as f:
-            fields = json.load(f).get("fields")
+            manifest = json.load(f)
+        fields = manifest.get("fields") if isinstance(manifest, dict) else None
         return len(fields) if isinstance(fields, list) else 0
     except (OSError, ValueError, TypeError):
         return 0

@@ -51,7 +51,7 @@ by running the real file through the server (below).
 
 ```bash
 cd server
-python3 -m uvicorn app:app --host 127.0.0.1 --port 8000
+python3 -m uvicorn app:app --host 127.0.0.1 --port 8001
 ```
 
 Binds `127.0.0.1` only — this is a local, single-user tool, not a hosted

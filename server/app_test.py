@@ -76,6 +76,17 @@ def test_case_response_uses_zero_field_count_when_manifest_is_missing(
     detail = c.get(f"/api/cases/{cid}").json()
     assert detail["packets"][0]["reviewFieldCount"] == 0
 
+def test_case_response_uses_zero_field_count_for_non_object_manifest(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    packet_dir = tmp_path / cid / "packets" / "0"
+    packet_dir.mkdir(parents=True)
+    (packet_dir / "manifest.json").write_text("[]", encoding="utf-8")
+
+    detail = c.get(f"/api/cases/{cid}")
+    assert detail.status_code == 200
+    assert detail.json()["packets"][0]["reviewFieldCount"] == 0
+
 def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
 
