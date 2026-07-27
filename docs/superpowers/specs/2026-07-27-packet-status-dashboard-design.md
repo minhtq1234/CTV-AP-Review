@@ -1,6 +1,6 @@
 # CTV v1 Packet-Status Dashboard Design
 
-**Date:** 2026-07-27  
+**Date:** 2026-07-27
 **Status:** Approved for implementation
 
 ## Goal
