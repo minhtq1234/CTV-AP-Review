@@ -20,11 +20,22 @@ fixture now reads the required environment variable immediately after stdlib
 imports, before Pillow or any application module. The new test passes and the
 fixture still imports with an explicit disposable root.
 
+### Fix round 2 — live CCCD progress label
+
+Controller browser verification found that `CaseList` preferred generic packet
+progress whenever a live stage had a nonzero total. A CCCD callback of
+`{stage: "cccd", done: 1, total: 1, detail: ""}` therefore rendered `gói 1/1`
+instead of the required `Đọc và ghép ảnh CCCD…`. Scope expands to
+`CaseList.tsx` and `CaseList.test.ts` because this is an acceptance defect in
+the completed upload slice. The focused static rendering regression failed
+first, then passed after `cccd` was made an explicit stage-label exception;
+OCR retains `gói n/N · detail` rendering.
+
 ## Verification
 
 - Backend: `cd server && python3 -m pytest -q` — 295 passed, 6 existing
   dependency/runtime warnings.
-- Frontend: `npx vitest run` — 12 files, 70 tests passed.
+- Frontend: `npx vitest run` — 13 files, 72 tests passed.
 - Production build: `npm run build` — passed.
 - Focused pipeline suite: `cd server && python3 -m pytest pipeline_test.py -q`
   — 15 passed.

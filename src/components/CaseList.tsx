@@ -59,7 +59,9 @@ export default function CaseList({ cases, live, onOpen, onNew, onDelete }: Props
                       <div className="mini-bar-fill" style={{ width: `${lp ? progressPct(lp) : 0}%` }} />
                     </div>
                     <span className="case-row-live-text">
-                      {lp && lp.total
+                      {lp?.stage === 'cccd'
+                        ? stageLabel('cccd')
+                        : lp && lp.total
                         ? `gói ${lp.done}/${lp.total}${lp.detail ? ' · ' + lp.detail : ''}`
                         : stageLabel(lp?.stage ?? 'queued')}
                     </span>
