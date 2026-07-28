@@ -9,6 +9,7 @@
     "build:single": "vite build --config vite.config.export.ts && node scripts/build-single.mjs",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:presentation": "node --test scripts/presentation.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
