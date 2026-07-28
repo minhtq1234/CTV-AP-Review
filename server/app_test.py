@@ -1,5 +1,11 @@
 from fastapi.testclient import TestClient
+import io
 import json
+import os
+import time
+
+import openpyxl
+
 import app as appmod
 from app import app, rewrite_manifest_urls
 
@@ -15,11 +21,36 @@ def test_page_endpoint_rejects_traversal():
     c = TestClient(app)
     assert c.get("/api/cases/nope/packets/0/page/..%2f..%2fetc%2fpasswd").status_code in (400, 404)
 
-def _fake_pipeline(pdf, roster, out_dir, cb):
+
+def test_page_endpoint_serves_attached_jpeg(tmp_path, monkeypatch):
+    client, cid = _ready_case(monkeypatch, tmp_path)
+    packet_dir = tmp_path / cid / "packets" / "0"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    (packet_dir / "cccd-front.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    response = client.get(
+        f"/api/cases/{cid}/packets/0/page/cccd-front.jpg",
+    )
+
+    assert response.status_code == 200
+
+def _fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
     cb("done", 1, 1, "")
     return {"summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
             "packets": [{"index": 0, "name": "P0", "pages": [8, 15],
-                         "confidence": "green", "flags": [], "labels": []}]}
+                         "confidence": "green", "flags": [], "labels": []}],
+            "cccdWorkbook": None}
+
+
+def _roster_bytes():
+    content = io.BytesIO()
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(["Họ và tên", "Số CCCD"])
+    worksheet.append(["Synthetic A", "000000000001"])
+    workbook.save(content)
+    workbook.close()
+    return content.getvalue()
 
 def _ready_case(monkeypatch, tmp_path):
     """Mirror the app's real flow: monkeypatch the pipeline to a fake that
@@ -159,6 +190,125 @@ def test_report_404_before_generation(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get(f"/api/cases/{cid}/report.md").status_code == 404
     assert c.get(f"/api/cases/{cid}/report.csv").status_code == 404
+
+
+def test_cccd_without_roster_returns_422_and_creates_no_case(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "cccd": (
+                "cards.xlsx",
+                b"synthetic-not-read",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "cccd-requires-roster"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_cccd_extension_is_rejected_before_case_creation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "roster": (
+                "roster.xlsx",
+                _roster_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            "cccd": ("cards.xls", b"synthetic", "application/octet-stream"),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-cccd-workbook"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_valid_cccd_upload_is_saved_passed_to_pipeline_and_redacted(
+    tmp_path,
+    monkeypatch,
+):
+    seen = {}
+    workbook = {
+        "status": "ready",
+        "summary": {"candidates": 3, "attached": 2, "unresolved": 1},
+        "mappings": [{
+            "candidateId": "card-private",
+            "ocrIdentity": {"cccd": "000000000001"},
+        }],
+    }
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["cccd"] = cccd_xlsx_path
+        seen["cccd_exists"] = os.path.isfile(cccd_xlsx_path)
+        cb("done", 1, 1, "")
+        return {
+            "summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
+            "packets": [{
+                "index": 0,
+                "name": "P0",
+                "pages": [0, 1],
+                "confidence": "green",
+                "flags": [],
+                "labels": [],
+            }],
+            "cccdWorkbook": workbook,
+        }
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    client = TestClient(app)
+    response = client.post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "roster": (
+                "roster.xlsx",
+                _roster_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            "cccd": (
+                "cards.xlsx",
+                b"synthetic-workbook",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+    assert response.status_code == 200
+    cid = response.json()["case_id"]
+    for _ in range(100):
+        detail = client.get(f"/api/cases/{cid}").json()
+        if detail["status"] != "processing":
+            break
+        time.sleep(.02)
+
+    assert detail["status"] == "ready"
+    assert seen["cccd_exists"] is True
+    assert seen["cccd"].endswith("/cccd.xlsx")
+    assert detail["cccdName"] == "cards.xlsx"
+    assert detail["cccdSummary"] == {
+        "status": "ready",
+        "candidates": 3,
+        "attached": 2,
+        "unresolved": 1,
+    }
+    assert "cccdWorkbook" not in detail
+    assert "card-private" not in json.dumps(detail)
 
 if __name__ == "__main__":
     # minimal manual runner (monkeypatch/tmp_path tests need pytest; run those with: python3 -m pytest server/app_test.py)

@@ -22,13 +22,16 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 from typing import Literal
 import threading
 
-from cases import CaseStore, progress_of
+from cases import CaseStore, compact_cccd_summary, progress_of
+from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
 from report import build_report
+from roster_workbook import preflight_roster_workbook
 
 app = FastAPI()
 
@@ -54,7 +57,7 @@ store = CaseStore(os.path.join(os.path.dirname(__file__), "data", "cases"))
 # and only meaningful for the in-flight run); keyed by case id.
 _progress: dict[str, dict] = {}
 
-_PAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.png$")
+_PAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.(?:png|jpe?g)$")
 
 
 def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
@@ -91,15 +94,82 @@ def _packet_for_response(cid: str, packet: dict) -> dict:
     }
 
 
-def _run_case(cid: str, pdf_path: str, roster_path: str | None) -> None:
+def _upload_size(upload: UploadFile) -> int:
+    upload.file.seek(0, os.SEEK_END)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    return size
+
+
+def _is_valid_roster(upload: UploadFile) -> bool:
+    if not (upload.filename or "").casefold().endswith(".xlsx"):
+        return False
+    try:
+        upload.file.seek(0)
+        preflight_roster_workbook(upload.file)
+        return True
+    except Exception:
+        return False
+    finally:
+        upload.file.seek(0)
+
+
+async def _validate_uploads(
+    roster: UploadFile | None,
+    cccd: UploadFile | None,
+) -> None:
+    if cccd is not None and roster is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "cccd-requires-roster"},
+        )
+    if roster is not None and not await run_in_threadpool(
+        _is_valid_roster,
+        roster,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-roster-workbook"},
+        )
+    if cccd is None:
+        return
+    if not (cccd.filename or "").casefold().endswith(".xlsx"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-cccd-workbook"},
+        )
+    if _upload_size(cccd) > MAX_CCCD_WORKBOOK_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "cccd-workbook-too-large"},
+        )
+
+
+def _run_case(
+    cid: str,
+    pdf_path: str,
+    roster_path: str | None,
+    cccd_path: str | None = None,
+) -> None:
     case_dir = store.case_dir(cid)
 
     def cb(stage: str, done: int, total: int, detail: str) -> None:
         _progress[cid] = {"stage": stage, "done": done, "total": total, "detail": detail}
 
     try:
-        result = run_pipeline(pdf_path, roster_path, case_dir, cb)
-        store.set_result(cid, summary=result.get("summary"), packets=result.get("packets", []))
+        result = run_pipeline(
+            pdf_path,
+            roster_path,
+            case_dir,
+            cb,
+            cccd_xlsx_path=cccd_path,
+        )
+        store.set_result(
+            cid,
+            summary=result.get("summary"),
+            packets=result.get("packets", []),
+            cccd_workbook=result.get("cccdWorkbook"),
+        )
     except Exception as e:  # noqa: BLE001 - surfaced to the caller via case["error"]
         store.set_error(cid, str(e))
     finally:
@@ -107,10 +177,16 @@ def _run_case(cid: str, pdf_path: str, roster_path: str | None) -> None:
 
 
 @app.post("/api/cases")
-async def post_case(pdf: UploadFile = File(...), roster: UploadFile | None = File(None)):
+async def post_case(
+    pdf: UploadFile = File(...),
+    roster: UploadFile | None = File(None),
+    cccd: UploadFile | None = File(None),
+):
+    await _validate_uploads(roster, cccd)
     now = datetime.now(timezone.utc).isoformat()
     cid = store.create(name=pdf.filename or "case", pdf_name=pdf.filename or "input.pdf",
-                        roster_name=roster.filename if roster is not None else None, now=now)
+                        roster_name=roster.filename if roster is not None else None, now=now,
+                        cccd_name=cccd.filename if cccd is not None else None)
     case_dir = store.case_dir(cid)
 
     pdf_path = os.path.join(case_dir, "input.pdf")
@@ -123,7 +199,17 @@ async def post_case(pdf: UploadFile = File(...), roster: UploadFile | None = Fil
         with open(roster_path, "wb") as f:
             shutil.copyfileobj(roster.file, f)
 
-    t = threading.Thread(target=_run_case, args=(cid, pdf_path, roster_path), daemon=True)
+    cccd_path = None
+    if cccd is not None:
+        cccd_path = os.path.join(case_dir, "cccd.xlsx")
+        with open(cccd_path, "wb") as f:
+            shutil.copyfileobj(cccd.file, f)
+
+    t = threading.Thread(
+        target=_run_case,
+        args=(cid, pdf_path, roster_path, cccd_path),
+        daemon=True,
+    )
     t.start()
     return {"case_id": cid}
 
@@ -139,6 +225,10 @@ async def get_case(cid: str):
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
     out = dict(case)
+    out.pop("cccdWorkbook", None)
+    out["cccdSummary"] = compact_cccd_summary(
+        case.get("cccdWorkbook"),
+    )
     out["packets"] = [
         _packet_for_response(cid, packet) for packet in case["packets"]
     ]
