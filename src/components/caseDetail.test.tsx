@@ -3,7 +3,8 @@ import type { ReactElement, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { PacketMeta, PacketReview } from '../upload/api'
-import {
+import type { CaseDetail as CaseDetailT } from '../upload/api'
+import CaseDetail, {
   PacketCard,
   PacketDashboardView,
   type PacketDashboardViewProps,
@@ -224,5 +225,47 @@ describe('packet dashboard presentation', () => {
     expect(after).toContain('Đã xong</span><span class="packet-filter-count">1')
     expect(after).not.toContain('Synthetic Unseen')
     expect(after).toContain('Không có gói hồ sơ ở trạng thái này.')
+  })
+})
+
+describe('CCCD aggregate summary', () => {
+  it('renders aggregate counts without changing v1 dashboard controls', () => {
+    const detail: CaseDetailT = {
+      id: 'synthetic-case',
+      name: 'Synthetic Case',
+      createdAt: null,
+      status: 'ready',
+      pdfName: 'packet.pdf',
+      rosterName: 'roster.xlsx',
+      cccdName: 'cards.xlsx',
+      cccdSummary: {
+        status: 'ready',
+        candidates: 3,
+        attached: 2,
+        unresolved: 1,
+      },
+      summary: {
+        found: packets.length,
+        roster_n: packets.length,
+        matched: packets.length,
+        auto_merged: 0,
+      },
+      error: null,
+      packets,
+      progress: { done: 1, total: packets.length, flagged: 2 },
+    }
+
+    const html = renderToStaticMarkup(
+      <CaseDetail
+        detail={detail}
+        onOpenPacket={() => undefined}
+        onBack={() => undefined}
+        onExport={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('CCCD: 2 đã gắn · 1 chưa ghép')
+    expect(html).toContain('Cần chú ý trước')
+    expect(html).toContain('Xuất báo cáo gửi lại')
   })
 })

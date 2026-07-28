@@ -98,6 +98,14 @@ export interface CaseSummary {
   progress: CaseProgress
 }
 
+export interface CccdSummary {
+  status: 'ready' | 'partial' | 'error'
+  candidates: number
+  attached: number
+  unresolved: number
+  errorCode?: string
+}
+
 export interface CaseDetail {
   id: string
   name: string
@@ -105,6 +113,8 @@ export interface CaseDetail {
   status: CaseState
   pdfName: string
   rosterName: string | null
+  cccdName: string | null
+  cccdSummary: CccdSummary | null
   summary: CaseResultSummary | null
   error: string | null
   packets: PacketMeta[]
@@ -117,6 +127,7 @@ const STAGE_LABELS: Record<string, string> = {
   queued: 'Đang chờ…',
   splitting: 'Tách trang & phát hiện bìa, đối chiếu bảng kê…',
   ocr: 'Đọc dữ liệu từng hồ sơ (OCR)…',
+  cccd: 'Đọc và ghép ảnh CCCD…',
   done: 'Hoàn tất',
   error: 'Lỗi',
 }
@@ -163,10 +174,15 @@ export async function getCase(caseId: string): Promise<CaseDetail> {
   }
 }
 
-export async function createCase(pdf: File, roster?: File): Promise<{ case_id: string }> {
+export async function createCase(
+  pdf: File,
+  roster?: File,
+  cccd?: File,
+): Promise<{ case_id: string }> {
   const form = new FormData()
   form.append('pdf', pdf)
   if (roster) form.append('roster', roster)
+  if (cccd) form.append('cccd', cccd)
   const res = await fetch(`${API_BASE}/api/cases`, { method: 'POST', body: form })
   if (!res.ok) throw new Error(`createCase: HTTP ${res.status}`)
   return res.json()

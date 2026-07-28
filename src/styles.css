@@ -139,6 +139,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .dropzone-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
 .dropzone-icon { font-size: 22px; }
 .dropzone-label { font-size: 13px; color: var(--text-muted); }
+.upload-helper { font-size: 11px; line-height: 1.4; color: var(--text-muted); text-align: center; }
+.upload-file-clear { align-self: flex-end; border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; margin: -4px 0 4px; }
+.upload-validation { margin: 0 0 8px; color: var(--danger); font-size: 12px; }
 .upload-start { width: 100%; margin-top: 6px; padding: 10px 16px; font-size: 14px; }
 .upload-start:disabled { opacity: 0.4; cursor: default; }
 .upload-error { color: var(--danger); font-size: 13px; margin: 0 0 16px; }
@@ -285,6 +288,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .flag-note { font-size: 12px; padding: 4px 8px; border: 0.5px solid var(--border); border-radius: 6px; }
 
 .case-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 16px; }
+.cccd-summary { margin: 8px 0; color: var(--text-muted); font-size: 13px; }
+.cccd-summary.partial { color: #9a6700; }
+.cccd-summary.error { color: var(--danger); }
 .card-match { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
 .card-match.warn { background: #fef7e0; color: #b06000; }
 .card-match.bad { background: #fce8e6; color: #c5221f; }

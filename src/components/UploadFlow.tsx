@@ -120,10 +120,10 @@ export default function UploadFlow() {
 
   const onNew = () => { setErr(null); setScreen('upload') }
 
-  const onStart = async (pdf: File, roster?: File) => {
+  const onStart = async (pdf: File, roster?: File, cccd?: File) => {
     setErr(null); setBusy(true)
     try {
-      const { case_id } = await createCase(pdf, roster)
+      const { case_id } = await createCase(pdf, roster, cccd)
       setCaseId(case_id)
       setScreen('list')     // straight back to the list; the new case processes inline
       refreshList()

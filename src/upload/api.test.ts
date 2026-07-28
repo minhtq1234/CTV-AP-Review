@@ -8,6 +8,7 @@ import {
   normalizePacketReview,
   reportUrls,
   API_BASE,
+  createCase,
   getCase,
 } from './api'
 
@@ -20,6 +21,7 @@ describe('upload api helpers', () => {
     expect(stageLabel('splitting')).toMatch(/tách|phát hiện|đối chiếu/i)
     expect(stageLabel('ocr')).toMatch(/đọc|trích|OCR/i)
     expect(stageLabel('done')).toMatch(/hoàn tất|xong/i)
+    expect(stageLabel('cccd')).toBe('Đọc và ghép ảnh CCCD…')
   })
   it('computes percent, clamped, 0 when total is 0', () => {
     expect(progressPct({ stage: 'ocr', done: 8, total: 32, detail: '' })).toBe(25)
@@ -31,6 +33,25 @@ describe('upload api helpers', () => {
     const out = withAbsolutePageSrc(m, 'http://127.0.0.1:8000')
     expect(out.docs[0].pages[0].src).toBe('http://127.0.0.1:8000/api/jobs/J/packets/0/page/pg0.png')
   })
+})
+
+test('createCase appends optional CCCD and preserves legacy multipart shape', async () => {
+  const bodies: FormData[] = []
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    bodies.push(init?.body as FormData)
+    return new Response(JSON.stringify({ case_id: 'synthetic-case' }), {
+      status: 200,
+    })
+  }))
+  const pdf = new File(['pdf'], 'packet.pdf', { type: 'application/pdf' })
+  const roster = new File(['roster'], 'roster.xlsx')
+  const cccd = new File(['cards'], 'cards.xlsx')
+
+  await createCase(pdf, roster, cccd)
+  await createCase(pdf, roster)
+
+  expect((bodies[0].get('cccd') as File).name).toBe('cards.xlsx')
+  expect(bodies[1].has('cccd')).toBe(false)
 })
 
 describe('case helpers', () => {
