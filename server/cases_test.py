@@ -208,6 +208,13 @@ def test_compact_cccd_summary_redacts_mapping_and_identity():
     assert "cccd" not in json.dumps(summary).casefold()
 
 
+def test_compact_cccd_summary_replaces_unknown_error_code_with_safe_fallback():
+    workbook = _cccd_workbook()
+    workbook["errorCode"] = "private OCR failure for Synthetic A"
+
+    assert compact_cccd_summary(workbook)["errorCode"] == "invalid-workbook"
+
+
 def test_legacy_case_normalizes_missing_cccd_properties(tmp_path):
     _write_raw_case(str(tmp_path), "legacy-cccd", status="ready")
     case = CaseStore(str(tmp_path)).get("legacy-cccd")

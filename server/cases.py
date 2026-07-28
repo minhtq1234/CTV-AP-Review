@@ -18,6 +18,15 @@ import shutil
 import uuid
 
 
+SAFE_CCCD_ERROR_CODES = (
+    "invalid-workbook",
+    "no-supported-images",
+    "extraction-incomplete",
+    "ocr-unavailable",
+    "attachment-failed",
+)
+
+
 def needs_resubmit(packet: dict) -> bool:
     """A packet needs resubmission if any checklist item is flagged, or its
     roster match is weak (matched by name only, or unmatched)."""
@@ -65,8 +74,11 @@ def compact_cccd_summary(workbook: dict | None) -> dict | None:
         "attached": int(counts.get("attached", 0)),
         "unresolved": int(counts.get("unresolved", 0)),
     }
-    if workbook.get("errorCode"):
-        out["errorCode"] = workbook["errorCode"]
+    error_code = workbook.get("errorCode")
+    if error_code:
+        out["errorCode"] = (
+            error_code if error_code in SAFE_CCCD_ERROR_CODES else "invalid-workbook"
+        )
     return out
 
 
