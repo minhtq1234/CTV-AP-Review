@@ -186,6 +186,66 @@ def test_packet_meta_no_roster_is_no_roster_with_null_identity(tmp_path, monkeyp
         assert set(p["ocrIdentity"]) == {"cccd", "name"}
 
 
+def test_cccd_ingest_runs_after_packet_manifests_and_returns_workbook(
+    tmp_path,
+    monkeypatch,
+):
+    _install_fake_detection(monkeypatch)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
+    seen = {}
+    workbook = {
+        "status": "ready",
+        "summary": {"candidates": 1, "attached": 1, "unresolved": 0},
+        "mappings": [],
+    }
+
+    def fake_ingest(
+        xlsx_path,
+        roster_rows,
+        packets,
+        case_dir,
+        manifest_paths,
+        assets_dir,
+        progress_cb,
+    ):
+        seen["xlsx_path"] = xlsx_path
+        seen["roster_rows"] = roster_rows
+        seen["manifest_paths"] = manifest_paths
+        seen["manifests_exist"] = all(
+            os.path.isfile(path) for path in manifest_paths.values()
+        )
+        return {"packets": packets, "cccdWorkbook": workbook}
+
+    monkeypatch.setattr(pl, "ingest_cccd_workbook", fake_ingest)
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        "roster.xlsx",
+        str(tmp_path),
+        lambda *args: None,
+        cccd_xlsx_path="cards.xlsx",
+    )
+
+    assert result["cccdWorkbook"] == workbook
+    assert seen["xlsx_path"] == "cards.xlsx"
+    assert seen["roster_rows"][0]["cccd"] == "048091001309"
+    assert seen["manifests_exist"] is True
+    assert set(seen["manifest_paths"]) == {0, 1}
+
+
+def test_legacy_pipeline_call_returns_null_cccd_workbook(tmp_path, monkeypatch):
+    _install_fake_detection(monkeypatch)
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        None,
+        str(tmp_path),
+        lambda *args: None,
+    )
+
+    assert result["cccdWorkbook"] is None
+
+
 if __name__ == "__main__":
     import inspect
     for n, f in sorted(globals().items()):
