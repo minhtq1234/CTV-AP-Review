@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,27 @@ else:
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parent,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_smoke_cccd_delay_spans_two_polling_intervals(tmp_path):
+    script = """
+import cccd_smoke_app
+
+assert cccd_smoke_app.SMOKE_CCCD_DELAY_SECONDS == 3.2
+"""
+    env = {
+        **os.environ,
+        "CTV_CCCD_SMOKE_ROOT": str(tmp_path / "smoke-root"),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parent,
+        env=env,
         capture_output=True,
         text=True,
     )

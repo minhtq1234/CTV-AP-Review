@@ -31,9 +31,17 @@ the completed upload slice. The focused static rendering regression failed
 first, then passed after `cccd` was made an explicit stage-label exception;
 OCR retains `gói n/N · detail` rendering.
 
+### Fix round 3 — deterministic smoke timing
+
+Controller smoke verification showed the fixture's former 1.8-second CCCD
+pause could complete between the UI's 1.5-second polls. The disposable fixture
+now exports `SMOKE_CCCD_DELAY_SECONDS = 3.2` and uses it only for its synthetic
+CCCD callback pause. A subprocess fixture test pins that constant; no
+production delay or pipeline timing changed.
+
 ## Verification
 
-- Backend: `cd server && python3 -m pytest -q` — 295 passed, 6 existing
+- Backend: `cd server && python3 -m pytest -q` — 296 passed, 6 existing
   dependency/runtime warnings.
 - Frontend: `npx vitest run` — 13 files, 72 tests passed.
 - Production build: `npm run build` — passed.

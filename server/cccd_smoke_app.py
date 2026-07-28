@@ -7,6 +7,7 @@ import time
 
 
 ROOT = os.environ["CTV_CCCD_SMOKE_ROOT"]
+SMOKE_CCCD_DELAY_SECONDS = 3.2
 
 from PIL import Image
 
@@ -107,7 +108,7 @@ def _fake_pipeline(
 
     if cccd_xlsx_path:
         progress_cb("cccd", 1, 1, "")
-        time.sleep(1.8)
+        time.sleep(SMOKE_CCCD_DELAY_SECONDS)
         workbook = {
             "status": "ready",
             "summary": {"candidates": 1, "attached": 1, "unresolved": 0},
