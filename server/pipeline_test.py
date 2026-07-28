@@ -6,18 +6,18 @@ from pipeline import digits, match_roster, fill_expected, all_roster_rows, build
 
 
 def test_digits_strips_spaces_and_punct():
-    assert digits("048 091 001 309") == "048091001309"
-    assert digits("048-091-001.309") == "048091001309"
+    assert digits("000 000 000 001") == "000000000001"
+    assert digits("000-000-000.001") == "000000000001"
     assert digits(None) == ""
     assert digits("") == ""
 
 
 def test_match_roster_exact_cccd_hit():
-    by_cccd = {"048091001309": {"name": "Nguyễn Văn A", "cccd": "048091001309"}}
+    by_cccd = {"000000000001": {"name": "Synthetic Ánh", "cccd": "000000000001"}}
     by_name = {}
-    row, how = match_roster("048091001309", "Bất kỳ tên gì", by_cccd, by_name)
+    row, how = match_roster("000000000001", "Synthetic Ignored", by_cccd, by_name)
     assert how == "cccd"
-    assert row["name"] == "Nguyễn Văn A"
+    assert row["name"] == "Synthetic Ánh"
 
 
 def test_match_roster_cccd_miss_falls_back_to_name():
@@ -26,25 +26,25 @@ def test_match_roster_cccd_miss_falls_back_to_name():
     # the roster row by name -- so the packet still aligns to the right row
     # (and its cccd field will then correctly show a mismatch against the
     # roster's typo'd value).
-    by_cccd = {"048091001399": {"name": "Nguyễn Văn A", "cccd": "048091001399"}}
-    by_name = {"nguyen van a": {"name": "Nguyễn Văn A", "cccd": "048091001399"}}
-    row, how = match_roster("048091001309", "Nguyễn Văn A", by_cccd, by_name)
+    by_cccd = {"000000000009": {"name": "Synthetic Ánh", "cccd": "000000000009"}}
+    by_name = {"synthetic anh": {"name": "Synthetic Ánh", "cccd": "000000000009"}}
+    row, how = match_roster("000000000001", "Synthetic Ánh", by_cccd, by_name)
     assert how == "name"
-    assert row["cccd"] == "048091001399"  # the roster's (typo'd) value, unchanged
+    assert row["cccd"] == "000000000009"  # the roster's synthetic typo, unchanged
 
 
 def test_match_roster_no_hit_is_unmatched():
-    row, how = match_roster("000000000000", "Không Ai Cả", {}, {})
+    row, how = match_roster("000000000099", "Synthetic Unknown", {}, {})
     assert row is None
     assert how == "unmatched"
 
 
 def test_match_roster_name_match_is_accent_insensitive():
     by_cccd = {}
-    by_name = {"nguyen van a": {"name": "Nguyễn Văn A", "cccd": "048091001309"}}
-    row, how = match_roster("", "NGUYEN VAN A", by_cccd, by_name)
+    by_name = {"synthetic anh": {"name": "Synthetic Ánh", "cccd": "000000000001"}}
+    row, how = match_roster("", "SYNTHETIC ANH", by_cccd, by_name)
     assert how == "name"
-    assert row["cccd"] == "048091001309"
+    assert row["cccd"] == "000000000001"
 
 
 def test_fill_expected_maps_field_keys_to_roster_row():
@@ -53,12 +53,12 @@ def test_fill_expected_maps_field_keys_to_roster_row():
         {"key": "cccd", "expected": "", "sources": []},
         {"key": "mst", "expected": "", "sources": []},
     ]
-    row = {"name": "Nguyễn Văn A", "cccd": "048091001309", "mst": "048091001309"}
+    row = {"name": "Synthetic Ánh", "cccd": "000000000001", "mst": "000000000001"}
     filled = fill_expected(fields, row)
     by_key = {f["key"]: f for f in filled}
-    assert by_key["hoten"]["expected"] == "Nguyễn Văn A"
-    assert by_key["cccd"]["expected"] == "048091001309"
-    assert by_key["mst"]["expected"] == "048091001309"
+    assert by_key["hoten"]["expected"] == "Synthetic Ánh"
+    assert by_key["cccd"]["expected"] == "000000000001"
+    assert by_key["mst"]["expected"] == "000000000001"
 
 
 def test_fill_expected_with_no_row_is_all_empty():
@@ -70,31 +70,31 @@ def test_fill_expected_with_no_row_is_all_empty():
 def test_all_roster_rows_reads_header_and_data():
     rows = [
         ["BẢNG KÊ THANH TOÁN CTV"],
-        ["Sản phẩm:", "Foo"],
+        ["Sản phẩm:", "Synthetic Product"],
         ["Họ và tên", "Số CCCD", "MST", "Ngày tháng năm sinh", "Số TK", "Phí dịch vụ", "Note"],
         [None, None, None, None, None, "Gross", None],  # merged sub-header row
-        ["Nguyễn Văn A", "048091001309", "048091001309", "24/04/1991", "19001234567", "10.000.000", "Danh Tướng 3Q - 381"],
-        ["Trần Thị B", "079123456789", "079123456789", "01/01/1990", "19007654321", "8.000.000", "Liên Quân - 220"],
+        ["Synthetic Ánh", "000000000001", "000000000001", "SYNTHETIC-DOB-A", "000000000001", "SYNTHETIC-FEE-A", "Synthetic Product A - 001"],
+        ["Synthetic Bình", "000000000002", "000000000002", "SYNTHETIC-DOB-B", "000000000002", "SYNTHETIC-FEE-B", "Synthetic Product B - 002"],
         [None, None, None, None, None, None, None],
     ]
     out = all_roster_rows(rows)
     assert len(out) == 2
-    assert out[0]["name"] == "Nguyễn Văn A"
-    assert out[0]["cccd"] == "048091001309"
-    assert out[0]["product"] == "Danh Tướng 3Q"
-    assert out[1]["name"] == "Trần Thị B"
-    assert out[1]["product"] == "Liên Quân"
+    assert out[0]["name"] == "Synthetic Ánh"
+    assert out[0]["cccd"] == "000000000001"
+    assert out[0]["product"] == "Synthetic Product A"
+    assert out[1]["name"] == "Synthetic Bình"
+    assert out[1]["product"] == "Synthetic Product B"
 
 
 def test_build_roster_index_keys_by_digits_and_norm_name():
     rows = [
         ["Họ và tên", "Số CCCD", "MST", "Ngày tháng năm sinh", "Số TK", "Phí dịch vụ", "Note"],
-        ["Nguyễn Văn A", "048 091 001 309", "048091001309", "24/04/1991", "19001234567", "10.000.000", ""],
+        ["Synthetic Ánh", "000 000 000 001", "000000000001", "SYNTHETIC-DOB-A", "000000000001", "SYNTHETIC-FEE-A", ""],
     ]
     by_cccd, by_name = build_roster_index(rows)
-    assert "048091001309" in by_cccd
-    assert by_cccd["048091001309"]["name"] == "Nguyễn Văn A"
-    assert "nguyen van a" in by_name
+    assert "000000000001" in by_cccd
+    assert by_cccd["000000000001"]["name"] == "Synthetic Ánh"
+    assert "synthetic anh" in by_name
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +110,8 @@ def test_build_roster_index_keys_by_digits_and_norm_name():
 
 _ROSTER_ROWS = [
     ["Họ và tên", "Số CCCD", "MST", "Ngày tháng năm sinh", "Số TK", "Phí dịch vụ", "Note"],
-    ["Nguyễn Văn A", "048091001309", "048091001309", "24/04/1991", "19001234567",
-     "10.000.000", "Danh Tướng 3Q - 381"],
+    ["Synthetic Ánh", "000000000001", "000000000001", "SYNTHETIC-DOB-A", "000000000001",
+     "SYNTHETIC-FEE-A", "Synthetic Product A - 001"],
 ]
 
 _FAKE_BOUNDS = [(0, 2), (3, 5)]  # 2 packets, 3 pages each, 6 pages total
@@ -120,8 +120,8 @@ _FAKE_BOUNDS = [(0, 2), (3, 5)]  # 2 packets, 3 pages each, 6 pages total
 def _fake_ocr_packet(pdf_path, start, end, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     identity = (
-        {"cccd": "048091001309", "name": "Nguyễn Văn A"} if start == 0
-        else {"cccd": "000000000000", "name": "Không Ai Cả"}
+        {"cccd": "000000000001", "name": "Synthetic Ánh"} if start == 0
+        else {"cccd": "000000000099", "name": "Synthetic Unknown"}
     )
     fields = [{"key": "hoten", "expected": "", "sources": []}]
     return {"folder": {"docs": [], "fields": fields}, "identity": identity}
@@ -157,14 +157,14 @@ def test_packet_meta_carries_match_key_and_identities(tmp_path, monkeypatch):
     p0 = packets[0]
     assert p0["matchedBy"] == "cccd"
     assert set(p0["ocrIdentity"]) == {"cccd", "name"}
-    assert p0["ocrIdentity"] == {"cccd": "048091001309", "name": "Nguyễn Văn A"}
-    assert p0["rosterIdentity"] == {"cccd": "048091001309", "name": "Nguyễn Văn A"}
+    assert p0["ocrIdentity"] == {"cccd": "000000000001", "name": "Synthetic Ánh"}
+    assert p0["rosterIdentity"] == {"cccd": "000000000001", "name": "Synthetic Ánh"}
 
     # packet 1's OCR'd identity matches no one in the (1-row) roster.
     p1 = packets[1]
     assert p1["matchedBy"] == "unmatched"
     assert set(p1["ocrIdentity"]) == {"cccd", "name"}
-    assert p1["ocrIdentity"] == {"cccd": "000000000000", "name": "Không Ai Cả"}
+    assert p1["ocrIdentity"] == {"cccd": "000000000099", "name": "Synthetic Unknown"}
     assert p1["rosterIdentity"] is None
 
     for p in packets:
@@ -257,13 +257,13 @@ def test_pipeline_runs_cccd_after_manifests_and_returns_safe_result(
     call = seen["calls"][0]
     assert call["xlsx_path"] == "cards.xlsx"
     assert call["roster_rows"] == [{
-        "name": "Nguyễn Văn A",
-        "cccd": "048091001309",
-        "mst": "048091001309",
-        "ngaysinh": "24/04/1991",
-        "tk": "19001234567",
-        "phi": "10.000.000",
-        "product": "Danh Tướng 3Q",
+        "name": "Synthetic Ánh",
+        "cccd": "000000000001",
+        "mst": "000000000001",
+        "ngaysinh": "SYNTHETIC-DOB-A",
+        "tk": "000000000001",
+        "phi": "SYNTHETIC-FEE-A",
+        "product": "Synthetic Product A",
     }]
     assert set(call["packet_manifest_paths"]) == {0, 1}
     assert set(call["packet_manifest_paths"].values()) == {
@@ -320,7 +320,7 @@ def test_cccd_error_result_keeps_pdf_packets_reviewable(tmp_path, monkeypatch):
 
 def _fake_ocr_packet_for_checklist(pdf_path, start, end, out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    identity = {"cccd": "048091001309", "name": "Nguyễn Văn A"}
+    identity = {"cccd": "000000000001", "name": "Synthetic Ánh"}
     fields = [{"key": "hoten", "expected": "", "sources": []}]
     docs = [{"id": "contract", "kind": "contract", "label": "Hợp đồng dịch vụ"}]
     return {"folder": {"docs": docs, "fields": fields}, "identity": identity}
