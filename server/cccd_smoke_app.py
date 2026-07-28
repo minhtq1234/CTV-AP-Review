@@ -5,6 +5,9 @@ import json
 import os
 import time
 
+
+ROOT = os.environ["CTV_CCCD_SMOKE_ROOT"]
+
 from PIL import Image
 
 import app as appmod
@@ -12,7 +15,6 @@ import checklist
 from cases import CaseStore
 
 
-ROOT = os.environ["CTV_CCCD_SMOKE_ROOT"]
 appmod.store = CaseStore(ROOT)
 
 

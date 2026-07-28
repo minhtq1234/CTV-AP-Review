@@ -10,14 +10,26 @@ first added: Task 6 already preserves the PDF-derived packets and returns an
 `invalid-workbook` CCCD result as data. It is therefore a characterization
 test; no production correction was made.
 
+### Fix round 1 — import guard ordering
+
+The initial fixture imported `app` before reading `CTV_CCCD_SMOKE_ROOT`, which
+could initialize the normal default store before the fixture rejected a missing
+root. `cccd_smoke_app_test.py` was added first as an isolated subprocess test
+that blocks any `app` import; it failed with that import-order defect. The
+fixture now reads the required environment variable immediately after stdlib
+imports, before Pillow or any application module. The new test passes and the
+fixture still imports with an explicit disposable root.
+
 ## Verification
 
-- Backend: `cd server && python3 -m pytest -q` — 294 passed, 6 existing
+- Backend: `cd server && python3 -m pytest -q` — 295 passed, 6 existing
   dependency/runtime warnings.
 - Frontend: `npx vitest run` — 12 files, 70 tests passed.
 - Production build: `npm run build` — passed.
 - Focused pipeline suite: `cd server && python3 -m pytest pipeline_test.py -q`
   — 15 passed.
+- Import-order regression: `cd server && python3 -m pytest
+  cccd_smoke_app_test.py -q` — 1 passed.
 - Fixture import: requires `CTV_CCCD_SMOKE_ROOT`; with an explicit disposable
   root it imports and exposes the FastAPI app.
 - `git diff --check` — passed.
