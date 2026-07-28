@@ -50,6 +50,24 @@ the durable manifest commit. Final focused count: 52 passed.
   warnings (FastAPI/Starlette deprecation plus the existing SWIG warnings).
 - `git diff --check` — clean.
 
+## Fix round 2 — durable incomplete-cleanup signal
+
+Rollback cleanup now reports incomplete attempt-owned asset removal without
+leaking file paths or exception text. `_cleanup_attempt_files` returns whether
+either its file check or deletion raised. The pre-commit failure path always
+returns the existing de-duplicated `attachment-failed` issue and appends the
+safe, de-duplicated `cleanup-failed` issue only when cleanup was incomplete.
+Normal rollback remains unchanged when cleanup succeeds.
+
+### Fix-round TDD evidence
+
+- RED: the forced-unlink regression failed because rollback returned only
+  `attachment-failed`.
+- GREEN: focused ingest suite — 65 passed, 5 known third-party warnings.
+- CCCD suite — 121 passed, 5 known third-party warnings.
+- Full backend — 292 passed, 6 known third-party warnings.
+- `git diff --check` — clean.
+
 ## Self-review
 
 - Attachment leaves a non-target manifest byte-identical and returns a deep

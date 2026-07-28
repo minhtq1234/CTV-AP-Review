@@ -262,13 +262,15 @@ def _remove_stale_owned_files(old_documents, packet_dir: str, new_paths: set[str
                 os.unlink(old_path)
 
 
-def _cleanup_attempt_files(paths: list[str]) -> None:
+def _cleanup_attempt_files(paths: list[str]) -> bool:
+    failed = False
     for path in paths:
         try:
             if os.path.isfile(path):
                 os.unlink(path)
         except Exception:
-            pass
+            failed = True
+    return failed
 
 
 def _is_exact_attachment_plan(plan: PlannedMapping) -> bool:
@@ -490,8 +492,10 @@ def attach_planned_mapping(
         )
         _atomic_json_write(manifest_path, updated)
     except Exception:
-        _cleanup_attempt_files(created_files)
-        return _attachment_failure(plan)
+        failure = _attachment_failure(plan)
+        if _cleanup_attempt_files(created_files):
+            _append_issue(failure["issues"], "cleanup-failed")
+        return failure
 
     mapping["attachedPacketIndex"] = plan.target_packet_index
     try:

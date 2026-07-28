@@ -207,6 +207,7 @@ def test_attachment_packet_mismatch_is_safe_and_keeps_manifest(tmp_path, bad_pac
 
     assert result["attachedPacketIndex"] is None
     assert result["issues"].count("attachment-failed") == 1
+    assert "cleanup-failed" not in result["issues"]
     assert manifest_path.read_bytes() == before
 
 
@@ -241,6 +242,7 @@ def test_attachment_failures_rollback_manifest_and_new_files(tmp_path, monkeypat
 
     assert result["attachedPacketIndex"] is None
     assert result["issues"].count("attachment-failed") == 1
+    assert "cleanup-failed" not in result["issues"]
     assert manifest_path.read_bytes() == before
     assert not list(manifest_path.parent.glob("cccd-*.png"))
 
@@ -370,7 +372,9 @@ def test_rollback_unlink_failure_is_contained_and_original_manifest_is_unchanged
 
     assert result["attachedPacketIndex"] is None
     assert result["issues"].count("attachment-failed") == 1
+    assert result["issues"].count("cleanup-failed") == 1
     assert manifest_path.read_bytes() == before
+    assert "cleanup interrupted" not in json.dumps(result)
 
 
 @pytest.mark.parametrize("bad_plan", [
