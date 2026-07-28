@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 import zipfile
 
 import openpyxl
+from openpyxl.xml.constants import CONTYPES_NS, XLSM, XLSX, XLTM, XLTX
 
 from ooxml import OoxmlRelationshipError, resolve_internal_relationship_target
 
@@ -25,11 +26,13 @@ MAX_STRING_CHARACTERS = 32_767
 _SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _DOC_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_CONTENT_TYPES_NS = f"{{{CONTYPES_NS}}}"
 _WORKSHEET_REL_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
 )
-_WORKBOOK_PART = "xl/workbook.xml"
-_WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
+_CONTENT_TYPES_PART = "[Content_Types].xml"
+_DEFAULT_WORKBOOK_PART = "xl/workbook.xml"
+_WORKBOOK_CONTENT_TYPES = frozenset({XLTM, XLTX, XLSM, XLSX})
 _CELL_REF_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?([1-9][0-9]*)$")
 
 
@@ -114,17 +117,27 @@ def preflight_roster_workbook(xlsx_source) -> None:
         _seek_start(xlsx_source)
         with zipfile.ZipFile(xlsx_source) as archive:
             members = _validate_archive(archive)
-            required = {
-                "[Content_Types].xml",
-                _WORKBOOK_PART,
-                _WORKBOOK_RELS_PART,
-            }
-            if not required.issubset(members):
+            if _CONTENT_TYPES_PART not in members:
                 raise RosterWorkbookError("missing-required-part")
             budget = _ByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES)
-            worksheets = _worksheet_targets(archive, members, budget)
+            workbook_part, workbook_rels_part = _workbook_parts(
+                archive,
+                members,
+                budget,
+            )
+            worksheets = _worksheet_targets(
+                archive,
+                members,
+                budget,
+                workbook_part,
+                workbook_rels_part,
+            )
             for name in sorted(members):
-                if name in {_WORKBOOK_PART, _WORKBOOK_RELS_PART}:
+                if name in {
+                    _CONTENT_TYPES_PART,
+                    workbook_part,
+                    workbook_rels_part,
+                }:
                     continue
                 if name.endswith((".xml", ".rels")):
                     _stream_xml(
@@ -171,13 +184,101 @@ def _validate_archive(archive: zipfile.ZipFile) -> set[str]:
     return names
 
 
+def _workbook_parts(
+    archive: zipfile.ZipFile,
+    members: set[str],
+    byte_budget: _ByteBudget,
+) -> tuple[str, str]:
+    content_types = _parse_xml_root(
+        archive,
+        _CONTENT_TYPES_PART,
+        byte_budget,
+    )
+    if content_types.tag != f"{_CONTENT_TYPES_NS}Types":
+        raise RosterWorkbookError("invalid-content-types")
+
+    overrides: list[str] = []
+    default_declarations = 0
+    seen_parts: set[str] = set()
+    seen_extensions: set[str] = set()
+    for element in content_types:
+        if element.tag == f"{_CONTENT_TYPES_NS}Override":
+            part_name = element.attrib.get("PartName")
+            content_type = element.attrib.get("ContentType")
+            if not part_name or not content_type:
+                raise RosterWorkbookError("invalid-content-types")
+            part = _normalize_package_part_name(part_name)
+            if part in seen_parts:
+                raise RosterWorkbookError("duplicate-content-type-part")
+            seen_parts.add(part)
+            if content_type in _WORKBOOK_CONTENT_TYPES:
+                overrides.append(part)
+        elif element.tag == f"{_CONTENT_TYPES_NS}Default":
+            extension = element.attrib.get("Extension")
+            content_type = element.attrib.get("ContentType")
+            if not extension or not content_type:
+                raise RosterWorkbookError("invalid-content-types")
+            normalized_extension = extension.casefold()
+            if normalized_extension in seen_extensions:
+                raise RosterWorkbookError("duplicate-content-type-default")
+            seen_extensions.add(normalized_extension)
+            if content_type in _WORKBOOK_CONTENT_TYPES:
+                default_declarations += 1
+
+    declaration_count = len(overrides) + default_declarations
+    if declaration_count == 0:
+        raise RosterWorkbookError("missing-workbook-part")
+    if declaration_count > 1:
+        raise RosterWorkbookError("multiple-workbook-parts")
+    workbook_part = (
+        overrides[0] if overrides else _DEFAULT_WORKBOOK_PART
+    )
+    workbook_rels_part = _relationship_part_name(workbook_part)
+    if workbook_part not in members or workbook_rels_part not in members:
+        raise RosterWorkbookError("missing-required-part")
+    return workbook_part, workbook_rels_part
+
+
+def _normalize_package_part_name(part_name: str) -> str:
+    if (
+        not part_name.startswith("/")
+        or part_name.startswith("//")
+        or "\\" in part_name
+        or "\x00" in part_name
+        or "?" in part_name
+        or "#" in part_name
+    ):
+        raise RosterWorkbookError("invalid-workbook-part")
+    raw_part = part_name[1:]
+    part = PurePosixPath(raw_part)
+    if (
+        raw_part in {"", "."}
+        or part.is_absolute()
+        or ".." in part.parts
+        or str(part) != raw_part
+    ):
+        raise RosterWorkbookError("invalid-workbook-part")
+    return str(part)
+
+
+def _relationship_part_name(source_part: str) -> str:
+    source = PurePosixPath(source_part)
+    return str(source.parent / "_rels" / f"{source.name}.rels")
+
+
 def _worksheet_targets(
     archive: zipfile.ZipFile,
     members: set[str],
     byte_budget: _ByteBudget,
+    workbook_part: str,
+    workbook_rels_part: str,
 ) -> set[str]:
-    workbook = _parse_xml_root(archive, _WORKBOOK_PART, byte_budget)
-    rels_root = _parse_xml_root(archive, _WORKBOOK_RELS_PART, byte_budget)
+    workbook = _parse_xml_root(archive, workbook_part, byte_budget)
+    rels_root = _parse_xml_root(
+        archive,
+        workbook_rels_part,
+        byte_budget,
+    )
     relationships: dict[str, dict[str, object]] = {}
     for element in rels_root.findall(f"{_REL_NS}Relationship"):
         rel_id = element.attrib.get("Id")
@@ -207,7 +308,7 @@ def _worksheet_targets(
             raise RosterWorkbookError("invalid-workbook-relationships")
         try:
             target = resolve_internal_relationship_target(
-                _WORKBOOK_PART,
+                workbook_part,
                 relationship["target"],
                 external=relationship["external"],
             )
