@@ -74,12 +74,15 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
         raise CccdWorkbookError("workbook-too-large")
     with zipfile.ZipFile(xlsx_path) as archive:
         _validate_archive(archive)
-        sheet_parts = _worksheet_parts_in_workbook_order(archive)
+        byte_budget = _ExtractionByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+        sheet_parts = _worksheet_parts_in_workbook_order(archive, byte_budget)
         records = []
         issues = []
         drawing_instances = 0
         for sheet_name, sheet_part in sheet_parts:
-            for drawing_part in _drawing_parts_for_sheet(archive, sheet_part):
+            for drawing_part in _drawing_parts_for_sheet(
+                archive, sheet_part, byte_budget
+            ):
                 try:
                     drawing_records, drawing_issues, instance_count = _drawing_records(
                         archive,
@@ -87,6 +90,7 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
                         drawing_part,
                         drawing_instances + 1,
                         MAX_DRAWINGS - drawing_instances,
+                        byte_budget,
                     )
                 except ET.ParseError:
                     issues.append(ExtractionIssue("malformed-drawing", None))
@@ -95,13 +99,13 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
                 records.extend(drawing_records)
                 issues.extend(drawing_issues)
         return _decode_and_store(
-            archive, records, issues, drawing_instances, output_dir
+            archive, records, issues, drawing_instances, output_dir, byte_budget
         )
 
 
-def _worksheet_parts_in_workbook_order(archive):
-    workbook = _parse_xml(archive, "xl/workbook.xml")
-    rels = _relationships(archive, "xl/workbook.xml")
+def _worksheet_parts_in_workbook_order(archive, byte_budget):
+    workbook = _parse_xml(archive, "xl/workbook.xml", byte_budget)
+    rels = _relationships(archive, "xl/workbook.xml", byte_budget)
     parts = []
     for sheet in workbook.findall(f".//{_SHEET_NS}sheet"):
         target = _resolve_relationship_target(
@@ -111,9 +115,9 @@ def _worksheet_parts_in_workbook_order(archive):
     return parts
 
 
-def _drawing_parts_for_sheet(archive, sheet_part):
-    sheet = _parse_xml(archive, sheet_part)
-    rels = _relationships(archive, sheet_part)
+def _drawing_parts_for_sheet(archive, sheet_part, byte_budget):
+    sheet = _parse_xml(archive, sheet_part, byte_budget)
+    rels = _relationships(archive, sheet_part, byte_budget)
     parts = []
     for drawing in sheet.findall(f".//{_SHEET_NS}drawing"):
         rel = rels[drawing.attrib[f"{_DOC_REL_NS}id"]]
@@ -122,8 +126,15 @@ def _drawing_parts_for_sheet(archive, sheet_part):
     return parts
 
 
-def _drawing_records(archive, sheet_name, drawing_part, next_id, remaining_capacity):
-    rels = _relationships(archive, drawing_part)
+def _drawing_records(
+    archive,
+    sheet_name,
+    drawing_part,
+    next_id,
+    remaining_capacity,
+    byte_budget,
+):
+    rels = _relationships(archive, drawing_part, byte_budget)
     records = []
     issues = []
     instance_count = 0
@@ -132,6 +143,7 @@ def _drawing_records(archive, sheet_name, drawing_part, next_id, remaining_capac
         drawing_part,
         MAX_XML_BYTES,
         "xml-too-large",
+        byte_budget,
     ) as drawing_stream:
         for _, element in ET.iterparse(drawing_stream, events=("end",)):
             if element.tag != f"{_DRAWING_NS}twoCellAnchor":
@@ -179,7 +191,14 @@ def _anchor_value(element, side, value):
     return int(node.text)
 
 
-def _decode_and_store(archive, records, issues, drawing_instances, output_dir):
+def _decode_and_store(
+    archive,
+    records,
+    issues,
+    drawing_instances,
+    output_dir,
+    byte_budget,
+):
     if drawing_instances > MAX_DRAWINGS:
         raise CccdWorkbookError("drawing-limit")
     os.makedirs(output_dir, exist_ok=True)
@@ -200,6 +219,7 @@ def _decode_and_store(archive, records, issues, drawing_instances, output_dir):
             media_part,
             MAX_IMAGE_BYTES,
             "image-too-large",
+            byte_budget,
         )
         total_image_bytes += len(content)
         try:
@@ -227,10 +247,10 @@ def _decode_and_store(archive, records, issues, drawing_instances, output_dir):
     return ExtractionResult(drawing_instances, drawings, issues)
 
 
-def _relationships(archive, source_part):
+def _relationships(archive, source_part, byte_budget):
     path = PurePosixPath(source_part)
     rels_part = str(path.parent / "_rels" / f"{path.name}.rels")
-    root = _parse_xml(archive, rels_part)
+    root = _parse_xml(archive, rels_part, byte_budget)
     result = {}
     for rel in root.findall(f"{_REL_NS}Relationship"):
         result[rel.attrib["Id"]] = {
@@ -435,25 +455,45 @@ def _validate_archive(archive):
     _reject_encrypted_entries(archive)
 
 
+class _ExtractionByteBudget:
+    """Bound the total bytes streamed across all ZIP member reads."""
+
+    def __init__(self, limit):
+        self._limit = limit
+        self._read = 0
+
+    @property
+    def remaining(self):
+        return self._limit - self._read
+
+    def consume(self, size):
+        if size > self.remaining:
+            raise CccdWorkbookError("archive-uncompressed-too-large")
+        self._read += size
+
+
 class _BoundedMemberReader:
     """Read one ZIP member without trusting its declared uncompressed size."""
 
-    def __init__(self, stream, limit, error_code):
+    def __init__(self, stream, limit, error_code, byte_budget):
         self._stream = stream
         self._limit = limit
         self._error_code = error_code
+        self._byte_budget = byte_budget
         self._read = 0
 
     def read(self, size=-1):
         remaining = self._limit - self._read
-        request_size = (
+        requested = (
             remaining + 1
             if size is None or size < 0
             else min(size, remaining + 1)
         )
+        request_size = min(requested, self._byte_budget.remaining + 1)
         content = self._stream.read(request_size)
         if len(content) > remaining:
             raise CccdWorkbookError(self._error_code)
+        self._byte_budget.consume(len(content))
         self._read += len(content)
         return content
 
@@ -467,26 +507,38 @@ class _BoundedMemberReader:
         self.close()
 
 
-def _bounded_member_reader(archive, member, limit, error_code):
+def _bounded_member_reader(archive, member, limit, error_code, byte_budget):
     info = archive.getinfo(member)
     if info.file_size > limit:
         raise CccdWorkbookError(error_code)
-    return _BoundedMemberReader(archive.open(info), limit, error_code)
+    return _BoundedMemberReader(
+        archive.open(info),
+        limit,
+        error_code,
+        byte_budget,
+    )
 
 
-def _parse_xml(archive, member):
+def _parse_xml(archive, member, byte_budget):
     with _bounded_member_reader(
         archive,
         member,
         MAX_XML_BYTES,
         "xml-too-large",
+        byte_budget,
     ) as stream:
         return ET.parse(stream).getroot()
 
 
-def _read_member_bytes(archive, member, limit, error_code):
+def _read_member_bytes(archive, member, limit, error_code, byte_budget):
     chunks = []
-    with _bounded_member_reader(archive, member, limit, error_code) as stream:
+    with _bounded_member_reader(
+        archive,
+        member,
+        limit,
+        error_code,
+        byte_budget,
+    ) as stream:
         while True:
             chunk = stream.read(64 * 1024)
             if not chunk:

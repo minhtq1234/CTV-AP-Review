@@ -309,6 +309,38 @@ def test_archive_total_uncompressed_limit_is_a_hard_failure(tmp_path, monkeypatc
         extract_drawings(str(book), str(tmp_path / "out"))
 
 
+def test_repeated_relationship_targets_share_the_extraction_byte_budget(
+    tmp_path,
+    monkeypatch,
+):
+    book = _one_image_book(tmp_path)
+    _replace_zip_part(
+        book,
+        "xl/workbook.xml",
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets>'
+        '<sheet name="Cards A" sheetId="1" r:id="rId1"/>'
+        '<sheet name="Cards B" sheetId="2" r:id="rId1"/>'
+        "</sheets></workbook>",
+    )
+    with zipfile.ZipFile(book) as archive:
+        declared_uncompressed_bytes = sum(
+            info.file_size for info in archive.infolist()
+        )
+    monkeypatch.setattr(
+        cccd_workbook,
+        "MAX_ARCHIVE_UNCOMPRESSED_BYTES",
+        declared_uncompressed_bytes,
+    )
+
+    with pytest.raises(
+        CccdWorkbookError,
+        match="archive-uncompressed-too-large",
+    ):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
 @pytest.mark.parametrize(
     "part_name",
     [
