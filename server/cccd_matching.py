@@ -46,6 +46,9 @@ def resolve_candidates(
     automatic outcome is produced if the same roster identity has competing
     card claims, or if any CCCD/name evidence is duplicated or conflicts.
     """
+    if len({candidate.id for candidate in candidates}) != len(candidates):
+        raise ValueError("duplicate candidate id")
+
     by_cccd = _index_many(roster_rows, lambda row: _digits(row.get("cccd", "")))
     by_name = _index_many(roster_rows, lambda row: _name_key(row.get("name", "")))
     expected = _expected_mappable_identities(by_cccd)

@@ -167,6 +167,16 @@ def test_multiple_candidates_targeting_one_identity_are_conflicts():
     assert all("competing-candidate" in resolution.issues for resolution in result.resolutions)
 
 
+def test_duplicate_candidate_ids_are_rejected_before_any_can_be_exact():
+    cards = [
+        candidate("duplicate", cccd="079123456789", cccd_conf=.99),
+        candidate("duplicate", cccd="079123456789", cccd_conf=.99),
+    ]
+
+    with pytest.raises(ValueError, match="duplicate candidate id"):
+        resolve_candidates(cards, [{"name": "Alpha", "cccd": "079123456789"}])
+
+
 def test_unreadable_candidate_stays_manual():
     result = resolve_candidates(
         [candidate("c1", cccd="not-a-number", cccd_conf=.99, name="", name_conf=0)],
