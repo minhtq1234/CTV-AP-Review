@@ -217,6 +217,7 @@ def plan_candidate_mappings(
             "candidateId": candidate.id,
             "front": _serialize_side(candidate.front, case_dir),
             "back": _serialize_side(candidate.back, case_dir),
+            "unknown": _serialize_side(candidate.unknown, case_dir),
             "ocrIdentity": {
                 "cccd": front_ocr.cccd if front_ocr is not None else "",
                 "name": front_ocr.name if front_ocr is not None else "",
@@ -292,8 +293,13 @@ def _packet_filename(
         plan.candidate.id.encode("utf-8")
     ).hexdigest()[:12]
     image_token = analyzed.drawing.sha256[:12]
+    orientation_token = (
+        "-upright"
+        if analyzed.ocr.evidence_path is not None
+        else ""
+    )
     return (
-        f"cccd-{candidate_token}-{image_token}-{side}."
+        f"cccd-{candidate_token}-{image_token}{orientation_token}-{side}."
         f"{analyzed.drawing.extension}"
     )
 
@@ -335,6 +341,121 @@ def _remove_stale_owned_files(
                 and os.path.isfile(old_path)
             ):
                 os.unlink(old_path)
+
+
+def _is_owned_doc_id(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("cccd-excel-")
+
+
+def _kept_owned_ids_by_packet(mappings: list[dict]) -> dict[int, set[str]]:
+    kept: dict[int, set[str]] = {}
+    for mapping in mappings:
+        packet_index = mapping.get("attachedPacketIndex")
+        candidate_id = mapping.get("candidateId")
+        if (
+            not isinstance(packet_index, int)
+            or isinstance(packet_index, bool)
+            or packet_index < 0
+            or not isinstance(candidate_id, str)
+        ):
+            continue
+        kept.setdefault(packet_index, set()).update({
+            _owned_doc_id(candidate_id, "front"),
+            _owned_doc_id(candidate_id, "back"),
+        })
+    return kept
+
+
+def _reconcile_manifest_owned_evidence(
+    manifest_path: str,
+    case_dir: str,
+    keep_ids: set[str],
+) -> bool:
+    try:
+        _case_relative(case_dir, manifest_path)
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            original = json.load(handle)
+        if not isinstance(original, dict):
+            raise ValueError("manifest must be an object")
+        updated = deepcopy(original)
+        docs = updated.get("docs")
+        fields = updated.get("fields")
+        if not isinstance(docs, list) or not isinstance(fields, list):
+            raise ValueError("manifest structure is invalid")
+        removed_docs = [
+            document
+            for document in docs
+            if (
+                isinstance(document, dict)
+                and _is_owned_doc_id(document.get("id"))
+                and document.get("id") not in keep_ids
+            )
+        ]
+        updated["docs"] = [
+            document
+            for document in docs
+            if not (
+                isinstance(document, dict)
+                and _is_owned_doc_id(document.get("id"))
+                and document.get("id") not in keep_ids
+            )
+        ]
+        changed = bool(removed_docs)
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            sources = field.get("sources")
+            if not isinstance(sources, list):
+                continue
+            kept_sources = [
+                source
+                for source in sources
+                if not (
+                    isinstance(source, dict)
+                    and _is_owned_doc_id(source.get("docId"))
+                    and source.get("docId") not in keep_ids
+                )
+            ]
+            if len(kept_sources) != len(sources):
+                field["sources"] = kept_sources
+                changed = True
+        if changed:
+            _atomic_json_write(manifest_path, updated)
+            _remove_stale_owned_files(
+                removed_docs,
+                os.path.dirname(manifest_path),
+                set(),
+            )
+        return True
+    except Exception:
+        return False
+
+
+def _reconcile_owned_evidence(
+    manifest_paths: dict[int, str],
+    case_dir: str,
+    mappings: list[dict],
+) -> bool:
+    kept_by_packet = _kept_owned_ids_by_packet(mappings)
+    successful = True
+    for packet_index, manifest_path in manifest_paths.items():
+        if (
+            not isinstance(packet_index, int)
+            or isinstance(packet_index, bool)
+            or packet_index < 0
+            or not isinstance(manifest_path, str)
+        ):
+            successful = False
+            continue
+        successful = (
+            _reconcile_manifest_owned_evidence(
+                manifest_path,
+                case_dir,
+                kept_by_packet.get(packet_index, set()),
+            )
+            and successful
+        )
+    return successful
 
 
 def _cleanup_attempt_files(paths: list[str]) -> bool:
@@ -394,6 +515,17 @@ def _error_result(
     }
 
 
+def _reconciled_error_result(
+    packets: list[dict],
+    error_code: str,
+    manifest_paths: dict[int, str],
+    case_dir: str,
+) -> CccdIngestResult:
+    if not _reconcile_owned_evidence(manifest_paths, case_dir, []):
+        error_code = "attachment-failed"
+    return _error_result(packets, error_code)
+
+
 def _packet_by_index(packets: list[dict]) -> dict[int, dict]:
     indexed = {}
     for packet in packets:
@@ -419,15 +551,30 @@ def ingest_cccd_workbook(
     progress_cb: ProgressCallback,
 ) -> CccdIngestResult:
     """Run local CCCD ingestion and preserve partial usable results."""
+    manifest_paths = (
+        packet_manifest_paths
+        if isinstance(packet_manifest_paths, dict)
+        else {}
+    )
     try:
         extraction = extract_drawings(
             xlsx_path,
             os.path.join(assets_dir, "extracted"),
         )
     except Exception:
-        return _error_result(packets, "invalid-workbook")
+        return _reconciled_error_result(
+            packets,
+            "invalid-workbook",
+            manifest_paths,
+            case_dir,
+        )
     if not extraction.drawings:
-        return _error_result(packets, "no-supported-images")
+        return _reconciled_error_result(
+            packets,
+            "no-supported-images",
+            manifest_paths,
+            case_dir,
+        )
 
     analyzed = []
     ocr_failures = 0
@@ -439,7 +586,12 @@ def ingest_cccd_workbook(
         except Exception:
             ocr_failures += 1
     if not analyzed:
-        return _error_result(packets, "ocr-unavailable")
+        return _reconciled_error_result(
+            packets,
+            "ocr-unavailable",
+            manifest_paths,
+            case_dir,
+        )
 
     try:
         candidates = pair_drawings(analyzed)
@@ -455,14 +607,14 @@ def ingest_cccd_workbook(
             case_dir,
         )
     except Exception:
-        return _error_result(packets, "invalid-workbook")
+        return _reconciled_error_result(
+            packets,
+            "invalid-workbook",
+            manifest_paths,
+            case_dir,
+        )
 
     packet_by_index = _packet_by_index(packets)
-    manifest_paths = (
-        packet_manifest_paths
-        if isinstance(packet_manifest_paths, dict)
-        else {}
-    )
     mappings = []
     for done, planned in enumerate(plans, start=1):
         if planned.target_packet_index is None:
@@ -488,6 +640,11 @@ def ingest_cccd_workbook(
         mappings.append(mapping)
         _report_progress(progress_cb, done, len(plans))
 
+    reconciliation_failed = not _reconcile_owned_evidence(
+        manifest_paths,
+        case_dir,
+        mappings,
+    )
     attached = sum(
         mapping.get("attachedPacketIndex") is not None
         for mapping in mappings
@@ -497,7 +654,7 @@ def ingest_cccd_workbook(
         "attached": attached,
         "unresolved": len(mappings) - attached,
     }
-    if any(
+    if reconciliation_failed or any(
         "attachment-failed" in mapping.get("issues", [])
         for mapping in mappings
     ):
@@ -574,7 +731,10 @@ def attach_planned_mapping(
             analyzed = getattr(plan.candidate, side)
             if analyzed is None:
                 continue
-            source = analyzed.drawing.stored_path
+            source = (
+                analyzed.ocr.evidence_path
+                or analyzed.drawing.stored_path
+            )
             _case_relative(case_dir, source)
             destination = os.path.join(
                 packet_dir,
@@ -604,8 +764,14 @@ def attach_planned_mapping(
                 ),
                 "pages": [{
                     "src": destination,
-                    "width": analyzed.drawing.width,
-                    "height": analyzed.drawing.height,
+                    "width": (
+                        analyzed.ocr.evidence_width
+                        or analyzed.drawing.width
+                    ),
+                    "height": (
+                        analyzed.ocr.evidence_height
+                        or analyzed.drawing.height
+                    ),
                 }],
             })
         updated["docs"] = [

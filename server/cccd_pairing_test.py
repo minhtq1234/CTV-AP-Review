@@ -64,3 +64,9 @@ def test_other_sheet_and_unknown_images_remain_separate():
         ("card-f1", ("missing-back",)),
         ("card-u1", ("unknown-side",)),
     ]
+    unknown_candidate = next(
+        candidate for candidate in result if candidate.id == "card-u1"
+    )
+    assert unknown_candidate.front is None
+    assert unknown_candidate.back is None
+    assert unknown_candidate.unknown is unknown

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -142,3 +143,40 @@ def test_analyze_drawing_reocrs_the_recovered_crop(tmp_path, monkeypatch):
     assert result.cccd == "000000000001"
     assert result.cccd_confidence == .91
     assert seen["bbox"] == result.number_bbox
+
+
+def test_analyze_drawing_persists_upright_evidence_for_exif_rotation(
+    tmp_path,
+    monkeypatch,
+):
+    drawing = replace(
+        _drawing(tmp_path, width=400, height=250),
+        media_type="image/jpeg",
+        extension="jpg",
+        stored_path=str(tmp_path / "synthetic.jpg"),
+    )
+    image = Image.new("RGB", (400, 250), "white")
+    exif = Image.Exif()
+    exif[274] = 6
+    image.save(drawing.stored_path, format="JPEG", exif=exif)
+    monkeypatch.setattr(
+        co.pytesseract,
+        "image_to_osd",
+        lambda *args, **kwargs: {"rotate": 0, "orientation_conf": 10.0},
+    )
+    monkeypatch.setattr(co, "_full_image_words", lambda image: FRONT_WORDS)
+    monkeypatch.setattr(
+        co,
+        "_region_digits",
+        lambda image, bbox: ("000000000001", .91),
+    )
+    monkeypatch.setattr(co, "_name_from_words", lambda words: ("", 0.0))
+
+    result = co.analyze_drawing(drawing)
+
+    assert result.evidence_path is not None
+    assert result.evidence_path.endswith("-upright.jpg")
+    assert Path(result.evidence_path).is_file()
+    with Image.open(result.evidence_path) as evidence:
+        assert evidence.size == (250, 400)
+    assert (result.evidence_width, result.evidence_height) == (250, 400)

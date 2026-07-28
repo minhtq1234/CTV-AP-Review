@@ -19,6 +19,7 @@ class CardCandidate:
     front: AnalyzedDrawing | None
     back: AnalyzedDrawing | None
     issues: tuple[str, ...]
+    unknown: AnalyzedDrawing | None = None
 
 
 def pair_drawings(images: list[AnalyzedDrawing]) -> list[CardCandidate]:
@@ -100,6 +101,7 @@ def _unpaired_candidate(
         None,
         None,
         ("unknown-side",),
+        image,
     )
 
 

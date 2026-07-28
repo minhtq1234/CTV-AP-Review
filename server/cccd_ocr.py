@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import re
+import tempfile
 from typing import Literal
 
 import pytesseract
@@ -34,6 +36,9 @@ class CccdImageOcr:
     name: str
     name_confidence: float
     number_bbox: dict[str, int] | None
+    evidence_path: str | None = None
+    evidence_width: int | None = None
+    evidence_height: int | None = None
 
 
 def _group_words_into_lines(
@@ -232,6 +237,8 @@ def locate_number_region(
 
 def _upright_image(path: str) -> Image.Image:
     with Image.open(path) as source:
+        exif_orientation = source.getexif().get(274, 1)
+        transformed = exif_orientation not in (None, 1)
         image = ImageOps.exif_transpose(source).convert("RGB")
     try:
         osd = pytesseract.image_to_osd(
@@ -244,7 +251,35 @@ def _upright_image(path: str) -> Image.Image:
         )
     except Exception:
         rotation = 0
-    return image.rotate(rotation, expand=True) if rotation else image
+    if rotation:
+        image = image.rotate(rotation, expand=True)
+        transformed = True
+    image.info["_cccd_transformed"] = transformed
+    return image
+
+
+def _persist_upright_evidence(
+    drawing: EmbeddedDrawing,
+    image: Image.Image,
+) -> str:
+    base, _ = os.path.splitext(drawing.stored_path)
+    destination = f"{base}-upright.{drawing.extension}"
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".cccd-upright-",
+        suffix=f".{drawing.extension}",
+        dir=os.path.dirname(destination),
+    )
+    os.close(descriptor)
+    try:
+        if drawing.extension == "jpg":
+            image.save(temporary_path, format="JPEG", quality=95)
+        else:
+            image.save(temporary_path, format="PNG")
+        os.replace(temporary_path, destination)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+    return destination
 
 
 def _full_image_words(image: Image.Image) -> list[OcrWord]:
@@ -380,6 +415,11 @@ def analyze_drawing(drawing: EmbeddedDrawing) -> CccdImageOcr:
         if len(candidate) == 12:
             cccd = candidate
             cccd_confidence = confidence
+    evidence_path = (
+        _persist_upright_evidence(drawing, image)
+        if image.info.get("_cccd_transformed") is True
+        else None
+    )
     return CccdImageOcr(
         side=side,
         side_confidence=side_confidence,
@@ -388,4 +428,7 @@ def analyze_drawing(drawing: EmbeddedDrawing) -> CccdImageOcr:
         name=name,
         name_confidence=name_confidence,
         number_bbox=number_bbox,
+        evidence_path=evidence_path,
+        evidence_width=image.width if evidence_path else None,
+        evidence_height=image.height if evidence_path else None,
     )

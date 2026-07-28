@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -30,10 +31,16 @@ def analyzed(
     *,
     cccd: str = "",
     confidence: float = 0.0,
+    upright: bool = False,
 ):
     path = root / "cccd-assets" / "extracted" / f"{drawing_id}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"synthetic-image")
+    evidence_path = None
+    if upright:
+        evidence = path.with_name(f"{drawing_id}-upright.png")
+        evidence.write_bytes(b"synthetic-upright-image")
+        evidence_path = str(evidence)
     return AnalyzedDrawing(
         EmbeddedDrawing(
             id=drawing_id,
@@ -54,6 +61,9 @@ def analyzed(
             name_confidence=.9,
             number_bbox={"x": 20, "y": 30, "width": 200, "height": 40}
             if side == "front" else None,
+            evidence_path=evidence_path,
+            evidence_width=630 if upright else None,
+            evidence_height=1000 if upright else None,
         ),
     )
 
@@ -222,6 +232,56 @@ def test_attachment_adds_v1_docs_and_field_source_idempotently(tmp_path):
     assert "checks" not in manifest
 
 
+def test_attachment_uses_the_upright_image_that_produced_the_bbox(tmp_path):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    candidate = CardCandidate(
+        CARD_ID,
+        analyzed(
+            tmp_path,
+            "drawing-0001",
+            "front",
+            cccd=CCCD,
+            confidence=.95,
+            upright=True,
+        ),
+        analyzed(tmp_path, "drawing-0002", "back"),
+        (),
+    )
+    planned = plan_candidate_mappings(
+        [candidate],
+        resolution(candidate),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+    )[0]
+
+    result = attach_planned_mapping(
+        planned,
+        packet(),
+        str(manifest_path),
+        str(tmp_path),
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    front_doc = next(
+        document for document in manifest["docs"]
+        if document["kind"] == "id_front"
+    )
+    front_page = front_doc["pages"][0]
+    assert result["attachedPacketIndex"] == 0
+    assert front_page["src"].endswith("-upright-front.png")
+    assert (front_page["width"], front_page["height"]) == (630, 1000)
+    assert next(
+        field for field in manifest["fields"] if field["key"] == "cccd"
+    )["sources"][-1]["bbox"] == {
+        "x": 20,
+        "y": 30,
+        "width": 200,
+        "height": 40,
+    }
+
+
 @pytest.mark.parametrize(
     "bad_packet",
     [None, {}, {"index": "0"}, {"index": 1}],
@@ -311,6 +371,144 @@ def test_ingest_returns_aggregate_and_preserves_unresolved_provenance(
     assert mapping["front"]["sourcePath"].startswith("cccd-assets/")
 
 
+def test_ingest_removes_prior_attachment_when_match_becomes_unresolved(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    first_candidate = card(tmp_path)
+    attached = attach_planned_mapping(
+        exact_plan(tmp_path),
+        packet(),
+        str(manifest_path),
+        str(tmp_path),
+    )
+    assert attached["attachedPacketIndex"] == 0
+    weak_front = replace(
+        first_candidate.front.ocr,
+        cccd_confidence=.40,
+    )
+    analyzed_by_id = {
+        first_candidate.front.drawing.id: weak_front,
+        first_candidate.back.drawing.id: first_candidate.back.ocr,
+    }
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(
+            2,
+            [first_candidate.front.drawing, first_candidate.back.drawing],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing: analyzed_by_id[drawing.id],
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cccd_field = next(
+        field for field in manifest["fields"] if field["key"] == "cccd"
+    )
+    assert result["cccdWorkbook"]["summary"]["attached"] == 0
+    assert not [
+        document for document in manifest["docs"]
+        if document["id"].startswith("cccd-excel-")
+    ]
+    assert [source["docId"] for source in cccd_field["sources"]] == ["contract"]
+    assert not list(manifest_path.parent.glob("cccd-*.png"))
+
+
+def test_unknown_side_mapping_preserves_image_provenance(tmp_path):
+    unknown = analyzed(tmp_path, "drawing-unknown", "unknown")
+    candidate = CardCandidate(
+        "card-drawing-unknown",
+        None,
+        None,
+        ("unknown-side",),
+        unknown,
+    )
+    planned = plan_candidate_mappings(
+        [candidate],
+        ResolutionResult(
+            expected_mappable_identities=1,
+            resolutions=[CardResolution(
+                candidate_id=candidate.id,
+                state="manual",
+                roster_key=None,
+                matched_by=None,
+                issues=("no-front",),
+            )],
+        ),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+    )[0]
+
+    assert planned.mapping["front"] is None
+    assert planned.mapping["back"] is None
+    assert planned.mapping["unknown"]["drawingId"] == "drawing-unknown"
+    assert planned.mapping["unknown"]["sourcePath"].startswith("cccd-assets/")
+
+
+def test_ingest_removes_prior_attachment_when_candidate_disappears(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    attached = attach_planned_mapping(
+        exact_plan(tmp_path),
+        packet(),
+        str(manifest_path),
+        str(tmp_path),
+    )
+    assert attached["attachedPacketIndex"] == 0
+    unknown = analyzed(tmp_path, "drawing-replacement", "unknown")
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(1, [unknown.drawing], []),
+    )
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing: unknown.ocr,
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mapping = result["cccdWorkbook"]["mappings"][0]
+    assert mapping["candidateId"] == "card-drawing-replacement"
+    assert mapping["unknown"]["drawingId"] == "drawing-replacement"
+    assert not [
+        document for document in manifest["docs"]
+        if document["id"].startswith("cccd-excel-")
+    ]
+    assert not list(manifest_path.parent.glob("cccd-*.png"))
+
+
 def test_workbook_failure_is_safe_and_keeps_packet_case_usable(
     tmp_path,
     monkeypatch,
@@ -339,3 +537,41 @@ def test_workbook_failure_is_safe_and_keeps_packet_case_usable(
         "summary": {"candidates": 0, "attached": 0, "unresolved": 0},
         "mappings": [],
     }
+
+
+def test_workbook_failure_removes_prior_attached_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    attached = attach_planned_mapping(
+        exact_plan(tmp_path),
+        packet(),
+        str(manifest_path),
+        str(tmp_path),
+    )
+    assert attached["attachedPacketIndex"] == 0
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: (_ for _ in ()).throw(ValueError("private-workbook")),
+    )
+
+    result = ingest_cccd_workbook(
+        "bad.xlsx",
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert result["cccdWorkbook"]["errorCode"] == "invalid-workbook"
+    assert not [
+        document for document in manifest["docs"]
+        if document["id"].startswith("cccd-excel-")
+    ]
+    assert not list(manifest_path.parent.glob("cccd-*.png"))
