@@ -1,4 +1,4 @@
-import { describe, it, expect, test } from 'vitest'
+import { describe, it, expect, test, vi } from 'vitest'
 import {
   stageLabel,
   progressPct,
@@ -7,6 +7,7 @@ import {
   packetNeedsResubmit,
   reportUrls,
   API_BASE,
+  createCase,
 } from './api'
 
 describe('upload api helpers', () => {
@@ -14,6 +15,9 @@ describe('upload api helpers', () => {
     expect(stageLabel('splitting')).toMatch(/tách|phát hiện|đối chiếu/i)
     expect(stageLabel('ocr')).toMatch(/đọc|trích|OCR/i)
     expect(stageLabel('done')).toMatch(/hoàn tất|xong/i)
+  })
+  it('maps CCCD processing to the approved Vietnamese label', () => {
+    expect(stageLabel('cccd')).toBe('Đọc và ghép ảnh CCCD…')
   })
   it('computes percent, clamped, 0 when total is 0', () => {
     expect(progressPct({ stage: 'ocr', done: 8, total: 32, detail: '' })).toBe(25)
@@ -44,4 +48,50 @@ test('packetNeedsResubmit reads items', () => {
 
 test('reportUrls point at the backend', () => {
   expect(reportUrls('abc').md).toBe(`${API_BASE}/api/cases/abc/report.md`)
+})
+
+test('createCase appends the CCCD workbook to multipart form', async () => {
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const form = init?.body as FormData
+    expect((form.get('pdf') as File).name).toBe('input.pdf')
+    expect((form.get('roster') as File).name).toBe('roster.xlsx')
+    expect((form.get('cccd') as File).name).toBe('cards.xlsx')
+    return new Response(JSON.stringify({ case_id: 'case-1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  try {
+    await createCase(
+      new File(['pdf'], 'input.pdf', { type: 'application/pdf' }),
+      new File(['roster'], 'roster.xlsx'),
+      new File(['cards'], 'cards.xlsx'),
+    )
+    expect(fetchMock).toHaveBeenCalledOnce()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test('createCase keeps the legacy PDF-and-roster multipart shape', async () => {
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const form = init?.body as FormData
+    expect((form.get('pdf') as File).name).toBe('input.pdf')
+    expect((form.get('roster') as File).name).toBe('roster.xlsx')
+    expect(form.has('cccd')).toBe(false)
+    return new Response(JSON.stringify({ case_id: 'case-1' }), { status: 200 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  try {
+    await createCase(
+      new File(['pdf'], 'input.pdf', { type: 'application/pdf' }),
+      new File(['roster'], 'roster.xlsx'),
+    )
+    expect(fetchMock).toHaveBeenCalledOnce()
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
