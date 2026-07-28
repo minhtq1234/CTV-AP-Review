@@ -22,6 +22,7 @@ if _SPLITTER_DIR not in sys.path:
 
 import detect_packets as dp  # noqa: E402
 import ocr_extract as oc  # noqa: E402
+from roster_workbook import load_roster_rows  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Roster -> field mapping
@@ -213,7 +214,7 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     if roster_path:
-        roster_rows_raw = dp._roster_rows(roster_path)
+        roster_rows_raw = load_roster_rows(roster_path)
         roster_names = dp.extract_roster_names(roster_rows_raw)
         by_cccd, by_name = build_roster_index(roster_rows_raw)
     roster_n = len(roster_names) if roster_names is not None else None

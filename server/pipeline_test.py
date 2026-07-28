@@ -143,7 +143,7 @@ def _install_fake_detection(monkeypatch):
 
 def test_packet_meta_carries_match_key_and_identities(tmp_path, monkeypatch):
     _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
 
     result = pl.run_pipeline(
         str(tmp_path / "input.pdf"), "roster.xlsx", str(tmp_path), lambda *a: None,
