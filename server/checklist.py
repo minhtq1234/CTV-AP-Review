@@ -96,11 +96,31 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
             continue
         sources = f.get("sources") or []
         routed = contract if kind_doc == "contract" else _doc_by_kind(docs, kind_doc)
-        src = next((s for s in sources if s and s.get("docId") == routed), None) or (sources[0] if sources else None)
+        mapped_cccd = (
+            next(
+                (
+                    source
+                    for source in sources
+                    if (source or {}).get("docId", "").startswith("cccd-excel-")
+                ),
+                None,
+            )
+            if code == "A1"
+            else None
+        )
+        src = mapped_cccd or next(
+            (source for source in sources if source and source.get("docId") == routed),
+            None,
+        ) or (sources[0] if sources else None)
+        autostatus = (
+            "review"
+            if code == "A1" and mapped_cccd is not None
+            else _autostatus(f.get("expected", ""), src)
+        )
         checks.append({"code": code, "label": label, "tier": "detail", "kind": "value",
                        "evidenceDocId": (src or {}).get("docId") or routed,
                        "reference": f.get("expected", ""), "source": src,
-                       "autostatus": _autostatus(f.get("expected", ""), src)})
+                       "autostatus": autostatus})
     for code, label, kind_doc in _CONFIRM_DETAIL:
         doc_id = _doc_by_kind(docs, kind_doc)
         if code == "C1":

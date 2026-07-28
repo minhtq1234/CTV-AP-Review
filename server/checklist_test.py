@@ -50,6 +50,63 @@ def test_value_check_prefers_source_on_its_routed_doc():
     assert c["B1"]["evidenceDocId"] == "contract"
     assert c["B1"]["source"]["docId"] == "contract"
 
+def test_a1_prefers_mapped_cccd_front_and_stays_reviewer_controlled():
+    fields = [{
+        "key": "cccd",
+        "label": "Số CCCD",
+        "expected": "000000000001",
+        "sources": [
+            {
+                "docId": "contract",
+                "page": 0,
+                "value": "000000000001",
+                "bbox": {"x": 1, "y": 1, "width": 2, "height": 2},
+                "confidence": .91,
+            },
+            {
+                "docId": "cccd-excel-card-drawing-0001-front",
+                "page": 0,
+                "value": "000000000001",
+                "bbox": {"x": 20, "y": 30, "width": 80, "height": 24},
+                "confidence": .95,
+            },
+        ],
+    }]
+    docs = [
+        *DOCS,
+        {
+            "id": "cccd-excel-card-drawing-0001-front",
+            "kind": "id_front",
+            "label": "CCCD (Excel) · Mặt trước",
+            "pages": [],
+        },
+    ]
+
+    a1 = _by_code(build_checklist(fields, MATCH, docs))["A1"]
+
+    assert a1["evidenceDocId"] == "cccd-excel-card-drawing-0001-front"
+    assert a1["source"]["bbox"]["x"] == 20
+    assert a1["autostatus"] == "review"
+
+def test_a1_without_mapped_cccd_keeps_existing_comparison():
+    fields = [{
+        "key": "cccd",
+        "label": "Số CCCD",
+        "expected": "000000000001",
+        "sources": [{
+            "docId": "contract",
+            "page": 0,
+            "value": "000000000001",
+            "bbox": {"x": 1, "y": 1, "width": 2, "height": 2},
+            "confidence": .91,
+        }],
+    }]
+
+    a1 = _by_code(build_checklist(fields, MATCH, DOCS))["A1"]
+
+    assert a1["evidenceDocId"] == "contract"
+    assert a1["autostatus"] == "match"
+
 def test_name_with_D_stroke_matches():
     fields = [{"key": "hoten", "label": "Họ và tên", "expected": "Đặng Văn Đức",
                "sources": [{"docId": "contract", "page": 0, "value": "ĐẶNG VĂN ĐỨC",
