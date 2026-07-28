@@ -1,3 +1,5 @@
+import pytest
+
 from checklist import build_checklist
 
 FIELDS = [
@@ -105,6 +107,38 @@ def test_a1_without_mapped_cccd_keeps_existing_comparison():
     a1 = _by_code(build_checklist(fields, MATCH, DOCS))["A1"]
 
     assert a1["evidenceDocId"] == "contract"
+    assert a1["autostatus"] == "match"
+
+@pytest.mark.parametrize("malformed_doc_id", [None, 42])
+def test_a1_ignores_non_string_doc_ids_and_keeps_legacy_contract_routing(
+    malformed_doc_id,
+):
+    fields = [{
+        "key": "cccd",
+        "label": "Số CCCD",
+        "expected": "000000000001",
+        "sources": [
+            {
+                "docId": malformed_doc_id,
+                "page": 0,
+                "value": "000000000001",
+                "bbox": {"x": 1, "y": 1, "width": 2, "height": 2},
+                "confidence": .91,
+            },
+            {
+                "docId": "contract",
+                "page": 0,
+                "value": "000000000001",
+                "bbox": {"x": 20, "y": 30, "width": 80, "height": 24},
+                "confidence": .95,
+            },
+        ],
+    }]
+
+    a1 = _by_code(build_checklist(fields, MATCH, DOCS))["A1"]
+
+    assert a1["evidenceDocId"] == "contract"
+    assert a1["source"]["bbox"]["x"] == 20
     assert a1["autostatus"] == "match"
 
 def test_name_with_D_stroke_matches():

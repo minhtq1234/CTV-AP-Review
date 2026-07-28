@@ -101,7 +101,8 @@ def build_checklist(fields: list[dict], match: dict, docs: list[dict]) -> list[d
                 (
                     source
                     for source in sources
-                    if (source or {}).get("docId", "").startswith("cccd-excel-")
+                    if isinstance((source or {}).get("docId"), str)
+                    and (source or {}).get("docId").startswith("cccd-excel-")
                 ),
                 None,
             )
