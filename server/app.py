@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -22,7 +23,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-import threading
+from starlette.concurrency import run_in_threadpool
 
 import checklist
 import greennode
@@ -81,7 +82,7 @@ def _upload_size(upload: UploadFile) -> int:
     return size
 
 
-def _validate_cccd_upload(
+async def _validate_cccd_upload(
     roster: UploadFile | None,
     cccd: UploadFile | None,
 ) -> None:
@@ -92,7 +93,7 @@ def _validate_cccd_upload(
             status_code=422,
             detail={"code": "cccd-requires-roster"},
         )
-    if not _is_xlsx_upload(roster):
+    if not await run_in_threadpool(_is_xlsx_upload, roster):
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid-roster-workbook"},
@@ -159,7 +160,7 @@ async def post_case(
     roster: UploadFile | None = File(None),
     cccd: UploadFile | None = File(None),
 ):
-    _validate_cccd_upload(roster, cccd)
+    await _validate_cccd_upload(roster, cccd)
     now = datetime.now(timezone.utc).isoformat()
     cid = store.create(name=pdf.filename or "case", pdf_name=pdf.filename or "input.pdf",
                         roster_name=roster.filename if roster is not None else None, now=now,

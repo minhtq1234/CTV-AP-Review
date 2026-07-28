@@ -24,6 +24,7 @@ import checklist  # noqa: E402
 from cccd_ingest import ingest_cccd_workbook  # noqa: E402
 import detect_packets as dp  # noqa: E402
 import ocr_extract as oc  # noqa: E402
+from roster_workbook import load_roster_rows  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Roster -> field mapping
@@ -192,11 +193,6 @@ def fill_expected(fields: list[dict], row: dict[str, str] | None) -> list[dict]:
         g["expected"] = row.get(_ROSTER_KEY_BY_FIELD.get(f["key"], ""), "")
         filled.append(g)
     return filled
-
-
-def load_roster_rows(xlsx_source) -> list[list]:
-    """Read roster rows through the production OpenPyXL loader."""
-    return dp._roster_rows(xlsx_source)
 
 
 # ---------------------------------------------------------------------------

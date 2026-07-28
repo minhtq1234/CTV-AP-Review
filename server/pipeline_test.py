@@ -144,7 +144,7 @@ def _install_fake_detection(monkeypatch):
 
 def test_packet_meta_carries_match_key_and_identities(tmp_path, monkeypatch):
     _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
 
     result = pl.run_pipeline(
         str(tmp_path / "input.pdf"), "roster.xlsx", str(tmp_path), lambda *a: None,
@@ -210,7 +210,7 @@ def test_pipeline_runs_cccd_after_manifests_and_returns_safe_result(
     monkeypatch,
 ):
     _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
     seen = {"calls": []}
     progress = []
 
@@ -280,7 +280,7 @@ def test_pipeline_runs_cccd_after_manifests_and_returns_safe_result(
 
 def test_cccd_error_result_keeps_pdf_packets_reviewable(tmp_path, monkeypatch):
     _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
     monkeypatch.setattr(
         pl,
         "ingest_cccd_workbook",
@@ -328,7 +328,7 @@ def _fake_ocr_packet_for_checklist(pdf_path, start, end, out_dir):
 
 def test_manifest_carries_checks(tmp_path, monkeypatch):
     _install_fake_detection(monkeypatch)
-    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(pl, "load_roster_rows", lambda path: _ROSTER_ROWS)
     monkeypatch.setattr(pl.oc, "ocr_packet", _fake_ocr_packet_for_checklist)
 
     pl.run_pipeline(

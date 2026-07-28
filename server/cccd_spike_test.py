@@ -253,7 +253,7 @@ def setup_synthetic_run(
         spike, "analyze_drawing", lambda drawing: ocr_by_id[drawing.id],
     )
     monkeypatch.setattr(
-        spike.detect_packets, "_roster_rows", lambda _path: [["private raw row"]],
+        spike.pipeline, "load_roster_rows", lambda _path: [["private raw row"]],
     )
     roster_rows = [
         {"name": "Synthetic Alpha", "cccd": "000000000001"},

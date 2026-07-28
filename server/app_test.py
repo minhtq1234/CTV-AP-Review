@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 import app as appmod
 import pipeline as pl
+import roster_workbook
 from app import app, rewrite_manifest_urls
 
 
@@ -33,6 +34,31 @@ def _malformed_xlsx_bytes():
                 b"<workbook" if info.filename == "xl/workbook.xml" else source.read(info),
             )
     return malformed.getvalue()
+
+
+def _malformed_worksheet_xlsx_bytes():
+    valid = io.BytesIO(_minimal_xlsx_bytes())
+    malformed = io.BytesIO()
+    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(malformed, "w") as target:
+        for info in source.infolist():
+            target.writestr(
+                info,
+                b"<worksheet" if info.filename == "xl/worksheets/sheet1.xml" else source.read(info),
+            )
+    return malformed.getvalue()
+
+
+def _expanded_dimension_xlsx_bytes():
+    """A compact workbook that makes OpenPyXL yield 200,001 rows."""
+    valid = io.BytesIO(_minimal_xlsx_bytes())
+    expanded = io.BytesIO()
+    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(expanded, "w") as target:
+        for info in source.infolist():
+            content = source.read(info)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                content = content.replace(b'A1:B2', b'A1:B200001')
+            target.writestr(info, content)
+    return expanded.getvalue()
 
 
 def test_rewrite_manifest_urls_points_pages_at_api():
@@ -182,6 +208,59 @@ def test_cccd_rejects_malformed_roster_ooxml_before_case_creation(
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cccd_rejects_malformed_roster_worksheet_before_case_creation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": (
+            "roster.xlsx",
+            _malformed_worksheet_xlsx_bytes(),
+            "application/octet-stream",
+        ),
+        "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cccd_rejects_expanded_roster_before_openpyxl_and_case_creation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    loader_calls = 0
+
+    def unbounded_loader(*_args, **_kwargs):
+        nonlocal loader_calls
+        loader_calls += 1
+        raise AssertionError("OpenPyXL must not run before bounded preflight")
+
+    monkeypatch.setattr(roster_workbook.openpyxl, "load_workbook", unbounded_loader)
+
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": (
+            "roster.xlsx",
+            _expanded_dimension_xlsx_bytes(),
+            "application/octet-stream",
+        ),
+        "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert loader_calls == 0
     assert appmod.store.list() == []
     assert list(tmp_path.iterdir()) == []
 

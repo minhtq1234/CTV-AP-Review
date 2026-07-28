@@ -17,9 +17,6 @@ from cccd_workbook import ExtractionResult, extract_drawings
 import pipeline
 
 
-detect_packets = pipeline.dp
-
-
 Decision = Literal["proceed", "revise", "stop"]
 
 THRESHOLDS: dict[str, float | int] = {
@@ -161,7 +158,7 @@ def run_spike(
             candidates = pair_drawings(analyzed)
             _validate_candidates(candidates, {drawing.id for drawing in extraction.drawings})
             roster_rows = pipeline.all_roster_rows(
-                detect_packets._roster_rows(roster_path)
+                pipeline.load_roster_rows(roster_path)
             )
             resolution_result = resolve_candidates(candidates, roster_rows)
         except InvalidSpikeInput:
