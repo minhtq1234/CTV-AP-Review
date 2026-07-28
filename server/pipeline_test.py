@@ -187,6 +187,17 @@ def test_packet_meta_no_roster_is_no_roster_with_null_identity(tmp_path, monkeyp
         assert set(p["ocrIdentity"]) == {"cccd", "name"}
 
 
+def test_pipeline_returns_empty_cccd_workbook_for_legacy_processing(tmp_path, monkeypatch):
+    _install_fake_detection(monkeypatch)
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"), None, str(tmp_path), lambda *a: None,
+        cccd_xlsx_path=None,
+    )
+
+    assert result["cccdWorkbook"] is None
+
+
 # ---------------------------------------------------------------------------
 # run_pipeline: manifest carries the coded checklist (Task 2)
 #

@@ -197,10 +197,18 @@ def fill_expected(fields: list[dict], row: dict[str, str] | None) -> list[dict]:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_cb) -> dict:
+def run_pipeline(
+    pdf_path: str,
+    roster_path: str | None,
+    job_dir: str,
+    progress_cb,
+    cccd_xlsx_path: str | None = None,
+) -> dict:
     """Split `pdf_path` into packets, OCR/extract each into a manifest under
     `job_dir/packets/{i}/`, reporting progress via `progress_cb(stage, done,
-    total, detail)`. Returns `{"summary": {...}, "packets": [...]}`.
+    total, detail)`. `cccd_xlsx_path` is accepted for the upload boundary but
+    is not processed until CCCD ingestion is implemented. Returns
+    `{"summary": {...}, "packets": [...], "cccdWorkbook": None}`.
     """
     progress_cb("splitting", 0, 0, "")
 
@@ -300,4 +308,4 @@ def run_pipeline(pdf_path: str, roster_path: str | None, job_dir: str, progress_
         "matched": matched,
         "auto_merged": len(merged_covers),
     }
-    return {"summary": summary, "packets": packets_out}
+    return {"summary": summary, "packets": packets_out, "cccdWorkbook": None}

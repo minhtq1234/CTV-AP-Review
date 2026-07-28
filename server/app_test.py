@@ -4,6 +4,7 @@ import time
 
 from fastapi.testclient import TestClient
 import app as appmod
+import pipeline as pl
 from app import app, rewrite_manifest_urls
 
 def test_rewrite_manifest_urls_points_pages_at_api():
@@ -142,6 +143,33 @@ def test_cccd_upload_is_saved_passed_and_detail_is_redacted(tmp_path, monkeypatc
     }
     assert "cccdWorkbook" not in detail
     assert "private-candidate" not in json.dumps(detail)
+
+
+def test_real_pipeline_bridge_accepts_legacy_cccd_none(tmp_path, monkeypatch):
+    def fake_ocr_packet(pdf_path, start, end, out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        return {
+            "folder": {"docs": [], "fields": []},
+            "identity": {"cccd": "", "name": ""},
+        }
+
+    monkeypatch.setattr(pl.dp, "load_page_bands", lambda path: ([None], [1.0], [0.001], 1))
+    monkeypatch.setattr(pl.dp, "seed_scores", lambda bands: ([0.0], 0))
+    monkeypatch.setattr(pl.dp, "derive_threshold", lambda scores: 0.5)
+    monkeypatch.setattr(pl.dp, "covers_from_scores", lambda scores, threshold: [0])
+    monkeypatch.setattr(pl.dp, "prune_excess_covers", lambda covers, scores, roster_n: (covers, []))
+    monkeypatch.setattr(pl.dp, "packets_from_covers", lambda covers, n: [(0, 0)])
+    monkeypatch.setattr(pl.oc, "ocr_packet", fake_ocr_packet)
+    monkeypatch.setattr(appmod, "run_pipeline", pl.run_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    cid = appmod.store.create("input.pdf", "input.pdf", None, now="2026-07-28T00:00:00Z")
+    appmod._run_case(cid, str(tmp_path / "input.pdf"), None)
+
+    case = appmod.store.get(cid)
+    assert case["status"] == "ready"
+    assert case["error"] is None
+    assert case["cccdWorkbook"] is None
 
 def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
