@@ -147,6 +147,21 @@ def _replace_zip_part(path, part_name, content):
     replacement.replace(path)
 
 
+def _replace_zip_part_compressed(path, part_name, content):
+    replacement = path.with_suffix(".compressed-replacement.xlsx")
+    with zipfile.ZipFile(path) as old, zipfile.ZipFile(
+        replacement,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as new:
+        for info in old.infolist():
+            new.writestr(
+                info.filename,
+                content if info.filename == part_name else old.read(info.filename),
+            )
+    replacement.replace(path)
+
+
 def _malicious_or_invalid_xlsx(tmp_path, fixture):
     book = tmp_path / f"{fixture}.xlsx"
     if fixture == "unsupported-gif":
@@ -267,6 +282,59 @@ def test_workbook_limit_is_a_hard_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(cccd_workbook, "MAX_WORKBOOK_BYTES", 1)
 
     with pytest.raises(CccdWorkbookError, match="workbook-too-large"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+def test_archive_member_count_limit_is_a_hard_failure(tmp_path, monkeypatch):
+    book = _one_image_book(tmp_path)
+    monkeypatch.setattr(cccd_workbook, "MAX_ARCHIVE_MEMBERS", 1)
+
+    with pytest.raises(CccdWorkbookError, match="archive-member-limit"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+def test_archive_member_size_limit_is_a_hard_failure(tmp_path, monkeypatch):
+    book = _one_image_book(tmp_path)
+    monkeypatch.setattr(cccd_workbook, "MAX_ARCHIVE_MEMBER_BYTES", 1)
+
+    with pytest.raises(CccdWorkbookError, match="archive-member-too-large"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+def test_archive_total_uncompressed_limit_is_a_hard_failure(tmp_path, monkeypatch):
+    book = _one_image_book(tmp_path)
+    monkeypatch.setattr(cccd_workbook, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 1)
+
+    with pytest.raises(CccdWorkbookError, match="archive-uncompressed-too-large"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+@pytest.mark.parametrize(
+    "part_name",
+    [
+        "xl/workbook.xml",
+        "xl/_rels/workbook.xml.rels",
+        "xl/worksheets/sheet1.xml",
+        "xl/worksheets/_rels/sheet1.xml.rels",
+        "xl/drawings/drawing1.xml",
+        "xl/drawings/_rels/drawing1.xml.rels",
+    ],
+)
+def test_compressed_oversized_xml_parts_are_bounded(
+    tmp_path,
+    monkeypatch,
+    part_name,
+):
+    book = _one_image_book(tmp_path)
+    oversized_xml = b"<root>" + (b"x" * (1024 * 1024)) + b"</root>"
+    _replace_zip_part_compressed(book, part_name, oversized_xml)
+    with zipfile.ZipFile(book) as archive:
+        info = archive.getinfo(part_name)
+        assert info.file_size > 1024 * 1024
+        assert info.compress_size < 2048
+    monkeypatch.setattr(cccd_workbook, "MAX_XML_BYTES", 1024)
+
+    with pytest.raises(CccdWorkbookError, match="xml-too-large"):
         extract_drawings(str(book), str(tmp_path / "out"))
 
 
