@@ -15,7 +15,7 @@ from cccd_spike import (
 )
 import cccd_spike as spike
 from cccd_ocr import CccdImageOcr
-from cccd_workbook import Anchor, EmbeddedDrawing, ExtractionResult
+from cccd_workbook import Anchor, EmbeddedDrawing, ExtractionIssue, ExtractionResult
 
 
 def metric_fixture(**changes) -> SpikeMetrics:
@@ -300,6 +300,49 @@ def test_run_spike_orchestrates_and_uses_fixed_roster_denominator(
     assert not Path(extraction_dirs[0]).exists()
 
 
+def test_unaccounted_extraction_issue_cannot_coexist_with_proceed(
+    tmp_path, monkeypatch,
+):
+    workbook, roster, truth, output, _ = setup_synthetic_run(
+        tmp_path, monkeypatch,
+    )
+    drawings = [
+        synthetic_drawing("drawing-001", 0, 0),
+        synthetic_drawing("drawing-002", 0, 6),
+        synthetic_drawing("drawing-003", 20, 0),
+        synthetic_drawing("drawing-004", 20, 6),
+    ]
+    original_analyze = spike.analyze_drawing
+    second_exact = CccdImageOcr(
+        "front", .99, "000000000002", .99, "Nguyen Synthetic", .99,
+        {"x": 1, "y": 1, "width": 10, "height": 5},
+    )
+    monkeypatch.setattr(
+        spike,
+        "extract_drawings",
+        lambda _path, _output: ExtractionResult(
+            4,
+            drawings,
+            [ExtractionIssue("malformed-drawing", None)],
+        ),
+    )
+    monkeypatch.setattr(
+        spike,
+        "analyze_drawing",
+        lambda drawing: (
+            second_exact
+            if drawing.id == "drawing-003"
+            else original_analyze(drawing)
+        ),
+    )
+
+    with pytest.raises(InvalidSpikeInput, match="unaccounted extraction"):
+        run_spike(
+            str(workbook), str(roster), str(truth), str(output), iteration=1,
+        )
+    assert not (output / "cccd-spike-report.json").exists()
+
+
 def test_incorrect_proposed_pair_and_exact_match_are_counted_and_stop(
     tmp_path, monkeypatch,
 ):
@@ -365,6 +408,63 @@ def test_written_report_contains_only_aggregate_schema(tmp_path, monkeypatch):
         "assisted_rate",
         "manual_search_rate",
     }
+
+
+def test_mid_write_failure_preserves_prior_report_and_removes_temp(
+    tmp_path, monkeypatch,
+):
+    output = tmp_path / "report"
+    output.mkdir()
+    prior_report = SpikeReport(
+        iteration=1,
+        decision="proceed",
+        metrics=metric_fixture(),
+        thresholds=dict(spike.THRESHOLDS),
+    )
+    spike._write_report(prior_report, str(output))
+    final_path = output / "cccd-spike-report.json"
+    prior_raw = final_path.read_bytes()
+
+    def fail_after_partial_write(_payload, destination, **_options):
+        destination.write('{"forbidden-partial":')
+        raise OSError("synthetic mid-write failure")
+
+    monkeypatch.setattr(spike.json, "dump", fail_after_partial_write)
+
+    with pytest.raises(OSError, match="synthetic mid-write failure"):
+        spike._write_report(
+            replace(prior_report, iteration=2, decision="stop"),
+            str(output),
+        )
+
+    assert final_path.read_bytes() == prior_raw
+    assert [path.name for path in output.iterdir()] == [
+        "cccd-spike-report.json",
+    ]
+
+
+def test_report_atomically_replaces_final_path_instead_of_following_it(tmp_path):
+    output = tmp_path / "report"
+    output.mkdir()
+    prior_target = tmp_path / "prior-valid-report.json"
+    prior_target.write_text("prior valid aggregate report\n", encoding="utf-8")
+    final_path = output / "cccd-spike-report.json"
+    final_path.symlink_to(prior_target)
+    report = SpikeReport(
+        iteration=1,
+        decision="proceed",
+        metrics=metric_fixture(),
+        thresholds=dict(spike.THRESHOLDS),
+    )
+
+    spike._write_report(report, str(output))
+
+    assert not final_path.is_symlink()
+    assert json.loads(final_path.read_text(encoding="utf-8"))["decision"] == "proceed"
+    assert prior_target.read_text(encoding="utf-8") == "prior valid aggregate report\n"
+    assert [path.name for path in output.iterdir()] == [
+        "cccd-spike-report.json",
+    ]
 
 
 def test_duplicate_candidate_ids_surface_as_invalid_without_partial_report(

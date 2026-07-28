@@ -249,6 +249,15 @@ def _validate_extraction(extraction: ExtractionResult) -> None:
     drawing_ids = [drawing.id for drawing in extraction.drawings]
     if len(drawing_ids) != len(set(drawing_ids)):
         raise InvalidSpikeInput("duplicate extracted drawing ID")
+    issue_ids = [issue.drawing_id for issue in extraction.issues]
+    if any(drawing_id is None for drawing_id in issue_ids):
+        raise InvalidSpikeInput("unaccounted extraction issue")
+    if (
+        len(issue_ids) != len(set(issue_ids))
+        or not set(drawing_ids).isdisjoint(issue_ids)
+        or len(drawing_ids) + len(issue_ids) != extraction.drawing_instances
+    ):
+        raise InvalidSpikeInput("invalid extraction issue coverage")
     if (
         extraction.drawing_instances < 0
         or len(extraction.drawings) > extraction.drawing_instances
@@ -361,9 +370,28 @@ def _digits(value: object) -> str:
 
 def _write_report(report: SpikeReport, output_dir: str) -> None:
     path = os.path.join(output_dir, "cccd-spike-report.json")
-    with open(path, "w", encoding="utf-8") as destination:
-        json.dump(asdict(report), destination, indent=2, sort_keys=True)
-        destination.write("\n")
+    descriptor, temporary_path = tempfile.mkstemp(
+        dir=output_dir,
+        prefix=".cccd-spike-report-",
+        suffix=".tmp",
+        text=True,
+    )
+    try:
+        destination = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = -1
+        with destination:
+            json.dump(asdict(report), destination, indent=2, sort_keys=True)
+            destination.write("\n")
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
 
 
 class _PrivateArgumentParser(argparse.ArgumentParser):
