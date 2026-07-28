@@ -1,11 +1,29 @@
+import io
 import json
 import os
 import time
+import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
 import app as appmod
 import pipeline as pl
 from app import app, rewrite_manifest_urls
+
+
+def _minimal_xlsx_bytes():
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
+        )
+    return content.getvalue()
+
 
 def test_rewrite_manifest_urls_points_pages_at_api():
     m = {"docs": [{"pages": [{"src": "/abs/whatever/pg0.png", "width": 10, "height": 20}]}]}
@@ -88,7 +106,7 @@ def test_invalid_cccd_extension_creates_no_case(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
     response = TestClient(app).post("/api/cases", files={
         "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
-        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "roster": ("roster.xlsx", _minimal_xlsx_bytes(), "application/octet-stream"),
         "cccd": ("cards.xls", b"old", "application/octet-stream"),
     })
     assert response.status_code == 422
@@ -101,12 +119,39 @@ def test_oversized_cccd_creates_no_case(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "MAX_CCCD_WORKBOOK_BYTES", 3)
     response = TestClient(app).post("/api/cases", files={
         "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
-        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "roster": ("roster.xlsx", _minimal_xlsx_bytes(), "application/octet-stream"),
         "cccd": ("cards.xlsx", b"four", "application/octet-stream"),
     })
     assert response.status_code == 413
     assert response.json()["detail"]["code"] == "cccd-workbook-too-large"
     assert appmod.store.list() == []
+
+
+@pytest.mark.parametrize(
+    "filename, content",
+    [
+        ("roster.xlsx", b"not-an-xlsx-container"),
+        ("roster.xls", _minimal_xlsx_bytes()),
+    ],
+)
+def test_cccd_requires_an_actual_xlsx_roster_before_case_creation(
+    tmp_path,
+    monkeypatch,
+    filename,
+    content,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": (filename, content, "application/octet-stream"),
+        "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_cccd_upload_is_saved_passed_and_detail_is_redacted(tmp_path, monkeypatch):
@@ -121,7 +166,7 @@ def test_cccd_upload_is_saved_passed_and_detail_is_redacted(tmp_path, monkeypatc
     client = TestClient(app)
     response = client.post("/api/cases", files={
         "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
-        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "roster": ("roster.xlsx", _minimal_xlsx_bytes(), "application/octet-stream"),
         "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
     })
     cid = response.json()["case_id"]

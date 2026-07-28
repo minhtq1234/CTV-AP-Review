@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -92,6 +93,11 @@ def _validate_cccd_upload(
             status_code=422,
             detail={"code": "cccd-requires-roster"},
         )
+    if not _is_xlsx_upload(roster):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-roster-workbook"},
+        )
     if not (cccd.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(
             status_code=422,
@@ -102,6 +108,21 @@ def _validate_cccd_upload(
             status_code=413,
             detail={"code": "cccd-workbook-too-large"},
         )
+
+
+def _is_xlsx_upload(upload: UploadFile) -> bool:
+    if not (upload.filename or "").casefold().endswith(".xlsx"):
+        return False
+    try:
+        upload.file.seek(0)
+        with zipfile.ZipFile(upload.file) as archive:
+            archive.getinfo("[Content_Types].xml")
+            archive.getinfo("xl/workbook.xml")
+        return True
+    except (KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return False
+    finally:
+        upload.file.seek(0)
 
 
 def _run_case(
