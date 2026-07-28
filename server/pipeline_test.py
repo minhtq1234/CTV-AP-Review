@@ -278,6 +278,36 @@ def test_pipeline_runs_cccd_after_manifests_and_returns_safe_result(
     assert result["cccdWorkbook"]["errorCode"] == "ocr-unavailable"
 
 
+def test_cccd_error_result_keeps_pdf_packets_reviewable(tmp_path, monkeypatch):
+    _install_fake_detection(monkeypatch)
+    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    monkeypatch.setattr(
+        pl,
+        "ingest_cccd_workbook",
+        lambda xlsx, rows, packets, case_dir, paths, assets, cb: {
+            "packets": packets,
+            "cccdWorkbook": {
+                "status": "error",
+                "errorCode": "invalid-workbook",
+                "summary": {"candidates": 0, "attached": 0, "unresolved": 0},
+                "mappings": [],
+            },
+        },
+    )
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        "roster.xlsx",
+        str(tmp_path),
+        lambda *args: None,
+        cccd_xlsx_path="malformed.xlsx",
+    )
+
+    assert len(result["packets"]) == 2
+    assert result["cccdWorkbook"]["status"] == "error"
+    assert result["cccdWorkbook"]["errorCode"] == "invalid-workbook"
+
+
 # ---------------------------------------------------------------------------
 # run_pipeline: manifest carries the coded checklist (Task 2)
 #

@@ -1,0 +1,65 @@
+# Task 9 report — CCCD regression, privacy audit, and browser fixture
+
+## Scope and characterization
+
+Started from `401ddd2` on `codex/cccd-mapping-spike`. This task adds only a
+PII-free smoke backend and a pipeline failure-isolation regression test.
+
+`test_cccd_error_result_keeps_pdf_packets_reviewable` passed immediately when
+first added: Task 6 already preserves the PDF-derived packets and returns an
+`invalid-workbook` CCCD result as data. It is therefore a characterization
+test; no production correction was made.
+
+## Verification
+
+- Backend: `cd server && python3 -m pytest -q` — 294 passed, 6 existing
+  dependency/runtime warnings.
+- Frontend: `npx vitest run` — 12 files, 70 tests passed.
+- Production build: `npm run build` — passed.
+- Focused pipeline suite: `cd server && python3 -m pytest pipeline_test.py -q`
+  — 15 passed.
+- Fixture import: requires `CTV_CCCD_SMOKE_ROOT`; with an explicit disposable
+  root it imports and exposes the FastAPI app.
+- `git diff --check` — passed.
+
+## Privacy and boundary audit
+
+- Case detail removes raw `cccdWorkbook` and derives `cccdSummary` through
+  `compact_cccd_summary`; the list endpoint exposes neither workbook metadata
+  nor mappings.
+- The browser contract carries only aggregate CCCD summary data. Packet-level
+  identity remains available only to the reviewer flow, not the case summary.
+- `server/cccd_ingest.py`, `server/cccd_workbook.py`, and `server/cccd_ocr.py`
+  contain no `print`, logger, or logging calls.
+- `cccd_spike` has no production `server/` or `src/` import/call path.
+- The fixture contains only deliberate synthetic values (`000000000001`,
+  `Synthetic Reviewer`) and creates all generated PNGs beneath the disposable
+  smoke root. It neither imports nor calls `cccd_ingest`.
+- The existing `CaseDetail` redaction test intentionally seeds a synthetic
+  `/private/source/000000000001.png` path and asserts that neither it nor the
+  synthetic identity reaches the detail response. It is test-only and not a
+  real attachment path.
+
+## Controller browser handoff
+
+In terminal 1, create disposable placeholder uploads and run the fixture:
+
+```bash
+SMOKE_ROOT="$(mktemp -d)"
+touch "$SMOKE_ROOT/input.pdf" "$SMOKE_ROOT/roster.xlsx" "$SMOKE_ROOT/cards.xlsx"
+CTV_CCCD_SMOKE_ROOT="$SMOKE_ROOT" \
+  python3 -m uvicorn cccd_smoke_app:app --app-dir server \
+  --host 127.0.0.1 --port 8000
+```
+
+In terminal 2:
+
+```bash
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Use only `$SMOKE_ROOT/input.pdf`, `$SMOKE_ROOT/roster.xlsx`, and
+`$SMOKE_ROOT/cards.xlsx`; their contents are deliberately unused by the
+fixture. The controller should complete the approved upload-blocker, live
+`Đọc và ghép ảnh CCCD…`, summary, packet-tab, A1 reviewer-control, and
+console-error checks. No browser interaction was performed in this task.
