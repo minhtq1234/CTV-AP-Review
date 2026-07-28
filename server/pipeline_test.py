@@ -187,8 +187,14 @@ def test_packet_meta_no_roster_is_no_roster_with_null_identity(tmp_path, monkeyp
         assert set(p["ocrIdentity"]) == {"cccd", "name"}
 
 
-def test_pipeline_returns_empty_cccd_workbook_for_legacy_processing(tmp_path, monkeypatch):
+def test_pipeline_without_cccd_keeps_behavior_and_returns_null_workbook(tmp_path, monkeypatch):
     _install_fake_detection(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        pl,
+        "ingest_cccd_workbook",
+        lambda *args: called.append(args),
+    )
 
     result = pl.run_pipeline(
         str(tmp_path / "input.pdf"), None, str(tmp_path), lambda *a: None,
@@ -196,6 +202,80 @@ def test_pipeline_returns_empty_cccd_workbook_for_legacy_processing(tmp_path, mo
     )
 
     assert result["cccdWorkbook"] is None
+    assert called == []
+
+
+def test_pipeline_runs_cccd_after_manifests_and_returns_safe_result(
+    tmp_path,
+    monkeypatch,
+):
+    _install_fake_detection(monkeypatch)
+    monkeypatch.setattr(pl.dp, "_roster_rows", lambda path: _ROSTER_ROWS)
+    seen = {"calls": []}
+    progress = []
+
+    def fake_ingest(
+        xlsx_path,
+        roster_rows,
+        packets,
+        case_dir,
+        packet_manifest_paths,
+        assets_dir,
+        progress_cb,
+    ):
+        assert all(os.path.isfile(path) for path in packet_manifest_paths.values())
+        seen["calls"].append({
+            "xlsx_path": xlsx_path,
+            "roster_rows": roster_rows,
+            "packets": packets,
+            "case_dir": case_dir,
+            "packet_manifest_paths": packet_manifest_paths,
+            "assets_dir": assets_dir,
+            "progress_cb": progress_cb,
+        })
+        return {
+            "packets": [{"index": 0, "cccdAttached": False}],
+            "cccdWorkbook": {
+                "status": "partial",
+                "summary": {"candidates": 1, "attached": 0, "unresolved": 1},
+                "mappings": [],
+                "errorCode": "ocr-unavailable",
+            },
+        }
+
+    monkeypatch.setattr(pl, "ingest_cccd_workbook", fake_ingest)
+    progress_cb = lambda *args: progress.append(args)
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        "roster.xlsx",
+        str(tmp_path),
+        progress_cb,
+        cccd_xlsx_path="cards.xlsx",
+    )
+
+    assert len(seen["calls"]) == 1
+    call = seen["calls"][0]
+    assert call["xlsx_path"] == "cards.xlsx"
+    assert call["roster_rows"] == [{
+        "name": "Nguyễn Văn A",
+        "cccd": "048091001309",
+        "mst": "048091001309",
+        "ngaysinh": "24/04/1991",
+        "tk": "19001234567",
+        "phi": "10.000.000",
+        "product": "Danh Tướng 3Q",
+    }]
+    assert set(call["packet_manifest_paths"]) == {0, 1}
+    assert set(call["packet_manifest_paths"].values()) == {
+        str(tmp_path / "packets" / "0" / "manifest.json"),
+        str(tmp_path / "packets" / "1" / "manifest.json"),
+    }
+    assert call["case_dir"] == str(tmp_path)
+    assert call["assets_dir"] == str(tmp_path / "cccd-assets")
+    assert call["progress_cb"] is progress_cb
+    assert progress[-1] == ("cccd", 0, 0, "")
+    assert result["packets"] == [{"index": 0, "cccdAttached": False}]
+    assert result["cccdWorkbook"]["errorCode"] == "ocr-unavailable"
 
 
 # ---------------------------------------------------------------------------

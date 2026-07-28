@@ -21,6 +21,7 @@ if _SPLITTER_DIR not in sys.path:
     sys.path.insert(0, _SPLITTER_DIR)
 
 import checklist  # noqa: E402
+from cccd_ingest import ingest_cccd_workbook  # noqa: E402
 import detect_packets as dp  # noqa: E402
 import ocr_extract as oc  # noqa: E402
 
@@ -206,9 +207,9 @@ def run_pipeline(
 ) -> dict:
     """Split `pdf_path` into packets, OCR/extract each into a manifest under
     `job_dir/packets/{i}/`, reporting progress via `progress_cb(stage, done,
-    total, detail)`. `cccd_xlsx_path` is accepted for the upload boundary but
-    is not processed until CCCD ingestion is implemented. Returns
-    `{"summary": {...}, "packets": [...], "cccdWorkbook": None}`.
+    total, detail)`. A supplied `cccd_xlsx_path` is ingested after all packet
+    manifests have been created. Returns `{"summary": {...}, "packets": [...],
+    "cccdWorkbook": ...}`.
     """
     progress_cb("splitting", 0, 0, "")
 
@@ -218,11 +219,13 @@ def run_pipeline(
     cover_pages = dp.covers_from_scores(scores, threshold)
 
     roster_rows_raw = None
+    roster_rows: list[dict[str, str]] = []
     roster_names = None
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     if roster_path:
         roster_rows_raw = dp._roster_rows(roster_path)
+        roster_rows = all_roster_rows(roster_rows_raw)
         roster_names = dp.extract_roster_names(roster_rows_raw)
         by_cccd, by_name = build_roster_index(roster_rows_raw)
     roster_n = len(roster_names) if roster_names is not None else None
@@ -308,4 +311,24 @@ def run_pipeline(
         "matched": matched,
         "auto_merged": len(merged_covers),
     }
-    return {"summary": summary, "packets": packets_out, "cccdWorkbook": None}
+    cccd_workbook = None
+    if cccd_xlsx_path is not None:
+        progress_cb("cccd", 0, 0, "")
+        packet_manifest_paths = {
+            packet["index"]: os.path.join(
+                job_dir, "packets", str(packet["index"]), "manifest.json",
+            )
+            for packet in packets_out
+        }
+        ingest_result = ingest_cccd_workbook(
+            cccd_xlsx_path,
+            roster_rows,
+            packets_out,
+            job_dir,
+            packet_manifest_paths,
+            os.path.join(job_dir, "cccd-assets"),
+            progress_cb,
+        )
+        packets_out = ingest_result["packets"]
+        cccd_workbook = ingest_result["cccdWorkbook"]
+    return {"summary": summary, "packets": packets_out, "cccdWorkbook": cccd_workbook}
