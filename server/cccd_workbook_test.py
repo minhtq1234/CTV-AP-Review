@@ -1,0 +1,215 @@
+import base64
+import os
+import zipfile
+
+import pytest
+
+import cccd_workbook
+from cccd_workbook import CccdWorkbookError, extract_drawings
+
+
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="
+)
+
+
+def _jpeg():
+    return (
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x01\x00\x01"
+        b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00\xff\xd9"
+    )
+
+
+def _rels(items):
+    body = "".join(
+        f'<Relationship Id="{rel_id}" Type="{kind}" Target="{target}"{mode}/>'
+        for rel_id, kind, target, mode in items
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f"{body}</Relationships>"
+    )
+
+
+def _write_synthetic_xlsx(path, sheets):
+    with zipfile.ZipFile(path, "w") as archive:
+        workbook_sheets = []
+        workbook_rels = []
+        for index, (sheet_name, images) in enumerate(sheets, start=1):
+            workbook_sheets.append(
+                f'<sheet name="{sheet_name}" sheetId="{index}" r:id="rId{index}"/>'
+            )
+            workbook_rels.append((
+                f"rId{index}",
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+                f"worksheets/sheet{index}.xml",
+                "",
+            ))
+            archive.writestr(
+                f"xl/worksheets/sheet{index}.xml",
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<drawing r:id="rIdDrawing"/></worksheet>',
+            )
+            archive.writestr(
+                f"xl/worksheets/_rels/sheet{index}.xml.rels",
+                _rels([(
+                    "rIdDrawing",
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing",
+                    f"../drawings/drawing{index}.xml",
+                    "",
+                )]),
+            )
+
+            anchors = []
+            drawing_rels = []
+            for rel_id, media_path, anchor, image in images:
+                from_row, from_col, to_row, to_col = anchor
+                anchors.append(
+                    '<xdr:twoCellAnchor><xdr:from>'
+                    f'<xdr:col>{from_col}</xdr:col><xdr:row>{from_row}</xdr:row>'
+                    '</xdr:from><xdr:to>'
+                    f'<xdr:col>{to_col}</xdr:col><xdr:row>{to_row}</xdr:row>'
+                    '</xdr:to><xdr:pic><xdr:blipFill>'
+                    f'<a:blip r:embed="{rel_id}"/>'
+                    '</xdr:blipFill></xdr:pic></xdr:twoCellAnchor>'
+                )
+                drawing_rels.append((
+                    rel_id,
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+                    f"../media/{media_path.rsplit('/', 1)[-1]}",
+                    "",
+                ))
+                archive.writestr(media_path, image)
+            archive.writestr(
+                f"xl/drawings/drawing{index}.xml",
+                '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+                'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                f"{''.join(anchors)}</xdr:wsDr>",
+            )
+            archive.writestr(
+                f"xl/drawings/_rels/drawing{index}.xml.rels",
+                _rels(drawing_rels),
+            )
+
+        archive.writestr(
+            "xl/workbook.xml",
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f"<sheets>{''.join(workbook_sheets)}</sheets></workbook>",
+        )
+        archive.writestr("xl/_rels/workbook.xml.rels", _rels(workbook_rels))
+
+
+def _replace_zip_part(path, part_name, content):
+    replacement = path.with_suffix(".replacement.xlsx")
+    with zipfile.ZipFile(path) as old, zipfile.ZipFile(replacement, "w") as new:
+        for info in old.infolist():
+            new.writestr(
+                info,
+                content if info.filename == part_name else old.read(info.filename),
+            )
+    replacement.replace(path)
+
+
+def test_extract_drawings_follows_relationships_not_media_names(tmp_path):
+    book = tmp_path / "cards.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [
+            ("Cards A", [
+                ("rId9", "xl/media/image20.png", (1, 0, 10, 1), _PNG),
+                ("rId2", "xl/media/image3.png", (1, 1, 10, 2), _PNG),
+            ]),
+            ("Cards B", [
+                ("rId4", "xl/media/image1.jpeg", (20, 0, 28, 1), _jpeg()),
+            ]),
+        ],
+    )
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert result.drawing_instances == 3
+    assert [
+        (drawing.anchor.sheet, drawing.anchor.from_row, drawing.extension)
+        for drawing in result.drawings
+    ] == [
+        ("Cards A", 1, "png"),
+        ("Cards A", 1, "png"),
+        ("Cards B", 20, "jpg"),
+    ]
+    assert all(os.path.isfile(drawing.stored_path) for drawing in result.drawings)
+
+
+@pytest.mark.parametrize(
+    ("target", "mode", "code"),
+    [
+        ("https://example.invalid/image.png", ' TargetMode="External"', "external-relationship"),
+        ("../../../outside.png", "", "invalid-target"),
+    ],
+)
+def test_unsafe_image_relationship_is_reported(tmp_path, target, mode, code):
+    book = tmp_path / "unsafe.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _PNG)])],
+    )
+    _replace_zip_part(
+        book,
+        "xl/drawings/_rels/drawing1.xml.rels",
+        _rels([(
+            "rId1",
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+            target,
+            mode,
+        )]),
+    )
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert [issue.code for issue in result.issues] == [code]
+    assert result.drawings == []
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "code"),
+    [
+        ("MAX_ARCHIVE_MEMBERS", "archive-member-limit"),
+        ("MAX_ARCHIVE_MEMBER_BYTES", "archive-member-too-large"),
+        ("MAX_ARCHIVE_UNCOMPRESSED_BYTES", "archive-uncompressed-too-large"),
+    ],
+)
+def test_archive_limits_are_hard_failures(tmp_path, monkeypatch, limit_name, code):
+    book = tmp_path / "bounded.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [("rId1", "xl/media/image1.png", (0, 0, 1, 1), _PNG)])],
+    )
+    monkeypatch.setattr(cccd_workbook, limit_name, 1)
+
+    with pytest.raises(CccdWorkbookError, match=code):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+
+def test_total_image_budget_is_enforced_before_writing_next_image(
+    tmp_path,
+    monkeypatch,
+):
+    book = tmp_path / "budget.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [
+            ("rId1", "xl/media/image1.png", (0, 0, 1, 1), _PNG),
+            ("rId2", "xl/media/image2.png", (1, 0, 2, 1), _PNG),
+        ])],
+    )
+    monkeypatch.setattr(cccd_workbook, "MAX_TOTAL_IMAGE_BYTES", len(_PNG))
+
+    with pytest.raises(CccdWorkbookError, match="total-image-too-large"):
+        extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert sorted(path.name for path in (tmp_path / "out").iterdir()) == [
+        "drawing-0001.png",
+    ]
