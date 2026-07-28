@@ -16,7 +16,7 @@ from cccd_matching import (
     ResolutionResult,
     resolve_candidates,
 )
-from cccd_ocr import analyze_drawing
+from cccd_ocr import EvidenceWriteBudget, analyze_drawing
 from cccd_pairing import (
     AnalyzedDrawing,
     CardCandidate,
@@ -198,6 +198,15 @@ def plan_candidate_mappings(
             if candidate.front is not None
             else None
         )
+        provenance_ocr = (
+            front_ocr
+            if front_ocr is not None
+            else (
+                candidate.unknown.ocr
+                if candidate.unknown is not None
+                else None
+            )
+        )
         issues = list(
             dict.fromkeys((*candidate.issues, *resolution.issues))
         )
@@ -219,24 +228,32 @@ def plan_candidate_mappings(
             "back": _serialize_side(candidate.back, case_dir),
             "unknown": _serialize_side(candidate.unknown, case_dir),
             "ocrIdentity": {
-                "cccd": front_ocr.cccd if front_ocr is not None else "",
-                "name": front_ocr.name if front_ocr is not None else "",
+                "cccd": (
+                    provenance_ocr.cccd
+                    if provenance_ocr is not None
+                    else ""
+                ),
+                "name": (
+                    provenance_ocr.name
+                    if provenance_ocr is not None
+                    else ""
+                ),
             },
             "ocrConfidence": {
                 "cccd": (
-                    front_ocr.cccd_confidence
-                    if front_ocr is not None
+                    provenance_ocr.cccd_confidence
+                    if provenance_ocr is not None
                     else 0.0
                 ),
                 "name": (
-                    front_ocr.name_confidence
-                    if front_ocr is not None
+                    provenance_ocr.name_confidence
+                    if provenance_ocr is not None
                     else 0.0
                 ),
             },
             "numberBbox": (
-                front_ocr.number_bbox
-                if front_ocr is not None
+                provenance_ocr.number_bbox
+                if provenance_ocr is not None
                 else None
             ),
             "state": resolution.state,
@@ -578,10 +595,14 @@ def ingest_cccd_workbook(
 
     analyzed = []
     ocr_failures = 0
+    evidence_budget = EvidenceWriteBudget()
     for drawing in extraction.drawings:
         try:
             analyzed.append(
-                AnalyzedDrawing(drawing, analyze_drawing(drawing))
+                AnalyzedDrawing(
+                    drawing,
+                    analyze_drawing(drawing, evidence_budget),
+                )
             )
         except Exception:
             ocr_failures += 1

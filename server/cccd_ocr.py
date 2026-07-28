@@ -10,7 +10,11 @@ from typing import Literal
 import pytesseract
 from PIL import Image, ImageOps
 
-from cccd_workbook import EmbeddedDrawing
+from cccd_workbook import (
+    MAX_IMAGE_BYTES,
+    MAX_TOTAL_IMAGE_BYTES,
+    EmbeddedDrawing,
+)
 from ocr_extract import _upright_rotation, norm
 
 
@@ -39,6 +43,22 @@ class CccdImageOcr:
     evidence_path: str | None = None
     evidence_width: int | None = None
     evidence_height: int | None = None
+
+
+@dataclass
+class EvidenceWriteBudget:
+    per_file_limit: int = MAX_IMAGE_BYTES
+    total_limit: int = MAX_TOTAL_IMAGE_BYTES
+    used_bytes: int = 0
+
+    def ensure_can_write(self, size: int) -> None:
+        if size > self.per_file_limit:
+            raise ValueError("upright-evidence-too-large")
+        if self.used_bytes + size > self.total_limit:
+            raise ValueError("upright-evidence-total-too-large")
+
+    def record(self, size: int) -> None:
+        self.used_bytes += size
 
 
 def _group_words_into_lines(
@@ -261,7 +281,9 @@ def _upright_image(path: str) -> Image.Image:
 def _persist_upright_evidence(
     drawing: EmbeddedDrawing,
     image: Image.Image,
+    budget: EvidenceWriteBudget | None = None,
 ) -> str:
+    write_budget = budget or EvidenceWriteBudget()
     base, _ = os.path.splitext(drawing.stored_path)
     destination = f"{base}-upright.{drawing.extension}"
     descriptor, temporary_path = tempfile.mkstemp(
@@ -275,7 +297,10 @@ def _persist_upright_evidence(
             image.save(temporary_path, format="JPEG", quality=95)
         else:
             image.save(temporary_path, format="PNG")
+        encoded_size = os.path.getsize(temporary_path)
+        write_budget.ensure_can_write(encoded_size)
         os.replace(temporary_path, destination)
+        write_budget.record(encoded_size)
     finally:
         if os.path.exists(temporary_path):
             os.unlink(temporary_path)
@@ -400,7 +425,10 @@ def _name_label_span(line: list[OcrWord]) -> tuple[int, int]:
     raise ValueError("name label was not found")
 
 
-def analyze_drawing(drawing: EmbeddedDrawing) -> CccdImageOcr:
+def analyze_drawing(
+    drawing: EmbeddedDrawing,
+    evidence_budget: EvidenceWriteBudget | None = None,
+) -> CccdImageOcr:
     """Analyze one drawing and re-OCR only a safely located number crop."""
     image = _upright_image(drawing.stored_path)
     words = _full_image_words(image)
@@ -416,7 +444,7 @@ def analyze_drawing(drawing: EmbeddedDrawing) -> CccdImageOcr:
             cccd = candidate
             cccd_confidence = confidence
     evidence_path = (
-        _persist_upright_evidence(drawing, image)
+        _persist_upright_evidence(drawing, image, evidence_budget)
         if image.info.get("_cccd_transformed") is True
         else None
     )

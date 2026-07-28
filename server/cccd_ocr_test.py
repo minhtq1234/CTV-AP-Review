@@ -2,6 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 import cccd_ocr as co
 from cccd_ocr import OcrWord, classify_side, locate_number_region
@@ -180,3 +181,45 @@ def test_analyze_drawing_persists_upright_evidence_for_exif_rotation(
     with Image.open(result.evidence_path) as evidence:
         assert evidence.size == (250, 400)
     assert (result.evidence_width, result.evidence_height) == (250, 400)
+
+
+def test_upright_evidence_rejects_per_file_overflow_before_replace(tmp_path):
+    drawing = _drawing(tmp_path, width=10, height=10)
+    image = Image.new("RGB", (10, 10), "white")
+    budget = co.EvidenceWriteBudget(per_file_limit=1, total_limit=1_000)
+
+    with pytest.raises(ValueError, match="upright-evidence-too-large"):
+        co._persist_upright_evidence(drawing, image, budget)
+
+    assert not (tmp_path / "synthetic-upright.png").exists()
+    assert not list(tmp_path.glob(".cccd-upright-*"))
+    assert budget.used_bytes == 0
+
+
+def test_upright_evidence_enforces_one_shared_cumulative_budget(tmp_path):
+    first = _drawing(tmp_path, width=10, height=10)
+    second = replace(
+        first,
+        id="drawing-0002",
+        stored_path=str(tmp_path / "synthetic-2.png"),
+    )
+    image = Image.new("RGB", (10, 10), "white")
+    probe = co._persist_upright_evidence(
+        first,
+        image,
+        co.EvidenceWriteBudget(),
+    )
+    encoded_size = Path(probe).stat().st_size
+    Path(probe).unlink()
+    budget = co.EvidenceWriteBudget(
+        per_file_limit=encoded_size,
+        total_limit=encoded_size,
+    )
+
+    co._persist_upright_evidence(first, image, budget)
+    with pytest.raises(ValueError, match="upright-evidence-total-too-large"):
+        co._persist_upright_evidence(second, image, budget)
+
+    assert budget.used_bytes == encoded_size
+    assert not (tmp_path / "synthetic-2-upright.png").exists()
+    assert not list(tmp_path.glob(".cccd-upright-*"))

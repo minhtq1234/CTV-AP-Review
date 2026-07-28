@@ -346,7 +346,7 @@ def test_ingest_returns_aggregate_and_preserves_unresolved_provenance(
     monkeypatch.setattr(
         cccd_ingest,
         "analyze_drawing",
-        lambda drawing: analyzed_by_id[drawing.id],
+        lambda drawing, *args: analyzed_by_id[drawing.id],
     )
 
     result = ingest_cccd_workbook(
@@ -405,7 +405,7 @@ def test_ingest_removes_prior_attachment_when_match_becomes_unresolved(
     monkeypatch.setattr(
         cccd_ingest,
         "analyze_drawing",
-        lambda drawing: analyzed_by_id[drawing.id],
+        lambda drawing, *args: analyzed_by_id[drawing.id],
     )
 
     result = ingest_cccd_workbook(
@@ -433,6 +433,15 @@ def test_ingest_removes_prior_attachment_when_match_becomes_unresolved(
 
 def test_unknown_side_mapping_preserves_image_provenance(tmp_path):
     unknown = analyzed(tmp_path, "drawing-unknown", "unknown")
+    unknown = replace(
+        unknown,
+        ocr=replace(
+            unknown.ocr,
+            cccd=CCCD,
+            cccd_confidence=.72,
+            number_bbox={"x": 2, "y": 3, "width": 40, "height": 8},
+        ),
+    )
     candidate = CardCandidate(
         "card-drawing-unknown",
         None,
@@ -461,6 +470,14 @@ def test_unknown_side_mapping_preserves_image_provenance(tmp_path):
     assert planned.mapping["back"] is None
     assert planned.mapping["unknown"]["drawingId"] == "drawing-unknown"
     assert planned.mapping["unknown"]["sourcePath"].startswith("cccd-assets/")
+    assert planned.mapping["ocrIdentity"]["cccd"] == CCCD
+    assert planned.mapping["ocrConfidence"]["cccd"] == .72
+    assert planned.mapping["numberBbox"] == {
+        "x": 2,
+        "y": 3,
+        "width": 40,
+        "height": 8,
+    }
 
 
 def test_ingest_removes_prior_attachment_when_candidate_disappears(
@@ -485,7 +502,7 @@ def test_ingest_removes_prior_attachment_when_candidate_disappears(
     monkeypatch.setattr(
         cccd_ingest,
         "analyze_drawing",
-        lambda drawing: unknown.ocr,
+        lambda drawing, *args: unknown.ocr,
     )
 
     result = ingest_cccd_workbook(
