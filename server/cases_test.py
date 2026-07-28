@@ -1,5 +1,11 @@
 import json, os, tempfile
-from cases import CaseStore, case_status, progress_of, needs_resubmit
+from cases import (
+    CaseStore,
+    case_status,
+    compact_cccd_summary,
+    needs_resubmit,
+    progress_of,
+)
 
 def _pkt(index, done=False, flags=None, matched_by="cccd", rejection=None):
     fields = {}
@@ -226,6 +232,86 @@ def test_load_adds_null_rejection_to_existing_review_without_changing_fields(tmp
     }
     persisted = json.loads((d / "case.json").read_text(encoding="utf-8"))
     assert persisted["packets"][0]["review"]["rejection"] is None
+
+
+def test_cccd_workbook_metadata_persists_across_restart(tmp_path):
+    store = CaseStore(str(tmp_path))
+    cid = store.create(
+        name="Synthetic",
+        pdf_name="packet.pdf",
+        roster_name="roster.xlsx",
+        cccd_name="cards.xlsx",
+    )
+    workbook = {
+        "status": "ready",
+        "summary": {"candidates": 3, "attached": 2, "unresolved": 1},
+        "mappings": [{"candidateId": "card-1", "ocrIdentity": {"cccd": "secret"}}],
+    }
+
+    store.set_result(
+        cid,
+        summary={"found": 1},
+        packets=_pkts([False]),
+        cccd_workbook=workbook,
+    )
+
+    reloaded = CaseStore(str(tmp_path)).get(cid)
+    assert reloaded["cccdName"] == "cards.xlsx"
+    assert reloaded["cccdWorkbook"] == workbook
+    assert set(CaseStore(str(tmp_path)).list()[0]) == {
+        "id", "name", "createdAt", "status", "pdfName", "progress",
+    }
+
+
+def test_legacy_case_normalizes_missing_cccd_fields_without_changing_review(
+    tmp_path,
+):
+    cid = "legacy-cccd"
+    case_dir = tmp_path / cid
+    case_dir.mkdir()
+    rejection = {
+        "reasons": ["missing_signature"],
+        "note": "Synthetic note",
+    }
+    case = {
+        "id": cid,
+        "name": "Synthetic",
+        "createdAt": None,
+        "status": "done",
+        "pdfName": "packet.pdf",
+        "rosterName": None,
+        "summary": None,
+        "error": None,
+        "packets": [_pkt(0, done=True, rejection=rejection)],
+    }
+    (case_dir / "case.json").write_text(
+        json.dumps(case),
+        encoding="utf-8",
+    )
+
+    loaded = CaseStore(str(tmp_path)).get(cid)
+
+    assert loaded["cccdName"] is None
+    assert loaded["cccdWorkbook"] is None
+    assert loaded["packets"][0]["review"]["rejection"] == rejection
+
+
+def test_compact_cccd_summary_redacts_mappings_and_private_errors():
+    workbook = {
+        "status": "partial",
+        "errorCode": "private-exception",
+        "summary": {"candidates": "3", "attached": 2, "unresolved": 1},
+        "mappings": [{"ocrIdentity": {"cccd": "000000000001"}}],
+    }
+
+    assert compact_cccd_summary(workbook) == {
+        "status": "partial",
+        "candidates": 3,
+        "attached": 2,
+        "unresolved": 1,
+        "errorCode": "invalid-workbook",
+    }
+    assert compact_cccd_summary(None) is None
 
 
 if __name__ == "__main__":

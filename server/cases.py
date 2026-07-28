@@ -24,6 +24,14 @@ REJECTION_REASON_ORDER = (
     "missing_signature",
 )
 
+SAFE_CCCD_ERROR_CODES = (
+    "invalid-workbook",
+    "no-supported-images",
+    "extraction-incomplete",
+    "ocr-unavailable",
+    "attachment-failed",
+)
+
 
 def normalize_review(review: dict | None) -> dict:
     """Return the complete additive review shape and enforce rejection rules."""
@@ -82,6 +90,27 @@ def progress_of(packets: list[dict]) -> dict:
     }
 
 
+def compact_cccd_summary(workbook: dict | None) -> dict | None:
+    """Return aggregate CCCD state without mappings, OCR values, or paths."""
+    if not workbook:
+        return None
+    counts = workbook.get("summary") or {}
+    out = {
+        "status": workbook.get("status", "error"),
+        "candidates": int(counts.get("candidates", 0)),
+        "attached": int(counts.get("attached", 0)),
+        "unresolved": int(counts.get("unresolved", 0)),
+    }
+    error_code = workbook.get("errorCode")
+    if error_code:
+        out["errorCode"] = (
+            error_code
+            if error_code in SAFE_CCCD_ERROR_CODES
+            else "invalid-workbook"
+        )
+    return out
+
+
 def _ensure_packet_defaults(packet: dict) -> dict:
     """Fill review/match defaults if the pipeline (or a fake test pipeline)
     didn't set them."""
@@ -121,6 +150,12 @@ class CaseStore:
             except Exception:  # noqa: BLE001 - skip corrupt/partial files, don't crash startup
                 continue
             changed = False
+            if "cccdName" not in case:
+                case["cccdName"] = None
+                changed = True
+            if "cccdWorkbook" not in case:
+                case["cccdWorkbook"] = None
+                changed = True
             for i, p in enumerate(case.get("packets", [])):
                 had_review = "review" in p
                 normalized = _ensure_packet_defaults(p)
@@ -156,7 +191,14 @@ class CaseStore:
             json.dump(case, f, ensure_ascii=False, indent=2)
         self._idx[case["id"]] = case
 
-    def create(self, name: str, pdf_name: str, roster_name: str | None, now: str | None = None) -> str:
+    def create(
+        self,
+        name: str,
+        pdf_name: str,
+        roster_name: str | None,
+        now: str | None = None,
+        cccd_name: str | None = None,
+    ) -> str:
         cid = uuid.uuid4().hex
         case = {
             "id": cid,
@@ -165,7 +207,9 @@ class CaseStore:
             "status": "processing",
             "pdfName": pdf_name,
             "rosterName": roster_name,
+            "cccdName": cccd_name,
             "summary": None,
+            "cccdWorkbook": None,
             "error": None,
             "packets": [],
         }
@@ -199,13 +243,20 @@ class CaseStore:
             for c in ordered
         ]
 
-    def set_result(self, cid: str, summary: dict | None, packets: list[dict]) -> None:
+    def set_result(
+        self,
+        cid: str,
+        summary: dict | None,
+        packets: list[dict],
+        cccd_workbook: dict | None = None,
+    ) -> None:
         case = self._idx.get(cid)
         if case is None:
             return
         filled = [_ensure_packet_defaults(p) for p in packets]
         case["summary"] = summary
         case["packets"] = filled
+        case["cccdWorkbook"] = cccd_workbook
         case["status"] = case_status("ready", filled)
         self._write(case)
 
