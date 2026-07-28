@@ -194,6 +194,11 @@ def fill_expected(fields: list[dict], row: dict[str, str] | None) -> list[dict]:
     return filled
 
 
+def load_roster_rows(xlsx_source) -> list[list]:
+    """Read roster rows through the production OpenPyXL loader."""
+    return dp._roster_rows(xlsx_source)
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -224,7 +229,7 @@ def run_pipeline(
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     if roster_path:
-        roster_rows_raw = dp._roster_rows(roster_path)
+        roster_rows_raw = load_roster_rows(roster_path)
         roster_rows = all_roster_rows(roster_rows_raw)
         roster_names = dp.extract_roster_names(roster_rows_raw)
         by_cccd, by_name = build_roster_index(roster_rows_raw)

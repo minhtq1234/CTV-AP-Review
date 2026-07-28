@@ -4,6 +4,7 @@ import os
 import time
 import zipfile
 
+import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 import app as appmod
@@ -13,16 +14,25 @@ from app import app, rewrite_manifest_urls
 
 def _minimal_xlsx_bytes():
     content = io.BytesIO()
-    with zipfile.ZipFile(content, "w") as archive:
-        archive.writestr(
-            "[Content_Types].xml",
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
-        )
-        archive.writestr(
-            "xl/workbook.xml",
-            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
-        )
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(["Họ và tên", "Số CCCD"])
+    worksheet.append(["Synthetic A", "079123456789"])
+    workbook.save(content)
+    workbook.close()
     return content.getvalue()
+
+
+def _malformed_xlsx_bytes():
+    valid = io.BytesIO(_minimal_xlsx_bytes())
+    malformed = io.BytesIO()
+    with zipfile.ZipFile(valid) as source, zipfile.ZipFile(malformed, "w") as target:
+        for info in source.infolist():
+            target.writestr(
+                info,
+                b"<workbook" if info.filename == "xl/workbook.xml" else source.read(info),
+            )
+    return malformed.getvalue()
 
 
 def test_rewrite_manifest_urls_points_pages_at_api():
@@ -145,6 +155,28 @@ def test_cccd_requires_an_actual_xlsx_roster_before_case_creation(
     response = TestClient(app).post("/api/cases", files={
         "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
         "roster": (filename, content, "application/octet-stream"),
+        "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cccd_rejects_malformed_roster_ooxml_before_case_creation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": (
+            "roster.xlsx",
+            _malformed_xlsx_bytes(),
+            "application/octet-stream",
+        ),
         "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
     })
 

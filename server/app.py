@@ -15,7 +15,6 @@ import json
 import os
 import re
 import shutil
-import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -30,8 +29,8 @@ import greennode
 import recap
 from cases import CaseStore, compact_cccd_summary, progress_of
 from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
-from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
-                                    # time below so tests can monkeypatch this name.
+from pipeline import load_roster_rows, run_pipeline  # noqa: F401
+# `run_pipeline` is referenced by name at call time so tests can monkeypatch it.
 from report import build_report
 
 app = FastAPI()
@@ -115,11 +114,9 @@ def _is_xlsx_upload(upload: UploadFile) -> bool:
         return False
     try:
         upload.file.seek(0)
-        with zipfile.ZipFile(upload.file) as archive:
-            archive.getinfo("[Content_Types].xml")
-            archive.getinfo("xl/workbook.xml")
+        load_roster_rows(upload.file)
         return True
-    except (KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+    except Exception:  # noqa: BLE001 - any loader failure means invalid upload
         return False
     finally:
         upload.file.seek(0)
