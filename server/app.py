@@ -27,7 +27,8 @@ import threading
 import checklist
 import greennode
 import recap
-from cases import CaseStore, progress_of
+from cases import CaseStore, compact_cccd_summary, progress_of
+from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
 from report import build_report
@@ -73,26 +74,78 @@ def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
     return out
 
 
-def _run_case(cid: str, pdf_path: str, roster_path: str | None) -> None:
+def _upload_size(upload: UploadFile) -> int:
+    upload.file.seek(0, os.SEEK_END)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    return size
+
+
+def _validate_cccd_upload(
+    roster: UploadFile | None,
+    cccd: UploadFile | None,
+) -> None:
+    if cccd is None:
+        return
+    if roster is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "cccd-requires-roster"},
+        )
+    if not (cccd.filename or "").casefold().endswith(".xlsx"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-cccd-workbook"},
+        )
+    if _upload_size(cccd) > MAX_CCCD_WORKBOOK_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "cccd-workbook-too-large"},
+        )
+
+
+def _run_case(
+    cid: str,
+    pdf_path: str,
+    roster_path: str | None,
+    cccd_path: str | None = None,
+) -> None:
     case_dir = store.case_dir(cid)
 
     def cb(stage: str, done: int, total: int, detail: str) -> None:
         _progress[cid] = {"stage": stage, "done": done, "total": total, "detail": detail}
 
     try:
-        result = run_pipeline(pdf_path, roster_path, case_dir, cb)
-        store.set_result(cid, summary=result.get("summary"), packets=result.get("packets", []))
-    except Exception as e:  # noqa: BLE001 - surfaced to the caller via case["error"]
-        store.set_error(cid, str(e))
+        result = run_pipeline(
+            pdf_path,
+            roster_path,
+            case_dir,
+            cb,
+            cccd_xlsx_path=cccd_path,
+        )
+        store.set_result(
+            cid,
+            summary=result.get("summary"),
+            packets=result.get("packets", []),
+            cccd_workbook=result.get("cccdWorkbook"),
+        )
+    except Exception as error:  # noqa: BLE001 - surfaced to the caller via case["error"]
+        store.set_error(cid, str(error))
     finally:
         _progress.pop(cid, None)
 
 
 @app.post("/api/cases")
-async def post_case(pdf: UploadFile = File(...), roster: UploadFile | None = File(None)):
+async def post_case(
+    pdf: UploadFile = File(...),
+    roster: UploadFile | None = File(None),
+    cccd: UploadFile | None = File(None),
+):
+    _validate_cccd_upload(roster, cccd)
     now = datetime.now(timezone.utc).isoformat()
     cid = store.create(name=pdf.filename or "case", pdf_name=pdf.filename or "input.pdf",
-                        roster_name=roster.filename if roster is not None else None, now=now)
+                        roster_name=roster.filename if roster is not None else None, now=now,
+                        cccd_name=cccd.filename if cccd is not None else None)
     case_dir = store.case_dir(cid)
 
     pdf_path = os.path.join(case_dir, "input.pdf")
@@ -105,7 +158,13 @@ async def post_case(pdf: UploadFile = File(...), roster: UploadFile | None = Fil
         with open(roster_path, "wb") as f:
             shutil.copyfileobj(roster.file, f)
 
-    t = threading.Thread(target=_run_case, args=(cid, pdf_path, roster_path), daemon=True)
+    cccd_path = None
+    if cccd is not None:
+        cccd_path = os.path.join(case_dir, "cccd.xlsx")
+        with open(cccd_path, "wb") as f:
+            shutil.copyfileobj(cccd.file, f)
+
+    t = threading.Thread(target=_run_case, args=(cid, pdf_path, roster_path, cccd_path), daemon=True)
     t.start()
     return {"case_id": cid}
 
@@ -121,6 +180,8 @@ async def get_case(cid: str):
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
     out = dict(case)
+    out.pop("cccdWorkbook", None)
+    out["cccdSummary"] = compact_cccd_summary(case.get("cccdWorkbook"))
     out["progress"] = progress_of(case["packets"])
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]

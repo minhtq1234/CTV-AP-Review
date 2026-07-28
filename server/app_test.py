@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from fastapi.testclient import TestClient
 import app as appmod
@@ -17,11 +18,27 @@ def test_page_endpoint_rejects_traversal():
     c = TestClient(app)
     assert c.get("/api/cases/nope/packets/0/page/..%2f..%2fetc%2fpasswd").status_code in (400, 404)
 
-def _fake_pipeline(pdf, roster, out_dir, cb):
+def _fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
     cb("done", 1, 1, "")
-    return {"summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
-            "packets": [{"index": 0, "name": "P0", "pages": [8, 15],
-                         "confidence": "green", "flags": [], "labels": []}]}
+    return {
+        "summary": {"found": 1, "roster_n": 1, "matched": 1, "auto_merged": 0},
+        "packets": [{
+            "index": 0,
+            "name": "P0",
+            "pages": [8, 15],
+            "confidence": "green",
+            "flags": [],
+            "labels": [],
+        }],
+        "cccdWorkbook": (
+            {
+                "status": "ready",
+                "summary": {"candidates": 1, "attached": 1, "unresolved": 0},
+                "mappings": [{"candidateId": "private-candidate"}],
+            }
+            if cccd_xlsx_path else None
+        ),
+    }
 
 def _ready_case(monkeypatch, tmp_path):
     """Mirror the app's real flow: monkeypatch the pipeline to a fake that
@@ -52,6 +69,79 @@ def test_case_create_list_detail_review(tmp_path, monkeypatch):
     # delete
     assert c.delete(f"/api/cases/{cid}").status_code == 200
     assert c.get("/api/cases").json() == []
+
+
+def test_cccd_requires_roster_before_case_creation(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "cccd": ("cards.xlsx", b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "cccd-requires-roster"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_cccd_extension_creates_no_case(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "cccd": ("cards.xls", b"old", "application/octet-stream"),
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-cccd-workbook"
+    assert appmod.store.list() == []
+
+
+def test_oversized_cccd_creates_no_case(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    monkeypatch.setattr(appmod, "MAX_CCCD_WORKBOOK_BYTES", 3)
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "cccd": ("cards.xlsx", b"four", "application/octet-stream"),
+    })
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "cccd-workbook-too-large"
+    assert appmod.store.list() == []
+
+
+def test_cccd_upload_is_saved_passed_and_detail_is_redacted(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["cccd"] = cccd_xlsx_path
+        return _fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path)
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    client = TestClient(app)
+    response = client.post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": ("roster.xlsx", b"roster", "application/octet-stream"),
+        "cccd": ("cards.xlsx", b"xlsx", "application/octet-stream"),
+    })
+    cid = response.json()["case_id"]
+    for _ in range(100):
+        detail = client.get(f"/api/cases/{cid}").json()
+        if detail["status"] != "processing":
+            break
+        time.sleep(0.02)
+
+    assert os.path.basename(seen["cccd"]) == "cccd.xlsx"
+    assert os.path.isfile(os.path.join(appmod.store.case_dir(cid), "cccd.xlsx"))
+    assert os.path.isfile(os.path.join(appmod.store.case_dir(cid), "roster.xlsx"))
+    assert detail["cccdName"] == "cards.xlsx"
+    assert detail["cccdSummary"] == {
+        "status": "ready",
+        "candidates": 1,
+        "attached": 1,
+        "unresolved": 0,
+    }
+    assert "cccdWorkbook" not in detail
+    assert "private-candidate" not in json.dumps(detail)
 
 def test_get_unknown_case_404():
     assert TestClient(app).get("/api/cases/nope").status_code == 404
