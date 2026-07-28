@@ -172,6 +172,12 @@ def plan_candidate_mappings(
         target_packet_index = _target_packet_index(
             resolution, roster_rows, packets, issues,
         )
+        if candidate.front is None:
+            _append_issue(issues, "missing-front")
+            target_packet_index = None
+        if candidate.back is None:
+            _append_issue(issues, "missing-back")
+            target_packet_index = None
         mapping = {
             "candidateId": candidate.id,
             "front": _serialize_side(candidate.front, case_dir),
@@ -237,7 +243,12 @@ def _attachment_failure(plan: PlannedMapping) -> dict:
 def _remove_stale_owned_files(old_documents, packet_dir: str, new_paths: set[str]) -> None:
     real_packet_dir = os.path.realpath(packet_dir)
     for document in old_documents:
-        for page in document.get("pages", []):
+        if not isinstance(document, dict):
+            continue
+        pages = document.get("pages")
+        if not isinstance(pages, list):
+            continue
+        for page in pages:
             source = page.get("src") if isinstance(page, dict) else None
             if not isinstance(source, str):
                 continue
@@ -249,6 +260,38 @@ def _remove_stale_owned_files(old_documents, packet_dir: str, new_paths: set[str
                 and os.path.isfile(old_path)
             ):
                 os.unlink(old_path)
+
+
+def _cleanup_attempt_files(paths: list[str]) -> None:
+    for path in paths:
+        try:
+            if os.path.isfile(path):
+                os.unlink(path)
+        except Exception:
+            pass
+
+
+def _is_exact_attachment_plan(plan: PlannedMapping) -> bool:
+    target = plan.target_packet_index
+    return (
+        isinstance(target, int)
+        and not isinstance(target, bool)
+        and target >= 0
+        and getattr(plan.resolution, "state", None) == "exact"
+        and isinstance(plan.mapping, dict)
+        and plan.mapping.get("state") == "exact"
+        and plan.candidate.front is not None
+        and plan.candidate.back is not None
+        and isinstance(plan.mapping.get("front"), dict)
+        and isinstance(plan.mapping.get("back"), dict)
+    )
+
+
+def _report_progress(progress_cb: ProgressCallback, done: int, total: int) -> None:
+    try:
+        progress_cb("cccd", done, total, "")
+    except Exception:
+        pass
 
 
 def _error_result(packets: list[dict], error_code: str) -> CccdIngestResult:
@@ -325,7 +368,7 @@ def ingest_cccd_workbook(
                 else _attachment_failure(planned)
             )
         mappings.append(mapping)
-        progress_cb("cccd", done, len(plans), "")
+        _report_progress(progress_cb, done, len(plans))
 
     attached = sum(mapping.get("attachedPacketIndex") is not None for mapping in mappings)
     summary = {
@@ -357,7 +400,10 @@ def attach_planned_mapping(
     if plan.target_packet_index is None:
         return deepcopy(plan.mapping)
     if (
-        not isinstance(packet, dict)
+        not _is_exact_attachment_plan(plan)
+        or not isinstance(packet, dict)
+        or not isinstance(packet.get("index"), int)
+        or isinstance(packet.get("index"), bool)
         or packet.get("index") != plan.target_packet_index
         or not isinstance(manifest_path, str)
         or not isinstance(case_dir, str)
@@ -397,8 +443,8 @@ def attach_planned_mapping(
             destination = os.path.join(packet_dir, _packet_filename(plan, analyzed, side))
             _case_relative(case_dir, destination)
             if not os.path.exists(destination):
-                shutil.copyfile(source, destination)
                 created_files.append(destination)
+                shutil.copyfile(source, destination)
             new_paths.add(os.path.realpath(destination))
             side_mapping = mapping.get(side)
             if not isinstance(side_mapping, dict):
@@ -443,14 +489,13 @@ def attach_planned_mapping(
             updated["docs"],
         )
         _atomic_json_write(manifest_path, updated)
-        mapping["attachedPacketIndex"] = plan.target_packet_index
-        try:
-            _remove_stale_owned_files(old_owned_docs, packet_dir, new_paths)
-        except OSError:
-            pass
-        return mapping
     except Exception:
-        for path in created_files:
-            if os.path.isfile(path):
-                os.unlink(path)
+        _cleanup_attempt_files(created_files)
         return _attachment_failure(plan)
+
+    mapping["attachedPacketIndex"] = plan.target_packet_index
+    try:
+        _remove_stale_owned_files(old_owned_docs, packet_dir, new_paths)
+    except Exception:
+        pass
+    return mapping

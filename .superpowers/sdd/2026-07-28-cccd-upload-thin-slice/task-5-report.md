@@ -71,3 +71,37 @@ Stale-file deletion is intentionally best-effort after the manifest commit:
 the committed manifest is authoritative, and a filesystem cleanup failure can
 leave an unreferenced `cccd-*` image for later cleanup rather than incorrectly
 claiming attachment failure or rolling back a committed manifest.
+
+## Fix round 1 — reviewer findings
+
+All five in-scope findings were addressed with new tests first.
+
+1. The pre-commit write/copy/build block now ends immediately after successful
+   `_atomic_json_write`. Attachment success and stale cleanup run afterwards,
+   so malformed stale pages or cleanup errors cannot invoke rollback or delete
+   newly referenced assets. The stale scan itself tolerates malformed document
+   and page structures.
+2. A destination becomes attempt-owned before `copyfile` runs. Partial PNG and
+   JPEG copies are removed on failure; rollback deletion is best-effort and an
+   unlink failure still produces the safe `attachment-failed` result with the
+   original manifest bytes intact.
+3. Attachment validates direct plans before I/O: the target and packet index
+   must be non-boolean, non-negative integers, both resolution and mapping
+   state must be `exact`, and a complete front/back card plus serialized sides
+   must be present.
+4. Mapping planning clears the target for a missing front or back and retains
+   the existing safe `missing-front`/`missing-back` issues. Such candidates are
+   ordinary `ready` unresolved results, never attachments or technical partials.
+5. Progress reporting is contained; callback failures cannot escape after
+   durable attachment work.
+
+### Fix-round TDD evidence
+
+- RED: 9 focused failures demonstrated the five reported paths (malformed
+  post-commit cleanup, partial copy, invalid direct plans, missing side, and
+  progress callback failure).
+- GREEN: `cd server && python3 -m pytest cccd_ingest_test.py -q` — 65 passed,
+  5 known third-party warnings.
+- CCCD suite: 121 passed, 5 known third-party warnings.
+- Full backend: 292 passed, 6 known third-party warnings.
+- `git diff --check` — clean.

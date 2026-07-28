@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -295,6 +296,105 @@ def test_stale_file_cleanup_error_does_not_hide_committed_attachment(tmp_path, m
     assert any(doc["id"].startswith("cccd-excel-") for doc in json.loads(manifest_path.read_text())["docs"])
 
 
+def test_malformed_stale_docs_after_commit_preserve_committed_assets_and_success(tmp_path):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path, docs=[{
+        "id": f"cccd-excel-{CARD_ID}-front", "kind": "id_front", "label": "old",
+        "pages": None,
+    }])
+
+    result = cccd_ingest.attach_planned_mapping(
+        exact_plan(tmp_path), packet(), str(manifest_path), str(tmp_path),
+    )
+
+    manifest = json.loads(manifest_path.read_text())
+    owned = [doc for doc in manifest["docs"] if doc["id"].startswith("cccd-excel-")]
+    assert result["attachedPacketIndex"] == 0
+    assert "attachment-failed" not in result["issues"]
+    assert len(owned) == 2
+    assert all(Path(doc["pages"][0]["src"]).is_file() for doc in owned)
+
+
+@pytest.mark.parametrize("extension", ["png", "jpg"])
+def test_partial_copy_is_attempt_owned_and_rollback_is_safe(tmp_path, monkeypatch, extension):
+    import cccd_ingest as ingest
+
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    before = manifest_path.read_bytes()
+    front = analyzed(tmp_path, "drawing-0001", "front", cccd=CCCD, confidence=.95)
+    front = AnalyzedDrawing(
+        replace(
+            front.drawing,
+            extension=extension,
+            media_type={"png": "image/png", "jpg": "image/jpeg"}[extension],
+            stored_path=str(tmp_path / "cccd-assets" / "extracted" / f"drawing-0001.{extension}"),
+        ),
+        front.ocr,
+    )
+    Path(front.drawing.stored_path).write_bytes(b"synthetic-image")
+    card = candidate(tmp_path, front=front)
+
+    def partial_copy(_source, destination):
+        Path(destination).write_bytes(b"partial")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(ingest.shutil, "copyfile", partial_copy)
+    result = ingest.attach_planned_mapping(
+        exact_plan(tmp_path, card=card), packet(), str(manifest_path), str(tmp_path),
+    )
+
+    assert result["attachedPacketIndex"] is None
+    assert "attachment-failed" in result["issues"]
+    assert manifest_path.read_bytes() == before
+    assert not list(manifest_path.parent.glob(f"cccd-*.{extension}"))
+
+
+def test_rollback_unlink_failure_is_contained_and_original_manifest_is_unchanged(tmp_path, monkeypatch):
+    import cccd_ingest as ingest
+
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    before = manifest_path.read_bytes()
+
+    def partial_copy(_source, destination):
+        Path(destination).write_bytes(b"partial")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(ingest.shutil, "copyfile", partial_copy)
+    monkeypatch.setattr(ingest.os, "unlink", lambda _path: (_ for _ in ()).throw(OSError("cleanup interrupted")))
+
+    result = ingest.attach_planned_mapping(
+        exact_plan(tmp_path), packet(), str(manifest_path), str(tmp_path),
+    )
+
+    assert result["attachedPacketIndex"] is None
+    assert result["issues"].count("attachment-failed") == 1
+    assert manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad_plan", [
+    lambda planned: replace(planned, target_packet_index=True),
+    lambda planned: replace(planned, target_packet_index=-1),
+    lambda planned: replace(planned, resolution=replace(planned.resolution, state="manual")),
+    lambda planned: replace(planned, resolution=replace(planned.resolution, state="suggested")),
+    lambda planned: replace(planned, resolution=replace(planned.resolution, state="conflict")),
+    lambda planned: replace(planned, mapping={**planned.mapping, "state": "manual"}),
+])
+def test_direct_invalid_attachment_plans_never_mutate(tmp_path, bad_plan):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    before = manifest_path.read_bytes()
+
+    result = cccd_ingest.attach_planned_mapping(
+        bad_plan(exact_plan(tmp_path)), packet(), str(manifest_path), str(tmp_path),
+    )
+
+    assert result["attachedPacketIndex"] is None
+    assert result["issues"].count("attachment-failed") == 1
+    assert manifest_path.read_bytes() == before
+
+
 def install_extraction(monkeypatch, card: CardCandidate, *, issues=(), drawing_instances=2):
     from cccd_workbook import ExtractionResult
 
@@ -470,6 +570,48 @@ def test_manual_unresolved_mapping_is_still_ready(tmp_path, monkeypatch):
 
     assert result["cccdWorkbook"]["status"] == "ready"
     assert result["cccdWorkbook"]["summary"] == {"candidates": 1, "attached": 0, "unresolved": 1}
+
+
+@pytest.mark.parametrize("available_side", ["front", "back"])
+def test_missing_card_side_remains_ready_and_unresolved(tmp_path, monkeypatch, available_side):
+    from cccd_workbook import ExtractionResult
+
+    card = candidate(tmp_path)
+    drawing = getattr(card, available_side).drawing
+    ocr = getattr(card, available_side).ocr
+    monkeypatch.setattr(
+        cccd_ingest, "extract_drawings", lambda *_args: ExtractionResult(1, [drawing], []),
+    )
+    monkeypatch.setattr(cccd_ingest, "analyze_drawing", lambda _drawing: ocr)
+
+    result = cccd_ingest.ingest_cccd_workbook(
+        "cards.xlsx", roster(), [packet()], str(tmp_path), {}, str(tmp_path / "cccd-assets"),
+        lambda *_args: None,
+    )
+
+    workbook = result["cccdWorkbook"]
+    assert workbook["status"] == "ready"
+    assert workbook["summary"] == {"candidates": 1, "attached": 0, "unresolved": 1}
+    assert workbook["mappings"][0]["attachedPacketIndex"] is None
+    assert f"missing-{ 'back' if available_side == 'front' else 'front' }" in workbook["mappings"][0]["issues"]
+
+
+def test_progress_callback_failure_returns_committed_attachment(tmp_path, monkeypatch):
+    card = candidate(tmp_path)
+    install_extraction(monkeypatch, card)
+    install_ocr(monkeypatch, card)
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+
+    result = cccd_ingest.ingest_cccd_workbook(
+        "cards.xlsx", roster(), [packet()], str(tmp_path), {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("progress failure")),
+    )
+
+    assert result["cccdWorkbook"]["status"] == "ready"
+    assert result["cccdWorkbook"]["mappings"][0]["attachedPacketIndex"] == 0
+    assert any(doc["id"].startswith("cccd-excel-") for doc in json.loads(manifest_path.read_text())["docs"])
 
 
 def test_malformed_packets_and_manifest_map_cannot_crash_or_leak_detail(tmp_path, monkeypatch):
