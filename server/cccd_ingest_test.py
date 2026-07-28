@@ -78,8 +78,14 @@ def card(root: Path) -> CardCandidate:
             "front",
             cccd=CCCD,
             confidence=.95,
+            anchor=Anchor("Sheet1", 1, 1, 5, 3),
         ),
-        analyzed(root, "drawing-0002", "back"),
+        analyzed(
+            root,
+            "drawing-0002",
+            "back",
+            anchor=Anchor("Sheet1", 1, 4, 5, 6),
+        ),
         (),
     )
 
