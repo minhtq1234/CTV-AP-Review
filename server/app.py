@@ -86,17 +86,17 @@ async def _validate_cccd_upload(
     roster: UploadFile | None,
     cccd: UploadFile | None,
 ) -> None:
+    if roster is not None and not await run_in_threadpool(_is_xlsx_upload, roster):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-roster-workbook"},
+        )
     if cccd is None:
         return
     if roster is None:
         raise HTTPException(
             status_code=422,
             detail={"code": "cccd-requires-roster"},
-        )
-    if not await run_in_threadpool(_is_xlsx_upload, roster):
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid-roster-workbook"},
         )
     if not (cccd.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(

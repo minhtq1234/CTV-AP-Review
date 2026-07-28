@@ -4,11 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import os
-import posixpath
 from pathlib import PurePosixPath
 import zipfile
 from xml.etree import ElementTree as ET
 import zlib
+
+from ooxml import OoxmlRelationshipError, resolve_internal_relationship_target
 
 
 MAX_WORKBOOK_BYTES = 100 * 1024 * 1024
@@ -262,16 +263,14 @@ def _relationships(archive, source_part, byte_budget):
 
 
 def _resolve_relationship_target(source_part, relationship):
-    if relationship["external"]:
-        raise CccdWorkbookError("external-relationship")
-    target = relationship["target"]
-    if target.startswith("/"):
-        raise CccdWorkbookError("invalid-target")
-    candidate = str(PurePosixPath(source_part).parent / target)
-    normalized = PurePosixPath(posixpath.normpath(candidate))
-    if normalized.is_absolute() or ".." in normalized.parts:
-        raise CccdWorkbookError("invalid-target")
-    return str(normalized)
+    try:
+        return resolve_internal_relationship_target(
+            source_part,
+            relationship["target"],
+            external=relationship["external"],
+        )
+    except OoxmlRelationshipError as error:
+        raise CccdWorkbookError(str(error)) from error
 
 
 def _extension_for(media_part):

@@ -9,6 +9,8 @@ import zipfile
 
 import openpyxl
 
+from ooxml import OoxmlRelationshipError, resolve_internal_relationship_target
+
 
 MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 2_000
@@ -21,6 +23,13 @@ MAX_WORKSHEET_CELLS = 500_000
 MAX_STRING_CHARACTERS = 32_767
 
 _SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_DOC_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_WORKSHEET_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+)
+_WORKBOOK_PART = "xl/workbook.xml"
+_WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
 _CELL_REF_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?([1-9][0-9]*)$")
 
 
@@ -105,20 +114,18 @@ def preflight_roster_workbook(xlsx_source) -> None:
         _seek_start(xlsx_source)
         with zipfile.ZipFile(xlsx_source) as archive:
             members = _validate_archive(archive)
-            required = {"[Content_Types].xml", "xl/workbook.xml"}
+            required = {
+                "[Content_Types].xml",
+                _WORKBOOK_PART,
+                _WORKBOOK_RELS_PART,
+            }
             if not required.issubset(members):
                 raise RosterWorkbookError("missing-required-part")
-            worksheets = [
-                name
-                for name in members
-                if name.startswith("xl/worksheets/")
-                and name.endswith(".xml")
-                and "/" not in name.removeprefix("xl/worksheets/")
-            ]
-            if not worksheets:
-                raise RosterWorkbookError("missing-worksheet")
             budget = _ByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+            worksheets = _worksheet_targets(archive, members, budget)
             for name in sorted(members):
+                if name in {_WORKBOOK_PART, _WORKBOOK_RELS_PART}:
+                    continue
                 if name.endswith((".xml", ".rels")):
                     _stream_xml(
                         archive,
@@ -162,6 +169,78 @@ def _validate_archive(archive: zipfile.ZipFile) -> set[str]:
         if total_uncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
             raise RosterWorkbookError("archive-uncompressed-too-large")
     return names
+
+
+def _worksheet_targets(
+    archive: zipfile.ZipFile,
+    members: set[str],
+    byte_budget: _ByteBudget,
+) -> set[str]:
+    workbook = _parse_xml_root(archive, _WORKBOOK_PART, byte_budget)
+    rels_root = _parse_xml_root(archive, _WORKBOOK_RELS_PART, byte_budget)
+    relationships: dict[str, dict[str, object]] = {}
+    for element in rels_root.findall(f"{_REL_NS}Relationship"):
+        rel_id = element.attrib.get("Id")
+        rel_type = element.attrib.get("Type")
+        target = element.attrib.get("Target")
+        if not rel_id or not rel_type or not target or rel_id in relationships:
+            raise RosterWorkbookError("invalid-workbook-relationships")
+        target_mode = element.attrib.get("TargetMode")
+        relationships[rel_id] = {
+            "type": rel_type,
+            "target": target,
+            "external": target_mode is not None and target_mode != "Internal",
+        }
+
+    sheet_nodes = workbook.findall(f".//{_SHEET_NS}sheet")
+    if not sheet_nodes:
+        raise RosterWorkbookError("missing-worksheet")
+    targets: set[str] = set()
+    used_relationships: set[str] = set()
+    for sheet in sheet_nodes:
+        rel_id = sheet.attrib.get(f"{_DOC_REL_NS}id")
+        if not rel_id or rel_id in used_relationships:
+            raise RosterWorkbookError("invalid-workbook-relationships")
+        used_relationships.add(rel_id)
+        relationship = relationships.get(rel_id)
+        if relationship is None or relationship["type"] != _WORKSHEET_REL_TYPE:
+            raise RosterWorkbookError("invalid-workbook-relationships")
+        try:
+            target = resolve_internal_relationship_target(
+                _WORKBOOK_PART,
+                relationship["target"],
+                external=relationship["external"],
+            )
+        except OoxmlRelationshipError as error:
+            raise RosterWorkbookError(str(error)) from error
+        if (
+            not target.endswith(".xml")
+            or target not in members
+            or target in targets
+        ):
+            raise RosterWorkbookError("invalid-workbook-relationships")
+        targets.add(target)
+    return targets
+
+
+def _parse_xml_root(
+    archive: zipfile.ZipFile,
+    member: str,
+    byte_budget: _ByteBudget,
+) -> ET.Element:
+    info = archive.getinfo(member)
+    if info.file_size > MAX_XML_BYTES:
+        raise RosterWorkbookError("xml-too-large")
+    with _BoundedReader(
+        archive.open(info),
+        MAX_XML_BYTES,
+        byte_budget,
+    ) as stream:
+        root = ET.parse(stream).getroot()
+    for element in root.iter():
+        if len(element.text or "") > MAX_STRING_CHARACTERS:
+            raise RosterWorkbookError("string-too-large")
+    return root
 
 
 def _stream_xml(

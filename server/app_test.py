@@ -265,6 +265,31 @@ def test_cccd_rejects_expanded_roster_before_openpyxl_and_case_creation(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    "roster_content",
+    [
+        b"not-an-xlsx-container",
+        _expanded_dimension_xlsx_bytes(),
+    ],
+)
+def test_roster_only_rejects_invalid_workbook_before_case_creation(
+    tmp_path,
+    monkeypatch,
+    roster_content,
+):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    response = TestClient(app).post("/api/cases", files={
+        "pdf": ("input.pdf", b"%PDF-1.4", "application/pdf"),
+        "roster": ("roster.xlsx", roster_content, "application/octet-stream"),
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid-roster-workbook"
+    assert appmod.store.list() == []
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_cccd_upload_is_saved_passed_and_detail_is_redacted(tmp_path, monkeypatch):
     seen = {}
 
