@@ -61,7 +61,7 @@ def analyzed(
             name="Synthetic A",
             name_confidence=.9,
             number_bbox={"x": 20, "y": 30, "width": 200, "height": 40}
-            if side == "front" else None,
+            if side == "front" or cccd else None,
             evidence_path=evidence_path,
             evidence_width=630 if upright else None,
             evidence_height=1000 if upright else None,
@@ -418,6 +418,131 @@ def test_ingest_returns_aggregate_and_preserves_unresolved_provenance(
     assert mapping["candidateId"] == CARD_ID
     assert mapping["attachedPacketIndex"] == 0
     assert mapping["front"]["sourcePath"].startswith("cccd-assets/")
+
+
+def test_ingest_attaches_exact_unknown_side_pair_by_layout(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    left = analyzed(
+        tmp_path,
+        "drawing-0099",
+        "unknown",
+        cccd=CCCD,
+        confidence=.95,
+        anchor=Anchor("Sheet1", 10, 0, 20, 1),
+    )
+    right = analyzed(
+        tmp_path,
+        "drawing-0001",
+        "unknown",
+        anchor=Anchor("Sheet1", 10, 1, 20, 2),
+    )
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(
+            2,
+            [right.drawing, left.drawing],
+            [],
+        ),
+    )
+    ocr_by_id = {
+        left.drawing.id: left.ocr,
+        right.drawing.id: right.ocr,
+    }
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing, *args: ocr_by_id[drawing.id],
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    assert result["cccdWorkbook"]["summary"] == {
+        "candidates": 1,
+        "attached": 1,
+        "unresolved": 0,
+    }
+    mapping = result["cccdWorkbook"]["mappings"][0]
+    assert mapping["candidateId"] == "card-drawing-0099-drawing-0001"
+    assert mapping["front"]["drawingId"] == "drawing-0099"
+    assert mapping["back"]["drawingId"] == "drawing-0001"
+    assert mapping["attachedPacketIndex"] == 0
+
+
+def test_ingest_does_not_attach_layout_side_conflict(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    left = analyzed(
+        tmp_path,
+        "drawing-0099",
+        "back",
+        cccd=CCCD,
+        confidence=.95,
+        anchor=Anchor("Sheet1", 10, 0, 20, 1),
+    )
+    right = analyzed(
+        tmp_path,
+        "drawing-0001",
+        "unknown",
+        anchor=Anchor("Sheet1", 10, 1, 20, 2),
+    )
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(
+            2,
+            [right.drawing, left.drawing],
+            [],
+        ),
+    )
+    ocr_by_id = {
+        left.drawing.id: left.ocr,
+        right.drawing.id: right.ocr,
+    }
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing, *args: ocr_by_id[drawing.id],
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    assert result["cccdWorkbook"]["summary"]["attached"] == 0
+    assert result["cccdWorkbook"]["summary"]["unresolved"] == 1
+    mapping = result["cccdWorkbook"]["mappings"][0]
+    assert mapping["state"] == "conflict"
+    assert "layout-side-conflict" in mapping["issues"]
+    assert mapping["attachedPacketIndex"] is None
+    assert not [
+        document
+        for document in json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        )["docs"]
+        if document["id"].startswith("cccd-excel-")
+    ]
 
 
 def test_ingest_removes_prior_attachment_when_match_becomes_unresolved(

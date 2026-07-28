@@ -13,6 +13,7 @@ def candidate(
     cccd_conf: float = 0.0,
     name: str = "",
     name_conf: float = 0.0,
+    ocr_side: str = "front",
     has_front: bool = True,
     has_region: bool = True,
     issues: tuple[str, ...] = (),
@@ -30,7 +31,7 @@ def candidate(
         stored_path=f"/synthetic/{candidate_id}.png",
     )
     ocr = CccdImageOcr(
-        side="front",
+        side=ocr_side,
         side_confidence=.99,
         cccd=cccd,
         cccd_confidence=cccd_conf,
@@ -124,3 +125,59 @@ def test_ambiguous_pair_blocks_exact_match():
     )
 
     assert result.resolutions[0].state == "conflict"
+
+
+def test_layout_front_with_unknown_ocr_side_can_resolve_exact():
+    result = resolve_candidates(
+        [candidate(
+            "c1",
+            cccd="000000000001",
+            cccd_conf=.95,
+            ocr_side="unknown",
+        )],
+        [{"name": "Synthetic A", "cccd": "000000000001"}],
+    )
+
+    assert result.resolutions[0].state == "exact"
+    assert result.resolutions[0].matched_by == "cccd"
+
+
+def test_layout_side_conflict_blocks_exact_match():
+    result = resolve_candidates(
+        [candidate(
+            "c1",
+            cccd="000000000001",
+            cccd_conf=.99,
+            issues=("layout-side-conflict",),
+        )],
+        [{"name": "Synthetic A", "cccd": "000000000001"}],
+    )
+
+    assert result.resolutions[0].state == "conflict"
+    assert "layout-side-conflict" in result.resolutions[0].issues
+
+
+def test_blocked_layout_candidate_does_not_claim_valid_target():
+    result = resolve_candidates(
+        [
+            candidate(
+                "blocked",
+                cccd="000000000001",
+                cccd_conf=.99,
+                issues=("layout-side-conflict",),
+            ),
+            candidate(
+                "valid",
+                cccd="000000000001",
+                cccd_conf=.99,
+            ),
+        ],
+        [{"name": "Synthetic A", "cccd": "000000000001"}],
+    )
+
+    by_id = {
+        resolution.candidate_id: resolution
+        for resolution in result.resolutions
+    }
+    assert by_id["blocked"].state == "conflict"
+    assert by_id["valid"].state == "exact"

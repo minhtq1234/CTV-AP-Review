@@ -19,6 +19,10 @@ MatchMethod: TypeAlias = Literal["cccd", "name"]
 
 _AUTO_CCCD_CONFIDENCE = .85
 _SUGGESTED_NAME_CONFIDENCE = .80
+_BLOCKING_PAIR_ISSUES = frozenset({
+    "ambiguous-pair",
+    "layout-side-conflict",
+})
 
 
 @dataclass(frozen=True)
@@ -100,13 +104,24 @@ def _expected_mappable_identities(by_cccd) -> int:
     return sum(1 for cccd in by_cccd if len(cccd) == 12)
 
 
+def _blocking_pair_issue(candidate: CardCandidate) -> str | None:
+    return next(
+        (
+            issue
+            for issue in candidate.issues
+            if issue in _BLOCKING_PAIR_ISSUES
+        ),
+        None,
+    )
+
+
 def _front_ocr(candidate: CardCandidate):
-    if candidate.front is None or candidate.front.ocr.side != "front":
-        return None
-    return candidate.front.ocr
+    return candidate.front.ocr if candidate.front is not None else None
 
 
 def _candidate_claims(candidate, by_cccd, by_name) -> set[int]:
+    if _blocking_pair_issue(candidate) is not None:
+        return set()
     ocr = _front_ocr(candidate)
     if ocr is None:
         return set()
@@ -163,8 +178,8 @@ def _resolve_one(
     ocr = _front_ocr(candidate)
     if ocr is None:
         return _manual(candidate.id, issues, "no-front")
-    if "ambiguous-pair" in issues:
-        return _conflict(candidate.id, issues, "ambiguous-pair")
+    if blocking_issue := _blocking_pair_issue(candidate):
+        return _conflict(candidate.id, issues, blocking_issue)
     if ocr.number_bbox is None:
         return _resolve_name_only(
             candidate.id,
