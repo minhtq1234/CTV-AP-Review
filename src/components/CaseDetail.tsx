@@ -1,6 +1,7 @@
 import type { CaseDetail as CaseDetailT, PacketMeta } from '../upload/api'
 import { caseProgressLabel, packetNeedsResubmit } from '../upload/api'
 import { packetStatus, PACKET_STATUS_LABEL } from '../logic/review'
+import { formatCccdSummary } from '../upload/cccd'
 
 interface Props {
   detail: CaseDetailT
@@ -41,6 +42,12 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
             {summary.matched}/{summary.found} đã khớp tên · {caseProgressLabel(detail.progress)}
             {mergedTxt}
           </span>
+        </div>
+      )}
+
+      {detail.cccdName && detail.cccdSummary && (
+        <div className={`cccd-summary ${detail.cccdSummary.status}`}>
+          {formatCccdSummary(detail.cccdSummary)}
         </div>
       )}
 
