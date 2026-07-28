@@ -32,6 +32,7 @@ def analyzed(
     cccd: str = "",
     confidence: float = 0.0,
     upright: bool = False,
+    anchor: Anchor | None = None,
 ):
     path = root / "cccd-assets" / "extracted" / f"{drawing_id}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +45,7 @@ def analyzed(
     return AnalyzedDrawing(
         EmbeddedDrawing(
             id=drawing_id,
-            anchor=Anchor("Sheet1", 1, 1, 5, 5),
+            anchor=anchor or Anchor("Sheet1", 1, 1, 5, 5),
             media_type="image/png",
             extension="png",
             width=1000,
@@ -118,6 +119,48 @@ def exact_plan(root: Path):
         [packet()],
         str(root),
     )[0]
+
+
+def test_mapping_provenance_serializes_full_anchor_offsets(tmp_path):
+    candidate = card(tmp_path)
+    front = replace(
+        candidate.front,
+        drawing=replace(
+            candidate.front.drawing,
+            anchor=Anchor(
+                "Sheet1",
+                1,
+                2,
+                5,
+                6,
+                from_row_offset=10,
+                from_col_offset=20,
+                to_row_offset=30,
+                to_col_offset=40,
+            ),
+        ),
+    )
+    candidate = replace(candidate, front=front)
+
+    planned = plan_candidate_mappings(
+        [candidate],
+        resolution(candidate),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+    )[0]
+
+    assert planned.mapping["front"]["anchor"] == {
+        "sheet": "Sheet1",
+        "fromRow": 1,
+        "fromCol": 2,
+        "toRow": 5,
+        "toCol": 6,
+        "fromRowOffset": 10,
+        "fromColOffset": 20,
+        "toRowOffset": 30,
+        "toColOffset": 40,
+    }
 
 
 def write_manifest(path: Path):

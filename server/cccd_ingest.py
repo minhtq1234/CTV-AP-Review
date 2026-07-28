@@ -87,6 +87,10 @@ def _serialize_side(analyzed, case_dir: str) -> dict | None:
             "fromCol": anchor.from_col,
             "toRow": anchor.to_row,
             "toCol": anchor.to_col,
+            "fromRowOffset": anchor.from_row_offset,
+            "fromColOffset": anchor.from_col_offset,
+            "toRowOffset": anchor.to_row_offset,
+            "toColOffset": anchor.to_col_offset,
         },
     }
 

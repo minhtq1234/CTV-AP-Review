@@ -5,7 +5,7 @@ import zipfile
 import pytest
 
 import cccd_workbook
-from cccd_workbook import CccdWorkbookError, extract_drawings
+from cccd_workbook import Anchor, CccdWorkbookError, extract_drawings
 
 
 _PNG = base64.b64decode(
@@ -65,15 +65,49 @@ def _write_synthetic_xlsx(path, sheets):
             anchors = []
             drawing_rels = []
             for rel_id, media_path, anchor, image in images:
-                from_row, from_col, to_row, to_col = anchor
+                if len(anchor) == 4:
+                    from_row, from_col, to_row, to_col = anchor
+                    from_row_offset = from_col_offset = 0
+                    to_row_offset = to_col_offset = 0
+                    include_offsets = False
+                else:
+                    (
+                        from_row,
+                        from_col,
+                        to_row,
+                        to_col,
+                        from_row_offset,
+                        from_col_offset,
+                        to_row_offset,
+                        to_col_offset,
+                    ) = anchor
+                    include_offsets = True
                 anchors.append(
                     '<xdr:twoCellAnchor><xdr:from>'
-                    f'<xdr:col>{from_col}</xdr:col><xdr:row>{from_row}</xdr:row>'
-                    '</xdr:from><xdr:to>'
-                    f'<xdr:col>{to_col}</xdr:col><xdr:row>{to_row}</xdr:row>'
-                    '</xdr:to><xdr:pic><xdr:blipFill>'
-                    f'<a:blip r:embed="{rel_id}"/>'
-                    '</xdr:blipFill></xdr:pic></xdr:twoCellAnchor>'
+                    f'<xdr:col>{from_col}</xdr:col>'
+                    + (
+                        f'<xdr:colOff>{from_col_offset}</xdr:colOff>'
+                        if include_offsets else ""
+                    )
+                    + f'<xdr:row>{from_row}</xdr:row>'
+                    + (
+                        f'<xdr:rowOff>{from_row_offset}</xdr:rowOff>'
+                        if include_offsets else ""
+                    )
+                    + '</xdr:from><xdr:to>'
+                    + f'<xdr:col>{to_col}</xdr:col>'
+                    + (
+                        f'<xdr:colOff>{to_col_offset}</xdr:colOff>'
+                        if include_offsets else ""
+                    )
+                    + f'<xdr:row>{to_row}</xdr:row>'
+                    + (
+                        f'<xdr:rowOff>{to_row_offset}</xdr:rowOff>'
+                        if include_offsets else ""
+                    )
+                    + '</xdr:to><xdr:pic><xdr:blipFill>'
+                    + f'<a:blip r:embed="{rel_id}"/>'
+                    + '</xdr:blipFill></xdr:pic></xdr:twoCellAnchor>'
                 )
                 drawing_rels.append((
                     rel_id,
@@ -112,6 +146,44 @@ def _replace_zip_part(path, part_name, content):
                 content if info.filename == part_name else old.read(info.filename),
             )
     replacement.replace(path)
+
+
+def test_anchor_offsets_default_to_zero():
+    anchor = Anchor("Cards", 1, 2, 10, 3)
+
+    assert (
+        anchor.from_row_offset,
+        anchor.from_col_offset,
+        anchor.to_row_offset,
+        anchor.to_col_offset,
+    ) == (0, 0, 0, 0)
+
+
+def test_extract_drawings_preserves_full_anchor_offsets(tmp_path):
+    book = tmp_path / "offsets.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [(
+            "rId1",
+            "xl/media/image1.png",
+            (7, 2, 18, 4, 111, 222, 333, 444),
+            _PNG,
+        )])],
+    )
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert result.drawings[0].anchor == Anchor(
+        "Cards",
+        7,
+        2,
+        18,
+        4,
+        from_row_offset=111,
+        from_col_offset=222,
+        to_row_offset=333,
+        to_col_offset=444,
+    )
 
 
 def test_extract_drawings_follows_relationships_not_media_names(tmp_path):

@@ -34,6 +34,10 @@ class Anchor:
     from_col: int
     to_row: int
     to_col: int
+    from_row_offset: int = 0
+    from_col_offset: int = 0
+    to_row_offset: int = 0
+    to_col_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,18 @@ def _drawing_records(
                     _anchor_value(element, "from", "col"),
                     _anchor_value(element, "to", "row"),
                     _anchor_value(element, "to", "col"),
+                    from_row_offset=_anchor_value(
+                        element, "from", "rowOff", default=0
+                    ),
+                    from_col_offset=_anchor_value(
+                        element, "from", "colOff", default=0
+                    ),
+                    to_row_offset=_anchor_value(
+                        element, "to", "rowOff", default=0
+                    ),
+                    to_col_offset=_anchor_value(
+                        element, "to", "colOff", default=0
+                    ),
                 )
             except (AttributeError, TypeError, ValueError):
                 issues.append(ExtractionIssue("malformed-drawing", drawing_id))
@@ -193,8 +209,12 @@ def _drawing_records(
     return records, issues, instance_count
 
 
-def _anchor_value(element, side, value):
+def _anchor_value(element, side, value, *, default=None):
     node = element.find(f"{_DRAWING_NS}{side}/{_DRAWING_NS}{value}")
+    if node is None or node.text is None:
+        if default is not None:
+            return default
+        raise ValueError(f"missing anchor {side}.{value}")
     return int(node.text)
 
 
