@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AP Lens — Soát hồ sơ CTV thông minh</title>
+  <style>
+    :root {
+      --navy-950: #07142b;
+      --navy-900: #0b1f3a;
+      --blue-500: #2f7cf6;
+      --cyan-300: #70d7ff;
+      --surface: #f8fbff;
+      --ink: #10213a;
+      --muted: #61718a;
+      --green: #258657;
+      --amber: #d99300;
+      --rose: #c94162;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--navy-950);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--surface);
+    }
+
+    .deck {
+      width: min(100vw, calc(100vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      position: relative;
+      margin: auto;
+      overflow: hidden;
+      background: var(--navy-950);
+      box-shadow: 0 24px 80px rgb(0 0 0 / 36%);
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateX(1.25%);
+      transition: opacity 280ms ease, transform 280ms ease, visibility 280ms;
+    }
+
+    .slide.is-active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:focus-visible {
+      outline: 3px solid var(--cyan-300);
+      outline-offset: 3px;
+    }
+
+    .slide-inner {
+      height: 100%;
+      padding: 6.4% 7.25% 9.5%;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .navy-slide { background: var(--navy-950); }
+    .light-slide { background: var(--surface); color: var(--ink); }
+
+    .navy-slide::before,
+    .navy-slide::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      filter: blur(3px);
+    }
+
+    .navy-slide::before {
+      width: 52%;
+      aspect-ratio: 1;
+      top: -30%;
+      right: -18%;
+      background: radial-gradient(circle, rgb(47 124 246 / 32%), transparent 67%);
+    }
+
+    .navy-slide::after {
+      width: 42%;
+      aspect-ratio: 1;
+      left: -21%;
+      bottom: -35%;
+      background: radial-gradient(circle, rgb(112 215 255 / 16%), transparent 67%);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .55em;
+      margin: 0 0 1.25em;
+      color: var(--cyan-300);
+      font-size: clamp(9px, .83vw, 16px);
+      font-weight: 750;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: .85em;
+      height: .85em;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 16px currentColor;
+      content: "";
+    }
+
+    .eyebrow.dark { color: var(--blue-500); }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1, h2 { letter-spacing: -.045em; }
+
+    h1 {
+      max-width: 8.7em;
+      margin-bottom: .32em;
+      font-size: clamp(34px, 4.65vw, 86px);
+      line-height: .98;
+    }
+
+    h2 {
+      max-width: 12.5em;
+      margin-bottom: .36em;
+      font-size: clamp(27px, 3.4vw, 62px);
+      line-height: 1.03;
+    }
+
+    .lede {
+      max-width: 38em;
+      color: rgb(248 251 255 / 76%);
+      font-size: clamp(13px, 1.28vw, 23px);
+      line-height: 1.5;
+    }
+
+    .lede.dark { color: var(--muted); }
+    .accent-text { color: var(--cyan-300); }
+
+    .hero-copy { position: relative; z-index: 1; width: 51%; }
+
+    .hero-flow {
+      position: absolute;
+      z-index: 1;
+      right: 7.5%;
+      top: 19%;
+      width: 42%;
+      height: 56%;
+    }
+
+    .hero-flow svg { width: 100%; height: 100%; overflow: visible; }
+    .flow-node { filter: drop-shadow(0 12px 18px rgb(0 0 0 / 22%)); }
+
+    .node-card {
+      fill: #102d55;
+      stroke: rgb(112 215 255 / 48%);
+      stroke-width: 1.8;
+    }
+
+    .node-card.result { fill: #143d55; stroke: var(--cyan-300); }
+    .svg-title { fill: var(--surface); font: 700 15px Inter, sans-serif; }
+    .svg-copy { fill: #a8bdd6; font: 500 11px Inter, sans-serif; }
+    .svg-tiny { fill: #8eadcc; font: 700 9px Inter, sans-serif; letter-spacing: 1px; }
+    .connector { stroke: #4d87d5; stroke-width: 2.4; stroke-linecap: round; fill: none; }
+    .connector-end { fill: var(--cyan-300); }
+
+    .hero-proof {
+      display: flex;
+      gap: 1.4em;
+      position: absolute;
+      z-index: 1;
+      left: 7.25%;
+      bottom: 15%;
+      color: #b6c9de;
+      font-size: clamp(10px, .9vw, 16px);
+    }
+
+    .hero-proof span { display: inline-flex; align-items: center; gap: .55em; }
+    .check { color: #77e3ae; font-size: 1.2em; }
+
+    .two-column {
+      display: grid;
+      grid-template-columns: .82fr 1.18fr;
+      gap: 5.5%;
+      align-items: center;
+      height: 100%;
+    }
+
+    .inputs {
+      display: grid;
+      gap: 1em;
+      margin-top: 1.85em;
+    }
+
+    .input-card {
+      display: flex;
+      align-items: center;
+      gap: .9em;
+      padding: 1em 1.1em;
+      border: 1px solid #dce5f1;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 9px 24px rgb(22 47 83 / 8%);
+    }
+
+    .input-icon {
+      display: grid;
+      place-items: center;
+      width: 2.6em;
+      aspect-ratio: 1;
+      border-radius: 10px;
+      background: #eaf2ff;
+      color: var(--blue-500);
+      font-weight: 800;
+      font-size: .86em;
+    }
+
+    .input-card strong { display: block; font-size: clamp(11px, 1vw, 18px); }
+    .input-card small { color: var(--muted); font-size: .84em; }
+    .optional { margin-left: auto; color: var(--muted); font-size: .72em; font-weight: 700; }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: .55em;
+      position: relative;
+      align-items: stretch;
+      padding: 2.25em 1.4em 1.45em;
+      border-radius: 22px;
+      background: var(--navy-900);
+      box-shadow: 0 20px 48px rgb(8 26 53 / 24%);
+    }
+
+    .pipeline::before {
+      position: absolute;
+      top: .9em;
+      left: 1.45em;
+      color: var(--cyan-300);
+      content: "Xử lý tại chỗ · reviewer quyết định";
+      font-size: clamp(8px, .75vw, 13px);
+      font-weight: 750;
+      letter-spacing: .06em;
+    }
+
+    .pipeline-step {
+      display: grid;
+      justify-items: center;
+      gap: .75em;
+      position: relative;
+      padding: 1em .55em;
+      border-radius: 14px;
+      background: #12315a;
+      color: var(--surface);
+      text-align: center;
+      font-size: clamp(9px, .9vw, 16px);
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .pipeline-step:not(:last-child)::after {
+      position: absolute;
+      right: -.6em;
+      top: 50%;
+      z-index: 1;
+      width: .7em;
+      border-top: 2px solid var(--cyan-300);
+      content: "";
+    }
+
+    .pipeline-num {
+      display: grid;
+      place-items: center;
+      width: 2em;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--blue-500);
+      color: #fff;
+      font-size: .78em;
+    }
+
+    .pipeline-note {
+      margin: 1.15em 0 0;
+      color: var(--muted);
+      font-size: clamp(11px, 1vw, 18px);
+      line-height: 1.5;
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: .84fr 1.16fr;
+      gap: 3.5%;
+      height: 100%;
+      align-items: center;
+    }
+
+    .dashboard-copy { align-self: start; padding-top: 9%; }
+
+    .dashboard-shell {
+      padding: 1.5em;
+      border: 1px solid #dce7f4;
+      border-radius: 22px;
+      background: #fff;
+      box-shadow: 0 20px 50px rgb(16 33 58 / 13%);
+    }
+
+    .dashboard-top { display: flex; align-items: center; justify-content: space-between; gap: 1em; }
+    .dashboard-top strong { font-size: clamp(11px, 1.1vw, 20px); }
+
+    .attention-control {
+      padding: .7em .9em;
+      border: 0;
+      border-radius: 9px;
+      background: #fff6df;
+      color: #956100;
+      font-size: clamp(8px, .8vw, 14px);
+      font-weight: 800;
+    }
+
+    .status-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .65em; margin: 1.3em 0; }
+
+    .status-card {
+      min-height: 5.8em;
+      padding: .8em;
+      border: 1px solid #dde7f4;
+      border-radius: 12px;
+      background: #fbfdff;
+    }
+
+    .status-card span { display: block; color: var(--muted); font-size: clamp(7px, .69vw, 12px); font-weight: 700; }
+    .status-card strong { display: block; margin-top: .25em; color: var(--ink); font-size: clamp(18px, 1.7vw, 30px); }
+    .status-mark { display: flex; align-items: center; gap: .35em; font-size: .76em; }
+    .dot { width: .62em; height: .62em; border-radius: 50%; background: #98a7ba; }
+    .dot.blue { background: var(--blue-500); }
+    .dot.green { background: var(--green); }
+    .dot.rose { background: var(--rose); }
+
+    .packet-list { display: grid; gap: .55em; }
+    .packet { display: grid; grid-template-columns: 1.15fr .78fr .6fr auto; gap: .6em; align-items: center; padding: .68em .85em; border-radius: 10px; background: #f6f9fd; color: #52637b; font-size: clamp(8px, .78vw, 14px); }
+    .packet strong { color: var(--ink); }
+    .packet .badge { justify-self: start; padding: .28em .52em; border-radius: 99px; font-weight: 800; font-size: .84em; }
+    .badge.watch { background: #fff2d1; color: #996200; }
+    .badge.done { background: #e5f7ed; color: #1f7450; }
+    .badge.flag { background: #fce8ee; color: #a62c4a; }
+    .attention { color: var(--amber); font-size: 1.25em; font-weight: 900; }
+
+    .review-layout {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 3.6%;
+      height: 100%;
+      align-items: center;
+    }
+
+    .review-copy { align-self: start; padding-top: 5%; }
+    .reviewer {
+      display: grid;
+      grid-template-columns: .88fr 1.12fr;
+      height: 70%;
+      min-height: 315px;
+      overflow: hidden;
+      border: 1px solid #dbe5f1;
+      border-radius: 18px;
+      background: #fff;
+      box-shadow: 0 18px 44px rgb(16 33 58 / 13%);
+    }
+
+    .review-panel { padding: 1.05em; }
+    .review-panel:first-child { border-right: 1px solid #e2e9f3; }
+    .review-title { display: flex; align-items: center; justify-content: space-between; gap: .6em; margin-bottom: .9em; color: var(--ink); font-size: clamp(10px, .92vw, 16px); font-weight: 800; }
+    .review-title small { color: var(--muted); font-size: .76em; }
+
+    .overview-card { margin-bottom: .55em; padding: .67em .7em; border-radius: 9px; background: #f2f6fb; color: var(--muted); font-size: clamp(8px, .72vw, 13px); }
+    .overview-card.active { border: 1px solid #a9c9ff; background: #edf5ff; color: #1552a8; box-shadow: inset 3px 0 var(--blue-500); }
+    .overview-card b { display: block; margin-bottom: .18em; font-size: 1.04em; }
+    .field-state { float: right; color: var(--green); font-weight: 900; }
+    .field-state.warn { color: var(--amber); }
+
+    .doc-page { height: calc(100% - 2.2em); padding: .7em; border-radius: 8px; background: #eef2f7; }
+    .doc-sheet { height: 100%; padding: .85em; border-radius: 3px; background: #fff; box-shadow: 0 3px 8px rgb(16 33 58 / 12%); }
+    .doc-head { height: .55em; width: 45%; margin-bottom: .8em; border-radius: 5px; background: #223e62; }
+    .doc-line { height: .3em; margin: .45em 0; border-radius: 4px; background: #dfe7f1; }
+    .doc-line.short { width: 58%; }
+    .evidence { margin: .75em 0; padding: .5em; border: 2px solid var(--blue-500); border-radius: 4px; color: #2461b5; font-size: clamp(7px, .65vw, 11px); font-weight: 800; text-align: center; }
+    .page-count { margin-top: .45em; color: var(--muted); font-size: clamp(7px, .65vw, 11px); text-align: center; }
+
+    .journey { display: grid; grid-template-columns: repeat(4, 1fr); gap: .65em; margin-top: 1.5em; }
+    .journey span { position: relative; padding-top: 1.35em; color: var(--muted); font-size: clamp(8px, .75vw, 13px); line-height: 1.25; }
+    .journey span::before { position: absolute; top: 0; left: 0; display: grid; place-items: center; width: 1.45em; aspect-ratio: 1; border-radius: 50%; background: #e8f1ff; color: var(--blue-500); content: attr(data-step); font-weight: 850; }
+
+    .outcome-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 5.5%; height: 100%; align-items: center; }
+    .outcomes { display: grid; gap: .95em; margin-top: 1.5em; }
+    .outcome { display: flex; align-items: center; gap: .85em; color: #d8e6f5; font-size: clamp(11px, 1vw, 18px); }
+    .outcome-icon { display: grid; place-items: center; flex: none; width: 2.25em; aspect-ratio: 1; border: 1px solid rgb(112 215 255 / 42%); border-radius: 9px; color: var(--cyan-300); font-weight: 900; }
+    .report { position: relative; padding: 1.3em; border: 1px solid rgb(112 215 255 / 35%); border-radius: 20px; background: linear-gradient(145deg, #102e55, #0d2343); box-shadow: 0 22px 50px rgb(0 0 0 / 22%); }
+    .report::after { position: absolute; inset: 13% -8% -11% 17%; z-index: -1; border-radius: 20px; background: rgb(47 124 246 / 18%); content: ""; filter: blur(20px); }
+    .report-top { display: flex; align-items: center; justify-content: space-between; color: #d8e6f5; font-size: clamp(10px, .95vw, 17px); font-weight: 750; }
+    .report-badge { padding: .34em .65em; border-radius: 99px; background: #dff7e9; color: #1b724c; font-size: .74em; }
+    .report-sheet { display: grid; gap: .65em; margin-top: 1em; padding: 1em; border-radius: 11px; background: #f8fbff; color: var(--ink); }
+    .report-row { display: flex; justify-content: space-between; gap: 1em; padding-bottom: .56em; border-bottom: 1px solid #e6edf6; font-size: clamp(8px, .75vw, 13px); }
+    .report-row:last-child { border-bottom: 0; padding-bottom: 0; }
+    .report-row span { color: var(--muted); }
+    .export { width: 100%; margin-top: .9em; padding: .76em 1em; border: 0; border-radius: 9px; background: var(--blue-500); color: #fff; font-size: clamp(9px, .82vw, 15px); font-weight: 800; }
+    .closing-line { max-width: 28em; margin: 2.2em 0 0; color: var(--cyan-300); font-size: clamp(13px, 1.16vw, 21px); font-weight: 700; line-height: 1.45; }
+
+    .deck-controls { display: flex; align-items: center; justify-content: space-between; position: absolute; z-index: 5; right: 4.3%; bottom: 3.4%; left: 4.3%; color: #bfd0e4; }
+    .control-group, .dot-group { display: flex; align-items: center; gap: .45em; }
+    .control-button, .dot-button { display: grid; place-items: center; border: 1px solid rgb(183 208 235 / 28%); background: rgb(7 20 43 / 66%); color: inherit; }
+    .control-button { width: 2.25em; aspect-ratio: 1; border-radius: 8px; font-size: clamp(12px, 1.1vw, 18px); }
+    .control-button:hover { background: #17365f; color: #fff; }
+    .dot-button { width: .72em; height: .72em; padding: 0; border-radius: 50%; }
+    .dot-button.is-active { width: 1.8em; border-radius: 99px; background: var(--cyan-300); border-color: var(--cyan-300); }
+    [data-position] { min-width: 4.1em; padding: .42em .58em; border-radius: 8px; background: rgb(7 20 43 / 66%); color: #d8e6f5; font-size: clamp(10px, .85vw, 15px); font-variant-numeric: tabular-nums; text-align: center; }
+    .light-slide ~ .deck-controls { color: #42556e; }
+
+    @media (max-width: 720px) {
+      .slide-inner { padding: 6% 6.5% 12%; }
+      .hero-flow { right: 5%; width: 44%; }
+      .deck-controls { right: 3%; bottom: 2%; left: 3%; }
+      .status-card { padding: .55em; }
+      .dashboard-shell { padding: .95em; }
+      .journey { gap: .4em; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="AP Lens — Soát hồ sơ CTV thông minh">
+    <section class="slide is-active" data-slide="0" aria-hidden="false">
+      <div class="slide-inner navy-slide">
+        <div class="hero-copy">
+          <p class="eyebrow">AP Lens · reviewer workspace</p>
+          <h1>AP Lens —<br><span class="accent-text">Soát hồ sơ CTV</span> thông minh</h1>
+          <p class="lede">Từ bộ chứng từ phức tạp đến quyết định rõ ràng.</p>
+          <p class="lede">Giúp reviewer định vị bằng chứng, đối chiếu dữ liệu và ghi nhận ngoại lệ theo từng gói hồ sơ.</p>
+        </div>
+        <div class="hero-flow" aria-label="Luồng từ chứng từ đến quyết định">
+          <svg viewBox="0 0 480 360" role="img" aria-label="Chứng từ đi qua màn hình soát xét để có kết quả rõ ràng">
+            <path class="connector" d="M145 180 H205" />
+            <circle class="connector-end" cx="205" cy="180" r="4" />
+            <path class="connector" d="M305 180 H355" />
+            <circle class="connector-end" cx="355" cy="180" r="4" />
+            <g class="flow-node" transform="translate(10 108)">
+              <rect class="node-card" width="135" height="144" rx="16" />
+              <rect x="25" y="24" width="45" height="57" rx="5" fill="#e6f1ff" />
+              <path d="M35 44h25M35 54h20M35 64h24" stroke="#2f7cf6" stroke-width="4" stroke-linecap="round" />
+              <text x="25" y="108" class="svg-title">Hồ sơ đầu vào</text>
+              <text x="25" y="126" class="svg-copy">PDF · Excel · ảnh</text>
+            </g>
+            <g class="flow-node" transform="translate(205 82)">
+              <rect class="node-card" width="100" height="196" rx="16" />
+              <circle cx="50" cy="53" r="26" fill="#2f7cf6" />
+              <path d="M40 53h20M50 43v20" stroke="#fff" stroke-width="4" stroke-linecap="round" />
+              <text x="18" y="105" class="svg-title">Soát xét</text>
+              <text x="17" y="128" class="svg-tiny">BẰNG CHỨNG</text>
+              <path d="M19 145h61M19 158h44M19 171h54" stroke="#7196bf" stroke-width="4" stroke-linecap="round" />
+            </g>
+            <g class="flow-node" transform="translate(355 108)">
+              <rect class="node-card result" width="115" height="144" rx="16" />
+              <circle cx="38" cy="52" r="20" fill="#258657" />
+              <path d="m28 52 7 7 13-16" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+              <text x="18" y="108" class="svg-title">Kết quả</text>
+              <text x="18" y="126" class="svg-copy">rõ ràng · mở lại</text>
+            </g>
+          </svg>
+        </div>
+        <div class="hero-proof"><span><b class="check">✓</b> Bằng chứng có ngữ cảnh</span><span><b class="check">✓</b> Reviewer làm chủ quyết định</span></div>
+      </div>
+    </section>
+
+    <section class="slide" data-slide="1" aria-hidden="true" inert>
+      <div class="slide-inner light-slide">
+        <div class="two-column">
+          <div>
+            <p class="eyebrow dark">01 · Chuẩn bị hồ sơ</p>
+            <h2>Tải lên một lần, hệ thống chuẩn bị phần còn lại</h2>
+            <p class="lede dark">Mỗi CTV được chuẩn bị thành một gói có thể soát xét. OCR hỗ trợ tìm và định vị; reviewer vẫn là người ra quyết định.</p>
+            <div class="inputs" aria-label="Các đầu vào">
+              <div class="input-card"><span class="input-icon">PDF</span><span><strong>PDF hồ sơ</strong><small>Bộ chứng từ nguồn</small></span></div>
+              <div class="input-card"><span class="input-icon">XLS</span><span><strong>Bảng kê Excel</strong><small>Dữ liệu roster đối chiếu</small></span></div>
+              <div class="input-card"><span class="input-icon">ID</span><span><strong>File ảnh CCCD Excel</strong><small>Đối chiếu bổ sung</small></span><span class="optional">TÙY CHỌN</span></div>
+            </div>
+          </div>
+          <div>
+            <div class="pipeline" aria-label="Tách gói, OCR, ghép CTV và định vị bằng chứng">
+              <div class="pipeline-step"><span class="pipeline-num">1</span><span>Tách<br>gói</span></div>
+              <div class="pipeline-step"><span class="pipeline-num">2</span><span>OCR</span></div>
+              <div class="pipeline-step"><span class="pipeline-num">3</span><span>Ghép<br>CTV</span></div>
+              <div class="pipeline-step"><span class="pipeline-num">4</span><span>Định vị<br>bằng chứng</span></div>
+            </div>
+            <p class="pipeline-note">Một lần chuẩn bị cho cả đợt, sau đó reviewer đi thẳng vào gói cần kiểm tra — không thay thế phán đoán chuyên môn.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-slide="2" aria-hidden="true" inert>
+      <div class="slide-inner light-slide">
+        <div class="dashboard-grid">
+          <div class="dashboard-copy">
+            <p class="eyebrow dark">02 · Điều phối đợt hồ sơ</p>
+            <h2>Một dashboard cho toàn bộ đợt hồ sơ</h2>
+            <p class="lede dark">Bộ lọc và số lượng giúp lên kế hoạch. Dấu <strong>!</strong> tách riêng các gói cần xem sớm để reviewer ưu tiên đúng việc.</p>
+          </div>
+          <div class="dashboard-shell" aria-label="Dashboard gói hồ sơ tổng hợp">
+            <div class="dashboard-top"><strong>Đợt CTV · Tháng này</strong><button class="attention-control" type="button">! &nbsp; Cần chú ý trước</button></div>
+            <div class="status-row" aria-label="Trạng thái gói">
+              <div class="status-card"><span class="status-mark"><i class="dot"></i> Chưa xem</span><strong>12</strong></div>
+              <div class="status-card"><span class="status-mark"><i class="dot blue"></i> Đang xem</span><strong>04</strong></div>
+              <div class="status-card"><span class="status-mark"><i class="dot green"></i> Đã xong</span><strong>19</strong></div>
+              <div class="status-card"><span class="status-mark"><i class="dot rose"></i> Flagged</span><strong>03</strong></div>
+            </div>
+            <div class="packet-list" aria-label="Danh sách gói mẫu">
+              <div class="packet"><strong>Gói 08 · CTV 01</strong><span>8 trường</span><span class="badge watch">Đang xem</span><span class="attention" aria-label="Cần chú ý">!</span></div>
+              <div class="packet"><strong>Gói 11 · CTV 02</strong><span>7 trường</span><span class="badge done">Đã xong</span><span aria-hidden="true">—</span></div>
+              <div class="packet"><strong>Gói 14 · CTV 03</strong><span>6 trường</span><span class="badge flag">Flagged</span><span class="attention" aria-label="Cần chú ý">!</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-slide="3" aria-hidden="true" inert>
+      <div class="slide-inner light-slide">
+        <div class="review-layout">
+          <div class="review-copy">
+            <p class="eyebrow dark">03 · Soát xét có ngữ cảnh</p>
+            <h2>Xem tổng quan, rồi kiểm tra từng trường</h2>
+            <p class="lede dark">Tài liệu vẫn là nguồn sự thật. Thẻ kiểm tra dẫn đến bằng chứng đã định vị, và mọi gói đều có thể mở lại.</p>
+            <div class="journey" aria-label="Hành trình reviewer">
+              <span data-step="1">Quét tất cả tài liệu trong Overview</span>
+              <span data-step="2">Chọn trường cần kiểm tra</span>
+              <span data-step="3">Đối chiếu bằng chứng với roster</span>
+              <span data-step="4">Đánh dấu trường hoặc từ chối hồ sơ</span>
+            </div>
+          </div>
+          <div class="reviewer" aria-label="Minh họa màn hình soát xét hai cột">
+            <div class="review-panel">
+              <div class="review-title"><span>Tổng quan</span><small>Gói 08</small></div>
+              <div class="overview-card"><b>Hồ sơ cộng tác viên</b>CTV 01 · •••• 4821</div>
+              <div class="overview-card active"><b>CCCD <span class="field-state">✓</span></b>Bằng chứng đã định vị</div>
+              <div class="overview-card"><b>Thông tin ngân hàng <span class="field-state warn">!</span></b>Cần đối chiếu roster</div>
+              <div class="overview-card"><b>Chữ ký</b>Đã ghi nhận</div>
+              <div class="overview-card"><b>Từ chối hồ sơ</b>Ghi nhận ngoại lệ toàn gói</div>
+            </div>
+            <div class="review-panel">
+              <div class="review-title"><span>Chứng từ nguồn</span><small>100%</small></div>
+              <div class="doc-page">
+                <div class="doc-sheet">
+                  <div class="doc-head"></div><div class="doc-line"></div><div class="doc-line short"></div><div class="doc-line"></div>
+                  <div class="evidence">Bằng chứng CCCD · đã định vị</div>
+                  <div class="doc-line"></div><div class="doc-line short"></div><div class="doc-line"></div>
+                </div>
+                <div class="page-count">Trang 1 / 2 · mở lại bất cứ lúc nào</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-slide="4" aria-hidden="true" inert>
+      <div class="slide-inner navy-slide">
+        <div class="outcome-layout">
+          <div>
+            <p class="eyebrow">04 · Khép vòng xử lý</p>
+            <h2>Tập trung vào ngoại lệ, xuất kết quả rõ ràng</h2>
+            <div class="outcomes">
+              <div class="outcome"><span class="outcome-icon">↻</span><span>Trạng thái và tiến độ cập nhật tự động</span></div>
+              <div class="outcome"><span class="outcome-icon">!</span><span>Vấn đề được tổng hợp theo từng gói</span></div>
+              <div class="outcome"><span class="outcome-icon">↗</span><span>Báo cáo sẵn sàng gửi lại để chỉnh sửa</span></div>
+            </div>
+            <p class="closing-line">Nhanh hơn để rà soát. Dễ hơn để giải trình. Chắc hơn khi quyết định.</p>
+          </div>
+          <div class="report" aria-label="Bản xem trước báo cáo">
+            <div class="report-top"><span>Báo cáo đợt CTV</span><span class="report-badge">Sẵn sàng</span></div>
+            <div class="report-sheet">
+              <div class="report-row"><span>Tổng gói</span><strong>38</strong></div>
+              <div class="report-row"><span>Đã xong</span><strong>19</strong></div>
+              <div class="report-row"><span>Cần làm rõ</span><strong>03</strong></div>
+              <div class="report-row"><span>Hành động tiếp theo</span><strong>Gửi lại 3 gói</strong></div>
+            </div>
+            <button class="export" type="button">Xuất báo cáo</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="deck-controls" aria-label="Điều hướng trình chiếu">
+      <div class="control-group">
+        <button class="control-button" type="button" aria-label="Trang trước" data-previous>‹</button>
+        <button class="control-button" type="button" aria-label="Trang tiếp theo" data-next>›</button>
+      </div>
+      <div class="dot-group" aria-label="Chọn trang">
+        <button class="dot-button is-active" type="button" aria-label="Trang 1" aria-current="page" data-slide-target="0"></button>
+        <button class="dot-button" type="button" aria-label="Trang 2" aria-current="false" data-slide-target="1"></button>
+        <button class="dot-button" type="button" aria-label="Trang 3" aria-current="false" data-slide-target="2"></button>
+        <button class="dot-button" type="button" aria-label="Trang 4" aria-current="false" data-slide-target="3"></button>
+        <button class="dot-button" type="button" aria-label="Trang 5" aria-current="false" data-slide-target="4"></button>
+      </div>
+      <div class="control-group">
+        <span data-position aria-live="polite">1 / 5</span>
+        <button class="control-button" type="button" aria-label="Toàn màn hình" data-fullscreen>⛶</button>
+      </div>
+    </nav>
+  </main>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')]
+    const dots = [...document.querySelectorAll('[data-slide-target]')]
+    let currentSlide = 0
+    let touchStartX = 0
+
+    function goToSlide(index) {
+      currentSlide = Math.max(0, Math.min(slides.length - 1, index))
+      slides.forEach((slide, slideIndex) => {
+        const active = slideIndex === currentSlide
+        slide.classList.toggle('is-active', active)
+        slide.setAttribute('aria-hidden', String(!active))
+        slide.inert = !active
+      })
+      dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle('is-active', dotIndex === currentSlide)
+        dot.setAttribute('aria-current', dotIndex === currentSlide ? 'page' : 'false')
+      })
+      document.querySelector('[data-position]').textContent =
+        `${currentSlide + 1} / ${slides.length}`
+    }
+
+    const nextSlide = () => goToSlide(currentSlide + 1)
+    const previousSlide = () => goToSlide(currentSlide - 1)
+
+    document.querySelector('[data-previous]').addEventListener('click', previousSlide)
+    document.querySelector('[data-next]').addEventListener('click', nextSlide)
+    dots.forEach((dot) => dot.addEventListener('click', () => goToSlide(Number(dot.dataset.slideTarget))))
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+        event.preventDefault()
+        previousSlide()
+      } else if (event.key === 'ArrowRight' || event.key === 'PageDown') {
+        event.preventDefault()
+        nextSlide()
+      } else if (event.key === 'Home') {
+        event.preventDefault()
+        goToSlide(0)
+      } else if (event.key === 'End') {
+        event.preventDefault()
+        goToSlide(slides.length - 1)
+      } else if (event.key === ' ' && document.activeElement?.tagName !== 'BUTTON') {
+        event.preventDefault()
+        nextSlide()
+      }
+    })
+
+    document.addEventListener('touchstart', (event) => {
+      touchStartX = event.changedTouches[0].screenX
+    }, { passive: true })
+
+    document.addEventListener('touchend', (event) => {
+      const distance = event.changedTouches[0].screenX - touchStartX
+      if (Math.abs(distance) < 50) return
+      if (distance < 0) nextSlide()
+      else previousSlide()
+    }, { passive: true })
+
+    document.querySelector('[data-fullscreen]').addEventListener('click', async () => {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else await document.querySelector('.deck').requestFullscreen()
+    })
+  </script>
+</body>
+</html>
