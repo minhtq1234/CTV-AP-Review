@@ -1,5 +1,7 @@
 import json, os, tempfile
-from cases import CaseStore, case_status, progress_of, needs_resubmit
+from pathlib import Path
+
+from cases import CaseStore, case_status, compact_cccd_summary, progress_of, needs_resubmit
 
 def _pkt(index, done=False, flags=None, matched_by="cccd"):
     items = {}
@@ -13,6 +15,19 @@ def _pkt(index, done=False, flags=None, matched_by="cccd"):
 
 def _pkts(dones):
     return [_pkt(i, done=d) for i, d in enumerate(dones)]
+
+
+def _cccd_workbook(status="partial"):
+    return {
+        "status": status,
+        "summary": {"candidates": 2, "attached": 1, "unresolved": 1},
+        "errorCode": "extraction-incomplete" if status == "partial" else None,
+        "mappings": [{
+            "candidateId": "card-drawing-0001",
+            "ocrIdentity": {"cccd": "000000000001", "name": "Synthetic A"},
+            "attachedPacketIndex": 0,
+        }],
+    }
 
 def test_needs_resubmit_on_field_flag():
     assert needs_resubmit(_pkt(0, flags=["cccd"])) is True
@@ -156,6 +171,69 @@ def test_load_migrates_fields_to_items(tmp_path):
     (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
     p = CaseStore(str(tmp_path)).get(cid)["packets"][0]
     assert p["review"] == {"done": False, "items": {}} and "fields" not in p["review"]
+
+
+def test_cccd_metadata_roundtrips_but_list_stays_compact(tmp_path):
+    store = CaseStore(str(tmp_path))
+    cid = store.create(
+        name="synthetic",
+        pdf_name="input.pdf",
+        roster_name="roster.xlsx",
+        cccd_name="cards.xlsx",
+    )
+    store.set_result(
+        cid,
+        summary={"found": 1},
+        packets=[_pkt(0)],
+        cccd_workbook=_cccd_workbook(),
+    )
+
+    detail = CaseStore(str(tmp_path)).get(cid)
+    assert detail["cccdName"] == "cards.xlsx"
+    assert detail["cccdWorkbook"]["mappings"][0]["candidateId"] == "card-drawing-0001"
+    assert "cccdName" not in store.list()[0]
+    assert "cccdWorkbook" not in store.list()[0]
+
+
+def test_compact_cccd_summary_redacts_mapping_and_identity():
+    summary = compact_cccd_summary(_cccd_workbook())
+    assert summary == {
+        "status": "partial",
+        "candidates": 2,
+        "attached": 1,
+        "unresolved": 1,
+        "errorCode": "extraction-incomplete",
+    }
+    assert "mappings" not in summary
+    assert "cccd" not in json.dumps(summary).casefold()
+
+
+def test_legacy_case_normalizes_missing_cccd_properties(tmp_path):
+    _write_raw_case(str(tmp_path), "legacy-cccd", status="ready")
+    case = CaseStore(str(tmp_path)).get("legacy-cccd")
+    assert case["cccdName"] is None
+    assert case["cccdWorkbook"] is None
+
+
+def test_delete_removes_cccd_workbook_assets_and_packet_copies(tmp_path):
+    store = CaseStore(str(tmp_path))
+    cid = store.create(
+        name="synthetic",
+        pdf_name="input.pdf",
+        roster_name="roster.xlsx",
+        cccd_name="cards.xlsx",
+    )
+    case_dir = Path(store.case_dir(cid))
+    (case_dir / "cccd.xlsx").write_bytes(b"synthetic")
+    (case_dir / "cccd-assets").mkdir()
+    (case_dir / "cccd-assets" / "drawing-0001.png").write_bytes(b"synthetic")
+    (case_dir / "packets" / "0").mkdir(parents=True)
+    (case_dir / "packets" / "0" / "cccd-front.png").write_bytes(b"synthetic")
+
+    store.delete(cid)
+
+    assert not case_dir.exists()
+    assert store.get(cid) is None
 
 
 if __name__ == "__main__":

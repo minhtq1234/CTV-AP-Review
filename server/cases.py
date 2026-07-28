@@ -55,6 +55,21 @@ def progress_of(packets: list[dict]) -> dict:
     }
 
 
+def compact_cccd_summary(workbook: dict | None) -> dict | None:
+    if not workbook:
+        return None
+    counts = workbook.get("summary") or {}
+    out = {
+        "status": workbook.get("status", "error"),
+        "candidates": int(counts.get("candidates", 0)),
+        "attached": int(counts.get("attached", 0)),
+        "unresolved": int(counts.get("unresolved", 0)),
+    }
+    if workbook.get("errorCode"):
+        out["errorCode"] = workbook["errorCode"]
+    return out
+
+
 def _ensure_packet_defaults(packet: dict) -> dict:
     """Fill review/match defaults if the pipeline (or a fake test pipeline)
     didn't set them."""
@@ -93,6 +108,13 @@ class CaseStore:
                     case = json.load(f)
             except Exception:  # noqa: BLE001 - skip corrupt/partial files, don't crash startup
                 continue
+            changed = False
+            if "cccdName" not in case:
+                case["cccdName"] = None
+                changed = True
+            if "cccdWorkbook" not in case:
+                case["cccdWorkbook"] = None
+                changed = True
             if case.get("status") == "processing":
                 # #007: a case still "processing" on disk has no live worker --
                 # the process that was running its pipeline is gone (this is a
@@ -117,7 +139,6 @@ class CaseStore:
                 #    don't map to check-codes, so this resets to an empty
                 #    checklist rather than trying to translate keys.
                 # Idempotent — a second load is a no-op either way.
-                changed = False
                 for p in case.get("packets", []):
                     if "review" not in p:
                         p["review"] = {"done": False, "items": {}}
@@ -145,7 +166,14 @@ class CaseStore:
             json.dump(case, f, ensure_ascii=False, indent=2)
         self._idx[case["id"]] = case
 
-    def create(self, name: str, pdf_name: str, roster_name: str | None, now: str | None = None) -> str:
+    def create(
+        self,
+        name: str,
+        pdf_name: str,
+        roster_name: str | None,
+        now: str | None = None,
+        cccd_name: str | None = None,
+    ) -> str:
         cid = uuid.uuid4().hex
         case = {
             "id": cid,
@@ -154,7 +182,9 @@ class CaseStore:
             "status": "processing",
             "pdfName": pdf_name,
             "rosterName": roster_name,
+            "cccdName": cccd_name,
             "summary": None,
+            "cccdWorkbook": None,
             "error": None,
             "packets": [],
         }
@@ -188,13 +218,20 @@ class CaseStore:
             for c in ordered
         ]
 
-    def set_result(self, cid: str, summary: dict | None, packets: list[dict]) -> None:
+    def set_result(
+        self,
+        cid: str,
+        summary: dict | None,
+        packets: list[dict],
+        cccd_workbook: dict | None = None,
+    ) -> None:
         case = self._idx.get(cid)
         if case is None:
             return
         filled = [_ensure_packet_defaults(p) for p in packets]
         case["summary"] = summary
         case["packets"] = filled
+        case["cccdWorkbook"] = cccd_workbook
         case["status"] = case_status("ready", filled)
         self._write(case)
 
