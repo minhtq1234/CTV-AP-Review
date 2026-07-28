@@ -356,7 +356,7 @@
 
     .status-card span { display: block; color: var(--muted); font-size: clamp(11px, .9vw, 14px); font-weight: 700; }
     .status-card strong { display: block; margin-top: .25em; color: var(--ink); font-size: clamp(18px, 1.7vw, 30px); }
-    .status-mark { display: flex; align-items: center; gap: .35em; font-size: .76em; }
+    .status-card .status-mark { display: flex; align-items: center; gap: .35em; font-size: clamp(10px, .85vw, 12px); }
     .dot { width: .62em; height: .62em; border-radius: 50%; background: #98a7ba; }
     .dot.blue { background: var(--blue-500); }
     .dot.green { background: var(--green); }
@@ -365,7 +365,7 @@
     .packet-list { display: grid; gap: .55em; }
     .packet { display: grid; grid-template-columns: 1.15fr .78fr .6fr auto; gap: .6em; align-items: center; padding: .68em .85em; border-radius: 10px; background: #f6f9fd; color: #52637b; font-size: clamp(11px, .9vw, 14px); }
     .packet strong { color: var(--ink); }
-    .packet .badge { justify-self: start; padding: .28em .52em; border-radius: 99px; font-weight: 800; font-size: .84em; }
+    .packet .badge { justify-self: start; padding: .28em .52em; border-radius: 99px; font-weight: 800; font-size: clamp(10px, .85vw, 12px); }
     .badge.watch { background: #fff2d1; color: #996200; }
     .badge.done { background: #e5f7ed; color: #1f7450; }
     .badge.flag { background: #fce8ee; color: #a62c4a; }
@@ -395,7 +395,7 @@
     .review-panel { padding: 1.05em; }
     .review-panel:first-child { border-right: 1px solid #e2e9f3; }
     .review-title { display: flex; align-items: center; justify-content: space-between; gap: .6em; margin-bottom: .9em; color: var(--ink); font-size: clamp(10px, .92vw, 16px); font-weight: 800; }
-    .review-title small { color: var(--muted); font-size: .76em; }
+    .review-title small { color: var(--muted); font-size: clamp(10px, .85vw, 12px); }
 
     .overview-card { margin-bottom: .55em; padding: .67em .7em; border-radius: 9px; background: #f2f6fb; color: var(--muted); font-size: clamp(11px, .9vw, 14px); }
     .overview-card.active { border: 1px solid #a9c9ff; background: #edf5ff; color: #1552a8; box-shadow: inset 3px 0 var(--blue-500); }
@@ -412,7 +412,7 @@
     .page-count { margin-top: .45em; color: var(--muted); font-size: clamp(10px, .85vw, 12px); text-align: center; }
 
     .journey { display: grid; grid-template-columns: repeat(4, 1fr); gap: .65em; margin-top: 1.5em; }
-    .journey span { position: relative; padding-top: 1.35em; color: var(--muted); font-size: clamp(8px, .75vw, 13px); line-height: 1.25; }
+    .journey span { position: relative; padding-top: 1.35em; color: var(--muted); font-size: clamp(10px, .9vw, 13px); line-height: 1.25; }
     .journey span::before { position: absolute; top: 0; left: 0; display: grid; place-items: center; width: 1.45em; aspect-ratio: 1; border-radius: 50%; background: #e8f1ff; color: var(--blue-500); content: attr(data-step); font-weight: 850; }
 
     .outcome-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 5.5%; height: 100%; align-items: center; }
@@ -422,7 +422,7 @@
     .report { position: relative; padding: 1.3em; border: 1px solid rgb(112 215 255 / 35%); border-radius: 20px; background: linear-gradient(145deg, #102e55, #0d2343); box-shadow: 0 22px 50px rgb(0 0 0 / 22%); }
     .report::after { position: absolute; inset: 13% -8% -11% 17%; z-index: -1; border-radius: 20px; background: rgb(47 124 246 / 18%); content: ""; filter: blur(20px); }
     .report-top { display: flex; align-items: center; justify-content: space-between; color: #d8e6f5; font-size: clamp(10px, .95vw, 17px); font-weight: 750; }
-    .report-badge { padding: .34em .65em; border-radius: 99px; background: #dff7e9; color: #1b724c; font-size: .74em; }
+    .report-badge { padding: .34em .65em; border-radius: 99px; background: #dff7e9; color: #1b724c; font-size: clamp(10px, .85vw, 12px); }
     .report-sheet { display: grid; gap: .65em; margin-top: 1em; padding: 1em; border-radius: 11px; background: #f8fbff; color: var(--ink); }
     .report-row { display: flex; justify-content: space-between; gap: 1em; padding-bottom: .56em; border-bottom: 1px solid #e6edf6; font-size: clamp(11px, .9vw, 14px); }
     .report-row:last-child { border-bottom: 0; padding-bottom: 0; }
