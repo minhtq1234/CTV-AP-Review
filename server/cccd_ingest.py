@@ -31,8 +31,8 @@ class PlannedMapping:
     mapping: dict
 
 
-def _digits(value: str | None) -> str:
-    return "".join(character for character in value or "" if character.isdigit())
+def _digits(value: object) -> str:
+    return "".join(character for character in value if character.isdigit()) if isinstance(value, str) else ""
 
 
 def _roster_index(roster_key: str | None) -> int | None:
@@ -45,7 +45,11 @@ def _roster_index(roster_key: str | None) -> int | None:
 def _case_relative(case_dir: str, path: str) -> str:
     root = os.path.realpath(case_dir)
     candidate = os.path.realpath(path)
-    if os.path.commonpath([root, candidate]) != root:
+    try:
+        shared_path = os.path.commonpath([root, candidate])
+    except ValueError as error:
+        raise ValueError("CCCD asset escaped case directory") from error
+    if shared_path != root:
         raise ValueError("CCCD asset escaped case directory")
     return os.path.relpath(candidate, root).replace(os.sep, "/")
 
@@ -76,6 +80,18 @@ def _serialize_side(analyzed, case_dir: str) -> dict | None:
 def _append_issue(issues: list[str], issue: str) -> None:
     if issue not in issues:
         issues.append(issue)
+
+
+def _packet_target_index(packet: object, roster_cccd: str) -> int | None:
+    if not isinstance(packet, dict):
+        return None
+    index = packet.get("index")
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        return None
+    identity = packet.get("rosterIdentity")
+    if not isinstance(identity, dict):
+        return None
+    return index if _digits(identity.get("cccd")) == roster_cccd else None
 
 
 def _validated_candidate_resolution_maps(
@@ -115,9 +131,9 @@ def _target_packet_index(
         return None
 
     targets = [
-        packet["index"]
+        index
         for packet in packets
-        if _digits((packet.get("rosterIdentity") or {}).get("cccd")) == roster_cccd
+        if (index := _packet_target_index(packet, roster_cccd)) is not None
     ]
     if len(targets) == 1:
         return targets[0]

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+import cccd_ingest
 from cccd_ingest import plan_candidate_mappings
 from cccd_matching import CardResolution, ResolutionResult
 from cccd_ocr import CccdImageOcr
@@ -154,6 +155,38 @@ def test_exact_resolution_with_non_unique_packet_target_does_not_attach(tmp_path
     assert issue in planned.mapping["issues"]
 
 
+@pytest.mark.parametrize("malformed_packet", [
+    None,
+    {"rosterIdentity": {"cccd": CCCD}},
+    {"index": "0", "rosterIdentity": {"cccd": CCCD}},
+    {"index": True, "rosterIdentity": {"cccd": CCCD}},
+    {"index": -1, "rosterIdentity": {"cccd": CCCD}},
+    {"index": 0, "rosterIdentity": "not-a-record"},
+    {"index": 0, "rosterIdentity": {"cccd": 1}},
+])
+def test_malformed_packet_entries_are_skipped_without_attaching(tmp_path, malformed_packet):
+    card = candidate(tmp_path)
+
+    planned = plan(tmp_path, card, resolution(card), packets=[malformed_packet])
+
+    assert planned.target_packet_index is None
+    assert "packet-target-not-found" in planned.mapping["issues"]
+
+
+def test_malformed_packet_entry_does_not_block_a_valid_target(tmp_path):
+    card = candidate(tmp_path)
+
+    planned = plan(
+        tmp_path,
+        card,
+        resolution(card),
+        packets=[{"index": True, "rosterIdentity": {"cccd": CCCD}}, packet()],
+    )
+
+    assert planned.target_packet_index == 0
+    assert "packet-target-not-found" not in planned.mapping["issues"]
+
+
 @pytest.mark.parametrize("state", ["suggested", "manual", "conflict"])
 def test_non_exact_resolution_never_targets_packet(tmp_path, state):
     card = candidate(tmp_path)
@@ -207,6 +240,18 @@ def test_source_asset_outside_case_root_is_rejected(tmp_path):
     card = candidate(tmp_path, front=front)
 
     with pytest.raises(ValueError, match="CCCD asset escaped case directory"):
+        plan(tmp_path, card, resolution(card))
+
+
+def test_commonpath_drive_error_is_normalized_to_case_escape(tmp_path, monkeypatch):
+    card = candidate(tmp_path)
+
+    def different_drives(_paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(cccd_ingest.os.path, "commonpath", different_drives)
+
+    with pytest.raises(ValueError, match="^CCCD asset escaped case directory$"):
         plan(tmp_path, card, resolution(card))
 
 
