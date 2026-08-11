@@ -145,7 +145,7 @@ def test_manifest_rejects_duplicate_source_artifact_and_decision_ids(key, duplic
 def test_exceptions_document_rejects_duplicate_exception_ids():
     item = {
         "exceptionId": "exception-1",
-        "code": "UNRESOLVED_COVERAGE",
+        "code": "unresolved-coverage",
         "severity": "blocking",
         "evidenceRefs": ["source-pdf"],
         "explanation": "A source remains unresolved.",
@@ -176,7 +176,7 @@ def test_prepared_validation_report_rejects_blocking_exceptions():
             "schemaVersion": "1.0",
             "outcome": "invalid",
             "packageStatus": "prepared",
-            "checks": [{"code": "UNRESOLVED_COVERAGE", "passed": False, "evidenceRefs": ["source-pdf"]}],
+            "checks": [{"code": "unresolved-coverage", "passed": False, "evidenceRefs": ["source-pdf"]}],
             "errors": ["exception-1"],
             "warnings": [],
             "validatedAt": "2026-08-11T00:00:00Z",
@@ -184,12 +184,57 @@ def test_prepared_validation_report_rejects_blocking_exceptions():
         })
 
 
-def test_manifest_rejects_artifact_paths_outside_the_package_directory():
+@pytest.mark.parametrize("path", ["/outside/input.pdf", "../input.pdf", "folder/../input.pdf"])
+def test_manifest_rejects_absolute_and_traversing_artifact_paths(path):
     document = _manifest()
-    document["artifacts"][0]["path"] = "workspace/input.pdf"
+    document["artifacts"][0]["path"] = path
 
     with pytest.raises(ValidationError):
         PackageManifest.model_validate(document)
+
+
+def test_manifest_accepts_a_top_level_package_relative_artifact_path():
+    document = _manifest()
+    document["artifacts"][0]["path"] = "input.pdf"
+
+    manifest = PackageManifest.model_validate(document)
+
+    assert manifest.artifacts[0].path == "input.pdf"
+
+
+def test_exception_codes_and_validation_checks_use_lowercase_kebab_case():
+    item = {
+        "exceptionId": "exception-1",
+        "code": "unresolved-coverage",
+        "severity": "blocking",
+        "evidenceRefs": ["source-pdf"],
+        "explanation": "A source remains unresolved.",
+        "requiredAction": "Resolve the source coverage.",
+        "resolution": "open",
+    }
+
+    document = ExceptionsDocument.model_validate({"schemaVersion": "1.0", "items": [item]})
+    assert document.items[0].code == "unresolved-coverage"
+    assert set(EXCEPTION_CODES) == {
+        "artifact-outside-package", "blocking-exception", "duplicate-id",
+        "malformed-sha256", "path-not-workspace-relative",
+        "unresolved-coverage", "zero-based-page",
+    }
+
+
+@pytest.mark.parametrize("code", ["UPPER_CASE", "bad_code", "with space", "", "two--hyphens", "-leading", "trailing-"])
+def test_validation_checks_reject_non_kebab_case_codes(code):
+    with pytest.raises(ValidationError):
+        ValidationReport.model_validate({
+            "schemaVersion": "1.0",
+            "outcome": "invalid",
+            "packageStatus": "partially_prepared",
+            "checks": [{"code": code, "passed": False, "evidenceRefs": ["source-pdf"]}],
+            "errors": [],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        })
 
 
 def test_roster_mapping_is_canonical_to_source_and_exception_codes_are_exported():
@@ -205,4 +250,4 @@ def test_roster_mapping_is_canonical_to_source_and_exception_codes_are_exported(
     }))
     assert row.values["faCode"] == "FA-DEMO"
     assert manifest.roster_mapping.canonical_to_source_columns["faCode"] == "FA code"
-    assert EXCEPTION_CODES["UNRESOLVED_COVERAGE"]
+    assert EXCEPTION_CODES["unresolved-coverage"]

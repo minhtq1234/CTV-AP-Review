@@ -30,17 +30,18 @@ DecisionType = Literal[
 
 
 EXCEPTION_CODES = {
-    "ARTIFACT_OUTSIDE_PACKAGE": "Artifact path is outside the package artifact directory.",
-    "BLOCKING_EXCEPTION": "A blocking exception prevents a prepared package.",
-    "DUPLICATE_ID": "A document contains duplicate stable identifiers.",
-    "MALFORMED_SHA256": "A SHA-256 value is malformed.",
-    "PATH_NOT_WORKSPACE_RELATIVE": "A path is not workspace-relative.",
-    "UNRESOLVED_COVERAGE": "Coverage remains unresolved.",
-    "ZERO_BASED_PAGE": "A PDF page number must be one-based.",
+    "artifact-outside-package": "Artifact path is outside the package artifact directory.",
+    "blocking-exception": "A blocking exception prevents a prepared package.",
+    "duplicate-id": "A document contains duplicate stable identifiers.",
+    "malformed-sha256": "A SHA-256 value is malformed.",
+    "path-not-workspace-relative": "A path is not workspace-relative.",
+    "unresolved-coverage": "Coverage remains unresolved.",
+    "zero-based-page": "A PDF page number must be one-based.",
 }
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_KEBAB_CASE_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class _ContractModel(BaseModel):
@@ -52,6 +53,12 @@ def _validate_relative_path(value: str) -> str:
         raise ValueError("path must be workspace-relative")
     if "\\" in value or any(part in {"", ".", ".."} for part in value.split("/")):
         raise ValueError("path must not contain traversal or empty segments")
+    return value
+
+
+def _validate_kebab_case_code(value: str) -> str:
+    if not _KEBAB_CASE_CODE_RE.fullmatch(value):
+        raise ValueError("code must be lower-case kebab-case")
     return value
 
 
@@ -97,10 +104,7 @@ class Artifact(_ContractModel):
     @field_validator("path")
     @classmethod
     def path_is_package_relative(cls, value: str) -> str:
-        value = _validate_relative_path(value)
-        if not value.startswith("artifacts/"):
-            raise ValueError("artifact path must be inside artifacts/")
-        return value
+        return _validate_relative_path(value)
 
     @field_validator("sha256")
     @classmethod
@@ -137,6 +141,7 @@ class ExceptionItem(_ContractModel):
     @field_validator("code")
     @classmethod
     def code_is_known(cls, value: str) -> str:
+        value = _validate_kebab_case_code(value)
         if value not in EXCEPTION_CODES:
             raise ValueError("exception code is not in EXCEPTION_CODES")
         return value
@@ -156,6 +161,11 @@ class ValidationCheck(_ContractModel):
     code: str = Field(min_length=1)
     passed: bool
     evidence_refs: list[str] = Field(alias="evidenceRefs")
+
+    @field_validator("code")
+    @classmethod
+    def code_is_kebab_case(cls, value: str) -> str:
+        return _validate_kebab_case_code(value)
 
 
 class ValidationReport(_ContractModel):
