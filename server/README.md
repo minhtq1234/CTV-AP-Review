@@ -58,6 +58,32 @@ Binds `127.0.0.1` only — this is a local, single-user tool, not a hosted
 service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
 5173-5175).
 
+## Validating a prepared intake package
+
+The CTV intake contract validator is a read-only mechanical gate for a prepared
+package. From the repository root, run:
+
+```bash
+python3 server/validate_intake_package.py /path/to/package
+python3 server/validate_intake_package.py /path/to/package --write-report
+```
+
+The command writes one canonical `ValidationReport` JSON object to stdout. It exits
+`0` for a valid package and `2` for a completed validation with an invalid outcome.
+Operational failures that prevent the requested command from completing use exit
+`1` and write diagnostics only to stderr.
+
+`--write-report` atomically writes the exact stdout bytes to the fixed package-local
+path `validation-report.json`. It accepts no caller-selected destination, refuses
+symlink/non-directory package roots and symlink/non-regular targets, and will not
+overwrite a digest-pinned `validation-report.json` artifact declared by the
+manifest. The validator never rewrites the manifest, original inputs, or other
+artifacts.
+
+This result means the package is mechanically complete against the CTV intake
+contract. It does not approve payment evidence or authorize submission to CTV. See
+`contracts/ctv-intake/README.md` for the CTV-to-WP snapshot procedure.
+
 ### Endpoints
 
 - `POST /api/cases` — multipart `pdf` (required) + `roster` (optional

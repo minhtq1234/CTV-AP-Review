@@ -1,0 +1,203 @@
+"""Validate one prepared CTV intake package."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import secrets
+import stat
+import sys
+
+from intake_package_validator import MAX_MANIFEST_BYTES, validate_package
+
+
+_MANIFEST_NAME = "case-manifest.json"
+_REPORT_NAME = "validation-report.json"
+_TEMP_PREFIX = f".{_REPORT_NAME}.tmp-"
+
+
+class ReportWriteError(RuntimeError):
+    """The requested report cannot be written without violating safety rules."""
+
+
+def _canonical_report_bytes(report: object) -> bytes:
+    payload = report.model_dump(by_alias=True, mode="json")
+    return (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _open_safe_package_root(package_dir: Path) -> int:
+    try:
+        root_status = os.lstat(package_dir)
+    except OSError as error:
+        raise ReportWriteError(f"package root is unavailable: {error}") from error
+    if stat.S_ISLNK(root_status.st_mode):
+        raise ReportWriteError("package root is a symlink")
+    if not stat.S_ISDIR(root_status.st_mode):
+        raise ReportWriteError("package root is not a directory")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise ReportWriteError("secure package-root opening is unavailable")
+    try:
+        descriptor = os.open(
+            package_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as error:
+        raise ReportWriteError(f"package root cannot be opened safely: {error}") from error
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ReportWriteError("package root is not a directory")
+    return descriptor
+
+
+def _guard_report_target(root_descriptor: int) -> None:
+    try:
+        target_status = os.stat(
+            _REPORT_NAME,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ReportWriteError(f"report target cannot be inspected safely: {error}") from error
+    if stat.S_ISLNK(target_status.st_mode):
+        raise ReportWriteError("validation-report.json target is a symlink")
+    if not stat.S_ISREG(target_status.st_mode):
+        raise ReportWriteError("validation-report.json target is not a regular file")
+
+
+def _manifest_declares_historical_report(root_descriptor: int) -> bool:
+    try:
+        descriptor = os.open(
+            _MANIFEST_NAME,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=root_descriptor,
+        )
+    except OSError:
+        return False
+    try:
+        file_status = os.fstat(descriptor)
+        if not stat.S_ISREG(file_status.st_mode):
+            return False
+        if file_status.st_size > MAX_MANIFEST_BYTES:
+            return False
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            content = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(content) > MAX_MANIFEST_BYTES:
+            return False
+        manifest = json.loads(content.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        return False
+    return any(
+        isinstance(artifact, dict)
+        and artifact.get("kind") == "validation-report"
+        and artifact.get("path") == _REPORT_NAME
+        for artifact in manifest["artifacts"]
+    )
+
+
+def _write_all(descriptor: int, content: bytes) -> None:
+    written = 0
+    while written < len(content):
+        count = os.write(descriptor, content[written:])
+        if count <= 0:
+            raise OSError("report temporary file write made no progress")
+        written += count
+
+
+def _atomic_write_report(root_descriptor: int, content: bytes) -> None:
+    temporary_name: str | None = None
+    temporary_descriptor = -1
+    try:
+        for _ in range(32):
+            candidate = f"{_TEMP_PREFIX}{secrets.token_hex(8)}"
+            try:
+                temporary_descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=root_descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_name is None:
+            raise ReportWriteError("could not allocate a report temporary file")
+        _write_all(temporary_descriptor, content)
+        os.fsync(temporary_descriptor)
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+        os.replace(
+            temporary_name,
+            _REPORT_NAME,
+            src_dir_fd=root_descriptor,
+            dst_dir_fd=root_descriptor,
+        )
+        temporary_name = None
+        os.fsync(root_descriptor)
+    finally:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=root_descriptor)
+            except FileNotFoundError:
+                pass
+
+
+def _emit_stdout(content: bytes) -> None:
+    stream = getattr(sys.stdout, "buffer", sys.stdout)
+    stream.write(content)
+    stream.flush()
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package_dir", type=Path)
+    parser.add_argument(
+        "--write-report",
+        action="store_true",
+        help=f"atomically write the same JSON to {_REPORT_NAME} inside the package",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    root_descriptor = -1
+    try:
+        if args.write_report:
+            root_descriptor = _open_safe_package_root(args.package_dir)
+            _guard_report_target(root_descriptor)
+            if _manifest_declares_historical_report(root_descriptor):
+                raise ReportWriteError(
+                    "refusing to overwrite declared validation-report.json artifact"
+                )
+
+        report = validate_package(args.package_dir)
+        content = _canonical_report_bytes(report)
+        if args.write_report:
+            _atomic_write_report(root_descriptor, content)
+        _emit_stdout(content)
+        return 0 if report.outcome == "valid" else 2
+    except Exception as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
