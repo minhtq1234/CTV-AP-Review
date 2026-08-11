@@ -1,7 +1,9 @@
+import gc
 import hashlib
 import json
 import os
 from pathlib import Path
+import weakref
 
 import fitz
 import openpyxl
@@ -907,6 +909,31 @@ def test_internal_open_reader_validation_uses_and_does_not_close_owned_descripto
         reader.close()
 
     assert reader.root_fd is None
+    closed_report = validator._validate_package_reader(reader)
+    assert closed_report.errors == ["secure-open-unavailable"]
+    assert _check(closed_report, "secure-open-unavailable").evidence_refs == [
+        "package-root"
+    ]
+
+
+def test_abandoned_factory_reader_does_not_leak_registry_or_descriptor(tmp_path):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    reader, failure = validator._PackageReader.open(package_dir)
+    assert failure is None
+    assert reader is not None
+    descriptor = reader.root_fd
+    assert descriptor is not None
+    reader_reference = weakref.ref(reader)
+
+    del reader
+    gc.collect()
+
+    assert reader_reference() is None
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_package_reader_rejects_direct_construction_with_an_arbitrary_descriptor(
@@ -920,6 +947,26 @@ def test_package_reader_rejects_direct_construction_with_an_arbitrary_descriptor
     try:
         with pytest.raises(TypeError):
             validator._PackageReader(root_path=package_dir, root_fd=descriptor)
+
+        assert os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def test_visible_factory_token_cannot_authorize_direct_reader_construction(tmp_path):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    descriptor = os.open(package_dir, os.O_RDONLY)
+    visible_token = getattr(validator, "_PACKAGE_READER_FACTORY_TOKEN", object())
+    try:
+        with pytest.raises(TypeError):
+            validator._PackageReader(
+                root_path=package_dir,
+                root_fd=descriptor,
+                _factory_token=visible_token,
+            )
 
         assert os.fstat(descriptor)
     finally:
@@ -945,6 +992,60 @@ def test_fabricated_package_reader_fails_closed_without_artifact_io(
 
     assert report.errors == ["secure-open-unavailable"]
     assert _check(report, "secure-open-unavailable").evidence_refs == ["package-root"]
+
+
+def test_fully_populated_fabrication_cannot_copy_or_steal_reader_identity(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    reader, failure = validator._PackageReader.open(package_dir)
+    assert failure is None
+    assert reader is not None
+    descriptor = reader.root_fd
+    assert descriptor is not None
+    fabricated = object.__new__(validator._PackageReader)
+    fabricated.root_path = reader.root_path
+    object.__setattr__(fabricated, "_PackageReader__root_fd", descriptor)
+    if hasattr(reader, "_PackageReader__root_identity"):
+        object.__setattr__(
+            fabricated,
+            "_PackageReader__root_identity",
+            getattr(reader, "_PackageReader__root_identity"),
+        )
+    if hasattr(validator, "_SECURE_OPEN_PROVENANCE"):
+        object.__setattr__(
+            fabricated,
+            "_PackageReader__secure_open_provenance",
+            validator._SECURE_OPEN_PROVENANCE,
+        )
+
+    def reject_artifact_io(*_args, **_kwargs):
+        pytest.fail("artifact I/O was attempted through copied visible trust data")
+
+    def reject_parser(*_args, **_kwargs):
+        pytest.fail("an artifact parser ran through copied visible trust data")
+
+    monkeypatch.setattr(validator, "_read_relative_to_fd", reject_artifact_io)
+    monkeypatch.setattr(validator.fitz, "open", reject_parser)
+    monkeypatch.setattr(validator.openpyxl, "load_workbook", reject_parser)
+
+    try:
+        report = validator._validate_package_reader(fabricated)
+
+        assert report.errors == ["secure-open-unavailable"]
+        assert _check(report, "secure-open-unavailable").evidence_refs == [
+            "package-root"
+        ]
+        fabricated.close()
+        assert os.fstat(descriptor)
+    finally:
+        reader.close()
+
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_open_reader_fails_closed_if_secure_capability_changes_without_io(
