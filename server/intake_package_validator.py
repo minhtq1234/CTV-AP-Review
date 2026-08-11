@@ -212,21 +212,33 @@ class _Issues:
 
 def validate_package(package_dir: Path) -> ValidationReport:
     """Validate one package without modifying the package or its artifacts."""
-    issues = _Issues()
     reader, root_failure = _PackageReader.open(Path(package_dir))
+    if reader is None:
+        return _report_package_root_failure(root_failure)
+    try:
+        return _validate_package_reader(reader)
+    finally:
+        reader.close()
+
+
+def _report_package_root_failure(root_failure: str | None) -> ValidationReport:
+    """Build the stable report for a package root that could not be opened."""
+    issues = _Issues()
     if root_failure == "symlink":
         issues.error("symlink-not-allowed", "package-root")
         return issues.report(None)
     if root_failure == "secure-open-unavailable":
         issues.error("secure-open-unavailable", "package-root")
         return issues.report(None)
-    if reader is None:
-        issues.error("manifest-invalid", _MANIFEST_NAME)
-        return issues.report(None)
-    try:
-        return _validate_open_package(reader, issues)
-    finally:
-        reader.close()
+    issues.error("manifest-invalid", _MANIFEST_NAME)
+    return issues.report(None)
+
+
+def _validate_package_reader(reader: _PackageReader) -> ValidationReport:
+    """Validate through a caller-owned open reader without closing it."""
+    if reader.root_fd is None:
+        return _report_package_root_failure("secure-open-unavailable")
+    return _validate_open_package(reader, _Issues())
 
 
 def _validate_open_package(reader: _PackageReader, issues: _Issues) -> ValidationReport:

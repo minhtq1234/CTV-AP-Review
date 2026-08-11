@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import fitz
@@ -875,6 +876,37 @@ def test_symlinked_package_root_uses_private_synthetic_evidence(tmp_path):
 
     assert "symlink-not-allowed" in report.errors
     assert _check(report, "symlink-not-allowed").evidence_refs == ["package-root"]
+
+
+def test_internal_open_reader_validation_uses_and_does_not_close_owned_descriptor(
+    tmp_path,
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["artifacts"] = [
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] != "roster"
+    ]
+    _save_manifest(package_dir, manifest)
+    reader, failure = validator._PackageReader.open(package_dir)
+    assert failure is None
+    assert reader is not None
+    opened_original = tmp_path / "opened-original"
+    package_dir.rename(opened_original)
+    _write_package(package_dir)
+
+    try:
+        report = validator._validate_package_reader(reader)
+
+        assert report.outcome == "invalid"
+        assert "missing-required-artifact" in report.errors
+        assert reader.root_fd is not None
+        assert os.fstat(reader.root_fd)
+    finally:
+        reader.close()
+
+    assert reader.root_fd is None
 
 
 def test_validation_fails_closed_when_secure_relative_open_is_unavailable(

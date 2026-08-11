@@ -9,7 +9,12 @@ import secrets
 import stat
 import sys
 
-from intake_package_validator import MAX_MANIFEST_BYTES, validate_package
+from intake_package_validator import (
+    MAX_MANIFEST_BYTES,
+    _PackageReader,
+    _report_package_root_failure,
+    _validate_package_reader,
+)
 
 
 _MANIFEST_NAME = "case-manifest.json"
@@ -27,30 +32,6 @@ def _canonical_report_bytes(report: object) -> bytes:
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
         + b"\n"
     )
-
-
-def _open_safe_package_root(package_dir: Path) -> int:
-    try:
-        root_status = os.lstat(package_dir)
-    except OSError as error:
-        raise ReportWriteError(f"package root is unavailable: {error}") from error
-    if stat.S_ISLNK(root_status.st_mode):
-        raise ReportWriteError("package root is a symlink")
-    if not stat.S_ISDIR(root_status.st_mode):
-        raise ReportWriteError("package root is not a directory")
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        raise ReportWriteError("secure package-root opening is unavailable")
-    try:
-        descriptor = os.open(
-            package_dir,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-    except OSError as error:
-        raise ReportWriteError(f"package root cannot be opened safely: {error}") from error
-    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise ReportWriteError("package root is not a directory")
-    return descriptor
 
 
 def _guard_report_target(root_descriptor: int) -> None:
@@ -173,19 +154,38 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _package_root_write_error(root_failure: str | None) -> ReportWriteError:
+    if root_failure == "symlink":
+        return ReportWriteError("package root is a symlink")
+    if root_failure == "secure-open-unavailable":
+        return ReportWriteError("secure package-root opening is unavailable")
+    return ReportWriteError("package root is not a safe directory")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    root_descriptor = -1
+    reader = None
     try:
+        reader, root_failure = _PackageReader.open(args.package_dir)
+        if reader is None:
+            if args.write_report:
+                raise _package_root_write_error(root_failure)
+            report = _report_package_root_failure(root_failure)
+            content = _canonical_report_bytes(report)
+            _emit_stdout(content)
+            return 2
+
+        root_descriptor = reader.root_fd
+        if root_descriptor is None:
+            raise ReportWriteError("secure package-root descriptor is unavailable")
         if args.write_report:
-            root_descriptor = _open_safe_package_root(args.package_dir)
             _guard_report_target(root_descriptor)
             if _manifest_declares_historical_report(root_descriptor):
                 raise ReportWriteError(
                     "refusing to overwrite declared validation-report.json artifact"
                 )
 
-        report = validate_package(args.package_dir)
+        report = _validate_package_reader(reader)
         content = _canonical_report_bytes(report)
         if args.write_report:
             _atomic_write_report(root_descriptor, content)
@@ -195,8 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     finally:
-        if root_descriptor >= 0:
-            os.close(root_descriptor)
+        if reader is not None:
+            reader.close()
 
 
 if __name__ == "__main__":

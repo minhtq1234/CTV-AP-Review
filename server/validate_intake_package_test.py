@@ -92,6 +92,42 @@ def test_write_report_atomically_replaces_an_undeclared_generated_report(tmp_pat
     assert not list(package_dir.glob(".validation-report.json.tmp-*"))
 
 
+def test_directory_substitution_cannot_split_validation_from_report_write(
+    tmp_path, monkeypatch, capsysbinary
+):
+    import validate_intake_package as cli
+
+    package_dir = tmp_path / "package"
+    original_manifest = _write_package(package_dir)
+    original_manifest["artifacts"] = [
+        artifact
+        for artifact in original_manifest["artifacts"]
+        if artifact["kind"] != "roster"
+    ]
+    _save_manifest(package_dir, original_manifest)
+    valid_replacement = tmp_path / "valid-replacement"
+    _write_package(valid_replacement)
+    opened_original = tmp_path / "opened-original"
+    real_guard = cli._guard_report_target
+
+    def substitute_path_after_open(root_descriptor):
+        real_guard(root_descriptor)
+        package_dir.rename(opened_original)
+        valid_replacement.rename(package_dir)
+
+    monkeypatch.setattr(cli, "_guard_report_target", substitute_path_after_open)
+
+    exit_code = cli.main([str(package_dir), "--write-report"])
+    captured = capsysbinary.readouterr()
+
+    report = _assert_canonical_report(captured.out, "invalid")
+    assert exit_code == 2
+    assert "missing-required-artifact" in report["errors"]
+    assert captured.err == b""
+    assert (opened_original / "validation-report.json").read_bytes() == captured.out
+    assert not (package_dir / "validation-report.json").exists()
+
+
 def test_write_report_refuses_a_digest_pinned_historical_report(tmp_path):
     package_dir = tmp_path / "package"
     manifest = _write_package(package_dir)
