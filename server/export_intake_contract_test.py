@@ -14,6 +14,47 @@ ARTIFACT_FILENAMES = (
     "compatibility.md",
 )
 _TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
+_ABSOLUTE_BUILD_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9+./:-])(?:/(?!/)[^\s\"'`<>()\[\]{},;]+|[A-Za-z]:[\\/][^\s\"'`<>()\[\]{},;]+)"
+)
+
+
+def _artifact_string_values(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested_value in value.values():
+            yield from _artifact_string_values(nested_value)
+    elif isinstance(value, list):
+        for nested_value in value:
+            yield from _artifact_string_values(nested_value)
+
+
+def _absolute_build_paths(artifact_text):
+    try:
+        values = _artifact_string_values(json.loads(artifact_text))
+    except json.JSONDecodeError:
+        values = [artifact_text]
+
+    return [
+        match.group(0)
+        for value in values
+        if not value.startswith(("#/", "http://", "https://"))
+        for match in _ABSOLUTE_BUILD_PATH_RE.finditer(value)
+    ]
+
+
+def test_absolute_path_detector_rejects_foreign_posix_and_windows_build_paths():
+    posix_path = "/tmp/build/contract.json"
+    windows_path = r"C:\build\contract.json"
+    foreign_artifact = json.dumps({"description": f"Built at {posix_path}; {windows_path}"})
+
+    assert str(Path(__file__).resolve().parents[1]) not in foreign_artifact
+    assert _absolute_build_paths(foreign_artifact) == [posix_path, windows_path]
+    assert not _absolute_build_paths(json.dumps({
+        "$ref": "#/$defs/Source",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+    }))
 
 
 def test_export_is_deterministic_and_matches_checked_in_artifacts(tmp_path):
@@ -31,7 +72,7 @@ def test_export_is_deterministic_and_matches_checked_in_artifacts(tmp_path):
         assert first_bytes == (CONTRACT_ROOT / filename).read_bytes()
 
         text = first_bytes.decode("utf-8")
-        assert str(Path(__file__).resolve().parents[1]) not in text
+        assert not _absolute_build_paths(text)
         assert not _TIMESTAMP_RE.search(text)
         if filename.endswith(".json"):
             assert text.endswith("\n")
