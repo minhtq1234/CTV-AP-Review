@@ -222,21 +222,110 @@ def test_missing_required_artifact_is_rejected(tmp_path):
     assert _check(report, "missing-required-artifact").evidence_refs == ["roster"]
 
 
-def test_digest_and_byte_size_mismatches_are_reported_together(tmp_path):
+def test_byte_size_mismatch_is_rejected_before_digesting_or_reading(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
     package_dir = tmp_path / "package"
     manifest = _write_package(package_dir)
     pdf_artifact = next(
         artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
     )
-    pdf_artifact["size"] += 1
+    pdf_path = package_dir / pdf_artifact["path"]
+    pdf_inode = pdf_path.stat().st_ino
+    with pdf_path.open("r+b") as stream:
+        stream.truncate(2 * 1024 * 1024)
+    real_fdopen = validator.os.fdopen
+
+    def reject_artifact_stream_read(file_descriptor, *args, **kwargs):
+        if validator.os.fstat(file_descriptor).st_ino == pdf_inode:
+            pytest.fail("size-mismatched artifact content was opened for reading")
+        return real_fdopen(file_descriptor, *args, **kwargs)
+
+    monkeypatch.setattr(validator.os, "fdopen", reject_artifact_stream_read)
+    _save_manifest(package_dir, manifest)
+
+    report = validator.validate_package(package_dir)
+
+    assert "artifact-size-mismatch" in report.errors
+    assert "artifact-digest-mismatch" not in report.errors
+    assert _check(report, "artifact-size-mismatch").evidence_refs == ["artifact-pdf"]
+
+
+def test_digest_mismatch_is_rejected_when_declared_size_matches(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    pdf_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
     pdf_artifact["sha256"] = "f" * 64
     _save_manifest(package_dir, manifest)
 
     report = _validate(package_dir)
 
-    assert "artifact-size-mismatch" in report.errors
+    assert "artifact-size-mismatch" not in report.errors
     assert "artifact-digest-mismatch" in report.errors
-    assert _check(report, "artifact-size-mismatch").evidence_refs == ["artifact-pdf"]
+
+
+def test_artifact_over_the_absolute_kind_limit_is_rejected_before_reading(tmp_path):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    pdf_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    pdf_path = package_dir / pdf_artifact["path"]
+    hard_limit = validator.MAX_ARTIFACT_BYTES_BY_KIND["input-pdf"]
+    with pdf_path.open("r+b") as stream:
+        stream.truncate(hard_limit + 1)
+    pdf_artifact["size"] = hard_limit + 1
+    pdf_artifact["sha256"] = "f" * 64
+    _save_manifest(package_dir, manifest)
+
+    report = validator.validate_package(package_dir)
+
+    assert "artifact-too-large" in report.errors
+    assert "artifact-size-mismatch" not in report.errors
+    assert "artifact-digest-mismatch" not in report.errors
+    assert "pdf-unreadable" not in report.errors
+
+
+def test_artifact_appended_after_fstat_is_bounded_and_rejected(tmp_path, monkeypatch):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    pdf_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    pdf_path = package_dir / pdf_artifact["path"]
+    pdf_inode = pdf_path.stat().st_ino
+    accepted_limit = pdf_path.stat().st_size + 16
+    monkeypatch.setitem(
+        validator.MAX_ARTIFACT_BYTES_BY_KIND, "input-pdf", accepted_limit
+    )
+    real_fdopen = validator.os.fdopen
+    appended = False
+
+    def append_before_read(file_descriptor, *args, **kwargs):
+        nonlocal appended
+        if not appended and validator.os.fstat(file_descriptor).st_ino == pdf_inode:
+            with pdf_path.open("ab") as stream:
+                stream.write(b"X" * 32)
+            appended = True
+        return real_fdopen(file_descriptor, *args, **kwargs)
+
+    monkeypatch.setattr(validator.os, "fdopen", append_before_read)
+
+    report = validator.validate_package(package_dir)
+
+    assert appended
+    assert "artifact-too-large" in report.errors
+    assert "artifact-size-mismatch" not in report.errors
+    assert "artifact-digest-mismatch" not in report.errors
+    assert "pdf-unreadable" not in report.errors
 
 
 def test_missing_and_extra_pdf_page_coverage_are_reported(tmp_path):
@@ -337,6 +426,57 @@ def test_derived_pdf_target_pages_must_be_covered_exactly_once(
     assert extra_evidence in _check(report, "page-coverage-extra").evidence_refs
 
 
+@pytest.mark.parametrize(
+    ("relationship", "expected_evidence"),
+    [
+        ("omitted", "artifact-pdf#omitted-source=1"),
+        ("extra-pdf", "artifact-pdf#extra-source=1"),
+        ("non-pdf", "artifact-pdf#non-pdf-source=1"),
+    ],
+)
+def test_input_pdf_provenance_matches_sources_represented_by_target_pages(
+    tmp_path, relationship, expected_evidence
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    input_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    if relationship == "omitted":
+        input_artifact["sourceIds"] = []
+    elif relationship == "extra-pdf":
+        manifest["sources"].append(
+            {
+                "sourceId": "source-pdf-unmapped",
+                "path": "workspace/source-unmapped.pdf",
+                "mediaType": "application/pdf",
+                "pageCount": 1,
+                "size": 1,
+                "sha256": "e" * 64,
+                "coverageState": "assigned",
+            }
+        )
+        manifest["pdfPages"].append(
+            {
+                "sourceId": "source-pdf-unmapped",
+                "sourcePage": 1,
+                "coverageState": "assigned",
+                "targetPage": None,
+            }
+        )
+        input_artifact["sourceIds"].append("source-pdf-unmapped")
+    else:
+        input_artifact["sourceIds"].append("source-roster")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "input-pdf-provenance-mismatch" in report.errors
+    assert expected_evidence in _check(
+        report, "input-pdf-provenance-mismatch"
+    ).evidence_refs
+
+
 def test_unknown_source_decision_exception_and_evidence_references_are_rejected(tmp_path):
     package_dir = tmp_path / "package"
     manifest = _write_package(package_dir)
@@ -367,9 +507,48 @@ def test_unknown_source_decision_exception_and_evidence_references_are_rejected(
     ]
     assert "evidence-reference-unknown" in report.errors
     assert _check(report, "evidence-reference-unknown").evidence_refs == [
-        "artifact-unknown",
-        "source-pdf#page=99",
+        "decision-present#evidence-ref=0",
+        "decision-present#evidence-ref=1",
     ]
+
+
+def test_unknown_evidence_reports_owner_and_index_without_echoing_raw_values(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(
+        package_dir,
+        exception_items=[
+            {
+                "exceptionId": "exception-evidence-owner",
+                "code": "artifact-outside-package",
+                "severity": "warning",
+                "evidenceRefs": ["../../private/location/synthetic-subject"],
+                "explanation": "Synthetic unknown exception evidence.",
+                "requiredAction": "Review the synthetic evidence reference.",
+                "resolution": "open",
+            }
+        ],
+    )
+    manifest["decisions"] = [
+        {
+            "decisionId": "decision-evidence-owner",
+            "proposalVersion": "1.0",
+            "type": "approve-preview",
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": ["synthetic.person@example.invalid"],
+        }
+    ]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+    serialized_report = report.model_dump_json(by_alias=True)
+
+    assert _check(report, "evidence-reference-unknown").evidence_refs == [
+        "decision-evidence-owner#evidence-ref=0",
+        "exception-evidence-owner#evidence-ref=0",
+    ]
+    assert "../../private/location/synthetic-subject" not in serialized_report
+    assert "synthetic.person@example.invalid" not in serialized_report
 
 
 def test_evidence_can_reference_an_authoritative_source_page_missing_coverage(tmp_path):
@@ -511,7 +690,7 @@ def test_prepared_package_allows_an_open_warning_only_exception(tmp_path):
     [
         ("missing", "artifact-missing"),
         ("malformed", "exceptions-invalid"),
-        ("metadata-mismatch", "artifact-digest-mismatch"),
+        ("metadata-mismatch", "artifact-size-mismatch"),
     ],
 )
 def test_manifest_exception_ids_remain_unknown_when_exceptions_are_unusable(
@@ -646,6 +825,31 @@ def test_symlinked_package_root_uses_private_synthetic_evidence(tmp_path):
 
     assert "symlink-not-allowed" in report.errors
     assert _check(report, "symlink-not-allowed").evidence_refs == ["package-root"]
+
+
+def test_validation_fails_closed_when_secure_relative_open_is_unavailable(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+
+    def reject_pathname_fallback(*_args, **_kwargs):
+        pytest.fail("an insecure package pathname reader was invoked")
+
+    def reject_parser(*_args, **_kwargs):
+        pytest.fail("an artifact parser was invoked")
+
+    monkeypatch.setattr(validator, "_SUPPORTS_SECURE_RELATIVE_OPEN", False)
+    monkeypatch.setattr(Path, "open", reject_pathname_fallback)
+    monkeypatch.setattr(validator.fitz, "open", reject_parser)
+    monkeypatch.setattr(validator.openpyxl, "load_workbook", reject_parser)
+
+    report = validator.validate_package(package_dir)
+
+    assert report.errors == ["secure-open-unavailable"]
+    assert _check(report, "secure-open-unavailable").evidence_refs == ["package-root"]
 
 
 def test_pdf_parser_uses_the_same_opened_bytes_that_were_digest_checked(

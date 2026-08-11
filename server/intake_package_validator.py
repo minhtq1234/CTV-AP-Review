@@ -17,10 +17,23 @@ import openpyxl
 from pydantic import ValidationError
 
 from intake_contract import ExceptionsDocument, PackageManifest, ValidationCheck, ValidationReport
+from roster_workbook import MAX_WORKBOOK_BYTES as MAX_ROSTER_WORKBOOK_BYTES
 from roster_workbook import preflight_roster_workbook
 
 
 VALIDATOR_VERSION = "1.0.0"
+_MIB = 1024 * 1024
+MAX_MANIFEST_BYTES = 16 * _MIB
+# V1 package ceilings bound in-memory snapshots. Workbook limits mirror the
+# existing app gates; the PDF ceiling is deliberately higher because the
+# current upload path has no lower PDF limit, and JSON artifacts stay compact.
+MAX_ARTIFACT_BYTES_BY_KIND = {
+    "input-pdf": 256 * _MIB,
+    "roster": MAX_ROSTER_WORKBOOK_BYTES,
+    "cccd": 100 * _MIB,
+    "exceptions": 16 * _MIB,
+    "validation-report": 16 * _MIB,
+}
 _MANIFEST_NAME = "case-manifest.json"
 _REQUIRED_ARTIFACT_KINDS = frozenset({"input-pdf", "roster", "exceptions"})
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -39,41 +52,47 @@ class _PackageReader:
     @classmethod
     def open(cls, package_dir: Path) -> tuple["_PackageReader | None", str | None]:
         root_path = Path(package_dir)
-        if _SUPPORTS_SECURE_RELATIVE_OPEN:
-            try:
-                root_fd = os.open(
-                    root_path,
-                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
-                )
-            except OSError:
-                return None, "symlink" if root_path.is_symlink() else "missing"
-            try:
-                if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
-                    os.close(root_fd)
-                    return None, "missing"
-            except OSError:
+        if not _SUPPORTS_SECURE_RELATIVE_OPEN:
+            return None, "secure-open-unavailable"
+        try:
+            root_fd = os.open(
+                root_path,
+                os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+            )
+        except OSError:
+            return None, "symlink" if root_path.is_symlink() else "missing"
+        try:
+            if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
                 os.close(root_fd)
                 return None, "missing"
-            return cls(root_path=root_path, root_fd=root_fd), None
-
-        if root_path.is_symlink():
-            return None, "symlink"
-        if not root_path.is_dir():
+        except OSError:
+            os.close(root_fd)
             return None, "missing"
-        return cls(root_path=root_path.resolve(), root_fd=None), None
+        return cls(root_path=root_path, root_fd=root_fd), None
 
     def close(self) -> None:
         if self.root_fd is not None:
             os.close(self.root_fd)
             self.root_fd = None
 
-    def read(self, declared_path: str) -> tuple[bytes | None, str | None]:
+    def read(
+        self,
+        declared_path: str,
+        *,
+        expected_size: int | None = None,
+        max_bytes: int,
+    ) -> tuple[bytes | None, str | None]:
         parts = _relative_path_parts(declared_path)
         if parts is None:
             return None, "unsafe"
-        if self.root_fd is not None:
-            return _read_relative_to_fd(self.root_fd, parts)
-        return _read_relative_fallback(self.root_path, parts)
+        if self.root_fd is None:
+            return None, "secure-open-unavailable"
+        return _read_relative_to_fd(
+            self.root_fd,
+            parts,
+            expected_size=expected_size,
+            max_bytes=max_bytes,
+        )
 
 
 def _relative_path_parts(declared_path: str) -> tuple[str, ...] | None:
@@ -92,7 +111,11 @@ def _relative_path_parts(declared_path: str) -> tuple[str, ...] | None:
 
 
 def _read_relative_to_fd(
-    root_fd: int, parts: tuple[str, ...]
+    root_fd: int,
+    parts: tuple[str, ...],
+    *,
+    expected_size: int | None,
+    max_bytes: int,
 ) -> tuple[bytes | None, str | None]:
     parent_fd = os.dup(root_fd)
     try:
@@ -117,10 +140,20 @@ def _read_relative_to_fd(
         except OSError:
             return None, "symlink" if _is_symlink_at(parent_fd, parts[-1]) else "missing"
         try:
-            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            metadata = os.fstat(file_fd)
+            if not stat.S_ISREG(metadata.st_mode):
                 return None, "not-regular"
+            if metadata.st_size > max_bytes:
+                return None, "too-large"
+            if expected_size is not None and metadata.st_size != expected_size:
+                return None, "size-mismatch"
             with os.fdopen(file_fd, "rb", closefd=False) as stream:
-                return stream.read(), None
+                content = stream.read(max_bytes + 1)
+            if len(content) > max_bytes:
+                return None, "too-large"
+            if expected_size is not None and len(content) != expected_size:
+                return None, "size-mismatch"
+            return content, None
         except OSError:
             return None, "missing"
         finally:
@@ -135,23 +168,6 @@ def _is_symlink_at(parent_fd: int, name: str) -> bool:
     except OSError:
         return False
     return stat.S_ISLNK(metadata.st_mode)
-
-
-def _read_relative_fallback(
-    root_path: Path, parts: tuple[str, ...]
-) -> tuple[bytes | None, str | None]:
-    candidate = root_path
-    for part in parts:
-        candidate = candidate / part
-        if candidate.is_symlink():
-            return None, "symlink"
-    try:
-        with candidate.open("rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                return None, "not-regular"
-            return stream.read(), None
-    except OSError:
-        return None, "missing"
 
 
 @dataclass
@@ -201,6 +217,9 @@ def validate_package(package_dir: Path) -> ValidationReport:
     if root_failure == "symlink":
         issues.error("symlink-not-allowed", "package-root")
         return issues.report(None)
+    if root_failure == "secure-open-unavailable":
+        issues.error("secure-open-unavailable", "package-root")
+        return issues.report(None)
     if reader is None:
         issues.error("manifest-invalid", _MANIFEST_NAME)
         return issues.report(None)
@@ -211,7 +230,9 @@ def validate_package(package_dir: Path) -> ValidationReport:
 
 
 def _validate_open_package(reader: _PackageReader, issues: _Issues) -> ValidationReport:
-    manifest_content, manifest_failure = reader.read(_MANIFEST_NAME)
+    manifest_content, manifest_failure = reader.read(
+        _MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES
+    )
     if manifest_failure == "symlink":
         issues.error("symlink-not-allowed", _MANIFEST_NAME)
         return issues.report(None)
@@ -248,23 +269,30 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
 
     usable_artifacts: dict[str, bytes] = {}
     for artifact in sorted(manifest.artifacts, key=lambda item: item.artifact_id):
-        content, failure = reader.read(artifact.path)
+        content, failure = reader.read(
+            artifact.path,
+            expected_size=artifact.size,
+            max_bytes=MAX_ARTIFACT_BYTES_BY_KIND[artifact.kind],
+        )
         if failure == "unsafe":
             issues.error("unsafe-artifact-path", artifact.artifact_id)
             continue
         if failure == "symlink":
             issues.error("symlink-not-allowed", artifact.artifact_id)
             continue
+        if failure == "too-large":
+            issues.error("artifact-too-large", artifact.artifact_id)
+            continue
+        if failure == "size-mismatch":
+            issues.error("artifact-size-mismatch", artifact.artifact_id)
+            continue
         if content is None:
             issues.error("artifact-missing", artifact.artifact_id)
             continue
-        size_matches = len(content) == artifact.size
-        if not size_matches:
-            issues.error("artifact-size-mismatch", artifact.artifact_id)
         digest_matches = hashlib.sha256(content).hexdigest() == artifact.sha256
         if not digest_matches:
             issues.error("artifact-digest-mismatch", artifact.artifact_id)
-        if size_matches and digest_matches:
+        if digest_matches:
             usable_artifacts[artifact.artifact_id] = content
 
     exceptions = _load_exceptions(
@@ -278,6 +306,7 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
     )
     _inspect_validation_reports(artifacts_by_kind, usable_artifacts, issues)
     _check_references(manifest, exceptions, issues)
+    _check_input_pdf_provenance(manifest, artifacts_by_kind, issues)
     _check_pdf_coverage(
         manifest, artifacts_by_kind, derived_pdf_page_counts, issues
     )
@@ -556,18 +585,20 @@ def _check_references(
     if manifest.roster_mapping and manifest.roster_mapping.source_id not in source_ids:
         unknown_sources.add(manifest.roster_mapping.source_id)
 
-    evidence_refs = (
-        ref for decision in manifest.decisions for ref in decision.evidence_refs
-    )
-    exception_evidence_refs = (
-        (ref for item in exceptions.items for ref in item.evidence_refs)
-        if exceptions is not None
-        else ()
-    )
     unknown_evidence_refs: set[str] = set()
-    for evidence_ref in (*evidence_refs, *exception_evidence_refs):
-        if evidence_ref not in known_evidence_refs:
-            unknown_evidence_refs.add(evidence_ref)
+    for decision in manifest.decisions:
+        for index, evidence_ref in enumerate(decision.evidence_refs):
+            if evidence_ref not in known_evidence_refs:
+                unknown_evidence_refs.add(
+                    f"{decision.decision_id}#evidence-ref={index}"
+                )
+    if exceptions is not None:
+        for item in exceptions.items:
+            for index, evidence_ref in enumerate(item.evidence_refs):
+                if evidence_ref not in known_evidence_refs:
+                    unknown_evidence_refs.add(
+                        f"{item.exception_id}#evidence-ref={index}"
+                    )
 
     if unknown_sources:
         issues.error("source-reference-unknown", *sorted(unknown_sources))
@@ -577,6 +608,43 @@ def _check_references(
         issues.error(
             "evidence-reference-unknown", *sorted(unknown_evidence_refs)
         )
+
+
+def _check_input_pdf_provenance(
+    manifest: PackageManifest,
+    artifacts_by_kind: dict[str, list],
+    issues: _Issues,
+) -> None:
+    sources_by_id = {source.source_id: source for source in manifest.sources}
+    represented_source_ids = {
+        page.source_id for page in manifest.pdf_pages if page.target_page is not None
+    }
+    for artifact in sorted(
+        artifacts_by_kind.get("input-pdf", []), key=lambda item: item.artifact_id
+    ):
+        declared_source_ids = set(artifact.source_ids)
+        omitted_source_ids = sorted(represented_source_ids - declared_source_ids)
+        extra_source_ids = sorted(declared_source_ids - represented_source_ids)
+        non_pdf_source_ids = sorted(
+            source_id
+            for source_id in declared_source_ids
+            if source_id in sources_by_id
+            and sources_by_id[source_id].media_type != "application/pdf"
+        )
+        evidence_refs = [
+            f"{artifact.artifact_id}#omitted-source={index}"
+            for index, _source_id in enumerate(omitted_source_ids, start=1)
+        ]
+        evidence_refs.extend(
+            f"{artifact.artifact_id}#extra-source={index}"
+            for index, _source_id in enumerate(extra_source_ids, start=1)
+        )
+        evidence_refs.extend(
+            f"{artifact.artifact_id}#non-pdf-source={index}"
+            for index, _source_id in enumerate(non_pdf_source_ids, start=1)
+        )
+        if evidence_refs:
+            issues.error("input-pdf-provenance-mismatch", *evidence_refs)
 
 
 def _check_pdf_coverage(
