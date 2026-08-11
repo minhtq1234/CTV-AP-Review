@@ -231,7 +231,188 @@ issue found” constitutes payment approval.
 Both teams own versioning and compatibility tests for the prepared-package schema.
 WP must not mark a package compatible with a CTV version it has not validated.
 
-## 8. Architecture
+## 8. Cross-team Development Workspace
+
+The teams collaborate through two isolated engineering workspaces and one versioned
+contract. They do not share a mutable checkout.
+
+### 8.1 CTV contract workspace
+
+The existing CTV repository remains the source of truth for requirements and the
+prepared-package contract:
+
+```text
+/Users/lap16603/Documents/New project/work/CTV_APReview-v1
+```
+
+It owns:
+
+- this approved design specification;
+- canonical roster fields;
+- prepared-package schemas;
+- exception and validation semantics;
+- synthetic examples and acceptance expectations; and
+- CTV import compatibility requirements.
+
+Contract implementation should use a dedicated branch and isolated worktree rather
+than expanding the `ver1` checkout. The branch name is selected when implementation
+planning begins.
+
+The intended contract layout is:
+
+```text
+contracts/ctv-intake/v1/
+  package.schema.json
+  canonical-roster.schema.json
+  exception-codes.md
+  compatibility.md
+  examples/
+    synthetic-clean/
+    synthetic-mixed-input/
+    synthetic-partial/
+```
+
+### 8.2 WP implementation workspace
+
+The WP team creates a clean isolated worktree from its explicitly confirmed sprint
+integration branch. The current local WP `main` checkout is not an implementation
+base: it points to the initial commit and contains a large unrelated untracked source
+tree. The team must confirm the authoritative branch and exact base SHA before
+creating the feature worktree; this design does not assume `main`, `sprint2`, or
+`sprint3`.
+
+A suggested feature branch name is:
+
+```text
+feat/ctv-intake-assistant
+```
+
+The WP feature workspace owns:
+
+```text
+CTV Intake Assistant
+|-- assistant definition
+|-- CTV preprocessing skill
+|-- file-inspection tools
+|-- transformation tools
+|-- conversation and review UX
+|-- prepared-package builder
+`-- WP-side contract tests
+```
+
+No raw CTV pilot data is copied into the source checkout.
+
+### 8.3 Contract synchronization
+
+V1 does not introduce a third repository. The CTV repository owns the contract; WP
+keeps a tested snapshot that records its source commit:
+
+```text
+resources/contracts/ctv-intake/v1/
+  package.schema.json
+  canonical-roster.schema.json
+  SOURCE.json
+```
+
+`SOURCE.json` contains the source repository identifier, schema version, and the
+exact 40-character CTV contract commit SHA. The synchronization step must populate
+the SHA from the source checkout; the file cannot be committed with a sample or
+sentinel value.
+
+WP contract tests fail when generated fixtures or packages do not validate against
+the pinned snapshot. A contract update requires review by named reviewers from both
+teams. WP cannot silently widen or reinterpret the contract, and CTV cannot remove
+or change a consumed field without a compatibility decision.
+
+### 8.4 Local pilot-data workspace
+
+Real batches, including `CTV AP GAS`, never enter either Git repository. Pilot work
+uses a local WP project named **CTV Intake Pilot**. The user-selected source folder
+is referenced read-only; derived and audit artifacts are written under the project:
+
+```text
+CTV Intake Pilot/
+  Working/
+    <batch-id>/
+      extracted/
+      inspection/
+      proposals/
+  Prepared/
+    <batch-id>/
+  Audit/
+    <batch-id>/
+```
+
+The assistant does not reorganize the source folder to fit this layout. It records
+source paths and digests in the inventory while containing every write inside the WP
+project workspace.
+
+Automated tests use synthetic fixtures that reproduce the structure of observed
+batches without real PII. The fixture set covers:
+
+- multiple FA folders;
+- ZIP and RAR archives;
+- multiple PDFs per case;
+- a relevant roster sheet that is not active;
+- `CMND`, `CCCD/PP`, and `Họ tên` header variants;
+- embedded workbook images;
+- shared and unassigned PDF pages; and
+- corrupt, duplicate, encrypted, and unsupported files.
+
+### 8.5 Named ownership
+
+Before implementation starts, each role must have a named owner:
+
+| Area | Required owner |
+|---|---|
+| Business meaning and canonical fields | CTV/ACC domain owner |
+| Package schema and exception semantics | CTV engineering owner |
+| Assistant, skill, and file tools | WP engineering owner |
+| PII and model-provider policy | Privacy/security reviewer |
+| Contract compatibility | One reviewer from each team |
+| Real-batch acceptance | CTV owner with WP engineer |
+| Final payment decision | ACC reviewer |
+
+Neither team changes the shared contract unilaterally.
+
+### 8.6 Delivery lanes
+
+Implementation is split into three bounded lanes:
+
+1. **Contract lane — CTV team:** package schema, canonical roster, exception codes,
+   synthetic acceptance fixtures, and a validator.
+2. **Tool lane — WP team:** inventory, archive handling, PDF/workbook inspection,
+   transformation preview, package creation, and validation adapters.
+3. **Assistant lane — WP team:** assistant definition, CTV skill, conversational
+   clarification, proposal/coverage artifacts, and approval workflow.
+
+The assistant lane can start against contract-backed mocked tool responses. It does
+not integrate real transformation writes until the relevant tool contract and safety
+tests pass.
+
+### 8.7 Merge and pilot gates
+
+Every WP merge request for this feature identifies:
+
+- the CTV contract version and exact source commit;
+- synthetic scenarios covered;
+- requested file permissions;
+- whether any model context can contain PII;
+- original-file mutation test results;
+- package-validation results; and
+- known unresolved cases.
+
+The feature is ready for a local pilot only when:
+
+- every received file and PDF page has an explicit coverage state;
+- originals remain unchanged;
+- no raw PII appears in logs, fixtures, or source control;
+- ambiguous transformations require user confirmation;
+- one failed file does not break the batch;
+- prepared packages validate against the pinned CTV contract; and
+- the local `CTV AP GAS` run produces redacted, reviewable acceptance evidence.
+
+## 9. Architecture
 
 ```text
 User selects folder in a WP project
@@ -268,15 +449,15 @@ authority. Large or sensitive documents remain in the local workspace. Skills re
 bounded summaries and evidence references rather than placing entire batches into
 model context.
 
-## 9. Assistant Workflow
+## 10. Assistant Workflow
 
-### 9.1 Receive
+### 10.1 Receive
 
 The user selects or drops a folder into a WP project and asks the CTV Intake
 Assistant to prepare it. WP records the selected root and requests the minimum file
 read/write permissions required for the workspace.
 
-### 9.2 Inventory
+### 10.2 Inventory
 
 The assistant calls deterministic inventory tooling to create immutable records for
 every source item:
@@ -293,7 +474,7 @@ Archive extraction is performed only into a derived working directory with path
 containment, type, count, expanded-size, nesting, and timeout limits. The archive
 itself remains part of the source inventory.
 
-### 9.3 Inspect
+### 10.3 Inspect
 
 Specialized inspectors produce structured facts:
 
@@ -309,7 +490,7 @@ Specialized inspectors produce structured facts:
 Inspectors must not log raw identity numbers, account numbers, addresses, or full
 document text in ordinary application logs.
 
-### 9.4 Propose cases and roles
+### 10.4 Propose cases and roles
 
 The assistant proposes:
 
@@ -326,7 +507,7 @@ The assistant proposes:
 Every proposal includes confidence, evidence references, and an explanation. A
 filename may be a signal but cannot be the only evidence for a high-confidence role.
 
-### 9.5 Resolve ambiguity conversationally
+### 10.5 Resolve ambiguity conversationally
 
 The assistant asks one targeted question at a time. Examples:
 
@@ -337,7 +518,7 @@ The assistant asks one targeted question at a time. Examples:
 User answers become explicit decisions in the audit trail. A later answer may revise
 an earlier proposal without re-running successful unrelated inspections.
 
-### 9.6 Preview transformations
+### 10.6 Preview transformations
 
 Before any derived write, WP presents:
 
@@ -352,13 +533,13 @@ Before any derived write, WP presents:
 The user can approve, edit, or cancel. Approval applies only to the displayed
 transformation version; changes after approval require a new preview.
 
-### 9.7 Prepare and validate
+### 10.7 Prepare and validate
 
 The assistant calls deterministic transformation tools, then independently validates
 their outputs. Failure of one case does not discard successfully prepared sibling
 cases.
 
-## 10. Skill and Tool Boundaries
+## 11. Skill and Tool Boundaries
 
 The WP team should package the workflow as a dedicated CTV skill that orchestrates
 the following bounded capabilities. Names are conceptual, not prescribed APIs.
@@ -401,7 +582,7 @@ Submits an already validated package only after a separate explicit user action.
 Submission is idempotent and records the returned CTV case identifier. It is outside
 the WP v1 delivery until the CTV package API is available.
 
-## 11. Prepared Package
+## 12. Prepared Package
 
 Each confirmed case is written under a versioned derived directory, for example:
 
@@ -433,7 +614,7 @@ Prepared/
 evidence reference, explanation, and required action. An empty list means “no known
 preprocessing exceptions”; it does not mean the payment evidence is correct.
 
-## 12. Coverage and Approval Rules
+## 13. Coverage and Approval Rules
 
 Package confirmation is blocked unless:
 
@@ -451,7 +632,7 @@ Unresolved items may remain in a prepared package only when they are visible in 
 exception list and the user explicitly confirms that the package is intentionally
 partial. A partial package must never be labeled complete.
 
-## 13. State Model and Recovery
+## 14. State Model and Recovery
 
 Batch states:
 
@@ -471,7 +652,7 @@ artifacts are reused only when their source digests, tool versions, and decision
 still match. The user can resume the conversation without re-uploading or rebuilding
 the whole batch.
 
-## 14. Error Handling
+## 15. Error Handling
 
 - **Unsupported file:** retain in inventory and request classification or exclusion.
 - **Corrupt/password-protected file:** mark unreadable; do not fail sibling files.
@@ -487,7 +668,7 @@ the whole batch.
   derived output, and retry only the failed operation.
 - **Validation failure:** keep the package in `partially_prepared`; never submit it.
 
-## 15. Privacy, Security, and Audit
+## 16. Privacy, Security, and Audit
 
 - Originals are immutable and remain outside derived write targets.
 - Path resolution must prevent writes or extraction outside the WP project workspace.
@@ -502,7 +683,7 @@ the whole batch.
 - No original document, extracted identity image, or real customer fixture may be
   committed to source control.
 
-## 16. UX Requirements
+## 17. UX Requirements
 
 The primary interface is conversation supplemented by structured artifacts:
 
@@ -521,7 +702,7 @@ The assistant must use plain operational language. It must distinguish:
 - **prepared** from **approved**;
 - **preprocessing complete** from **CTV review complete**.
 
-## 17. Testing Strategy
+## 18. Testing Strategy
 
 ### Unit tests
 
@@ -567,7 +748,7 @@ Using the real batch locally and without committing its contents, the assistant 
 8. leave every original file unchanged; and
 9. prevent “complete” status while any file/page lacks an explicit state.
 
-## 18. Success Measures
+## 19. Success Measures
 
 - 100% of received files and PDF pages have explicit coverage states.
 - 0 original-file mutations.
@@ -578,7 +759,7 @@ Using the real batch locally and without committing its contents, the assistant 
 - Users can understand and correct the proposed organization without manually
   reconstructing the source folder.
 
-## 19. Delivery Sequence
+## 20. Delivery Sequence
 
 1. Agree and version the prepared-package schema with the CTV team.
 2. Build deterministic inventory, inspection, and validation tools with synthetic
