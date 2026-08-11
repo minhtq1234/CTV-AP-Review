@@ -222,6 +222,56 @@ def test_missing_required_artifact_is_rejected(tmp_path):
     assert _check(report, "missing-required-artifact").evidence_refs == ["roster"]
 
 
+def test_duplicate_kind_is_not_snapshotted_while_unaffected_sibling_is_validated(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    input_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    duplicate_ids = [
+        "artifact-pdf",
+        "artifact-pdf-01",
+        "artifact-pdf-02",
+        "artifact-pdf-03",
+        "artifact-pdf-04",
+        "artifact-pdf-05",
+        "artifact-pdf-06",
+        "artifact-pdf-07",
+        "artifact-pdf-08",
+    ]
+    manifest["artifacts"].extend(
+        {**input_artifact, "artifactId": artifact_id}
+        for artifact_id in duplicate_ids[1:]
+    )
+    (package_dir / "roster.xlsx").write_bytes(b"not a workbook")
+    _refresh_artifact(package_dir, manifest, "roster")
+    real_os_open = validator.os.open
+
+    def reject_duplicate_snapshot(path, flags, mode=0o777, *, dir_fd=None):
+        if path == "input.pdf":
+            pytest.fail("a declaration from a duplicate artifact kind was opened")
+        return real_os_open(path, flags, mode, dir_fd=dir_fd)
+
+    def reject_duplicate_parser(*_args, **_kwargs):
+        pytest.fail("a declaration from a duplicate artifact kind was parsed")
+
+    monkeypatch.setattr(validator.os, "open", reject_duplicate_snapshot)
+    monkeypatch.setattr(validator.fitz, "open", reject_duplicate_parser)
+
+    first = validator.validate_package(package_dir)
+    second = validator.validate_package(package_dir)
+
+    assert first.errors == ["duplicate-artifact-kind", "roster-unreadable"]
+    assert _check(first, "duplicate-artifact-kind").evidence_refs == duplicate_ids
+    assert first.model_dump(exclude={"validated_at"}) == second.model_dump(
+        exclude={"validated_at"}
+    )
+
+
 def test_byte_size_mismatch_is_rejected_before_digesting_or_reading(
     tmp_path, monkeypatch
 ):

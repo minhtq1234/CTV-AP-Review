@@ -258,8 +258,10 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
         artifacts_by_kind[artifact.kind].append(artifact)
     for kind in sorted(_REQUIRED_ARTIFACT_KINDS - set(artifacts_by_kind)):
         issues.error("missing-required-artifact", kind)
+    duplicate_artifact_kinds: set[str] = set()
     for kind, artifacts in sorted(artifacts_by_kind.items()):
         if len(artifacts) > 1:
+            duplicate_artifact_kinds.add(kind)
             issues.error(
                 "duplicate-artifact-kind",
                 *(artifact.artifact_id for artifact in sorted(
@@ -269,6 +271,8 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
 
     usable_artifacts: dict[str, bytes] = {}
     for artifact in sorted(manifest.artifacts, key=lambda item: item.artifact_id):
+        if artifact.kind in duplicate_artifact_kinds:
+            continue
         content, failure = reader.read(
             artifact.path,
             expected_size=artifact.size,
