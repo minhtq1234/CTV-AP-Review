@@ -35,6 +35,10 @@ MAX_ARTIFACT_BYTES_BY_KIND = {
     "exceptions": 16 * _MIB,
     "validation-report": 16 * _MIB,
 }
+# Source reads are bounded independently from package artifacts. PDF originals
+# use the input-PDF ceiling, workbook originals use the app's workbook ceiling,
+# and every other v1 source is capped at the CCCD artifact ceiling.
+MAX_OTHER_SOURCE_BYTES = MAX_ARTIFACT_BYTES_BY_KIND["cccd"]
 MAX_PDF_PAGES_PER_SOURCE = 10_000
 MAX_PDF_PAGES_PER_PACKAGE = 25_000
 _MANIFEST_NAME = "case-manifest.json"
@@ -87,6 +91,7 @@ def _make_package_reader_type():
             "reader_ref": None,
             "closed": False,
             "manifest_snapshot": manifest_not_read,
+            "read_cache": {},
         }
 
         def release(dead_ref) -> None:
@@ -194,6 +199,33 @@ def _make_package_reader_type():
                 state["manifest_snapshot"] = cached
             return cached
 
+        def read_cached(
+            self,
+            declared_path: str,
+            *,
+            max_bytes: int,
+        ) -> tuple[bytes | None, str | None]:
+            """Read one relative path at most once for this opened root."""
+            state = lookup(self)
+            if state is None or not has_authority(self):
+                return None, "secure-open-unavailable"
+            cache = state["read_cache"]
+            cached = cache.get(declared_path)
+            if cached is None:
+                cached = self.read(
+                    declared_path,
+                    expected_size=None,
+                    max_bytes=max_bytes,
+                )
+                cache[declared_path] = cached
+            return cached
+
+        def discard_cached(self, declared_path: str) -> None:
+            """Release a source snapshot after all declarations using it finish."""
+            state = lookup(self)
+            if state is not None and has_authority(self):
+                state["read_cache"].pop(declared_path, None)
+
     def has_authority(reader: object) -> bool:
         state = lookup(reader)
         if state is None or not _SUPPORTS_SECURE_RELATIVE_OPEN:
@@ -215,6 +247,7 @@ def _make_package_reader_type():
 
 
 _PackageReader, _has_package_reader_authority = _make_package_reader_type()
+_SourceReader, _has_source_reader_authority = _make_package_reader_type()
 del _make_package_reader_type
 
 
@@ -353,14 +386,26 @@ class _Issues:
         )
 
 
-def validate_package(package_dir: Path) -> ValidationReport:
-    """Validate one package without modifying the package or its artifacts."""
+def validate_package(
+    package_dir: Path, source_root: Path | None = None
+) -> ValidationReport:
+    """Validate one package and, when available, its immutable source workspace."""
     reader, root_failure = _PackageReader.open(Path(package_dir))
     if reader is None:
         return _report_package_root_failure(root_failure)
+    source_reader = None
+    source_root_failure = None
     try:
-        return _validate_package_reader(reader)
+        if source_root is not None:
+            source_reader, source_root_failure = _SourceReader.open(Path(source_root))
+        return _validate_package_reader(
+            reader,
+            source_reader=source_reader,
+            source_root_failure=source_root_failure,
+        )
     finally:
+        if source_reader is not None:
+            source_reader.close()
         reader.close()
 
 
@@ -377,14 +422,33 @@ def _report_package_root_failure(root_failure: str | None) -> ValidationReport:
     return issues.report(None)
 
 
-def _validate_package_reader(reader: _PackageReader) -> ValidationReport:
+def _validate_package_reader(
+    reader: _PackageReader,
+    *,
+    source_reader: _SourceReader | None = None,
+    source_root_failure: str | None = None,
+) -> ValidationReport:
     """Validate through a caller-owned open reader without closing it."""
     if not _has_package_reader_authority(reader):
         return _report_package_root_failure("secure-open-unavailable")
-    return _validate_open_package(reader, _Issues())
+    if source_reader is not None and not _has_source_reader_authority(source_reader):
+        source_reader = None
+        source_root_failure = "secure-open-unavailable"
+    return _validate_open_package(
+        reader,
+        _Issues(),
+        source_reader=source_reader,
+        source_root_failure=source_root_failure,
+    )
 
 
-def _validate_open_package(reader: _PackageReader, issues: _Issues) -> ValidationReport:
+def _validate_open_package(
+    reader: _PackageReader,
+    issues: _Issues,
+    *,
+    source_reader: _SourceReader | None,
+    source_root_failure: str | None,
+) -> ValidationReport:
     manifest_content, manifest_failure = reader.read_manifest()
     if manifest_failure == "symlink":
         issues.error("symlink-not-allowed", _MANIFEST_NAME)
@@ -399,6 +463,7 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
         return issues.report(None)
 
     _inspect_raw_artifact_paths(raw_manifest, issues)
+    _inspect_raw_source_paths(raw_manifest, issues)
     _inspect_raw_unresolved_coverage(raw_manifest, issues)
     _inspect_raw_compatibility_target(raw_manifest, issues)
     try:
@@ -407,6 +472,13 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
         issues.error("manifest-invalid", _MANIFEST_NAME)
         return issues.report(None)
     issues.pass_check("manifest-valid", _MANIFEST_NAME)
+
+    _verify_sources(
+        manifest,
+        source_reader=source_reader,
+        source_root_failure=source_root_failure,
+        issues=issues,
+    )
 
     page_limits_exceeded = _check_page_count_limits(manifest, issues)
 
@@ -548,6 +620,111 @@ def _inspect_raw_artifact_paths(raw_manifest: object, issues: _Issues) -> None:
             issues.error("unsafe-artifact-path", evidence)
 
 
+def _inspect_raw_source_paths(raw_manifest: object, issues: _Issues) -> None:
+    if not isinstance(raw_manifest, dict):
+        return
+    sources = raw_manifest.get("sources")
+    if not isinstance(sources, list):
+        return
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            continue
+        evidence = source.get("sourceId")
+        if not isinstance(evidence, str) or not evidence:
+            evidence = f"source-index-{index}"
+        declared_path = source.get("path")
+        if not isinstance(declared_path, str) or _relative_path_parts(declared_path) is None:
+            issues.error("unsafe-source-path", evidence)
+
+
+def _source_byte_limit(media_type: str) -> int:
+    if media_type == "application/pdf":
+        return MAX_ARTIFACT_BYTES_BY_KIND["input-pdf"]
+    if media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        return MAX_ROSTER_WORKBOOK_BYTES
+    return MAX_OTHER_SOURCE_BYTES
+
+
+def _verify_sources(
+    manifest: PackageManifest,
+    *,
+    source_reader: _SourceReader | None,
+    source_root_failure: str | None,
+    issues: _Issues,
+) -> None:
+    gate_before = issues.issue_count()
+    if not manifest.sources:
+        issues.pass_check("sources-valid", "sources")
+        return
+    if source_reader is None:
+        code = (
+            "source-symlink-not-allowed"
+            if source_root_failure == "symlink"
+            else "source-verification-unavailable"
+        )
+        issues.error(code, "source-root")
+        return
+
+    sources_by_path: dict[str, list] = defaultdict(list)
+    for source in manifest.sources:
+        sources_by_path[source.path].append(source)
+
+    for declared_path, sources in sorted(sources_by_path.items()):
+        read_limit = max(
+            _source_byte_limit(source.media_type) for source in sources
+        )
+        try:
+            for source in sorted(sources, key=lambda item: item.source_id):
+                content, failure = source_reader.read_cached(
+                    declared_path,
+                    max_bytes=read_limit,
+                )
+                if failure == "unsafe":
+                    issues.error("unsafe-source-path", source.source_id)
+                    continue
+                if failure == "symlink":
+                    issues.error("source-symlink-not-allowed", source.source_id)
+                    continue
+                if failure == "too-large":
+                    issues.error("source-too-large", source.source_id)
+                    continue
+                if content is None:
+                    issues.error("source-missing", source.source_id)
+                    continue
+
+                if len(content) > _source_byte_limit(source.media_type):
+                    issues.error("source-too-large", source.source_id)
+                    continue
+                if len(content) != source.size:
+                    issues.error("source-size-mismatch", source.source_id)
+                if hashlib.sha256(content).hexdigest() != source.sha256:
+                    issues.error("source-digest-mismatch", source.source_id)
+                if source.media_type == "application/pdf":
+                    _verify_source_pdf(source, content, issues)
+        finally:
+            source_reader.discard_cached(declared_path)
+
+    issues.pass_gate("sources-valid", "sources", gate_before)
+
+
+def _verify_source_pdf(source, content: bytes, issues: _Issues) -> None:
+    try:
+        with fitz.open(stream=content, filetype="pdf") as document:
+            if not document.is_pdf or document.needs_pass:
+                raise ValueError("PDF is encrypted or has the wrong format")
+            actual_page_count = document.page_count
+            if (
+                actual_page_count > MAX_PDF_PAGES_PER_SOURCE
+                or actual_page_count != source.page_count
+            ):
+                issues.error("source-page-count-mismatch", source.source_id)
+                return
+            for page_index in range(actual_page_count):
+                document.load_page(page_index)
+    except (OSError, RuntimeError, ValueError, fitz.FileDataError):
+        issues.error("source-pdf-unreadable", source.source_id)
+
+
 def _inspect_raw_unresolved_coverage(raw_manifest: object, issues: _Issues) -> None:
     if not isinstance(raw_manifest, dict):
         return
@@ -633,6 +810,9 @@ def _inspect_pdfs(
                 if not document.is_pdf or document.needs_pass:
                     raise ValueError("PDF is encrypted or has the wrong format")
                 page_count = document.page_count
+                if page_count > MAX_PDF_PAGES_PER_SOURCE:
+                    issues.error("pdf-page-limit-exceeded", artifact.artifact_id)
+                    continue
                 for page_index in range(page_count):
                     document.load_page(page_index)
         except (OSError, RuntimeError, ValueError, fitz.FileDataError):

@@ -12,6 +12,7 @@ import sys
 from intake_package_validator import (
     MAX_MANIFEST_BYTES,
     _PackageReader,
+    _SourceReader,
     _report_package_root_failure,
     _validate_package_reader,
 )
@@ -128,6 +129,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package_dir", type=Path)
     parser.add_argument(
+        "--source-root",
+        type=Path,
+        help="read-only source workspace required for a valid/prepared result",
+    )
+    parser.add_argument(
         "--write-report",
         action="store_true",
         help=f"atomically write the same JSON to {_REPORT_NAME} inside the package",
@@ -146,6 +152,7 @@ def _package_root_write_error(root_failure: str | None) -> ReportWriteError:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     reader = None
+    source_reader = None
     try:
         reader, root_failure = _PackageReader.open(args.package_dir)
         if reader is None:
@@ -167,7 +174,14 @@ def main(argv: list[str] | None = None) -> int:
                     "refusing to overwrite declared validation-report.json artifact"
                 )
 
-        report = _validate_package_reader(reader)
+        source_root_failure = None
+        if args.source_root is not None:
+            source_reader, source_root_failure = _SourceReader.open(args.source_root)
+        report = _validate_package_reader(
+            reader,
+            source_reader=source_reader,
+            source_root_failure=source_root_failure,
+        )
         content = _canonical_report_bytes(report)
         if args.write_report:
             _atomic_write_report(root_descriptor, content)
@@ -177,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     finally:
+        if source_reader is not None:
+            source_reader.close()
         if reader is not None:
             reader.close()
 

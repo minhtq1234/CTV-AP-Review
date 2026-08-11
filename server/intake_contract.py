@@ -174,7 +174,7 @@ class ValidationReport(_ContractModel):
     schema_version: Literal["1.0"] = Field(alias="schemaVersion")
     outcome: ValidationOutcome
     package_status: PackageStatus = Field(alias="packageStatus")
-    checks: list[ValidationCheck]
+    checks: list[ValidationCheck] = Field(min_length=1)
     errors: list[str]
     warnings: list[str]
     validated_at: datetime = Field(alias="validatedAt")

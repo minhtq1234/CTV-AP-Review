@@ -49,6 +49,7 @@ def test_fixture_validation_uses_declared_source_page_count_as_authority(tmp_pat
         exceptions=fixture.exceptions,
         input_pdf=fixture.input_pdf,
         roster_workbook=fixture.roster_workbook,
+        source_root=fixture.source_root,
     )
 
     with pytest.raises(FixtureValidationError, match="unassigned-page"):
@@ -93,14 +94,15 @@ def test_materialized_fixture_is_a_real_package_validated_through_public_api(
     tmp_path, fixture_name, outcome, status, required_error
 ):
     package_dir = tmp_path / fixture_name
-    materialize_fixture(fixture_name, package_dir)
+    fixture = materialize_fixture(fixture_name, package_dir)
 
     assert (package_dir / "case-manifest.json").is_file()
     assert (package_dir / "input.pdf").is_file()
     assert (package_dir / "roster.xlsx").is_file()
     assert (package_dir / "exceptions.json").is_file()
 
-    report = validate_package(package_dir)
+    assert fixture.source_root != package_dir
+    report = validate_package(package_dir, source_root=fixture.source_root)
 
     assert report.outcome == outcome
     assert report.package_status == status

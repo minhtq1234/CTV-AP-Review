@@ -29,6 +29,7 @@ class MaterializedFixture:
     exceptions: ExceptionsDocument
     input_pdf: Path
     roster_workbook: Path
+    source_root: Path
 
 
 def materialize_fixture(name: str, output: Path) -> MaterializedFixture:
@@ -42,6 +43,8 @@ def materialize_fixture(name: str, output: Path) -> MaterializedFixture:
         }
     )
     output.mkdir(parents=True, exist_ok=True)
+    source_root = output.parent / f"{output.name}-sources"
+    source_root.mkdir(parents=True, exist_ok=True)
     input_pdf = output / "input.pdf"
     roster_workbook = output / "roster.xlsx"
     exceptions_output = output / "exceptions.json"
@@ -61,8 +64,12 @@ def materialize_fixture(name: str, output: Path) -> MaterializedFixture:
     roster_source = next(
         source for source in sources if source["mediaType"] != "application/pdf"
     )
-    _set_size_and_digest(pdf_source, input_pdf)
-    _set_size_and_digest(roster_source, roster_workbook)
+    source_pdf = _materialize_source(source_root, pdf_source["path"], input_pdf)
+    source_roster = _materialize_source(
+        source_root, roster_source["path"], roster_workbook
+    )
+    _set_size_and_digest(pdf_source, source_pdf)
+    _set_size_and_digest(roster_source, source_roster)
     manifest_document["artifacts"] = [
         _artifact("artifact-input-pdf", "input-pdf", input_pdf, [pdf_source["sourceId"]]),
         _artifact("artifact-roster", "roster", roster_workbook, [roster_source["sourceId"]]),
@@ -73,7 +80,9 @@ def materialize_fixture(name: str, output: Path) -> MaterializedFixture:
         _canonical_json(manifest.model_dump(by_alias=True, mode="json")),
         encoding="utf-8",
     )
-    return MaterializedFixture(manifest, exceptions, input_pdf, roster_workbook)
+    return MaterializedFixture(
+        manifest, exceptions, input_pdf, roster_workbook, source_root
+    )
 
 
 def validate_materialized_fixture(fixture: MaterializedFixture) -> None:
@@ -143,6 +152,16 @@ def _set_size_and_digest(document: dict, path: Path) -> None:
     content = path.read_bytes()
     document["size"] = len(content)
     document["sha256"] = hashlib.sha256(content).hexdigest()
+
+
+def _materialize_source(source_root: Path, declared_path: str, derived: Path) -> Path:
+    parts = declared_path.split("/")
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("fixture source path must be safely workspace-relative")
+    destination = source_root.joinpath(*parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(derived.read_bytes())
+    return destination
 
 
 def _artifact(

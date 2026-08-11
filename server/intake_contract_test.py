@@ -401,3 +401,17 @@ def test_validation_report_accepts_positive_executed_checks_for_a_valid_result()
 
     assert report.outcome == "valid"
     assert all(check.passed for check in report.checks)
+
+
+def test_validation_report_rejects_a_valid_result_with_no_executed_checks():
+    with pytest.raises(ValidationError):
+        ValidationReport.model_validate({
+            "schemaVersion": "1.0",
+            "outcome": "valid",
+            "packageStatus": "prepared",
+            "checks": [],
+            "errors": [],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        })

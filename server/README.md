@@ -64,14 +64,23 @@ The CTV intake contract validator is a read-only mechanical gate for a prepared
 package. From the repository root, run:
 
 ```bash
-python3 server/validate_intake_package.py /path/to/package
-python3 server/validate_intake_package.py /path/to/package --write-report
+python3 server/validate_intake_package.py /path/to/package --source-root /path/to/workspace
+python3 server/validate_intake_package.py /path/to/package --source-root /path/to/workspace --write-report
 ```
 
 The command writes one canonical `ValidationReport` JSON object to stdout. It exits
 `0` for a valid package and `2` for a completed validation with an invalid outcome.
 Operational failures that prevent the requested command from completing use exit
 `1` and write diagnostics only to stderr.
+
+`--source-root` supplies the original read-only workspace used by manifest
+`sources[].path`. It is required for a `valid`/`prepared` result: omitting it, or
+supplying a missing, unsafe, or symlinked root, produces a normal invalid report
+without disclosing the absolute source path. Every source is read without following
+symlinks, checked against its declared byte size and SHA-256, and PDF page counts are
+verified from that same bounded byte snapshot. V1 caps PDF originals at 256 MiB,
+workbook originals at 25 MiB, other originals at 100 MiB, and actual PDFs at 10,000
+pages. Source files are never written or normalized.
 
 `--write-report` atomically writes the exact stdout bytes to the fixed package-local
 path `validation-report.json`. It accepts no caller-selected destination, refuses

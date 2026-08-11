@@ -101,10 +101,13 @@ WP records both after Task 7 rather than pinning a branch name.
 
 ## Handoff boundary
 
-A valid report proves mechanical schema, digest, source/page coverage, roster,
-exception, and compatibility checks. `prepared` does not mean the payment evidence
-is correct or approved. Visible unresolved evidence may only produce an explicitly
-partial package.
+A valid report requires `--source-root` access to the immutable original workspace
+and proves mechanical schema, package/source digests, actual source PDF page counts,
+page coverage, roster, exception, and compatibility checks. Package-only validation
+still returns diagnostics but is invalid with `source-verification-unavailable`.
+Source-root failures use synthetic evidence and do not expose the caller's absolute
+workspace path. `prepared` does not mean the payment evidence is correct or approved.
+Visible unresolved evidence may only produce an explicitly partial package.
 
 The v1 handoff stops at a validated prepared package. It does not authorize direct
 submission to CTV, placing real pilot data in Git, changing originals, or bypassing

@@ -73,6 +73,11 @@ def _write_package(
     exceptions_path = package_dir / "exceptions.json"
     _write_pdf(pdf_path)
     _write_roster(roster_path)
+    source_root = _source_root(package_dir)
+    (source_root / "workspace").mkdir(parents=True, exist_ok=True)
+    source_pdf = source_root / "workspace" / "source.pdf"
+    source_pdf.write_bytes(pdf_path.read_bytes() + b"\n% immutable source snapshot\n")
+    (source_root / "workspace" / "source.xlsx").write_bytes(roster_path.read_bytes())
     exceptions_path.write_text(
         json.dumps({"schemaVersion": "1.0", "items": exception_items or []}),
         encoding="utf-8",
@@ -91,8 +96,8 @@ def _write_package(
                 "path": "workspace/source.pdf",
                 "mediaType": "application/pdf",
                 "pageCount": 2,
-                "size": pdf_path.stat().st_size,
-                "sha256": _sha256(pdf_path),
+                "size": source_pdf.stat().st_size,
+                "sha256": _sha256(source_pdf),
                 "coverageState": "assigned",
             },
             {
@@ -200,7 +205,18 @@ def _historical_validation_report() -> dict:
 def _validate(package_dir: Path):
     from intake_package_validator import validate_package
 
-    return validate_package(package_dir)
+    return validate_package(package_dir, source_root=_source_root(package_dir))
+
+
+def _source_root(package_dir: Path) -> Path:
+    return package_dir.parent / f"{package_dir.name}-sources"
+
+
+def _validate_with_source(package_dir: Path, source_root: Path | None = None):
+    from intake_package_validator import validate_package
+
+    root = _source_root(package_dir) if source_root is None else source_root
+    return validate_package(package_dir, source_root=root)
 
 
 def _check(report, code: str):
@@ -272,10 +288,18 @@ def test_duplicate_kind_is_not_snapshotted_while_unaffected_sibling_is_validated
         pytest.fail("a declaration from a duplicate artifact kind was parsed")
 
     monkeypatch.setattr(validator.os, "open", reject_duplicate_snapshot)
-    monkeypatch.setattr(validator.fitz, "open", reject_duplicate_parser)
+    derived_content = (package_dir / "input.pdf").read_bytes()
+    real_fitz_open = validator.fitz.open
 
-    first = validator.validate_package(package_dir)
-    second = validator.validate_package(package_dir)
+    def reject_only_duplicate_artifact_parse(*args, **kwargs):
+        if kwargs.get("stream") == derived_content:
+            return reject_duplicate_parser(*args, **kwargs)
+        return real_fitz_open(*args, **kwargs)
+
+    monkeypatch.setattr(validator.fitz, "open", reject_only_duplicate_artifact_parse)
+
+    first = _validate(package_dir)
+    second = _validate(package_dir)
 
     assert first.errors == ["duplicate-artifact-kind", "roster-unreadable"]
     assert _check(first, "duplicate-artifact-kind").evidence_refs == duplicate_ids
@@ -308,7 +332,7 @@ def test_byte_size_mismatch_is_rejected_before_digesting_or_reading(
     monkeypatch.setattr(validator.os, "fdopen", reject_artifact_stream_read)
     _save_manifest(package_dir, manifest)
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert "artifact-size-mismatch" in report.errors
     assert "artifact-digest-mismatch" not in report.errors
@@ -346,7 +370,7 @@ def test_artifact_over_the_absolute_kind_limit_is_rejected_before_reading(tmp_pa
     pdf_artifact["sha256"] = "f" * 64
     _save_manifest(package_dir, manifest)
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert "artifact-too-large" in report.errors
     assert "artifact-size-mismatch" not in report.errors
@@ -381,7 +405,7 @@ def test_artifact_appended_after_fstat_is_bounded_and_rejected(tmp_path, monkeyp
 
     monkeypatch.setattr(validator.os, "fdopen", append_before_read)
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert appended
     assert "artifact-too-large" in report.errors
@@ -446,6 +470,10 @@ def test_each_pdf_source_uses_its_own_page_count_in_a_merged_input_pdf(tmp_path)
             "coverageState": "assigned",
         }
     )
+    secondary_source = _source_root(package_dir) / "workspace" / "source-secondary.pdf"
+    _write_pdf(secondary_source, page_count=1)
+    manifest["sources"][-1]["size"] = secondary_source.stat().st_size
+    manifest["sources"][-1]["sha256"] = _sha256(secondary_source)
     input_artifact = next(
         artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
     )
@@ -969,7 +997,17 @@ def test_reader_gc_cleanup_does_not_close_another_registered_identity(tmp_path):
     with pytest.raises(OSError):
         os.fstat(first_descriptor)
     assert os.fstat(second_descriptor)
-    assert validator._validate_package_reader(second).outcome == "valid"
+    source_reader, source_failure = validator._SourceReader.open(
+        _source_root(second_package)
+    )
+    assert source_failure is None
+    assert source_reader is not None
+    try:
+        assert validator._validate_package_reader(
+            second, source_reader=source_reader
+        ).outcome == "valid"
+    finally:
+        source_reader.close()
 
     second.close()
     with pytest.raises(OSError):
@@ -1138,7 +1176,17 @@ def test_equality_forged_subclass_cannot_validate_or_close_registered_reader(
 
     assert authority_comparisons == {"eq": 0, "hash": 0}
     assert os.fstat(descriptor)
-    legitimate_report = validator._validate_package_reader(reader)
+    source_reader, source_failure = validator._SourceReader.open(
+        _source_root(package_dir)
+    )
+    assert source_failure is None
+    assert source_reader is not None
+    try:
+        legitimate_report = validator._validate_package_reader(
+            reader, source_reader=source_reader
+        )
+    finally:
+        source_reader.close()
     assert legitimate_report.outcome == "valid"
 
     reader.close()
@@ -1205,7 +1253,7 @@ def test_validation_fails_closed_when_secure_relative_open_is_unavailable(
     monkeypatch.setattr(validator.fitz, "open", reject_parser)
     monkeypatch.setattr(validator.openpyxl, "load_workbook", reject_parser)
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert report.errors == ["secure-open-unavailable"]
     assert _check(report, "secure-open-unavailable").evidence_refs == ["package-root"]
@@ -1222,18 +1270,19 @@ def test_pdf_parser_uses_the_same_opened_bytes_that_were_digest_checked(
     replacement = tmp_path / "replacement.pdf"
     replacement.write_bytes(b"not a pdf")
     real_open = validator.fitz.open
+    derived_content = pdf_path.read_bytes()
     swapped = False
 
     def swap_path_before_real_parse(*args, **kwargs):
         nonlocal swapped
-        if not swapped:
+        if not swapped and kwargs.get("stream") == derived_content:
             replacement.replace(pdf_path)
             swapped = True
         return real_open(*args, **kwargs)
 
     monkeypatch.setattr(validator.fitz, "open", swap_path_before_real_parse)
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert swapped
     assert report.outcome == "valid"
@@ -1264,7 +1313,7 @@ def test_roster_parser_uses_the_same_opened_bytes_that_were_preflighted(
         validator.openpyxl, "load_workbook", swap_path_before_real_parse
     )
 
-    report = validator.validate_package(package_dir)
+    report = _validate(package_dir)
 
     assert swapped
     assert report.outcome == "valid"
@@ -1647,3 +1696,302 @@ def test_extreme_page_evidence_reference_is_bounded_and_reported_unknown(tmp_pat
     assert _check(report, "evidence-reference-unknown").evidence_refs == [
         "decision-extreme-page-reference#evidence-ref=0"
     ]
+
+
+def test_understated_declared_source_page_count_cannot_hide_an_original_page(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    _write_pdf(package_dir / "input.pdf", page_count=1)
+    _refresh_artifact(package_dir, manifest, "input-pdf")
+    manifest["sources"][0]["pageCount"] = 1
+    manifest["pdfPages"] = [manifest["pdfPages"][0]]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-page-count-mismatch" in report.errors
+    assert _check(report, "source-page-count-mismatch").evidence_refs == [
+        "source-pdf"
+    ]
+
+
+def test_declared_sources_cannot_validate_without_source_root(tmp_path):
+    from intake_package_validator import validate_package
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+
+    report = validate_package(package_dir)
+
+    assert report.outcome == "invalid"
+    assert "source-verification-unavailable" in report.errors
+    assert _check(report, "source-verification-unavailable").evidence_refs == [
+        "source-root"
+    ]
+
+
+@pytest.mark.parametrize("root_kind", ["missing", "symlink", "file"])
+def test_unsafe_source_root_is_a_private_validation_error(tmp_path, root_kind):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    real_source_root = _source_root(package_dir)
+    supplied_root = tmp_path / "supplied-source-root"
+    if root_kind == "symlink":
+        supplied_root.symlink_to(real_source_root, target_is_directory=True)
+    elif root_kind == "file":
+        supplied_root.write_bytes(b"not a source directory")
+
+    report = _validate_with_source(package_dir, supplied_root)
+
+    expected = (
+        "source-symlink-not-allowed"
+        if root_kind == "symlink"
+        else "source-verification-unavailable"
+    )
+    assert expected in report.errors
+    assert _check(report, expected).evidence_refs == ["source-root"]
+    assert str(supplied_root) not in report.model_dump_json()
+
+
+def test_unsafe_source_path_has_a_stable_synthetic_error(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0]["path"] = "../outside.pdf"
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert "unsafe-source-path" in report.errors
+    assert _check(report, "unsafe-source-path").evidence_refs == ["source-pdf"]
+    assert "../outside.pdf" not in report.model_dump_json()
+
+
+def test_symlinked_and_missing_source_files_are_independent_errors(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    source_root = _source_root(package_dir)
+    source_pdf = source_root / "workspace" / "source.pdf"
+    source_pdf.unlink()
+    source_pdf.symlink_to(source_root / "workspace" / "source.xlsx")
+    (source_root / "workspace" / "source.xlsx").unlink()
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-symlink-not-allowed" in report.errors
+    assert "source-missing" in report.errors
+    assert _check(report, "source-symlink-not-allowed").evidence_refs == [
+        "source-pdf"
+    ]
+    assert _check(report, "source-missing").evidence_refs == ["source-roster"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("size", 1, "source-size-mismatch"),
+        ("sha256", "f" * 64, "source-digest-mismatch"),
+    ],
+)
+def test_source_size_and_digest_are_verified_from_opened_bytes(
+    tmp_path, field, value, expected_code
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0][field] = value
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert expected_code in report.errors
+    assert _check(report, expected_code).evidence_refs == ["source-pdf"]
+
+
+def test_unreadable_source_pdf_is_rejected_from_the_verified_snapshot(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    source_pdf = _source_root(package_dir) / "workspace" / "source.pdf"
+    source_pdf.write_bytes(b"not a source pdf")
+    manifest["sources"][0]["size"] = source_pdf.stat().st_size
+    manifest["sources"][0]["sha256"] = _sha256(source_pdf)
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-pdf-unreadable" in report.errors
+
+
+def test_oversized_source_is_rejected_before_reading(tmp_path):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    source_pdf = _source_root(package_dir) / "workspace" / "source.pdf"
+    limit = validator.MAX_ARTIFACT_BYTES_BY_KIND["input-pdf"]
+    with source_pdf.open("r+b") as stream:
+        stream.truncate(limit + 1)
+    manifest["sources"][0]["size"] = limit + 1
+    manifest["sources"][0]["sha256"] = "f" * 64
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-too-large" in report.errors
+    assert "source-digest-mismatch" not in report.errors
+
+
+def test_repeated_source_path_uses_one_bounded_cached_read(tmp_path, monkeypatch):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    duplicate = dict(manifest["sources"][0])
+    duplicate["sourceId"] = "source-pdf-repeat"
+    duplicate["coverageState"] = "unsupported"
+    manifest["sources"].append(duplicate)
+    _save_manifest(package_dir, manifest)
+    real_read = validator._read_relative_to_fd
+    reads = 0
+
+    def count_source_reads(root_fd, parts, **kwargs):
+        nonlocal reads
+        if parts == ("workspace", "source.pdf"):
+            reads += 1
+        return real_read(root_fd, parts, **kwargs)
+
+    monkeypatch.setattr(validator, "_read_relative_to_fd", count_source_reads)
+
+    _validate_with_source(package_dir)
+
+    assert reads == 1
+
+
+def test_source_verification_never_mutates_original_bytes_or_metadata(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    source_root = _source_root(package_dir)
+    before = {
+        path.relative_to(source_root): (
+            path.read_bytes(),
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+        )
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+
+    _validate_with_source(package_dir)
+
+    after = {
+        path.relative_to(source_root): (
+            path.read_bytes(),
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+        )
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_actual_source_pdf_page_limit_is_checked_before_page_loading(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    source_pdf = _source_root(package_dir) / "workspace" / "source.pdf"
+    _write_pdf(source_pdf, page_count=1)
+    manifest["sources"][0]["size"] = source_pdf.stat().st_size
+    manifest["sources"][0]["sha256"] = _sha256(source_pdf)
+    source_content = source_pdf.read_bytes()
+    real_open = validator.fitz.open
+
+    class OversizedDocument:
+        is_pdf = True
+        needs_pass = False
+        page_count = 10_001
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def load_page(self, *_args):
+            pytest.fail("oversized source PDF pages were loaded")
+
+    def open_source_as_oversized(*args, **kwargs):
+        if kwargs.get("stream") == source_content:
+            return OversizedDocument()
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(validator.fitz, "open", open_source_as_oversized)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-page-count-mismatch" in report.errors
+
+
+def test_derived_pdf_actual_page_limit_is_checked_before_page_loading(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    derived_content = (package_dir / "input.pdf").read_bytes()
+    real_open = validator.fitz.open
+
+    class OversizedDocument:
+        is_pdf = True
+        needs_pass = False
+        page_count = 10_001
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def load_page(self, *_args):
+            pytest.fail("oversized derived PDF pages were loaded")
+
+    def open_derived_as_oversized(*args, **kwargs):
+        if kwargs.get("stream") == derived_content:
+            return OversizedDocument()
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(validator.fitz, "open", open_derived_as_oversized)
+
+    report = _validate_with_source(package_dir)
+
+    assert "pdf-page-limit-exceeded" in report.errors
+
+
+def test_declared_historical_valid_report_with_empty_checks_is_rejected(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    empty_checks = {
+        "schemaVersion": "1.0",
+        "outcome": "valid",
+        "packageStatus": "prepared",
+        "checks": [],
+        "errors": [],
+        "warnings": [],
+        "validatedAt": SYNTHETIC_TIMESTAMP,
+        "validatorVersion": "0.9.0",
+    }
+    _add_artifact(
+        package_dir,
+        manifest,
+        artifact_id="artifact-validation-report-empty-checks",
+        kind="validation-report",
+        filename="historical-report.json",
+        content=json.dumps(empty_checks).encode(),
+    )
+
+    report = _validate_with_source(package_dir)
+
+    assert "validation-report-invalid" in report.errors

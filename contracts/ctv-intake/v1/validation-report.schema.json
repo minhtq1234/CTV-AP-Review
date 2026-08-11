@@ -35,6 +35,7 @@
       "items": {
         "$ref": "#/$defs/ValidationCheck"
       },
+      "minItems": 1,
       "title": "Checks",
       "type": "array"
     },

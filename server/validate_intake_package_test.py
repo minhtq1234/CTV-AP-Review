@@ -24,6 +24,13 @@ def _run_cli(*args: object) -> subprocess.CompletedProcess[bytes]:
     )
 
 
+def _run_cli_with_source(
+    package_dir: Path, *args: object
+) -> subprocess.CompletedProcess[bytes]:
+    source_root = package_dir.parent / f"{package_dir.name}-sources"
+    return _run_cli(package_dir, "--source-root", source_root, *args)
+
+
 def _assert_canonical_report(stdout: bytes, expected_outcome: str) -> dict:
     assert stdout.endswith(b"\n")
     report = json.loads(stdout)
@@ -40,7 +47,7 @@ def test_valid_package_emits_one_canonical_report_and_exits_zero(tmp_path):
     package_dir = tmp_path / "package"
     _write_package(package_dir)
 
-    result = _run_cli(package_dir)
+    result = _run_cli_with_source(package_dir)
 
     assert result.returncode == 0
     _assert_canonical_report(result.stdout, "valid")
@@ -55,7 +62,7 @@ def test_invalid_package_emits_report_without_diagnostics_and_exits_two(tmp_path
     ]
     _save_manifest(package_dir, manifest)
 
-    result = _run_cli(package_dir)
+    result = _run_cli_with_source(package_dir)
 
     assert result.returncode == 2
     report = _assert_canonical_report(result.stdout, "invalid")
@@ -71,7 +78,7 @@ def test_write_report_persists_identical_bytes_for_an_invalid_package(tmp_path):
     ]
     _save_manifest(package_dir, manifest)
 
-    result = _run_cli(package_dir, "--write-report")
+    result = _run_cli_with_source(package_dir, "--write-report")
 
     assert result.returncode == 2
     _assert_canonical_report(result.stdout, "invalid")
@@ -85,7 +92,7 @@ def test_write_report_atomically_replaces_an_undeclared_generated_report(tmp_pat
     report_path = package_dir / "validation-report.json"
     report_path.write_bytes(b"old generated report\n")
 
-    result = _run_cli(package_dir, "--write-report")
+    result = _run_cli_with_source(package_dir, "--write-report")
 
     assert result.returncode == 0
     assert report_path.read_bytes() == result.stdout
@@ -145,7 +152,7 @@ def test_write_report_refuses_a_digest_pinned_historical_report(tmp_path):
     )
     _save_manifest(package_dir, manifest)
 
-    result = _run_cli(package_dir, "--write-report")
+    result = _run_cli_with_source(package_dir, "--write-report")
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -162,7 +169,7 @@ def test_write_report_refuses_a_symlink_target_without_following_it(tmp_path):
     report_path = package_dir / "validation-report.json"
     report_path.symlink_to(outside)
 
-    result = _run_cli(package_dir, "--write-report")
+    result = _run_cli_with_source(package_dir, "--write-report")
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -178,7 +185,7 @@ def test_write_report_refuses_a_non_regular_target(tmp_path):
     report_path = package_dir / "validation-report.json"
     report_path.mkdir()
 
-    result = _run_cli(package_dir, "--write-report")
+    result = _run_cli_with_source(package_dir, "--write-report")
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -314,3 +321,55 @@ def test_handoff_hash_recipe_reads_only_blobs_from_the_exact_commit():
     assert 'len(source_commit) != 40' in handoff
     assert "git ls-files" not in handoff
     assert "path.read_bytes()" not in handoff
+
+
+def test_cli_package_only_returns_source_verification_diagnostic(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+
+    result = _run_cli(package_dir)
+
+    assert result.returncode == 2
+    report = _assert_canonical_report(result.stdout, "invalid")
+    assert report["errors"] == ["source-verification-unavailable"]
+    assert result.stderr == b""
+
+
+def test_cli_source_root_enables_a_valid_prepared_result(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    source_root = package_dir.parent / f"{package_dir.name}-sources"
+
+    result = _run_cli(package_dir, "--source-root", source_root)
+
+    assert result.returncode == 0
+    _assert_canonical_report(result.stdout, "valid")
+    assert result.stderr == b""
+
+
+def test_cli_source_root_write_report_remains_inside_package(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    source_root = package_dir.parent / f"{package_dir.name}-sources"
+
+    result = _run_cli(
+        package_dir, "--source-root", source_root, "--write-report"
+    )
+
+    assert result.returncode == 0
+    assert (package_dir / "validation-report.json").read_bytes() == result.stdout
+    assert not (source_root / "validation-report.json").exists()
+
+
+def test_cli_unsafe_source_root_never_exposes_absolute_path(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    unsafe_root = tmp_path / "missing-sensitive-source-root"
+
+    result = _run_cli(package_dir, "--source-root", unsafe_root)
+
+    assert result.returncode == 2
+    report = _assert_canonical_report(result.stdout, "invalid")
+    assert "source-verification-unavailable" in report["errors"]
+    assert str(unsafe_root).encode() not in result.stdout
+    assert result.stderr == b""
