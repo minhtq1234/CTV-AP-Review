@@ -26,7 +26,128 @@ orchestrates bounded inspection, transformation, validation, and export skills. 
 may propose structure and explain uncertainty; deterministic tools prove file/page
 coverage; the user approves every package.
 
-## 2. Problem Evidence
+## 2. Product Context and User Experience
+
+### 2.1 What we are building
+
+The product is a conversational **intake desk** between raw source folders and the
+CTV Review application:
+
+```text
+Raw folder
+    |
+    v
+WP CTV Intake Assistant
+    |
+    v
+User confirms organization and transformations
+    |
+    v
+Prepared FA case packages
+    |
+    v
+CTV Review: OCR, comparison, and human decision
+```
+
+The objective is not merely to clean files. It is to turn ambiguous source material
+into an explicit, traceable, human-confirmed structure before automated CTV review
+begins.
+
+The current CTV application should not be responsible for interpreting arbitrary
+folders. It works best after the input has been reduced to a known contract: one
+confirmed case PDF, one canonical roster, optional identity evidence, and an honest
+record of anything unresolved.
+
+### 2.2 Why the interaction belongs in WP
+
+Preprocessing is not a single deterministic conversion. Real batches require
+contextual decisions such as whether pages are shared evidence, which workbook sheet
+is authoritative, whether two archives belong to one FA case, or whether `CMND`
+should be treated as the identity-number field.
+
+WP provides the right product surface because it combines:
+
+- a project workspace containing the selected folder and derived artifacts;
+- a dedicated assistant with reusable domain skills;
+- conversation for clarification and correction;
+- structured previews and artifacts alongside chat;
+- explicit file-read and file-write permissions; and
+- a durable record of proposals, user decisions, retries, and outputs.
+
+The user should not need to understand parser rules or manually reconstruct the
+folder before asking for help. The interaction begins with a plain request such as:
+
+> Prepare this CTV batch for review.
+
+### 2.3 Example using the current batch
+
+For the observed `CTV AP GAS` folder, the assistant could report:
+
+> I found four proposed FA cases. One has a usable PDF and roster but separate CCCD
+> evidence is in PDF format. One has 14 supporting PDFs inside two ZIP archives. One
+> has identity images inside a RAR archive. One workbook opened on a non-roster sheet,
+> and its PDF has 32 pages outside the proposed person packets.
+
+The assistant then asks focused questions rather than making silent assumptions:
+
+> Pages 1–32 appear to be shared case evidence. Should I retain them at case level?
+
+> This workbook uses `CMND` instead of `Số CCCD`. Should I map it to the canonical
+> identity-number field?
+
+The user's answers become versioned preprocessing decisions. The assistant can
+revise the case proposal without discarding successful inspection work for other
+files or cases.
+
+### 2.4 What “make necessary changes” means
+
+The assistant works only on derived copies after showing a transformation preview.
+Depending on user approval, it may:
+
+- extract archives into a controlled working directory;
+- combine multiple PDFs in an approved order;
+- retain shared pages as case-level evidence;
+- rotate or reorder pages in a derived PDF;
+- select the correct workbook sheet;
+- create a normalized roster with canonical headers;
+- organize supported identity evidence; and
+- create a manifest, exception report, and validation report.
+
+It may not alter original files, invent missing business values, silently discard
+evidence, decide that a payment packet is correct, or approve a payment.
+
+### 2.5 AI and deterministic responsibilities
+
+AI handles work that requires interpretation and interaction:
+
+- understanding unusual filenames, document layouts, and relationships;
+- proposing document roles, case groupings, and header meanings;
+- explaining uncertainty and presenting alternatives; and
+- asking the user for the minimum missing context.
+
+Deterministic tools handle operations that must be reproducible and exact:
+
+- hashing, inventory, and duplicate detection;
+- safe archive inspection and extraction;
+- workbook and PDF structure inspection;
+- page accounting and transformation;
+- derived-file creation; and
+- package-schema and coverage validation.
+
+The assistant orchestrates both layers. Model confidence alone can never satisfy a
+coverage or approval gate.
+
+### 2.6 End state for the user
+
+After confirmation, each FA case appears as a versioned prepared package containing
+the normalized working files, source provenance, user decisions, and visible
+exceptions. CTV Review then performs packet OCR, comparison, evidence presentation,
+and human review against this confirmed package.
+
+For v1, the workflow stops at a validated prepared package. A direct **Send to CTV
+Review** action follows only after the WP and CTV teams agree on the package API.
+
+## 3. Problem Evidence
 
 The current CTV application accepts one required PDF, one optional roster XLSX, and
 one optional CCCD-image XLSX. Real submissions are materially less consistent:
@@ -49,7 +170,7 @@ covered PDF pages 33–178; pages 1–32 were not represented in the dashboard. 
 an intake-interpretation failure, not evidence that all 25 submissions must be sent
 back.
 
-## 3. Product Promise
+## 4. Product Promise
 
 The assistant will:
 
@@ -62,7 +183,7 @@ The assistant will:
 The assistant will not claim that successful preprocessing, successful OCR, or “no
 issue found” constitutes payment approval.
 
-## 4. Goals
+## 5. Goals
 
 - Accept a selected folder with nested files and subfolders as one intake batch.
 - Propose one or more FA cases within the batch.
@@ -75,7 +196,7 @@ issue found” constitutes payment approval.
 - Preserve partial progress and permit item-level retry.
 - Keep final packet and payment decisions with human reviewers.
 
-## 5. Non-goals for v1
+## 6. Non-goals for v1
 
 - Autonomous payment approval or rejection.
 - Silent modification, deletion, or renaming of original files.
@@ -86,7 +207,7 @@ issue found” constitutes payment approval.
   CTV team. V1 produces and validates the prepared package; direct submission is a
   follow-on integration using the same package.
 
-## 6. Ownership Boundary
+## 7. Ownership Boundary
 
 ### WePrompt team owns
 
@@ -110,7 +231,7 @@ issue found” constitutes payment approval.
 Both teams own versioning and compatibility tests for the prepared-package schema.
 WP must not mark a package compatible with a CTV version it has not validated.
 
-## 7. Architecture
+## 8. Architecture
 
 ```text
 User selects folder in a WP project
@@ -147,15 +268,15 @@ authority. Large or sensitive documents remain in the local workspace. Skills re
 bounded summaries and evidence references rather than placing entire batches into
 model context.
 
-## 8. Assistant Workflow
+## 9. Assistant Workflow
 
-### 8.1 Receive
+### 9.1 Receive
 
 The user selects or drops a folder into a WP project and asks the CTV Intake
 Assistant to prepare it. WP records the selected root and requests the minimum file
 read/write permissions required for the workspace.
 
-### 8.2 Inventory
+### 9.2 Inventory
 
 The assistant calls deterministic inventory tooling to create immutable records for
 every source item:
@@ -172,7 +293,7 @@ Archive extraction is performed only into a derived working directory with path
 containment, type, count, expanded-size, nesting, and timeout limits. The archive
 itself remains part of the source inventory.
 
-### 8.3 Inspect
+### 9.3 Inspect
 
 Specialized inspectors produce structured facts:
 
@@ -188,7 +309,7 @@ Specialized inspectors produce structured facts:
 Inspectors must not log raw identity numbers, account numbers, addresses, or full
 document text in ordinary application logs.
 
-### 8.4 Propose cases and roles
+### 9.4 Propose cases and roles
 
 The assistant proposes:
 
@@ -205,7 +326,7 @@ The assistant proposes:
 Every proposal includes confidence, evidence references, and an explanation. A
 filename may be a signal but cannot be the only evidence for a high-confidence role.
 
-### 8.5 Resolve ambiguity conversationally
+### 9.5 Resolve ambiguity conversationally
 
 The assistant asks one targeted question at a time. Examples:
 
@@ -216,7 +337,7 @@ The assistant asks one targeted question at a time. Examples:
 User answers become explicit decisions in the audit trail. A later answer may revise
 an earlier proposal without re-running successful unrelated inspections.
 
-### 8.6 Preview transformations
+### 9.6 Preview transformations
 
 Before any derived write, WP presents:
 
@@ -231,13 +352,13 @@ Before any derived write, WP presents:
 The user can approve, edit, or cancel. Approval applies only to the displayed
 transformation version; changes after approval require a new preview.
 
-### 8.7 Prepare and validate
+### 9.7 Prepare and validate
 
 The assistant calls deterministic transformation tools, then independently validates
 their outputs. Failure of one case does not discard successfully prepared sibling
 cases.
 
-## 9. Skill and Tool Boundaries
+## 10. Skill and Tool Boundaries
 
 The WP team should package the workflow as a dedicated CTV skill that orchestrates
 the following bounded capabilities. Names are conceptual, not prescribed APIs.
@@ -280,7 +401,7 @@ Submits an already validated package only after a separate explicit user action.
 Submission is idempotent and records the returned CTV case identifier. It is outside
 the WP v1 delivery until the CTV package API is available.
 
-## 10. Prepared Package
+## 11. Prepared Package
 
 Each confirmed case is written under a versioned derived directory, for example:
 
@@ -312,7 +433,7 @@ Prepared/
 evidence reference, explanation, and required action. An empty list means “no known
 preprocessing exceptions”; it does not mean the payment evidence is correct.
 
-## 11. Coverage and Approval Rules
+## 12. Coverage and Approval Rules
 
 Package confirmation is blocked unless:
 
@@ -330,7 +451,7 @@ Unresolved items may remain in a prepared package only when they are visible in 
 exception list and the user explicitly confirms that the package is intentionally
 partial. A partial package must never be labeled complete.
 
-## 12. State Model and Recovery
+## 13. State Model and Recovery
 
 Batch states:
 
@@ -350,7 +471,7 @@ artifacts are reused only when their source digests, tool versions, and decision
 still match. The user can resume the conversation without re-uploading or rebuilding
 the whole batch.
 
-## 13. Error Handling
+## 14. Error Handling
 
 - **Unsupported file:** retain in inventory and request classification or exclusion.
 - **Corrupt/password-protected file:** mark unreadable; do not fail sibling files.
@@ -366,7 +487,7 @@ the whole batch.
   derived output, and retry only the failed operation.
 - **Validation failure:** keep the package in `partially_prepared`; never submit it.
 
-## 14. Privacy, Security, and Audit
+## 15. Privacy, Security, and Audit
 
 - Originals are immutable and remain outside derived write targets.
 - Path resolution must prevent writes or extraction outside the WP project workspace.
@@ -381,7 +502,7 @@ the whole batch.
 - No original document, extracted identity image, or real customer fixture may be
   committed to source control.
 
-## 15. UX Requirements
+## 16. UX Requirements
 
 The primary interface is conversation supplemented by structured artifacts:
 
@@ -400,7 +521,7 @@ The assistant must use plain operational language. It must distinguish:
 - **prepared** from **approved**;
 - **preprocessing complete** from **CTV review complete**.
 
-## 16. Testing Strategy
+## 17. Testing Strategy
 
 ### Unit tests
 
@@ -446,7 +567,7 @@ Using the real batch locally and without committing its contents, the assistant 
 8. leave every original file unchanged; and
 9. prevent “complete” status while any file/page lacks an explicit state.
 
-## 17. Success Measures
+## 18. Success Measures
 
 - 100% of received files and PDF pages have explicit coverage states.
 - 0 original-file mutations.
@@ -457,7 +578,7 @@ Using the real batch locally and without committing its contents, the assistant 
 - Users can understand and correct the proposed organization without manually
   reconstructing the source folder.
 
-## 18. Delivery Sequence
+## 19. Delivery Sequence
 
 1. Agree and version the prepared-package schema with the CTV team.
 2. Build deterministic inventory, inspection, and validation tools with synthetic
