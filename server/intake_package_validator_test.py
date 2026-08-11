@@ -936,6 +936,37 @@ def test_abandoned_factory_reader_does_not_leak_registry_or_descriptor(tmp_path)
         os.fstat(descriptor)
 
 
+def test_reader_gc_cleanup_does_not_close_another_registered_identity(tmp_path):
+    import intake_package_validator as validator
+
+    first_package = tmp_path / "first-package"
+    second_package = tmp_path / "second-package"
+    _write_package(first_package)
+    _write_package(second_package)
+    first, first_failure = validator._PackageReader.open(first_package)
+    second, second_failure = validator._PackageReader.open(second_package)
+    assert first_failure is None
+    assert second_failure is None
+    assert first is not None
+    assert second is not None
+    first_descriptor = first.root_fd
+    second_descriptor = second.root_fd
+    assert first_descriptor is not None
+    assert second_descriptor is not None
+
+    del first
+    gc.collect()
+
+    with pytest.raises(OSError):
+        os.fstat(first_descriptor)
+    assert os.fstat(second_descriptor)
+    assert validator._validate_package_reader(second).outcome == "valid"
+
+    second.close()
+    with pytest.raises(OSError):
+        os.fstat(second_descriptor)
+
+
 def test_package_reader_rejects_direct_construction_with_an_arbitrary_descriptor(
     tmp_path,
 ):
@@ -1044,6 +1075,64 @@ def test_fully_populated_fabrication_cannot_copy_or_steal_reader_identity(
     finally:
         reader.close()
 
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
+def test_equality_forged_subclass_cannot_validate_or_close_registered_reader(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    reader, failure = validator._PackageReader.open(package_dir)
+    assert failure is None
+    assert reader is not None
+    descriptor = reader.root_fd
+    assert descriptor is not None
+    authority_comparisons = {"eq": 0, "hash": 0}
+
+    class EqualityForgedReader(validator._PackageReader):
+        __slots__ = ()
+
+        def __eq__(self, _other):
+            authority_comparisons["eq"] += 1
+            return True
+
+        def __hash__(self):
+            authority_comparisons["hash"] += 1
+            return hash(reader)
+
+    fabricated = object.__new__(EqualityForgedReader)
+    fabricated.root_path = reader.root_path
+    object.__setattr__(fabricated, "_PackageReader__root_fd", descriptor)
+
+    def reject_artifact_io(*_args, **_kwargs):
+        pytest.fail("artifact I/O was attempted through equality-based authority")
+
+    def reject_parser(*_args, **_kwargs):
+        pytest.fail("an artifact parser ran through equality-based authority")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(validator, "_read_relative_to_fd", reject_artifact_io)
+        guarded.setattr(validator.fitz, "open", reject_parser)
+        guarded.setattr(validator.openpyxl, "load_workbook", reject_parser)
+
+        forged_report = validator._validate_package_reader(fabricated)
+
+        assert forged_report.errors == ["secure-open-unavailable"]
+        assert _check(
+            forged_report, "secure-open-unavailable"
+        ).evidence_refs == ["package-root"]
+        fabricated.close()
+
+    assert authority_comparisons == {"eq": 0, "hash": 0}
+    assert os.fstat(descriptor)
+    legitimate_report = validator._validate_package_reader(reader)
+    assert legitimate_report.outcome == "valid"
+
+    reader.close()
     with pytest.raises(OSError):
         os.fstat(descriptor)
 

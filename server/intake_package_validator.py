@@ -46,7 +46,54 @@ _SUPPORTS_SECURE_RELATIVE_OPEN = os.open in os.supports_dir_fd and bool(_NO_FOLL
 
 
 def _make_package_reader_type():
-    registry: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+    registry: dict[int, dict[str, object]] = {}
+
+    def close_state(state: dict[str, object], *, suppress_errors: bool) -> None:
+        if state["closed"]:
+            return
+        state["closed"] = True
+        try:
+            os.close(state["descriptor"])
+        except OSError:
+            if not suppress_errors:
+                raise
+
+    def lookup(reader):
+        state = registry.get(id(reader))
+        if state is None:
+            return None
+        registered_ref = state["reader_ref"]
+        if registered_ref() is not reader:
+            return None
+        return state
+
+    def register(reader, descriptor: int, root_identity: tuple[int, int]) -> None:
+        reader_id = id(reader)
+        prior_state = registry.get(reader_id)
+        if prior_state is not None:
+            prior_ref = prior_state["reader_ref"]
+            if prior_ref() is not None:
+                raise RuntimeError("live package reader identity collision")
+            registry.pop(reader_id, None)
+            close_state(prior_state, suppress_errors=True)
+
+        state: dict[str, object] = {
+            "descriptor": descriptor,
+            "root_identity": root_identity,
+            "reader_ref": None,
+            "closed": False,
+        }
+
+        def release(dead_ref) -> None:
+            current = registry.get(reader_id)
+            if current is not state or current["reader_ref"] is not dead_ref:
+                return
+            registry.pop(reader_id, None)
+            close_state(state, suppress_errors=True)
+
+        reader_ref = weakref.ref(reader, release)
+        state["reader_ref"] = reader_ref
+        registry[reader_id] = state
 
     class _PackageReader:
         """A package root whose authority exists only in the factory registry."""
@@ -77,22 +124,22 @@ def _make_package_reader_type():
                 reader = object.__new__(cls)
                 reader.root_path = root_path
                 reader.__root_fd = root_fd
-                finalizer = weakref.finalize(reader, os.close, root_fd)
-                registry[reader] = (
+                register(
+                    reader,
                     root_fd,
                     (metadata.st_dev, metadata.st_ino),
-                    finalizer,
                 )
-            except (OSError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 os.close(root_fd)
                 return None, "missing"
             return reader, None
 
         def has_secure_open_provenance(self) -> bool:
-            entry = registry.get(self)
-            if entry is None or not _SUPPORTS_SECURE_RELATIVE_OPEN:
+            state = lookup(self)
+            if state is None or not _SUPPORTS_SECURE_RELATIVE_OPEN:
                 return False
-            descriptor, root_identity, _finalizer = entry
+            descriptor = state["descriptor"]
+            root_identity = state["root_identity"]
             if getattr(self, "_PackageReader__root_fd", None) != descriptor:
                 return False
             try:
@@ -108,18 +155,21 @@ def _make_package_reader_type():
         def root_fd(self) -> int | None:
             if not self.has_secure_open_provenance():
                 return None
-            entry = registry.get(self)
-            return entry[0] if entry is not None else None
+            state = lookup(self)
+            return state["descriptor"] if state is not None else None
 
         def close(self) -> None:
-            entry = registry.pop(self, None)
+            state = lookup(self)
             if hasattr(self, "_PackageReader__root_fd"):
                 self.__root_fd = None
-            if entry is None:
+            if state is None:
                 return
-            descriptor, _root_identity, finalizer = entry
-            finalizer.detach()
-            os.close(descriptor)
+            reader_id = id(self)
+            current = registry.get(reader_id)
+            if current is not state or current["reader_ref"]() is not self:
+                return
+            registry.pop(reader_id, None)
+            close_state(state, suppress_errors=False)
 
         def read(
             self,
@@ -133,11 +183,11 @@ def _make_package_reader_type():
             parts = _relative_path_parts(declared_path)
             if parts is None:
                 return None, "unsafe"
-            entry = registry.get(self)
-            if entry is None:
+            state = lookup(self)
+            if state is None:
                 return None, "secure-open-unavailable"
             return _read_relative_to_fd(
-                entry[0],
+                state["descriptor"],
                 parts,
                 expected_size=expected_size,
                 max_bytes=max_bytes,
