@@ -1,0 +1,488 @@
+import hashlib
+import json
+from pathlib import Path
+
+import fitz
+import openpyxl
+import pytest
+
+
+SYNTHETIC_TIMESTAMP = "2026-08-11T00:00:00Z"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_pdf(path: Path, page_count: int = 2) -> None:
+    document = fitz.open()
+    try:
+        for page_number in range(1, page_count + 1):
+            page = document.new_page()
+            page.insert_text((72, 72), f"Synthetic page {page_number}")
+        document.save(path)
+    finally:
+        document.close()
+
+
+def _write_roster(
+    path: Path,
+    *,
+    title: str = "Roster",
+    headers: tuple[str, ...] = ("Display label", "Synthetic identity"),
+    rows: tuple[tuple[str, ...], ...] = (
+        ("SUBJECT-ALPHA", "SYNTHETIC-IDENTITY-A"),
+        ("SUBJECT-BETA", "SYNTHETIC-IDENTITY-B"),
+    ),
+) -> None:
+    workbook = openpyxl.Workbook()
+    try:
+        worksheet = workbook.active
+        worksheet.title = title
+        worksheet.append(headers)
+        for row in rows:
+            worksheet.append(row)
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+
+def _artifact(artifact_id: str, kind: str, path: Path, source_ids: list[str]) -> dict:
+    return {
+        "artifactId": artifact_id,
+        "kind": kind,
+        "path": path.name,
+        "size": path.stat().st_size,
+        "sha256": _sha256(path),
+        "sourceIds": source_ids,
+    }
+
+
+def _write_package(
+    package_dir: Path,
+    *,
+    status: str = "prepared",
+    exception_items: list[dict] | None = None,
+) -> dict:
+    package_dir.mkdir()
+    pdf_path = package_dir / "input.pdf"
+    roster_path = package_dir / "roster.xlsx"
+    exceptions_path = package_dir / "exceptions.json"
+    _write_pdf(pdf_path)
+    _write_roster(roster_path)
+    exceptions_path.write_text(
+        json.dumps({"schemaVersion": "1.0", "items": exception_items or []}),
+        encoding="utf-8",
+    )
+    manifest = {
+        "schemaVersion": "1.0",
+        "batchId": "batch-synthetic",
+        "caseId": "case-synthetic",
+        "faCode": None,
+        "packageVersion": "1.0",
+        "status": status,
+        "compatibilityTarget": "ctv-intake-v1",
+        "sources": [
+            {
+                "sourceId": "source-pdf",
+                "path": "workspace/source.pdf",
+                "mediaType": "application/pdf",
+                "size": pdf_path.stat().st_size,
+                "sha256": _sha256(pdf_path),
+                "coverageState": "assigned",
+            },
+            {
+                "sourceId": "source-roster",
+                "path": "workspace/source.xlsx",
+                "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": roster_path.stat().st_size,
+                "sha256": _sha256(roster_path),
+                "coverageState": "assigned",
+            },
+        ],
+        "pdfPages": [
+            {
+                "sourceId": "source-pdf",
+                "sourcePage": 1,
+                "coverageState": "assigned",
+                "targetPage": 1,
+            },
+            {
+                "sourceId": "source-pdf",
+                "sourcePage": 2,
+                "coverageState": "assigned",
+                "targetPage": 2,
+            },
+        ],
+        "artifacts": [
+            _artifact("artifact-pdf", "input-pdf", pdf_path, ["source-pdf"]),
+            _artifact("artifact-roster", "roster", roster_path, ["source-roster"]),
+            _artifact("artifact-exceptions", "exceptions", exceptions_path, []),
+        ],
+        "rosterMapping": {
+            "sourceId": "source-roster",
+            "sheetName": "Roster",
+            "canonicalToSourceColumns": {
+                "name": "Display label",
+                "identity": "Synthetic identity",
+            },
+        },
+        "decisions": [],
+        "exceptionIds": [item["exceptionId"] for item in exception_items or []],
+        "validatedAt": SYNTHETIC_TIMESTAMP,
+        "validatorVersion": "1.0.0",
+    }
+    _save_manifest(package_dir, manifest)
+    return manifest
+
+
+def _save_manifest(package_dir: Path, manifest: dict) -> None:
+    (package_dir / "case-manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+
+def _refresh_artifact(package_dir: Path, manifest: dict, kind: str) -> None:
+    artifact = next(item for item in manifest["artifacts"] if item["kind"] == kind)
+    path = package_dir / artifact["path"]
+    artifact["size"] = path.stat().st_size
+    artifact["sha256"] = _sha256(path)
+    _save_manifest(package_dir, manifest)
+
+
+def _validate(package_dir: Path):
+    from intake_package_validator import validate_package
+
+    return validate_package(package_dir)
+
+
+def _check(report, code: str):
+    return next(check for check in report.checks if check.code == code)
+
+
+def test_valid_prepared_package_passes_semantic_validation(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "valid"
+    assert report.package_status == "prepared"
+    assert report.errors == []
+    assert report.warnings == []
+    assert report.validator_version == "1.0.0"
+
+
+def test_missing_required_artifact_is_rejected(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["artifacts"] = [
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] != "roster"
+    ]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "missing-required-artifact" in report.errors
+    assert _check(report, "missing-required-artifact").evidence_refs == ["roster"]
+
+
+def test_digest_and_byte_size_mismatches_are_reported_together(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    pdf_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    pdf_artifact["size"] += 1
+    pdf_artifact["sha256"] = "f" * 64
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "artifact-size-mismatch" in report.errors
+    assert "artifact-digest-mismatch" in report.errors
+    assert _check(report, "artifact-size-mismatch").evidence_refs == ["artifact-pdf"]
+
+
+def test_missing_and_extra_pdf_page_coverage_are_reported(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["pdfPages"] = [
+        manifest["pdfPages"][0],
+        {
+            "sourceId": "source-pdf",
+            "sourcePage": 3,
+            "coverageState": "assigned",
+            "targetPage": 3,
+        },
+    ]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "page-coverage-missing" in report.errors
+    assert "page-coverage-extra" in report.errors
+    assert _check(report, "page-coverage-missing").evidence_refs == [
+        "source-pdf#page=2"
+    ]
+    assert _check(report, "page-coverage-extra").evidence_refs == [
+        "source-pdf#page=3"
+    ]
+
+
+def test_unknown_source_decision_exception_and_evidence_references_are_rejected(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0]["duplicateSourceId"] = "source-unknown"
+    manifest["sources"][0]["decisionId"] = "decision-unknown"
+    manifest["artifacts"][0]["sourceIds"].append("source-artifact-unknown")
+    manifest["decisions"] = [
+        {
+            "decisionId": "decision-present",
+            "proposalVersion": "1.0",
+            "type": "approve-preview",
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": ["artifact-unknown", "source-pdf#page=99"],
+        }
+    ]
+    manifest["exceptionIds"] = ["exception-unknown"]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "source-reference-unknown" in report.errors
+    assert "decision-reference-unknown" in report.errors
+    assert "exception-reference-unknown" in report.errors
+    assert _check(report, "source-reference-unknown").evidence_refs == [
+        "artifact-unknown",
+        "source-artifact-unknown",
+        "source-pdf#page=99",
+        "source-unknown",
+    ]
+
+
+def test_unreadable_pdf_and_roster_are_reported_as_independent_sibling_failures(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    (package_dir / "input.pdf").write_bytes(b"not a pdf")
+    (package_dir / "roster.xlsx").write_bytes(b"not a workbook")
+    _refresh_artifact(package_dir, manifest, "input-pdf")
+    _refresh_artifact(package_dir, manifest, "roster")
+
+    report = _validate(package_dir)
+
+    assert "pdf-unreadable" in report.errors
+    assert "roster-unreadable" in report.errors
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        None,
+        {
+            "sourceId": "source-roster",
+            "sheetName": "Roster",
+            "canonicalToSourceColumns": {"identity": "Synthetic identity"},
+        },
+        {
+            "sourceId": "source-roster",
+            "sheetName": "Roster",
+            "canonicalToSourceColumns": {
+                "name": "Display label",
+                "identity": "Display label",
+            },
+        },
+    ],
+)
+def test_missing_or_ambiguous_canonical_name_and_identity_mapping_is_rejected(
+    tmp_path, mapping
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["rosterMapping"] = mapping
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "roster-mapping-missing" in report.errors
+
+
+def test_selected_roster_sheet_and_mapped_columns_must_exist(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["rosterMapping"]["sheetName"] = "Missing sheet"
+    manifest["rosterMapping"]["canonicalToSourceColumns"]["identity"] = (
+        "Missing identity column"
+    )
+    _save_manifest(package_dir, manifest)
+
+    missing_sheet = _validate(package_dir)
+    assert "roster-sheet-missing" in missing_sheet.errors
+
+    manifest["rosterMapping"]["sheetName"] = "Roster"
+    _save_manifest(package_dir, manifest)
+    missing_column = _validate(package_dir)
+    assert "roster-column-missing" in missing_column.errors
+
+
+def test_nonempty_canonical_identity_values_must_be_unique(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    _write_roster(
+        package_dir / "roster.xlsx",
+        rows=(
+            ("SUBJECT-ALPHA", "SYNTHETIC-IDENTITY-DUPLICATE"),
+            ("SUBJECT-BETA", "SYNTHETIC-IDENTITY-DUPLICATE"),
+            ("SUBJECT-GAMMA", ""),
+            ("SUBJECT-DELTA", ""),
+        ),
+    )
+    _refresh_artifact(package_dir, manifest, "roster")
+
+    report = _validate(package_dir)
+
+    assert "roster-identity-duplicate" in report.errors
+    assert _check(report, "roster-identity-duplicate").evidence_refs == [
+        "artifact-roster#row=2",
+        "artifact-roster#row=3",
+    ]
+
+
+def test_prepared_package_allows_an_open_warning_only_exception(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(
+        package_dir,
+        exception_items=[
+            {
+                "exceptionId": "exception-synthetic-warning",
+                "code": "artifact-outside-package",
+                "severity": "warning",
+                "evidenceRefs": ["artifact-pdf"],
+                "explanation": "Synthetic warning for contract coverage.",
+                "requiredAction": "Review the synthetic warning.",
+                "resolution": "open",
+            }
+        ],
+    )
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "valid"
+    assert report.package_status == "prepared"
+    assert report.errors == []
+    assert report.warnings == ["artifact-outside-package"]
+
+
+def test_blocking_exception_and_unresolved_coverage_are_rejected(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(
+        package_dir,
+        status="partially_prepared",
+        exception_items=[
+            {
+                "exceptionId": "exception-synthetic-blocking",
+                "code": "unresolved-coverage",
+                "severity": "blocking",
+                "evidenceRefs": ["source-pdf#page=2"],
+                "explanation": "Synthetic page remains unresolved.",
+                "requiredAction": "Resolve the synthetic page.",
+                "resolution": "open",
+            }
+        ],
+    )
+    manifest["pdfPages"][1]["coverageState"] = "unresolved"
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "invalid"
+    assert report.package_status == "partially_prepared"
+    assert "blocking-exception" in report.errors
+    assert "unresolved-coverage" in report.errors
+
+
+def test_prepared_manifest_with_unresolved_coverage_keeps_the_semantic_code(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["pdfPages"][1]["coverageState"] = "unresolved"
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "invalid"
+    assert report.package_status == "partially_prepared"
+    assert "manifest-invalid" in report.errors
+    assert "unresolved-coverage" in report.errors
+    assert _check(report, "unresolved-coverage").evidence_refs == [
+        "source-pdf#page=2"
+    ]
+
+
+def test_symlinked_artifact_is_rejected_before_file_parsing(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"not a pdf")
+    (package_dir / "input.pdf").unlink()
+    (package_dir / "input.pdf").symlink_to(outside)
+    _refresh_artifact(package_dir, manifest, "input-pdf")
+
+    report = _validate(package_dir)
+
+    assert "symlink-not-allowed" in report.errors
+    assert "pdf-unreadable" not in report.errors
+
+
+@pytest.mark.parametrize("declared_path", ["../outside.pdf", "bad\x00.pdf"])
+def test_package_relative_path_escaping_the_package_is_rejected(
+    tmp_path, declared_path
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["artifacts"][0]["path"] = declared_path
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "unsafe-artifact-path" in report.errors
+
+
+def test_failed_size_check_precedes_and_suppresses_pdf_parsing(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    (package_dir / "input.pdf").write_bytes(b"not a pdf")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "artifact-size-mismatch" in report.errors
+    assert "pdf-unreadable" not in report.errors
+
+
+def test_errors_and_evidence_are_deterministic_and_code_sorted(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["artifacts"] = []
+    manifest["pdfPages"] = []
+    manifest["sources"][0]["decisionId"] = "decision-zeta"
+    manifest["sources"][1]["decisionId"] = "decision-alpha"
+    _save_manifest(package_dir, manifest)
+
+    first = _validate(package_dir)
+    second = _validate(package_dir)
+
+    assert first.errors == sorted(first.errors)
+    assert first.errors == second.errors
+    assert first.model_dump(exclude={"validated_at"}) == second.model_dump(
+        exclude={"validated_at"}
+    )
+    assert _check(first, "decision-reference-unknown").evidence_refs == [
+        "decision-alpha",
+        "decision-zeta",
+    ]
+    assert _check(first, "missing-required-artifact").evidence_refs == [
+        "exceptions",
+        "input-pdf",
+        "roster",
+    ]
