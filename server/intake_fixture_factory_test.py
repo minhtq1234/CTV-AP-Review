@@ -8,6 +8,7 @@ from intake_fixture_factory import (
     materialize_fixture,
     validate_materialized_fixture,
 )
+from intake_package_validator import validate_package
 
 
 def test_complete_fixture_materializes_synthetic_files_with_full_coverage(tmp_path):
@@ -26,7 +27,10 @@ def test_complete_fixture_materializes_synthetic_files_with_full_coverage(tmp_pa
         assert document.page_count == 2
     workbook = openpyxl.load_workbook(fixture.roster_workbook, read_only=True)
     try:
-        assert list(workbook.active.values) == [("FA code",), ("FA-SYNTH-001",)]
+        assert list(workbook.active.values) == [
+            ("Name", "Identity", "FA code"),
+            ("SUBJECT-ALPHA", "SYNTHETIC-IDENTITY-A", "FA-SYNTH-001"),
+        ]
     finally:
         workbook.close()
 
@@ -70,3 +74,37 @@ def test_invalid_hidden_page_fixture_is_rejected_with_stable_unassigned_page_cod
         validate_materialized_fixture(fixture)
 
     assert error.value.code == "unassigned-page"
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "outcome", "status", "required_error"),
+    [
+        ("complete", "valid", "prepared", None),
+        ("partial", "invalid", "partially_prepared", "blocking-exception"),
+        (
+            "invalid-hidden-page",
+            "invalid",
+            "partially_prepared",
+            "page-coverage-missing",
+        ),
+    ],
+)
+def test_materialized_fixture_is_a_real_package_validated_through_public_api(
+    tmp_path, fixture_name, outcome, status, required_error
+):
+    package_dir = tmp_path / fixture_name
+    materialize_fixture(fixture_name, package_dir)
+
+    assert (package_dir / "case-manifest.json").is_file()
+    assert (package_dir / "input.pdf").is_file()
+    assert (package_dir / "roster.xlsx").is_file()
+    assert (package_dir / "exceptions.json").is_file()
+
+    report = validate_package(package_dir)
+
+    assert report.outcome == outcome
+    assert report.package_status == status
+    if required_error is None:
+        assert report.errors == []
+    else:
+        assert required_error in report.errors

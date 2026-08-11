@@ -181,9 +181,22 @@ class ValidationReport(_ContractModel):
     validator_version: str = Field(alias="validatorVersion", min_length=1)
 
     @model_validator(mode="after")
-    def prepared_status_has_no_blocking_exceptions(self) -> "ValidationReport":
+    def report_is_internally_consistent(self) -> "ValidationReport":
+        if (self.outcome == "valid") != (not self.errors):
+            raise ValueError("validation outcome must agree with errors")
         if self.package_status == "prepared" and self.errors:
             raise ValueError("prepared packages cannot contain blocking exceptions")
+        check_codes = [check.code for check in self.checks]
+        if len(check_codes) != len(set(check_codes)):
+            raise ValueError("validation check codes must be unique")
+        if len(self.errors) != len(set(self.errors)) or len(self.warnings) != len(set(self.warnings)):
+            raise ValueError("validation issue codes must be unique")
+        if set(self.errors) & set(self.warnings):
+            raise ValueError("a validation code cannot be both an error and warning")
+        failed_codes = {check.code for check in self.checks if not check.passed}
+        issue_codes = set(self.errors) | set(self.warnings)
+        if failed_codes != issue_codes:
+            raise ValueError("failed checks must correspond exactly to errors and warnings")
         return self
 
 
@@ -194,7 +207,7 @@ class PackageManifest(_ContractModel):
     fa_code: str | None = Field(alias="faCode", default=None, min_length=1)
     package_version: str = Field(alias="packageVersion", min_length=1)
     status: PackageStatus
-    compatibility_target: str = Field(alias="compatibilityTarget", min_length=1)
+    compatibility_target: Literal["ctv-intake-v1"] = Field(alias="compatibilityTarget")
     sources: list[Source]
     pdf_pages: list[PdfPage] = Field(alias="pdfPages")
     artifacts: list[Artifact]
@@ -219,9 +232,20 @@ class PackageManifest(_ContractModel):
         return self
 
 
+class CanonicalRosterValues(_ContractModel):
+    name: str = Field(min_length=1)
+    identity: str = Field(min_length=1)
+    fa_code: str | None = Field(default=None, alias="faCode", min_length=1)
+    tax_id: str | None = Field(default=None, alias="taxId", min_length=1)
+    birth_date: str | None = Field(default=None, alias="birthDate", min_length=1)
+    bank_account: str | None = Field(default=None, alias="bankAccount", min_length=1)
+    service_fee: str | None = Field(default=None, alias="serviceFee", min_length=1)
+    product: str | None = Field(default=None, min_length=1)
+
+
 class CanonicalRosterRow(_ContractModel):
     row_id: str = Field(alias="rowId", min_length=1)
-    values: dict[str, str | None]
+    values: CanonicalRosterValues
 
 
 def _require_unique(items: list[object], field_name: str, label: str) -> None:

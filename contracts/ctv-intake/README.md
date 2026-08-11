@@ -46,33 +46,49 @@ README files. For each file:
 4. Sort those contract-relative paths lexicographically, concatenate their lines,
    and SHA-256 the resulting bytes.
 
-Symlinks and untracked files are forbidden inputs. From the CTV repository root,
-this Python 3 command implements the definition without depending on platform
-specific `sha256sum` variants:
+Only regular blob entries from the exact reviewed commit are inputs. Working-tree
+changes and untracked files cannot affect the result. From the CTV repository root,
+set `source_commit` to the supplied full commit ID. The preflight operations are
+equivalent to `git rev-parse --verify "$source_commit^{commit}"`,
+`git ls-tree -r -z "$source_commit" -- contracts/ctv-intake/v1`, and
+`git show "$source_commit:$path"`. This Python 3 command implements the complete
+definition without depending on platform-specific `sha256sum` variants:
 
 ```bash
-python3 - <<'PY'
-from pathlib import Path
+source_commit=<reviewed-40-character-commit>
+python3 - "$source_commit" <<'PY'
 import hashlib
 import subprocess
+import sys
 
-root = Path("contracts/ctv-intake/v1")
-tracked_raw = subprocess.check_output(
-    ["git", "ls-files", "-z", "--", root.as_posix()]
-)
-untracked_raw = subprocess.check_output(
-    ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", root.as_posix()]
-)
-if untracked_raw:
-    raise SystemExit("untracked contract files are forbidden")
+source_commit = sys.argv[1]
+if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
+    raise SystemExit("source commit must be a full lowercase 40-character SHA")
+resolved = subprocess.check_output(
+    ["git", "rev-parse", "--verify", f"{source_commit}^{{commit}}"], text=True
+).strip()
+if resolved != source_commit:
+    raise SystemExit("source commit did not resolve exactly")
 
-files = [Path(raw.decode("utf-8")) for raw in tracked_raw.split(b"\0") if raw]
+root = "contracts/ctv-intake/v1"
+tree_raw = subprocess.check_output(
+    ["git", "ls-tree", "-r", "-z", source_commit, "--", root]
+)
 entries = []
-for path in files:
-    if path.is_symlink() or not path.is_file():
-        raise SystemExit(f"contract entry is not a regular file: {path}")
-    relative = path.relative_to(root).as_posix()
-    file_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+for raw_entry in tree_raw.split(b"\0"):
+    if not raw_entry:
+        continue
+    metadata, raw_path = raw_entry.split(b"\t", 1)
+    mode, object_type, _object_id = metadata.decode("ascii").split(" ")
+    path = raw_path.decode("utf-8")
+    if object_type != "blob" or mode == "120000":
+        raise SystemExit(f"contract entry is not a regular blob: {path}")
+    prefix = root + "/"
+    if not path.startswith(prefix):
+        raise SystemExit(f"contract entry escaped the version root: {path}")
+    relative = path[len(prefix):]
+    content = subprocess.check_output(["git", "show", f"{source_commit}:{path}"])
+    file_sha256 = hashlib.sha256(content).hexdigest()
     entries.append((relative, f"{file_sha256}  {relative}\n".encode("utf-8")))
 
 tree_bytes = b"".join(line for _, line in sorted(entries))

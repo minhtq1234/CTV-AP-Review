@@ -33,9 +33,18 @@
   "rosterMapping": {
     "sourceId": "source-synthetic-roster",
     "sheetName": "Roster",
-    "canonicalToSourceColumns": {"faCode": "FA code"}
+    "canonicalToSourceColumns": {"name": "Name", "identity": "Identity", "faCode": "FA code"}
   },
-  "decisions": [],
+  "decisions": [
+    {
+      "decisionId": "decision-approve-preview",
+      "proposalVersion": "1.0",
+      "type": "approve-preview",
+      "actor": "user",
+      "timestamp": "2026-08-11T00:00:00Z",
+      "evidenceRefs": ["source-synthetic-pdf", "source-synthetic-roster"]
+    }
+  ],
   "exceptionIds": ["exception-unassigned-page"],
   "validatedAt": "2026-08-11T00:00:00Z",
   "validatorVersion": "1.0"

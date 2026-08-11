@@ -51,32 +51,13 @@ def _guard_report_target(root_descriptor: int) -> None:
         raise ReportWriteError("validation-report.json target is not a regular file")
 
 
-def _manifest_declares_historical_report(root_descriptor: int) -> bool:
-    try:
-        descriptor = os.open(
-            _MANIFEST_NAME,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=root_descriptor,
-        )
-    except OSError:
+def _manifest_declares_historical_report(content: bytes | None) -> bool:
+    if content is None:
         return False
     try:
-        file_status = os.fstat(descriptor)
-        if not stat.S_ISREG(file_status.st_mode):
-            return False
-        if file_status.st_size > MAX_MANIFEST_BYTES:
-            return False
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = -1
-            content = stream.read(MAX_MANIFEST_BYTES + 1)
-        if len(content) > MAX_MANIFEST_BYTES:
-            return False
         manifest = json.loads(content.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, json.JSONDecodeError):
         return False
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
         return False
     return any(
@@ -179,8 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         if root_descriptor is None:
             raise ReportWriteError("secure package-root descriptor is unavailable")
         if args.write_report:
+            manifest_content, _manifest_failure = reader.read_manifest()
             _guard_report_target(root_descriptor)
-            if _manifest_declares_historical_report(root_descriptor):
+            if _manifest_declares_historical_report(manifest_content):
                 raise ReportWriteError(
                     "refusing to overwrite declared validation-report.json artifact"
                 )

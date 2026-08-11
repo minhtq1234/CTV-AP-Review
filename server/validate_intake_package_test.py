@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -241,3 +242,75 @@ def test_forced_atomic_replace_failure_leaves_no_temp_or_partial_report(
     assert b"synthetic replace failure" in captured.err
     assert not (package_dir / "validation-report.json").exists()
     assert not list(package_dir.glob(".validation-report.json.tmp-*"))
+
+
+def test_manifest_swap_cannot_hide_a_historical_report_declaration(
+    tmp_path, monkeypatch, capsysbinary
+):
+    import validate_intake_package as cli
+
+    package_dir = tmp_path / "package"
+    clean_manifest = _write_package(package_dir)
+    clean_manifest_bytes = (package_dir / "case-manifest.json").read_bytes()
+    report_path = package_dir / "validation-report.json"
+    historical = b'{"historical":true}\n'
+    report_path.write_bytes(historical)
+    clean_manifest["artifacts"].append(
+        _artifact(
+            "artifact-validation-report",
+            "validation-report",
+            report_path,
+            [],
+        )
+    )
+    _save_manifest(package_dir, clean_manifest)
+    real_guard = cli._guard_report_target
+
+    def swap_manifest_after_the_required_snapshot(root_descriptor):
+        real_guard(root_descriptor)
+        temporary = package_dir / "case-manifest.clean"
+        temporary.write_bytes(clean_manifest_bytes)
+        os.replace(temporary, package_dir / "case-manifest.json")
+
+    monkeypatch.setattr(cli, "_guard_report_target", swap_manifest_after_the_required_snapshot)
+
+    exit_code = cli.main([str(package_dir), "--write-report"])
+    captured = capsysbinary.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == b""
+    assert b"declared validation-report.json" in captured.err
+    assert report_path.read_bytes() == historical
+
+
+def test_fifo_manifest_returns_promptly_instead_of_blocking(tmp_path):
+    package_dir = tmp_path / "package"
+    package_dir.mkdir()
+    os.mkfifo(package_dir / "case-manifest.json")
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(package_dir), "--write-report"],
+        capture_output=True,
+        check=False,
+        timeout=2,
+    )
+
+    assert result.returncode == 2
+    report = _assert_canonical_report(result.stdout, "invalid")
+    assert report["errors"] == ["manifest-invalid"]
+    assert result.stderr == b""
+
+
+def test_handoff_hash_recipe_reads_only_blobs_from_the_exact_commit():
+    handoff = (
+        Path(__file__).parents[1] / "contracts" / "ctv-intake" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert 'git rev-parse --verify "$source_commit^{commit}"' in handoff
+    assert 'git ls-tree -r -z "$source_commit" -- contracts/ctv-intake/v1' in handoff
+    assert 'git show "$source_commit:$path"' in handoff
+    assert 'mode == "120000"' in handoff
+    assert "object_type != \"blob\"" in handoff
+    assert 'len(source_commit) != 40' in handoff
+    assert "git ls-files" not in handoff
+    assert "path.read_bytes()" not in handoff

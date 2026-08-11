@@ -35,9 +35,12 @@ MAX_ARTIFACT_BYTES_BY_KIND = {
     "exceptions": 16 * _MIB,
     "validation-report": 16 * _MIB,
 }
+MAX_PDF_PAGES_PER_SOURCE = 10_000
+MAX_PDF_PAGES_PER_PACKAGE = 25_000
 _MANIFEST_NAME = "case-manifest.json"
 _REQUIRED_ARTIFACT_KINDS = frozenset({"input-pdf", "roster", "exceptions"})
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_SOURCE_PAGE_EVIDENCE_RE = re.compile(r"^(.+)#page=([1-9][0-9]*)$")
 _CLOSE_ON_EXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _NO_FOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -47,6 +50,7 @@ _SUPPORTS_SECURE_RELATIVE_OPEN = os.open in os.supports_dir_fd and bool(_NO_FOLL
 
 def _make_package_reader_type():
     registry: dict[int, dict[str, object]] = {}
+    manifest_not_read = object()
 
     def close_state(state: dict[str, object], *, suppress_errors: bool) -> None:
         if state["closed"]:
@@ -82,6 +86,7 @@ def _make_package_reader_type():
             "root_identity": root_identity,
             "reader_ref": None,
             "closed": False,
+            "manifest_snapshot": manifest_not_read,
         }
 
         def release(dead_ref) -> None:
@@ -135,21 +140,7 @@ def _make_package_reader_type():
             return reader, None
 
         def has_secure_open_provenance(self) -> bool:
-            state = lookup(self)
-            if state is None or not _SUPPORTS_SECURE_RELATIVE_OPEN:
-                return False
-            descriptor = state["descriptor"]
-            root_identity = state["root_identity"]
-            if getattr(self, "_PackageReader__root_fd", None) != descriptor:
-                return False
-            try:
-                metadata = os.fstat(descriptor)
-            except OSError:
-                return False
-            return (
-                stat.S_ISDIR(metadata.st_mode)
-                and (metadata.st_dev, metadata.st_ino) == root_identity
-            )
+            return has_authority(self)
 
         @property
         def root_fd(self) -> int | None:
@@ -193,10 +184,37 @@ def _make_package_reader_type():
                 max_bytes=max_bytes,
             )
 
-    return _PackageReader
+        def read_manifest(self) -> tuple[bytes | None, str | None]:
+            state = lookup(self)
+            if state is None or not has_authority(self):
+                return None, "secure-open-unavailable"
+            cached = state["manifest_snapshot"]
+            if cached is manifest_not_read:
+                cached = self.read(_MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES)
+                state["manifest_snapshot"] = cached
+            return cached
+
+    def has_authority(reader: object) -> bool:
+        state = lookup(reader)
+        if state is None or not _SUPPORTS_SECURE_RELATIVE_OPEN:
+            return False
+        descriptor = state["descriptor"]
+        root_identity = state["root_identity"]
+        if getattr(reader, "_PackageReader__root_fd", None) != descriptor:
+            return False
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == root_identity
+        )
+
+    return _PackageReader, has_authority
 
 
-_PackageReader = _make_package_reader_type()
+_PackageReader, _has_package_reader_authority = _make_package_reader_type()
 del _make_package_reader_type
 
 
@@ -279,6 +297,7 @@ def _is_symlink_at(parent_fd: int, name: str) -> bool:
 class _Issues:
     errors: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     warnings: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    passed: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
     def error(self, code: str, *evidence_refs: str) -> None:
         self.errors[code].update(evidence_refs)
@@ -286,18 +305,37 @@ class _Issues:
     def warning(self, code: str, *evidence_refs: str) -> None:
         self.warnings[code].update(evidence_refs)
 
+    def pass_check(self, code: str, *evidence_refs: str) -> None:
+        if code not in self.errors and code not in self.warnings:
+            self.passed[code].update(evidence_refs)
+
+    def issue_count(self) -> int:
+        return sum(len(values) or 1 for values in self.errors.values()) + sum(
+            len(values) or 1 for values in self.warnings.values()
+        )
+
+    def pass_gate(self, code: str, evidence_ref: str, before: int) -> None:
+        if self.issue_count() == before:
+            self.pass_check(code, evidence_ref)
+
     def report(self, manifest: PackageManifest | None) -> ValidationReport:
         error_codes = sorted(self.errors)
         warning_codes = sorted(self.warnings)
-        check_codes = sorted(set(error_codes) | set(warning_codes))
+        failed_codes = set(error_codes) | set(warning_codes)
         checks = [
             ValidationCheck(
                 code=code,
                 passed=False,
                 evidenceRefs=sorted(self.errors[code] | self.warnings[code]),
             )
-            for code in check_codes
+            for code in sorted(failed_codes)
         ]
+        checks.extend(
+            ValidationCheck(code=code, passed=True, evidenceRefs=sorted(evidence))
+            for code, evidence in sorted(self.passed.items())
+            if code not in failed_codes
+        )
+        checks.sort(key=lambda check: check.code)
         invalid = bool(error_codes)
         return ValidationReport(
             schemaVersion="1.0",
@@ -341,15 +379,13 @@ def _report_package_root_failure(root_failure: str | None) -> ValidationReport:
 
 def _validate_package_reader(reader: _PackageReader) -> ValidationReport:
     """Validate through a caller-owned open reader without closing it."""
-    if not reader.has_secure_open_provenance():
+    if not _has_package_reader_authority(reader):
         return _report_package_root_failure("secure-open-unavailable")
     return _validate_open_package(reader, _Issues())
 
 
 def _validate_open_package(reader: _PackageReader, issues: _Issues) -> ValidationReport:
-    manifest_content, manifest_failure = reader.read(
-        _MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES
-    )
+    manifest_content, manifest_failure = reader.read_manifest()
     if manifest_failure == "symlink":
         issues.error("symlink-not-allowed", _MANIFEST_NAME)
         return issues.report(None)
@@ -364,12 +400,17 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
 
     _inspect_raw_artifact_paths(raw_manifest, issues)
     _inspect_raw_unresolved_coverage(raw_manifest, issues)
+    _inspect_raw_compatibility_target(raw_manifest, issues)
     try:
         manifest = PackageManifest.model_validate(raw_manifest)
     except ValidationError:
         issues.error("manifest-invalid", _MANIFEST_NAME)
         return issues.report(None)
+    issues.pass_check("manifest-valid", _MANIFEST_NAME)
 
+    page_limits_exceeded = _check_page_count_limits(manifest, issues)
+
+    artifact_gate_before = issues.issue_count()
     artifacts_by_kind: dict[str, list] = defaultdict(list)
     for artifact in manifest.artifacts:
         artifacts_by_kind[artifact.kind].append(artifact)
@@ -415,25 +456,72 @@ def _validate_open_package(reader: _PackageReader, issues: _Issues) -> Validatio
             issues.error("artifact-digest-mismatch", artifact.artifact_id)
         if digest_matches:
             usable_artifacts[artifact.artifact_id] = content
+    issues.pass_gate("artifacts-valid", "artifacts", artifact_gate_before)
 
+    exceptions_ready = _unique_artifact_is_usable(
+        "exceptions", artifacts_by_kind, usable_artifacts
+    )
+    exceptions_gate_before = issues.issue_count()
     exceptions = _load_exceptions(
         manifest, artifacts_by_kind, usable_artifacts, issues
     )
+    if exceptions_ready:
+        issues.pass_gate("exceptions-valid", "exceptions.json", exceptions_gate_before)
+    pdf_ready = _unique_artifact_is_usable(
+        "input-pdf", artifacts_by_kind, usable_artifacts
+    )
+    pdf_gate_before = issues.issue_count()
     derived_pdf_page_counts = _inspect_pdfs(
         artifacts_by_kind, usable_artifacts, issues
     )
+    if pdf_ready:
+        issues.pass_gate("pdf-valid", "input.pdf", pdf_gate_before)
+    roster_ready = _unique_artifact_is_usable(
+        "roster", artifacts_by_kind, usable_artifacts
+    )
+    roster_gate_before = issues.issue_count()
     _inspect_rosters(
         manifest, artifacts_by_kind, usable_artifacts, issues
     )
+    if roster_ready:
+        issues.pass_gate("roster-valid", "roster.xlsx", roster_gate_before)
+    cccd_gate_before = issues.issue_count()
+    _inspect_cccd_workbooks(artifacts_by_kind, usable_artifacts, issues)
+    issues.pass_gate("cccd-valid", "cccd", cccd_gate_before)
+    report_gate_before = issues.issue_count()
     _inspect_validation_reports(artifacts_by_kind, usable_artifacts, issues)
+    issues.pass_gate("validation-report-valid", "validation-report", report_gate_before)
+    reference_gate_before = issues.issue_count()
     _check_references(manifest, exceptions, issues)
+    issues.pass_gate("references-valid", "references", reference_gate_before)
+    state_gate_before = issues.issue_count()
+    _check_coverage_state_and_decisions(manifest, issues)
+    issues.pass_gate("coverage-state-valid", "coverage-state", state_gate_before)
+    provenance_gate_before = issues.issue_count()
     _check_input_pdf_provenance(manifest, artifacts_by_kind, issues)
-    _check_pdf_coverage(
-        manifest, artifacts_by_kind, derived_pdf_page_counts, issues
-    )
+    _check_source_provenance(manifest, issues)
+    issues.pass_gate("provenance-valid", "sources", provenance_gate_before)
+    coverage_gate_before = issues.issue_count()
+    if not page_limits_exceeded:
+        _check_pdf_coverage(
+            manifest, artifacts_by_kind, derived_pdf_page_counts, issues
+        )
+        issues.pass_gate("coverage-valid", "pdfPages", coverage_gate_before)
+    approval_gate_before = issues.issue_count()
+    _check_current_approval(manifest, issues)
+    issues.pass_gate("approval-valid", manifest.package_version, approval_gate_before)
+    exception_status_gate_before = issues.issue_count()
     _check_exceptions(manifest, exceptions, issues)
     _check_unresolved_coverage(manifest, issues)
+    issues.pass_gate("package-status-valid", manifest.status, exception_status_gate_before)
     return issues.report(manifest)
+
+
+def _unique_artifact_is_usable(
+    kind: str, artifacts_by_kind: dict[str, list], usable_artifacts: dict[str, bytes]
+) -> bool:
+    artifacts = artifacts_by_kind.get(kind, [])
+    return len(artifacts) == 1 and artifacts[0].artifact_id in usable_artifacts
 
 
 def _read_json_bytes(content: bytes) -> object:
@@ -471,6 +559,14 @@ def _inspect_raw_unresolved_coverage(raw_manifest: object, issues: _Issues) -> N
             source_id = source.get("sourceId")
             evidence = source_id if isinstance(source_id, str) else f"source-index-{index}"
             issues.error("unresolved-coverage", evidence)
+
+
+def _inspect_raw_compatibility_target(raw_manifest: object, issues: _Issues) -> None:
+    if not isinstance(raw_manifest, dict):
+        return
+    target = raw_manifest.get("compatibilityTarget")
+    if isinstance(target, str) and target != "ctv-intake-v1":
+        issues.error("compatibility-target-unsupported", target)
     pages = raw_manifest.get("pdfPages")
     if isinstance(pages, list):
         for index, page in enumerate(pages):
@@ -645,6 +741,151 @@ def _inspect_validation_reports(
             issues.error("validation-report-invalid", artifact.artifact_id)
 
 
+def _inspect_cccd_workbooks(
+    artifacts_by_kind: dict[str, list],
+    usable_artifacts: dict[str, bytes],
+    issues: _Issues,
+) -> None:
+    for artifact in sorted(
+        artifacts_by_kind.get("cccd", []), key=lambda item: item.artifact_id
+    ):
+        content = usable_artifacts.get(artifact.artifact_id)
+        if content is None:
+            continue
+        if not artifact.path.casefold().endswith(".xlsx"):
+            issues.error("cccd-unreadable", artifact.artifact_id)
+            continue
+        workbook = None
+        try:
+            preflight_roster_workbook(io.BytesIO(content))
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(content), read_only=True, data_only=True
+            )
+            if not workbook.sheetnames:
+                raise ValueError("CCCD workbook has no readable worksheets")
+            for sheet_name in workbook.sheetnames:
+                next(workbook[sheet_name].iter_rows(values_only=True), ())
+        except Exception:
+            issues.error("cccd-unreadable", artifact.artifact_id)
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+
+def _check_page_count_limits(
+    manifest: PackageManifest, issues: _Issues
+) -> bool:
+    pdf_sources = [
+        source for source in manifest.sources if source.media_type == "application/pdf"
+    ]
+    exceeded = False
+    declared_total = 0
+    for source in sorted(pdf_sources, key=lambda item: item.source_id):
+        if source.page_count is None:
+            continue
+        declared_total += source.page_count
+        if source.page_count > MAX_PDF_PAGES_PER_SOURCE:
+            exceeded = True
+            issues.error(
+                "page-count-limit-exceeded",
+                f"{source.source_id}#page-count={source.page_count}",
+            )
+    if declared_total > MAX_PDF_PAGES_PER_PACKAGE:
+        exceeded = True
+        issues.error(
+            "page-count-limit-exceeded",
+            f"package#declared-pdf-pages={declared_total}",
+        )
+    return exceeded
+
+
+def _check_coverage_state_and_decisions(
+    manifest: PackageManifest, issues: _Issues
+) -> None:
+    decisions = {decision.decision_id: decision for decision in manifest.decisions}
+    source_decision_types = {
+        "assigned": "assign-source",
+        "shared": "share-source",
+        "duplicate": "mark-duplicate",
+        "excluded-by-user": "exclude-source",
+    }
+    page_decision_types = {
+        "assigned": "assign-page",
+        "shared": "share-source",
+        "duplicate": "mark-duplicate",
+        "excluded-by-user": "exclude-source",
+    }
+    decision_required_states = {"shared", "duplicate", "excluded-by-user"}
+    source_ids = {source.source_id for source in manifest.sources}
+
+    for source in sorted(manifest.sources, key=lambda item: item.source_id):
+        if source.coverage_state == "duplicate" and (
+            source.duplicate_source_id is None
+            or source.duplicate_source_id == source.source_id
+            or source.duplicate_source_id not in source_ids
+        ):
+            issues.error("coverage-state-inconsistent", source.source_id)
+        expected_type = source_decision_types.get(source.coverage_state)
+        if source.coverage_state in decision_required_states and not source.decision_id:
+            issues.error("decision-type-mismatch", source.source_id)
+        elif source.decision_id and expected_type:
+            decision = decisions.get(source.decision_id)
+            if decision is not None and decision.type != expected_type:
+                issues.error("decision-type-mismatch", source.source_id)
+
+    for page in sorted(
+        manifest.pdf_pages, key=lambda item: (item.source_id, item.source_page)
+    ):
+        evidence = f"{page.source_id}#page={page.source_page}"
+        has_target = page.target_page is not None
+        if page.coverage_state in {"assigned", "shared"}:
+            if not has_target:
+                issues.error("coverage-state-inconsistent", evidence)
+        elif has_target:
+            issues.error("coverage-state-inconsistent", evidence)
+        expected_type = page_decision_types.get(page.coverage_state)
+        if page.coverage_state in decision_required_states and not page.decision_id:
+            issues.error("decision-type-mismatch", evidence)
+        elif page.decision_id and expected_type:
+            decision = decisions.get(page.decision_id)
+            if decision is not None and decision.type != expected_type:
+                issues.error("decision-type-mismatch", evidence)
+
+
+def _check_source_provenance(manifest: PackageManifest, issues: _Issues) -> None:
+    artifact_source_ids = {
+        source_id
+        for artifact in manifest.artifacts
+        for source_id in artifact.source_ids
+    }
+    mapped_pdf_sources = {
+        page.source_id
+        for page in manifest.pdf_pages
+        if page.coverage_state in {"assigned", "shared"}
+        and page.target_page is not None
+    }
+    for source in sorted(manifest.sources, key=lambda item: item.source_id):
+        if source.coverage_state not in {"assigned", "shared"}:
+            continue
+        represented = (
+            source.source_id in mapped_pdf_sources
+            if source.media_type == "application/pdf"
+            else source.source_id in artifact_source_ids
+        )
+        if not represented:
+            issues.error("source-provenance-missing", source.source_id)
+
+
+def _check_current_approval(manifest: PackageManifest, issues: _Issues) -> None:
+    if not any(
+        decision.type == "approve-preview"
+        and decision.actor == "user"
+        and decision.proposal_version == manifest.package_version
+        for decision in manifest.decisions
+    ):
+        issues.error("approval-missing", manifest.package_version)
+
+
 def _mapping_is_unambiguous(mapping) -> bool:
     if mapping is None:
         return False
@@ -672,20 +913,15 @@ def _check_references(
         {item.exception_id for item in exceptions.items} if exceptions is not None else set()
     )
     known_evidence_refs = source_ids | artifact_ids | decision_ids | exception_ids
-    for source in manifest.sources:
-        if source.media_type != "application/pdf":
-            continue
-        if source.page_count is not None:
-            known_evidence_refs.update(
-                f"{source.source_id}#page={page_number}"
-                for page_number in range(1, source.page_count + 1)
-            )
-        else:
-            known_evidence_refs.update(
-                f"{page.source_id}#page={page.source_page}"
-                for page in manifest.pdf_pages
-                if page.source_id == source.source_id
-            )
+    known_evidence_refs.update(
+        f"{page.source_id}#page={page.source_page}"
+        for page in manifest.pdf_pages
+    )
+    pdf_page_counts = {
+        source.source_id: source.page_count
+        for source in manifest.sources
+        if source.media_type == "application/pdf" and source.page_count is not None
+    }
 
     unknown_sources: set[str] = set()
     unknown_decisions: set[str] = set()
@@ -709,14 +945,18 @@ def _check_references(
     unknown_evidence_refs: set[str] = set()
     for decision in manifest.decisions:
         for index, evidence_ref in enumerate(decision.evidence_refs):
-            if evidence_ref not in known_evidence_refs:
+            if not _evidence_reference_is_known(
+                evidence_ref, known_evidence_refs, pdf_page_counts
+            ):
                 unknown_evidence_refs.add(
                     f"{decision.decision_id}#evidence-ref={index}"
                 )
     if exceptions is not None:
         for item in exceptions.items:
             for index, evidence_ref in enumerate(item.evidence_refs):
-                if evidence_ref not in known_evidence_refs:
+                if not _evidence_reference_is_known(
+                    evidence_ref, known_evidence_refs, pdf_page_counts
+                ):
                     unknown_evidence_refs.add(
                         f"{item.exception_id}#evidence-ref={index}"
                     )
@@ -729,6 +969,26 @@ def _check_references(
         issues.error(
             "evidence-reference-unknown", *sorted(unknown_evidence_refs)
         )
+
+
+def _evidence_reference_is_known(
+    evidence_ref: str,
+    known_evidence_refs: set[str],
+    pdf_page_counts: dict[str, int],
+) -> bool:
+    if evidence_ref in known_evidence_refs:
+        return True
+    match = _SOURCE_PAGE_EVIDENCE_RE.fullmatch(evidence_ref)
+    if match is None:
+        return False
+    source_id, raw_page = match.groups()
+    page_count = pdf_page_counts.get(source_id)
+    if page_count is None:
+        return False
+    maximum = str(page_count)
+    return len(raw_page) < len(maximum) or (
+        len(raw_page) == len(maximum) and raw_page <= maximum
+    )
 
 
 def _check_input_pdf_provenance(
@@ -793,18 +1053,24 @@ def _check_pdf_coverage(
         if page_count is None:
             issues.error("page-coverage-missing", f"{source_id}#page-count")
             continue
-        for page_number in range(1, page_count + 1):
-            count = source_coverage[(source_id, page_number)]
-            evidence = f"{source_id}#page={page_number}"
-            if count == 0:
-                issues.error("page-coverage-missing", evidence)
-            elif count > 1:
-                issues.error("page-coverage-extra", evidence)
-        for covered_source, page_number in sorted(source_coverage):
-            if covered_source == source_id and page_number > page_count:
+        observed = sorted(
+            page_number
+            for covered_source, page_number in source_coverage
+            if covered_source == source_id and 1 <= page_number <= page_count
+        )
+        for start, end in _missing_ranges(observed, page_count):
+            issues.error(
+                "page-coverage-missing",
+                _page_range_evidence(source_id, start, end),
+            )
+        for page_number in observed:
+            if source_coverage[(source_id, page_number)] > 1:
                 issues.error(
                     "page-coverage-extra", f"{source_id}#page={page_number}"
                 )
+        for covered_source, page_number in sorted(source_coverage):
+            if covered_source == source_id and page_number > page_count:
+                issues.error("page-coverage-extra", f"{source_id}#page={page_number}")
     for source_id, page_number in sorted(source_coverage):
         if source_id not in pdf_source_ids and source_id in source_ids:
             issues.error(
@@ -822,19 +1088,44 @@ def _check_pdf_coverage(
         page_count = derived_page_counts.get(artifact.artifact_id)
         if page_count is None:
             continue
-        for page_number in range(1, page_count + 1):
-            count = target_coverage[page_number]
-            evidence = f"{artifact.artifact_id}#target-page={page_number}"
-            if count == 0:
-                issues.error("page-coverage-missing", evidence)
-            elif count > 1:
-                issues.error("page-coverage-extra", evidence)
+        observed_targets = sorted(
+            page_number for page_number in target_coverage if page_number <= page_count
+        )
+        for start, end in _missing_ranges(observed_targets, page_count):
+            evidence = (
+                f"{artifact.artifact_id}#target-page={start}"
+                if start == end
+                else f"{artifact.artifact_id}#target-pages={start}-{end}"
+            )
+            issues.error("page-coverage-missing", evidence)
+        for page_number in observed_targets:
+            if target_coverage[page_number] > 1:
+                issues.error(
+                    "page-coverage-extra",
+                    f"{artifact.artifact_id}#target-page={page_number}",
+                )
         for page_number in sorted(target_coverage):
             if page_number > page_count:
                 issues.error(
                     "page-coverage-extra",
                     f"{artifact.artifact_id}#target-page={page_number}",
                 )
+
+
+def _missing_ranges(observed: list[int], expected_count: int):
+    cursor = 1
+    for page_number in observed:
+        if page_number > cursor:
+            yield cursor, page_number - 1
+        cursor = max(cursor, page_number + 1)
+    if cursor <= expected_count:
+        yield cursor, expected_count
+
+
+def _page_range_evidence(source_id: str, start: int, end: int) -> str:
+    if start == end:
+        return f"{source_id}#page={start}"
+    return f"{source_id}#pages={start}-{end}"
 
 
 def _check_exceptions(
@@ -854,12 +1145,30 @@ def _check_exceptions(
     if exceptions is None:
         return
     for item in sorted(exceptions.items, key=lambda value: value.exception_id):
-        if item.resolution != "open":
+        if item.resolution == "resolved":
             continue
-        if item.severity == "blocking":
+        if item.resolution == "open" and item.severity == "blocking":
             issues.error("blocking-exception", item.exception_id)
-        else:
+            continue
+        if item.resolution == "open":
             issues.warning(item.code, item.exception_id)
+            continue
+
+        # Accepted partial evidence remains visible and is never compatible
+        # with a package claiming the complete prepared state.
+        issues.warning(item.code, item.exception_id)
+        if item.severity != "blocking":
+            continue
+        if manifest.status != "partially_prepared":
+            issues.error("partial-status-required", item.exception_id)
+        accepted = any(
+            decision.type == "accept-partial"
+            and decision.proposal_version == manifest.package_version
+            and item.exception_id in decision.evidence_refs
+            for decision in manifest.decisions
+        )
+        if not accepted:
+            issues.error("accept-partial-decision-missing", item.exception_id)
 
 
 def _check_unresolved_coverage(manifest: PackageManifest, issues: _Issues) -> None:

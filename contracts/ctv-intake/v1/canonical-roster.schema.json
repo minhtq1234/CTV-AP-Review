@@ -1,4 +1,105 @@
 {
+  "$defs": {
+    "CanonicalRosterValues": {
+      "additionalProperties": false,
+      "properties": {
+        "bankAccount": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bankaccount"
+        },
+        "birthDate": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Birthdate"
+        },
+        "faCode": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Facode"
+        },
+        "identity": {
+          "minLength": 1,
+          "title": "Identity",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product"
+        },
+        "serviceFee": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Servicefee"
+        },
+        "taxId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taxid"
+        }
+      },
+      "required": [
+        "name",
+        "identity"
+      ],
+      "title": "CanonicalRosterValues",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "properties": {
     "rowId": {
@@ -7,18 +108,7 @@
       "type": "string"
     },
     "values": {
-      "additionalProperties": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "title": "Values",
-      "type": "object"
+      "$ref": "#/$defs/CanonicalRosterValues"
     }
   },
   "required": [

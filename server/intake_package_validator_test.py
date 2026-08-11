@@ -131,7 +131,16 @@ def _write_package(
                 "identity": "Synthetic identity",
             },
         },
-        "decisions": [],
+        "decisions": [
+            {
+                "decisionId": "decision-preview-current",
+                "proposalVersion": "1.0",
+                "type": "approve-preview",
+                "actor": "user",
+                "timestamp": SYNTHETIC_TIMESTAMP,
+                "evidenceRefs": ["source-pdf", "source-roster"],
+            }
+        ],
         "exceptionIds": [item["exceptionId"] for item in exception_items or []],
         "validatedAt": SYNTHETIC_TIMESTAMP,
         "validatorVersion": "1.0.0",
@@ -1313,4 +1322,328 @@ def test_errors_and_evidence_are_deterministic_and_code_sorted(tmp_path):
         "exceptions",
         "input-pdf",
         "roster",
+    ]
+
+
+def test_assigned_source_page_without_target_is_not_falsely_valid(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["pdfPages"][1].pop("targetPage")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "coverage-state-inconsistent" in report.errors
+    assert "source-pdf#page=2" in _check(
+        report, "coverage-state-inconsistent"
+    ).evidence_refs
+
+
+def test_assigned_non_pdf_source_requires_derived_artifact_provenance(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    roster_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "roster"
+    )
+    roster_artifact["sourceIds"] = []
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "source-provenance-missing" in report.errors
+    assert _check(report, "source-provenance-missing").evidence_refs == [
+        "source-roster"
+    ]
+
+
+@pytest.mark.parametrize("approval_mode", ["missing", "stale"])
+def test_current_package_version_requires_approve_preview(tmp_path, approval_mode):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    if approval_mode == "missing":
+        manifest["decisions"] = []
+    else:
+        manifest["decisions"][0]["proposalVersion"] = "0.9"
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "approval-missing" in report.errors
+    assert _check(report, "approval-missing").evidence_refs == ["1.0"]
+
+
+@pytest.mark.parametrize(
+    ("owner", "state", "wrong_type"),
+    [
+        ("source", "shared", "assign-source"),
+        ("source", "duplicate", "share-source"),
+        ("source", "excluded-by-user", "assign-source"),
+        ("page", "shared", "assign-page"),
+        ("page", "excluded-by-user", "assign-page"),
+    ],
+)
+def test_coverage_decision_ids_must_use_the_state_transition_type(
+    tmp_path, owner, state, wrong_type
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    decision_id = "decision-state"
+    manifest["decisions"].append(
+        {
+            "decisionId": decision_id,
+            "proposalVersion": "1.0",
+            "type": wrong_type,
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": ["source-pdf"],
+        }
+    )
+    if owner == "source":
+        source = manifest["sources"][0]
+        source["coverageState"] = state
+        source["decisionId"] = decision_id
+        if state == "duplicate":
+            source["duplicateSourceId"] = "source-roster"
+    else:
+        page = manifest["pdfPages"][0]
+        page["coverageState"] = state
+        page["decisionId"] = decision_id
+        if state == "excluded-by-user":
+            page.pop("targetPage")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "decision-type-mismatch" in report.errors
+
+
+def _accepted_partial_exception() -> dict:
+    return {
+        "exceptionId": "exception-partial",
+        "code": "unassigned-page",
+        "severity": "blocking",
+        "evidenceRefs": ["source-pdf#page=2"],
+        "explanation": "A synthetic page is intentionally left partial.",
+        "requiredAction": "Accept the visible partial package.",
+        "resolution": "accepted-partial",
+    }
+
+
+def test_prepared_package_rejects_blocking_accepted_partial_exception(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(
+        package_dir, status="prepared", exception_items=[_accepted_partial_exception()]
+    )
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "partial-status-required" in report.errors
+
+
+def test_partial_accepted_exception_requires_current_exact_accept_partial_decision(
+    tmp_path,
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(
+        package_dir,
+        status="partially_prepared",
+        exception_items=[_accepted_partial_exception()],
+    )
+    _save_manifest(package_dir, manifest)
+
+    missing = _validate(package_dir)
+    assert "accept-partial-decision-missing" in missing.errors
+
+    manifest["decisions"].append(
+        {
+            "decisionId": "decision-accept-partial",
+            "proposalVersion": "1.0",
+            "type": "accept-partial",
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": ["exception-partial"],
+        }
+    )
+    _save_manifest(package_dir, manifest)
+
+    accepted = _validate(package_dir)
+    assert "accept-partial-decision-missing" not in accepted.errors
+    assert "partial-status-required" not in accepted.errors
+    assert "unassigned-page" in accepted.warnings
+
+
+def test_raw_unsupported_compatibility_target_has_a_stable_error(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["compatibilityTarget"] = "anything-that-mentions-v1"
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "compatibility-target-unsupported" in report.errors
+    assert _check(report, "compatibility-target-unsupported").evidence_refs == [
+        "anything-that-mentions-v1"
+    ]
+
+
+@pytest.mark.parametrize("page_count", [10_001, 1_000_000_000])
+def test_per_source_page_limit_rejects_without_unbounded_error_expansion(
+    tmp_path, page_count
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0]["pageCount"] = page_count
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "page-count-limit-exceeded" in report.errors
+    assert len(_check(report, "page-count-limit-exceeded").evidence_refs) <= 2
+    assert "page-coverage-missing" not in report.errors
+
+
+def test_aggregate_page_limit_rejects_without_materializing_declared_ranges(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0]["pageCount"] = 9_000
+    input_artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "input-pdf"
+    )
+    for index in (2, 3):
+        source_id = f"source-pdf-{index}"
+        manifest["sources"].append(
+            {
+                "sourceId": source_id,
+                "path": f"workspace/{source_id}.pdf",
+                "mediaType": "application/pdf",
+                "pageCount": 9_000,
+                "size": 1,
+                "sha256": f"{index}" * 64,
+                "coverageState": "assigned",
+            }
+        )
+        input_artifact["sourceIds"].append(source_id)
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "page-count-limit-exceeded" in report.errors
+    assert _check(report, "page-count-limit-exceeded").evidence_refs == [
+        "package#declared-pdf-pages=27000"
+    ]
+    assert "page-coverage-missing" not in report.errors
+
+
+def test_contradictory_declared_validation_report_is_rejected(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    contradictory = {
+        "schemaVersion": "1.0",
+        "outcome": "valid",
+        "packageStatus": "partially_prepared",
+        "checks": [{"code": "historical-error", "passed": False, "evidenceRefs": []}],
+        "errors": ["historical-error"],
+        "warnings": [],
+        "validatedAt": SYNTHETIC_TIMESTAMP,
+        "validatorVersion": "0.9.0",
+    }
+    _add_artifact(
+        package_dir,
+        manifest,
+        artifact_id="artifact-validation-report",
+        kind="validation-report",
+        filename="validation-report.json",
+        content=json.dumps(contradictory).encode(),
+    )
+
+    report = _validate(package_dir)
+
+    assert "validation-report-invalid" in report.errors
+
+
+def test_valid_report_lists_positive_checks_for_every_executed_gate(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "valid"
+    assert report.checks
+    assert all(check.passed for check in report.checks)
+    assert {"manifest-valid", "approval-valid", "coverage-valid"} <= {
+        check.code for check in report.checks
+    }
+
+
+@pytest.mark.parametrize("filename", ["cccd.xlsx", "cccd.pdf"])
+def test_cccd_artifact_requires_a_readable_xlsx_workbook(tmp_path, filename):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    cccd_path = package_dir / filename
+    cccd_path.write_bytes(b"not an xlsx workbook")
+    manifest["sources"].append(
+        {
+            "sourceId": "source-cccd",
+            "path": "workspace/cccd.xlsx",
+            "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": len(b"not an xlsx workbook"),
+            "sha256": hashlib.sha256(b"not an xlsx workbook").hexdigest(),
+            "coverageState": "assigned",
+        }
+    )
+    manifest["artifacts"].append(
+        _artifact("artifact-cccd", "cccd", cccd_path, ["source-cccd"])
+    )
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "cccd-unreadable" in report.errors
+
+
+def test_duck_typed_reader_cannot_override_internal_authority_check():
+    import intake_package_validator as validator
+
+    class DuckReader:
+        def __init__(self):
+            self.read_called = False
+
+        def has_secure_open_provenance(self):
+            return True
+
+        def read(self, *_args, **_kwargs):
+            self.read_called = True
+            pytest.fail("an unauthorized duck reader performed package I/O")
+
+    reader = DuckReader()
+
+    report = validator._validate_package_reader(reader)
+
+    assert report.errors == ["secure-open-unavailable"]
+    assert not reader.read_called
+
+
+def test_extreme_page_evidence_reference_is_bounded_and_reported_unknown(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["decisions"].append(
+        {
+            "decisionId": "decision-extreme-page-reference",
+            "proposalVersion": "1.0",
+            "type": "assign-page",
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": [f"source-pdf#page={'9' * 5_000}"],
+        }
+    )
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "evidence-reference-unknown" in report.errors
+    assert _check(report, "evidence-reference-unknown").evidence_refs == [
+        "decision-extreme-page-reference#evidence-ref=0"
     ]

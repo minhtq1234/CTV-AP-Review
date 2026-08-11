@@ -269,7 +269,11 @@ def test_validation_checks_reject_non_kebab_case_codes(code):
 def test_roster_mapping_is_canonical_to_source_and_exception_codes_are_exported():
     row = CanonicalRosterRow.model_validate({
         "rowId": "row-1",
-        "values": {"faCode": "FA-DEMO", "status": None},
+        "values": {
+            "name": "SUBJECT-ALPHA",
+            "identity": "SYNTHETIC-IDENTITY-A",
+            "faCode": "FA-DEMO",
+        },
     })
 
     manifest = PackageManifest.model_validate(_manifest(rosterMapping={
@@ -277,6 +281,123 @@ def test_roster_mapping_is_canonical_to_source_and_exception_codes_are_exported(
         "sheetName": "Roster",
         "canonicalToSourceColumns": {"faCode": "FA code"},
     }))
-    assert row.values["faCode"] == "FA-DEMO"
+    assert row.values.fa_code == "FA-DEMO"
     assert manifest.roster_mapping.canonical_to_source_columns["faCode"] == "FA code"
     assert EXCEPTION_CODES["unresolved-coverage"]
+
+
+def test_manifest_accepts_only_the_exact_v1_compatibility_target():
+    assert PackageManifest.model_validate(_manifest()).compatibility_target == "ctv-intake-v1"
+
+    with pytest.raises(ValidationError):
+        PackageManifest.model_validate(_manifest(compatibilityTarget="ctv-intake-v1-compatible"))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"identity": "SYNTHETIC-IDENTITY-A"},
+        {"name": "SUBJECT-ALPHA"},
+        {"name": "", "identity": "SYNTHETIC-IDENTITY-A"},
+        {"name": "SUBJECT-ALPHA", "identity": ""},
+        {
+            "name": "SUBJECT-ALPHA",
+            "identity": "SYNTHETIC-IDENTITY-A",
+            "arbitrary": "not-a-canonical-field",
+        },
+    ],
+)
+def test_canonical_roster_values_require_typed_name_and_identity(values):
+    with pytest.raises(ValidationError):
+        CanonicalRosterRow.model_validate({"rowId": "row-1", "values": values})
+
+
+def test_canonical_roster_values_accept_the_bounded_v1_field_set():
+    row = CanonicalRosterRow.model_validate({
+        "rowId": "row-1",
+        "values": {
+            "name": "SUBJECT-ALPHA",
+            "identity": "SYNTHETIC-IDENTITY-A",
+            "faCode": "FA-SYNTH-001",
+            "taxId": None,
+            "birthDate": None,
+            "bankAccount": None,
+            "serviceFee": None,
+            "product": None,
+        },
+    })
+
+    assert row.values.name == "SUBJECT-ALPHA"
+    assert row.values.identity == "SYNTHETIC-IDENTITY-A"
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {
+            "schemaVersion": "1.0",
+            "outcome": "valid",
+            "packageStatus": "partially_prepared",
+            "checks": [{"code": "gate", "passed": False, "evidenceRefs": []}],
+            "errors": ["gate"],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        },
+        {
+            "schemaVersion": "1.0",
+            "outcome": "invalid",
+            "packageStatus": "partially_prepared",
+            "checks": [],
+            "errors": [],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        },
+        {
+            "schemaVersion": "1.0",
+            "outcome": "invalid",
+            "packageStatus": "partially_prepared",
+            "checks": [
+                {"code": "gate", "passed": False, "evidenceRefs": []},
+                {"code": "gate", "passed": False, "evidenceRefs": []},
+            ],
+            "errors": ["gate"],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        },
+        {
+            "schemaVersion": "1.0",
+            "outcome": "invalid",
+            "packageStatus": "partially_prepared",
+            "checks": [{"code": "other-gate", "passed": False, "evidenceRefs": []}],
+            "errors": ["gate"],
+            "warnings": [],
+            "validatedAt": "2026-08-11T00:00:00Z",
+            "validatorVersion": "1.0",
+        },
+    ],
+)
+def test_validation_report_rejects_contradictory_outcomes_and_checks(report):
+    with pytest.raises(ValidationError):
+        ValidationReport.model_validate(report)
+
+
+def test_validation_report_accepts_positive_executed_checks_for_a_valid_result():
+    report = ValidationReport.model_validate({
+        "schemaVersion": "1.0",
+        "outcome": "valid",
+        "packageStatus": "prepared",
+        "checks": [
+            {"code": "manifest-valid", "passed": True, "evidenceRefs": ["case-manifest.json"]},
+            {"code": "coverage-valid", "passed": True, "evidenceRefs": ["source-pdf"]},
+        ],
+        "errors": [],
+        "warnings": [],
+        "validatedAt": "2026-08-11T00:00:00Z",
+        "validatorVersion": "1.0",
+    })
+
+    assert report.outcome == "valid"
+    assert all(check.passed for check in report.checks)
