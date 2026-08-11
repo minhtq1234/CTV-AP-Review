@@ -42,12 +42,42 @@ _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _NO_FOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _NON_BLOCKING = getattr(os, "O_NONBLOCK", 0)
 _SUPPORTS_SECURE_RELATIVE_OPEN = os.open in os.supports_dir_fd and bool(_NO_FOLLOW)
+_PACKAGE_READER_FACTORY_TOKEN = object()
+_SECURE_OPEN_PROVENANCE = object()
 
 
-@dataclass
 class _PackageReader:
-    root_path: Path
-    root_fd: int | None
+    """A package root proven to have been opened by the secure factory."""
+
+    __slots__ = (
+        "root_path",
+        "__root_fd",
+        "__root_identity",
+        "__secure_open_provenance",
+    )
+
+    def __init__(
+        self,
+        root_path: Path,
+        root_fd: int,
+        *,
+        _factory_token: object,
+    ) -> None:
+        if _factory_token is not _PACKAGE_READER_FACTORY_TOKEN:
+            raise TypeError("_PackageReader instances must be created by open()")
+        metadata = os.fstat(root_fd)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("package root descriptor is not a directory")
+        self.root_path = root_path
+        self.__root_fd: int | None = root_fd
+        self.__root_identity = (metadata.st_dev, metadata.st_ino)
+        self.__secure_open_provenance = _SECURE_OPEN_PROVENANCE
+
+    @property
+    def root_fd(self) -> int | None:
+        if not self.has_secure_open_provenance():
+            return None
+        return getattr(self, "_PackageReader__root_fd", None)
 
     @classmethod
     def open(cls, package_dir: Path) -> tuple["_PackageReader | None", str | None]:
@@ -62,18 +92,44 @@ class _PackageReader:
         except OSError:
             return None, "symlink" if root_path.is_symlink() else "missing"
         try:
-            if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
-                os.close(root_fd)
-                return None, "missing"
-        except OSError:
+            reader = cls(
+                root_path=root_path,
+                root_fd=root_fd,
+                _factory_token=_PACKAGE_READER_FACTORY_TOKEN,
+            )
+        except (OSError, ValueError):
             os.close(root_fd)
             return None, "missing"
-        return cls(root_path=root_path, root_fd=root_fd), None
+        return reader, None
+
+    def has_secure_open_provenance(self) -> bool:
+        provenance = getattr(
+            self,
+            "_PackageReader__secure_open_provenance",
+            None,
+        )
+        descriptor = getattr(self, "_PackageReader__root_fd", None)
+        if (
+            provenance is not _SECURE_OPEN_PROVENANCE
+            or not _SUPPORTS_SECURE_RELATIVE_OPEN
+            or descriptor is None
+        ):
+            return False
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino)
+            == getattr(self, "_PackageReader__root_identity", None)
+        )
 
     def close(self) -> None:
-        if self.root_fd is not None:
-            os.close(self.root_fd)
-            self.root_fd = None
+        descriptor = getattr(self, "_PackageReader__root_fd", None)
+        if descriptor is not None:
+            self.__root_fd = None
+            os.close(descriptor)
 
     def read(
         self,
@@ -82,13 +138,16 @@ class _PackageReader:
         expected_size: int | None = None,
         max_bytes: int,
     ) -> tuple[bytes | None, str | None]:
+        if not self.has_secure_open_provenance():
+            return None, "secure-open-unavailable"
         parts = _relative_path_parts(declared_path)
         if parts is None:
             return None, "unsafe"
-        if self.root_fd is None:
+        root_fd = self.__root_fd
+        if root_fd is None:
             return None, "secure-open-unavailable"
         return _read_relative_to_fd(
-            self.root_fd,
+            root_fd,
             parts,
             expected_size=expected_size,
             max_bytes=max_bytes,
@@ -236,7 +295,7 @@ def _report_package_root_failure(root_failure: str | None) -> ValidationReport:
 
 def _validate_package_reader(reader: _PackageReader) -> ValidationReport:
     """Validate through a caller-owned open reader without closing it."""
-    if reader.root_fd is None:
+    if not reader.has_secure_open_provenance():
         return _report_package_root_failure("secure-open-unavailable")
     return _validate_open_package(reader, _Issues())
 

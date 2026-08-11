@@ -909,6 +909,84 @@ def test_internal_open_reader_validation_uses_and_does_not_close_owned_descripto
     assert reader.root_fd is None
 
 
+def test_package_reader_rejects_direct_construction_with_an_arbitrary_descriptor(
+    tmp_path,
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    descriptor = os.open(package_dir, os.O_RDONLY)
+    try:
+        with pytest.raises(TypeError):
+            validator._PackageReader(root_path=package_dir, root_fd=descriptor)
+
+        assert os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def test_fabricated_package_reader_fails_closed_without_artifact_io(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    fabricated = object.__new__(validator._PackageReader)
+    fabricated.root_path = package_dir
+
+    def reject_artifact_io(*_args, **_kwargs):
+        pytest.fail("artifact I/O was attempted through a fabricated reader")
+
+    monkeypatch.setattr(validator, "_read_relative_to_fd", reject_artifact_io)
+
+    report = validator._validate_package_reader(fabricated)
+
+    assert report.errors == ["secure-open-unavailable"]
+    assert _check(report, "secure-open-unavailable").evidence_refs == ["package-root"]
+
+
+def test_open_reader_fails_closed_if_secure_capability_changes_without_io(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    reader, failure = validator._PackageReader.open(package_dir)
+    assert failure is None
+    assert reader is not None
+    descriptor = reader.root_fd
+    assert descriptor is not None
+
+    def reject_artifact_io(*_args, **_kwargs):
+        pytest.fail("artifact I/O was attempted after secure capability changed")
+
+    def reject_parser(*_args, **_kwargs):
+        pytest.fail("an artifact parser ran after secure capability changed")
+
+    monkeypatch.setattr(validator, "_SUPPORTS_SECURE_RELATIVE_OPEN", False)
+    monkeypatch.setattr(validator, "_read_relative_to_fd", reject_artifact_io)
+    monkeypatch.setattr(validator.fitz, "open", reject_parser)
+    monkeypatch.setattr(validator.openpyxl, "load_workbook", reject_parser)
+
+    try:
+        assert reader.root_fd is None
+        report = validator._validate_package_reader(reader)
+
+        assert report.errors == ["secure-open-unavailable"]
+        assert _check(report, "secure-open-unavailable").evidence_refs == [
+            "package-root"
+        ]
+        assert os.fstat(descriptor)
+    finally:
+        reader.close()
+
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
 def test_validation_fails_closed_when_secure_relative_open_is_unavailable(
     tmp_path, monkeypatch
 ):
