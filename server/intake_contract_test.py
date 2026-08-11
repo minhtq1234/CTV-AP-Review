@@ -9,6 +9,7 @@ from intake_contract import (
     CoverageState,
     DecisionType,
     EXCEPTION_CODES,
+    ExceptionItem,
     ExceptionResolution,
     ExceptionSeverity,
     ExceptionsDocument,
@@ -157,6 +158,20 @@ def test_exceptions_document_rejects_duplicate_exception_ids():
         ExceptionsDocument.model_validate({"schemaVersion": "1.0", "items": [item, item]})
 
 
+def test_exception_item_accepts_the_append_only_unassigned_page_code():
+    item = ExceptionItem.model_validate({
+        "exceptionId": "exception-unassigned-page",
+        "code": "unassigned-page",
+        "severity": "blocking",
+        "evidenceRefs": ["source-synthetic-pdf#page=2"],
+        "explanation": "A synthetic page is not assigned.",
+        "requiredAction": "Assign or explicitly exclude the page.",
+        "resolution": "open",
+    })
+
+    assert item.code == "unassigned-page"
+
+
 def test_manifest_rejects_duplicate_exception_references():
     with pytest.raises(ValidationError):
         PackageManifest.model_validate(_manifest(exceptionIds=["exception-1", "exception-1"]))
@@ -218,7 +233,7 @@ def test_exception_codes_and_validation_checks_use_lowercase_kebab_case():
     assert set(EXCEPTION_CODES) == {
         "artifact-outside-package", "blocking-exception", "duplicate-id",
         "malformed-sha256", "path-not-workspace-relative",
-        "unresolved-coverage", "zero-based-page",
+        "unassigned-page", "unresolved-coverage", "zero-based-page",
     }
 
 

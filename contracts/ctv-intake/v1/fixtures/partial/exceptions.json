@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "items": [
+    {
+      "exceptionId": "exception-unassigned-page",
+      "code": "unassigned-page",
+      "severity": "blocking",
+      "evidenceRefs": ["source-synthetic-pdf#page=2"],
+      "explanation": "Synthetic PDF page 2 remains unassigned.",
+      "requiredAction": "Assign or explicitly exclude synthetic PDF page 2.",
+      "resolution": "open"
+    }
+  ]
+}

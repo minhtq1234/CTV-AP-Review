@@ -35,6 +35,7 @@ EXCEPTION_CODES = {
     "duplicate-id": "A document contains duplicate stable identifiers.",
     "malformed-sha256": "A SHA-256 value is malformed.",
     "path-not-workspace-relative": "A path is not workspace-relative.",
+    "unassigned-page": "A PDF page is not assigned to package coverage.",
     "unresolved-coverage": "Coverage remains unresolved.",
     "zero-based-page": "A PDF page number must be one-based.",
 }

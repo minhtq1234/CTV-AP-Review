@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0",
+  "batchId": "batch-synthetic-invalid",
+  "caseId": "case-synthetic-invalid-hidden-page",
+  "faCode": "FA-SYNTH-001",
+  "packageVersion": "1.0",
+  "status": "prepared",
+  "compatibilityTarget": "ctv-intake-v1",
+  "sources": [
+    {
+      "sourceId": "source-synthetic-pdf",
+      "path": "workspace/synthetic-input.pdf",
+      "mediaType": "application/pdf",
+      "size": 0,
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "coverageState": "assigned"
+    },
+    {
+      "sourceId": "source-synthetic-roster",
+      "path": "workspace/synthetic-roster.xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 0,
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "coverageState": "assigned"
+    }
+  ],
+  "pdfPages": [
+    {"sourceId": "source-synthetic-pdf", "sourcePage": 1, "coverageState": "assigned", "targetPage": 1}
+  ],
+  "artifacts": [],
+  "rosterMapping": {
+    "sourceId": "source-synthetic-roster",
+    "sheetName": "Roster",
+    "canonicalToSourceColumns": {"faCode": "FA code"}
+  },
+  "decisions": [],
+  "exceptionIds": [],
+  "validatedAt": "2026-08-11T00:00:00Z",
+  "validatorVersion": "1.0"
+}
