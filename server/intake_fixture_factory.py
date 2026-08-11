@@ -49,20 +49,22 @@ def materialize_fixture(name: str, output: Path) -> MaterializedFixture:
 
 
 def validate_materialized_fixture(fixture: MaterializedFixture) -> None:
-    """Ensure every generated PDF page is represented by fixture coverage."""
+    """Ensure every declared source PDF page is represented by fixture coverage."""
     pdf_sources = [
         source for source in fixture.manifest.sources
         if source.media_type == "application/pdf"
     ]
-    with fitz.open(fixture.input_pdf) as document:
-        uncovered_pages = [
-            (source.source_id, page_number)
-            for source in pdf_sources
-            for page_number in range(1, document.page_count + 1)
-            if not _page_is_covered(fixture.manifest, source.source_id, page_number)
-        ]
+    uncovered_pages = [
+        (source.source_id, page_number)
+        for source in pdf_sources
+        for page_number in range(1, (source.page_count or 0) + 1)
+        if not _page_is_covered(fixture.manifest, source.source_id, page_number)
+    ]
+    missing_page_counts = [
+        source.source_id for source in pdf_sources if source.page_count is None
+    ]
 
-    if not uncovered_pages:
+    if not uncovered_pages and not missing_page_counts:
         return
     if fixture.manifest.status == "prepared":
         raise FixtureValidationError("unassigned-page")

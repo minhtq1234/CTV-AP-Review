@@ -87,6 +87,7 @@ def _write_package(
                 "sourceId": "source-pdf",
                 "path": "workspace/source.pdf",
                 "mediaType": "application/pdf",
+                "pageCount": 2,
                 "size": pdf_path.stat().st_size,
                 "sha256": _sha256(pdf_path),
                 "coverageState": "assigned",
@@ -148,6 +149,40 @@ def _refresh_artifact(package_dir: Path, manifest: dict, kind: str) -> None:
     artifact["size"] = path.stat().st_size
     artifact["sha256"] = _sha256(path)
     _save_manifest(package_dir, manifest)
+
+
+def _add_artifact(
+    package_dir: Path,
+    manifest: dict,
+    *,
+    artifact_id: str,
+    kind: str,
+    filename: str,
+    content: bytes,
+) -> None:
+    path = package_dir / filename
+    path.write_bytes(content)
+    manifest["artifacts"].append(_artifact(artifact_id, kind, path, []))
+    _save_manifest(package_dir, manifest)
+
+
+def _historical_validation_report() -> dict:
+    return {
+        "schemaVersion": "1.0",
+        "outcome": "invalid",
+        "packageStatus": "partially_prepared",
+        "checks": [
+            {
+                "code": "historical-check",
+                "passed": False,
+                "evidenceRefs": ["historical-synthetic-evidence"],
+            }
+        ],
+        "errors": ["historical-check"],
+        "warnings": [],
+        "validatedAt": SYNTHETIC_TIMESTAMP,
+        "validatorVersion": "0.9.0",
+    }
 
 
 def _validate(package_dir: Path):
@@ -213,7 +248,7 @@ def test_missing_and_extra_pdf_page_coverage_are_reported(tmp_path):
             "sourceId": "source-pdf",
             "sourcePage": 3,
             "coverageState": "assigned",
-            "targetPage": 3,
+            "targetPage": 2,
         },
     ]
     _save_manifest(package_dir, manifest)
@@ -228,6 +263,78 @@ def test_missing_and_extra_pdf_page_coverage_are_reported(tmp_path):
     assert _check(report, "page-coverage-extra").evidence_refs == [
         "source-pdf#page=3"
     ]
+
+
+def test_pdf_source_requires_a_declared_page_count(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0].pop("pageCount")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "page-coverage-missing" in report.errors
+    assert _check(report, "page-coverage-missing").evidence_refs == [
+        "source-pdf#page-count"
+    ]
+
+
+def test_each_pdf_source_uses_its_own_page_count_in_a_merged_input_pdf(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    _write_pdf(package_dir / "input.pdf", page_count=3)
+    _refresh_artifact(package_dir, manifest, "input-pdf")
+    manifest["sources"].append(
+        {
+            "sourceId": "source-pdf-secondary",
+            "path": "workspace/source-secondary.pdf",
+            "mediaType": "application/pdf",
+            "pageCount": 1,
+            "size": 1,
+            "sha256": "e" * 64,
+            "coverageState": "assigned",
+        }
+    )
+    input_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "input-pdf"
+    )
+    input_artifact["sourceIds"].append("source-pdf-secondary")
+    manifest["pdfPages"].append(
+        {
+            "sourceId": "source-pdf-secondary",
+            "sourcePage": 1,
+            "coverageState": "assigned",
+            "targetPage": 3,
+        }
+    )
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert report.outcome == "valid"
+    assert report.errors == []
+
+
+@pytest.mark.parametrize(
+    ("target_pages", "missing_evidence", "extra_evidence"),
+    [
+        ((1, 1), "artifact-pdf#target-page=2", "artifact-pdf#target-page=1"),
+        ((1, 3), "artifact-pdf#target-page=2", "artifact-pdf#target-page=3"),
+    ],
+)
+def test_derived_pdf_target_pages_must_be_covered_exactly_once(
+    tmp_path, target_pages, missing_evidence, extra_evidence
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    for page, target_page in zip(manifest["pdfPages"], target_pages, strict=True):
+        page["targetPage"] = target_page
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert missing_evidence in _check(report, "page-coverage-missing").evidence_refs
+    assert extra_evidence in _check(report, "page-coverage-extra").evidence_refs
 
 
 def test_unknown_source_decision_exception_and_evidence_references_are_rejected(tmp_path):
@@ -255,11 +362,36 @@ def test_unknown_source_decision_exception_and_evidence_references_are_rejected(
     assert "decision-reference-unknown" in report.errors
     assert "exception-reference-unknown" in report.errors
     assert _check(report, "source-reference-unknown").evidence_refs == [
-        "artifact-unknown",
         "source-artifact-unknown",
-        "source-pdf#page=99",
         "source-unknown",
     ]
+    assert "evidence-reference-unknown" in report.errors
+    assert _check(report, "evidence-reference-unknown").evidence_refs == [
+        "artifact-unknown",
+        "source-pdf#page=99",
+    ]
+
+
+def test_evidence_can_reference_an_authoritative_source_page_missing_coverage(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["pdfPages"] = [manifest["pdfPages"][0]]
+    manifest["decisions"] = [
+        {
+            "decisionId": "decision-missing-coverage",
+            "proposalVersion": "1.0",
+            "type": "assign-page",
+            "actor": "user",
+            "timestamp": SYNTHETIC_TIMESTAMP,
+            "evidenceRefs": ["source-pdf#page=2"],
+        }
+    ]
+    _save_manifest(package_dir, manifest)
+
+    report = _validate(package_dir)
+
+    assert "page-coverage-missing" in report.errors
+    assert "evidence-reference-unknown" not in report.errors
 
 
 def test_unreadable_pdf_and_roster_are_reported_as_independent_sibling_failures(tmp_path):
@@ -374,6 +506,76 @@ def test_prepared_package_allows_an_open_warning_only_exception(tmp_path):
     assert report.warnings == ["artifact-outside-package"]
 
 
+@pytest.mark.parametrize(
+    ("failure", "artifact_error"),
+    [
+        ("missing", "artifact-missing"),
+        ("malformed", "exceptions-invalid"),
+        ("metadata-mismatch", "artifact-digest-mismatch"),
+    ],
+)
+def test_manifest_exception_ids_remain_unknown_when_exceptions_are_unusable(
+    tmp_path, failure, artifact_error
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(
+        package_dir,
+        exception_items=[
+            {
+                "exceptionId": "exception-synthetic-unresolved",
+                "code": "unassigned-page",
+                "severity": "blocking",
+                "evidenceRefs": ["source-pdf#page=2"],
+                "explanation": "Synthetic exception document failure.",
+                "requiredAction": "Restore the synthetic exception document.",
+                "resolution": "open",
+            }
+        ],
+    )
+    exceptions_path = package_dir / "exceptions.json"
+    if failure == "missing":
+        exceptions_path.unlink()
+    elif failure == "malformed":
+        exceptions_path.write_bytes(b"{")
+        _refresh_artifact(package_dir, manifest, "exceptions")
+    else:
+        exceptions_path.write_bytes(b"{}")
+
+    report = _validate(package_dir)
+
+    assert artifact_error in report.errors
+    assert "exception-reference-unknown" in report.errors
+    assert _check(report, "exception-reference-unknown").evidence_refs == [
+        "exception-synthetic-unresolved"
+    ]
+
+
+@pytest.mark.parametrize("valid_document", [True, False])
+def test_declared_validation_report_is_parsed_but_never_used_as_current_output(
+    tmp_path, valid_document
+):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    document = _historical_validation_report()
+    if not valid_document:
+        document["schemaVersion"] = "invalid"
+    _add_artifact(
+        package_dir,
+        manifest,
+        artifact_id="artifact-validation-report",
+        kind="validation-report",
+        filename="historical-validation-report.json",
+        content=json.dumps(document).encode("utf-8"),
+    )
+
+    report = _validate(package_dir)
+
+    assert ("validation-report-invalid" in report.errors) is not valid_document
+    if valid_document:
+        assert report.outcome == "valid"
+        assert report.errors == []
+
+
 def test_blocking_exception_and_unresolved_coverage_are_rejected(tmp_path):
     package_dir = tmp_path / "package"
     manifest = _write_package(
@@ -432,6 +634,78 @@ def test_symlinked_artifact_is_rejected_before_file_parsing(tmp_path):
 
     assert "symlink-not-allowed" in report.errors
     assert "pdf-unreadable" not in report.errors
+
+
+def test_symlinked_package_root_uses_private_synthetic_evidence(tmp_path):
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    package_alias = tmp_path / "package-alias"
+    package_alias.symlink_to(package_dir, target_is_directory=True)
+
+    report = _validate(package_alias)
+
+    assert "symlink-not-allowed" in report.errors
+    assert _check(report, "symlink-not-allowed").evidence_refs == ["package-root"]
+
+
+def test_pdf_parser_uses_the_same_opened_bytes_that_were_digest_checked(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    pdf_path = package_dir / "input.pdf"
+    replacement = tmp_path / "replacement.pdf"
+    replacement.write_bytes(b"not a pdf")
+    real_open = validator.fitz.open
+    swapped = False
+
+    def swap_path_before_real_parse(*args, **kwargs):
+        nonlocal swapped
+        if not swapped:
+            replacement.replace(pdf_path)
+            swapped = True
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(validator.fitz, "open", swap_path_before_real_parse)
+
+    report = validator.validate_package(package_dir)
+
+    assert swapped
+    assert report.outcome == "valid"
+    assert "pdf-unreadable" not in report.errors
+
+
+def test_roster_parser_uses_the_same_opened_bytes_that_were_preflighted(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    _write_package(package_dir)
+    roster_path = package_dir / "roster.xlsx"
+    replacement = tmp_path / "replacement.xlsx"
+    replacement.write_bytes(b"not a workbook")
+    real_load_workbook = validator.openpyxl.load_workbook
+    swapped = False
+
+    def swap_path_before_real_parse(*args, **kwargs):
+        nonlocal swapped
+        if not swapped:
+            replacement.replace(roster_path)
+            swapped = True
+        return real_load_workbook(*args, **kwargs)
+
+    monkeypatch.setattr(
+        validator.openpyxl, "load_workbook", swap_path_before_real_parse
+    )
+
+    report = validator.validate_package(package_dir)
+
+    assert swapped
+    assert report.outcome == "valid"
+    assert "roster-unreadable" not in report.errors
 
 
 @pytest.mark.parametrize("declared_path", ["../outside.pdf", "bad\x00.pdf"])

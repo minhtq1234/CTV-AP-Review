@@ -11,6 +11,7 @@
       "sourceId": "source-synthetic-pdf",
       "path": "workspace/synthetic-input.pdf",
       "mediaType": "application/pdf",
+      "pageCount": 2,
       "size": 0,
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "coverageState": "assigned"

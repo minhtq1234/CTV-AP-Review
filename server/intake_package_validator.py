@@ -5,23 +5,153 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
-from typing import Iterable
+import stat
 
 import fitz
 import openpyxl
 from pydantic import ValidationError
 
 from intake_contract import ExceptionsDocument, PackageManifest, ValidationCheck, ValidationReport
-from roster_workbook import RosterWorkbookError, preflight_roster_workbook
+from roster_workbook import preflight_roster_workbook
 
 
 VALIDATOR_VERSION = "1.0.0"
 _MANIFEST_NAME = "case-manifest.json"
 _REQUIRED_ARTIFACT_KINDS = frozenset({"input-pdf", "roster", "exceptions"})
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_CLOSE_ON_EXEC = getattr(os, "O_CLOEXEC", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_NO_FOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NON_BLOCKING = getattr(os, "O_NONBLOCK", 0)
+_SUPPORTS_SECURE_RELATIVE_OPEN = os.open in os.supports_dir_fd and bool(_NO_FOLLOW)
+
+
+@dataclass
+class _PackageReader:
+    root_path: Path
+    root_fd: int | None
+
+    @classmethod
+    def open(cls, package_dir: Path) -> tuple["_PackageReader | None", str | None]:
+        root_path = Path(package_dir)
+        if _SUPPORTS_SECURE_RELATIVE_OPEN:
+            try:
+                root_fd = os.open(
+                    root_path,
+                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+                )
+            except OSError:
+                return None, "symlink" if root_path.is_symlink() else "missing"
+            try:
+                if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                    os.close(root_fd)
+                    return None, "missing"
+            except OSError:
+                os.close(root_fd)
+                return None, "missing"
+            return cls(root_path=root_path, root_fd=root_fd), None
+
+        if root_path.is_symlink():
+            return None, "symlink"
+        if not root_path.is_dir():
+            return None, "missing"
+        return cls(root_path=root_path.resolve(), root_fd=None), None
+
+    def close(self) -> None:
+        if self.root_fd is not None:
+            os.close(self.root_fd)
+            self.root_fd = None
+
+    def read(self, declared_path: str) -> tuple[bytes | None, str | None]:
+        parts = _relative_path_parts(declared_path)
+        if parts is None:
+            return None, "unsafe"
+        if self.root_fd is not None:
+            return _read_relative_to_fd(self.root_fd, parts)
+        return _read_relative_fallback(self.root_path, parts)
+
+
+def _relative_path_parts(declared_path: str) -> tuple[str, ...] | None:
+    parts = declared_path.split("/")
+    pure_path = PurePosixPath(declared_path)
+    if (
+        not declared_path
+        or "\x00" in declared_path
+        or pure_path.is_absolute()
+        or _WINDOWS_ABSOLUTE_PATH_RE.match(declared_path)
+        or "\\" in declared_path
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        return None
+    return tuple(parts)
+
+
+def _read_relative_to_fd(
+    root_fd: int, parts: tuple[str, ...]
+) -> tuple[bytes | None, str | None]:
+    parent_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            try:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except OSError:
+                return None, "symlink" if _is_symlink_at(parent_fd, part) else "missing"
+            os.close(parent_fd)
+            parent_fd = child_fd
+
+        try:
+            file_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | _CLOSE_ON_EXEC | _NO_FOLLOW | _NON_BLOCKING,
+                dir_fd=parent_fd,
+            )
+        except OSError:
+            return None, "symlink" if _is_symlink_at(parent_fd, parts[-1]) else "missing"
+        try:
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                return None, "not-regular"
+            with os.fdopen(file_fd, "rb", closefd=False) as stream:
+                return stream.read(), None
+        except OSError:
+            return None, "missing"
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _is_symlink_at(parent_fd: int, name: str) -> bool:
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISLNK(metadata.st_mode)
+
+
+def _read_relative_fallback(
+    root_path: Path, parts: tuple[str, ...]
+) -> tuple[bytes | None, str | None]:
+    candidate = root_path
+    for part in parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            return None, "symlink"
+    try:
+        with candidate.open("rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None, "not-regular"
+            return stream.read(), None
+    except OSError:
+        return None, "missing"
 
 
 @dataclass
@@ -66,28 +196,35 @@ class _Issues:
 
 def validate_package(package_dir: Path) -> ValidationReport:
     """Validate one package without modifying the package or its artifacts."""
-    package_root = Path(package_dir)
     issues = _Issues()
-    if package_root.is_symlink():
-        issues.error("symlink-not-allowed", str(package_root))
+    reader, root_failure = _PackageReader.open(Path(package_dir))
+    if root_failure == "symlink":
+        issues.error("symlink-not-allowed", "package-root")
         return issues.report(None)
-    if not package_root.is_dir():
+    if reader is None:
         issues.error("manifest-invalid", _MANIFEST_NAME)
         return issues.report(None)
+    try:
+        return _validate_open_package(reader, issues)
+    finally:
+        reader.close()
 
-    package_root = package_root.resolve()
-    manifest_path = package_root / _MANIFEST_NAME
-    if manifest_path.is_symlink():
+
+def _validate_open_package(reader: _PackageReader, issues: _Issues) -> ValidationReport:
+    manifest_content, manifest_failure = reader.read(_MANIFEST_NAME)
+    if manifest_failure == "symlink":
         issues.error("symlink-not-allowed", _MANIFEST_NAME)
         return issues.report(None)
-
+    if manifest_content is None:
+        issues.error("manifest-invalid", _MANIFEST_NAME)
+        return issues.report(None)
     try:
-        raw_manifest = _read_json(manifest_path)
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        raw_manifest = _read_json_bytes(manifest_content)
+    except (UnicodeError, json.JSONDecodeError):
         issues.error("manifest-invalid", _MANIFEST_NAME)
         return issues.report(None)
 
-    _inspect_raw_artifact_paths(package_root, raw_manifest, issues)
+    _inspect_raw_artifact_paths(raw_manifest, issues)
     _inspect_raw_unresolved_coverage(raw_manifest, issues)
     try:
         manifest = PackageManifest.model_validate(raw_manifest)
@@ -109,57 +246,51 @@ def validate_package(package_dir: Path) -> ValidationReport:
                 )),
             )
 
-    usable_artifacts: dict[str, Path] = {}
+    usable_artifacts: dict[str, bytes] = {}
     for artifact in sorted(manifest.artifacts, key=lambda item: item.artifact_id):
-        path = _safe_artifact_path(
-            package_root, artifact.path, artifact.artifact_id, issues
-        )
-        if path is None:
+        content, failure = reader.read(artifact.path)
+        if failure == "unsafe":
+            issues.error("unsafe-artifact-path", artifact.artifact_id)
             continue
-        if not path.is_file():
+        if failure == "symlink":
+            issues.error("symlink-not-allowed", artifact.artifact_id)
+            continue
+        if content is None:
             issues.error("artifact-missing", artifact.artifact_id)
             continue
-        try:
-            actual_size = path.stat().st_size
-        except OSError:
-            issues.error("artifact-missing", artifact.artifact_id)
-            continue
-        size_matches = actual_size == artifact.size
+        size_matches = len(content) == artifact.size
         if not size_matches:
             issues.error("artifact-size-mismatch", artifact.artifact_id)
-        try:
-            digest_matches = _sha256(path) == artifact.sha256
-        except OSError:
-            issues.error("artifact-missing", artifact.artifact_id)
-            continue
+        digest_matches = hashlib.sha256(content).hexdigest() == artifact.sha256
         if not digest_matches:
             issues.error("artifact-digest-mismatch", artifact.artifact_id)
         if size_matches and digest_matches:
-            usable_artifacts[artifact.artifact_id] = path
+            usable_artifacts[artifact.artifact_id] = content
 
     exceptions = _load_exceptions(
         manifest, artifacts_by_kind, usable_artifacts, issues
     )
-    pdf_page_counts = _inspect_pdfs(
-        manifest, artifacts_by_kind, usable_artifacts, issues
+    derived_pdf_page_counts = _inspect_pdfs(
+        artifacts_by_kind, usable_artifacts, issues
     )
     _inspect_rosters(
         manifest, artifacts_by_kind, usable_artifacts, issues
     )
+    _inspect_validation_reports(artifacts_by_kind, usable_artifacts, issues)
     _check_references(manifest, exceptions, issues)
-    _check_pdf_coverage(manifest, pdf_page_counts, issues)
+    _check_pdf_coverage(
+        manifest, artifacts_by_kind, derived_pdf_page_counts, issues
+    )
     _check_exceptions(manifest, exceptions, issues)
     _check_unresolved_coverage(manifest, issues)
     return issues.report(manifest)
 
 
-def _read_json(path: Path) -> object:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _read_json_bytes(content: bytes) -> object:
+    return json.loads(content.decode("utf-8"))
 
 
-def _inspect_raw_artifact_paths(
-    package_root: Path, raw_manifest: object, issues: _Issues
-) -> None:
+def _inspect_raw_artifact_paths(raw_manifest: object, issues: _Issues) -> None:
     if not isinstance(raw_manifest, dict):
         return
     artifacts = raw_manifest.get("artifacts")
@@ -175,7 +306,8 @@ def _inspect_raw_artifact_paths(
         if not isinstance(path, str):
             issues.error("unsafe-artifact-path", evidence)
             continue
-        _safe_artifact_path(package_root, path, evidence, issues)
+        if _relative_path_parts(path) is None:
+            issues.error("unsafe-artifact-path", evidence)
 
 
 def _inspect_raw_unresolved_coverage(raw_manifest: object, issues: _Issues) -> None:
@@ -204,63 +336,24 @@ def _inspect_raw_unresolved_coverage(raw_manifest: object, issues: _Issues) -> N
             issues.error("unresolved-coverage", evidence)
 
 
-def _safe_artifact_path(
-    package_root: Path,
-    declared_path: str,
-    evidence_ref: str,
-    issues: _Issues,
-) -> Path | None:
-    parts = declared_path.split("/")
-    pure_path = PurePosixPath(declared_path)
-    if (
-        not declared_path
-        or pure_path.is_absolute()
-        or _WINDOWS_ABSOLUTE_PATH_RE.match(declared_path)
-        or "\\" in declared_path
-        or any(part in {"", ".", ".."} for part in parts)
-    ):
-        issues.error("unsafe-artifact-path", evidence_ref)
-        return None
-
-    candidate = package_root.joinpath(*parts)
-    current = package_root
-    for part in parts:
-        current = current / part
-        if current.is_symlink():
-            issues.error("symlink-not-allowed", evidence_ref)
-            return None
-    try:
-        candidate.resolve(strict=False).relative_to(package_root)
-    except (OSError, ValueError):
-        issues.error("unsafe-artifact-path", evidence_ref)
-        return None
-    return candidate
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _load_exceptions(
     manifest: PackageManifest,
     artifacts_by_kind: dict[str, list],
-    usable_artifacts: dict[str, Path],
+    usable_artifacts: dict[str, bytes],
     issues: _Issues,
 ) -> ExceptionsDocument | None:
     documents: list[ExceptionsDocument] = []
     for artifact in sorted(
         artifacts_by_kind.get("exceptions", []), key=lambda item: item.artifact_id
     ):
-        path = usable_artifacts.get(artifact.artifact_id)
-        if path is None:
+        content = usable_artifacts.get(artifact.artifact_id)
+        if content is None:
             continue
         try:
-            documents.append(ExceptionsDocument.model_validate(_read_json(path)))
-        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+            documents.append(
+                ExceptionsDocument.model_validate(_read_json_bytes(content))
+            )
+        except (UnicodeError, json.JSONDecodeError, ValidationError):
             issues.error("exceptions-invalid", artifact.artifact_id)
     if not documents:
         return None
@@ -278,25 +371,19 @@ def _load_exceptions(
 
 
 def _inspect_pdfs(
-    manifest: PackageManifest,
     artifacts_by_kind: dict[str, list],
-    usable_artifacts: dict[str, Path],
+    usable_artifacts: dict[str, bytes],
     issues: _Issues,
 ) -> dict[str, int]:
-    source_ids = {
-        source.source_id
-        for source in manifest.sources
-        if source.media_type == "application/pdf"
-    }
     page_counts: dict[str, int] = {}
     for artifact in sorted(
         artifacts_by_kind.get("input-pdf", []), key=lambda item: item.artifact_id
     ):
-        path = usable_artifacts.get(artifact.artifact_id)
-        if path is None:
+        content = usable_artifacts.get(artifact.artifact_id)
+        if content is None:
             continue
         try:
-            with fitz.open(path) as document:
+            with fitz.open(stream=content, filetype="pdf") as document:
                 if not document.is_pdf or document.needs_pass:
                     raise ValueError("PDF is encrypted or has the wrong format")
                 page_count = document.page_count
@@ -305,16 +392,14 @@ def _inspect_pdfs(
         except (OSError, RuntimeError, ValueError, fitz.FileDataError):
             issues.error("pdf-unreadable", artifact.artifact_id)
             continue
-        for source_id in artifact.source_ids:
-            if source_id in source_ids and source_id not in page_counts:
-                page_counts[source_id] = page_count
+        page_counts[artifact.artifact_id] = page_count
     return page_counts
 
 
 def _inspect_rosters(
     manifest: PackageManifest,
     artifacts_by_kind: dict[str, list],
-    usable_artifacts: dict[str, Path],
+    usable_artifacts: dict[str, bytes],
     issues: _Issues,
 ) -> None:
     mapping = manifest.roster_mapping
@@ -331,13 +416,15 @@ def _inspect_rosters(
         issues.error("roster-mapping-missing", mapping.source_id)
 
     for artifact in roster_artifacts:
-        path = usable_artifacts.get(artifact.artifact_id)
-        if path is None:
+        content = usable_artifacts.get(artifact.artifact_id)
+        if content is None:
             continue
         try:
-            preflight_roster_workbook(path)
-            workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        except (OSError, ValueError, RosterWorkbookError):
+            preflight_roster_workbook(io.BytesIO(content))
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(content), read_only=True, data_only=True
+            )
+        except Exception:
             issues.error("roster-unreadable", artifact.artifact_id)
             continue
         try:
@@ -390,6 +477,24 @@ def _inspect_rosters(
             workbook.close()
 
 
+def _inspect_validation_reports(
+    artifacts_by_kind: dict[str, list],
+    usable_artifacts: dict[str, bytes],
+    issues: _Issues,
+) -> None:
+    for artifact in sorted(
+        artifacts_by_kind.get("validation-report", []),
+        key=lambda item: item.artifact_id,
+    ):
+        content = usable_artifacts.get(artifact.artifact_id)
+        if content is None:
+            continue
+        try:
+            ValidationReport.model_validate(_read_json_bytes(content))
+        except (UnicodeError, json.JSONDecodeError, ValidationError):
+            issues.error("validation-report-invalid", artifact.artifact_id)
+
+
 def _mapping_is_unambiguous(mapping) -> bool:
     if mapping is None:
         return False
@@ -417,9 +522,20 @@ def _check_references(
         {item.exception_id for item in exceptions.items} if exceptions is not None else set()
     )
     known_evidence_refs = source_ids | artifact_ids | decision_ids | exception_ids
-    known_evidence_refs.update(
-        f"{page.source_id}#page={page.source_page}" for page in manifest.pdf_pages
-    )
+    for source in manifest.sources:
+        if source.media_type != "application/pdf":
+            continue
+        if source.page_count is not None:
+            known_evidence_refs.update(
+                f"{source.source_id}#page={page_number}"
+                for page_number in range(1, source.page_count + 1)
+            )
+        else:
+            known_evidence_refs.update(
+                f"{page.source_id}#page={page.source_page}"
+                for page in manifest.pdf_pages
+                if page.source_id == source.source_id
+            )
 
     unknown_sources: set[str] = set()
     unknown_decisions: set[str] = set()
@@ -440,7 +556,7 @@ def _check_references(
     if manifest.roster_mapping and manifest.roster_mapping.source_id not in source_ids:
         unknown_sources.add(manifest.roster_mapping.source_id)
 
-    evidence_refs: Iterable[str] = (
+    evidence_refs = (
         ref for decision in manifest.decisions for ref in decision.evidence_refs
     )
     exception_evidence_refs = (
@@ -448,49 +564,88 @@ def _check_references(
         if exceptions is not None
         else ()
     )
+    unknown_evidence_refs: set[str] = set()
     for evidence_ref in (*evidence_refs, *exception_evidence_refs):
         if evidence_ref not in known_evidence_refs:
-            unknown_sources.add(evidence_ref)
+            unknown_evidence_refs.add(evidence_ref)
 
     if unknown_sources:
         issues.error("source-reference-unknown", *sorted(unknown_sources))
     if unknown_decisions:
         issues.error("decision-reference-unknown", *sorted(unknown_decisions))
+    if unknown_evidence_refs:
+        issues.error(
+            "evidence-reference-unknown", *sorted(unknown_evidence_refs)
+        )
 
 
 def _check_pdf_coverage(
     manifest: PackageManifest,
-    page_counts: dict[str, int],
+    artifacts_by_kind: dict[str, list],
+    derived_page_counts: dict[str, int],
     issues: _Issues,
 ) -> None:
-    coverage = Counter((page.source_id, page.source_page) for page in manifest.pdf_pages)
-    pdf_source_ids = {
-        source.source_id
-        for source in manifest.sources
-        if source.media_type == "application/pdf"
-    }
-    for source_id, page_count in sorted(page_counts.items()):
+    source_coverage = Counter(
+        (page.source_id, page.source_page) for page in manifest.pdf_pages
+    )
+    source_ids = {source.source_id for source in manifest.sources}
+    pdf_sources = sorted(
+        (
+            source
+            for source in manifest.sources
+            if source.media_type == "application/pdf"
+        ),
+        key=lambda source: source.source_id,
+    )
+    pdf_source_ids = {source.source_id for source in pdf_sources}
+    for source in pdf_sources:
+        source_id = source.source_id
+        page_count = source.page_count
+        if page_count is None:
+            issues.error("page-coverage-missing", f"{source_id}#page-count")
+            continue
         for page_number in range(1, page_count + 1):
-            count = coverage[(source_id, page_number)]
+            count = source_coverage[(source_id, page_number)]
             evidence = f"{source_id}#page={page_number}"
             if count == 0:
                 issues.error("page-coverage-missing", evidence)
             elif count > 1:
                 issues.error("page-coverage-extra", evidence)
-        for covered_source, page_number in sorted(coverage):
+        for covered_source, page_number in sorted(source_coverage):
             if covered_source == source_id and page_number > page_count:
                 issues.error(
                     "page-coverage-extra", f"{source_id}#page={page_number}"
                 )
-    for source_id, page_number in sorted(coverage):
-        if source_id in pdf_source_ids and source_id not in page_counts:
-            continue
-        if source_id not in pdf_source_ids and source_id in {
-            source.source_id for source in manifest.sources
-        }:
+    for source_id, page_number in sorted(source_coverage):
+        if source_id not in pdf_source_ids and source_id in source_ids:
             issues.error(
                 "page-coverage-extra", f"{source_id}#page={page_number}"
             )
+
+    target_coverage = Counter(
+        page.target_page
+        for page in manifest.pdf_pages
+        if page.target_page is not None
+    )
+    for artifact in sorted(
+        artifacts_by_kind.get("input-pdf", []), key=lambda item: item.artifact_id
+    ):
+        page_count = derived_page_counts.get(artifact.artifact_id)
+        if page_count is None:
+            continue
+        for page_number in range(1, page_count + 1):
+            count = target_coverage[page_number]
+            evidence = f"{artifact.artifact_id}#target-page={page_number}"
+            if count == 0:
+                issues.error("page-coverage-missing", evidence)
+            elif count > 1:
+                issues.error("page-coverage-extra", evidence)
+        for page_number in sorted(target_coverage):
+            if page_number > page_count:
+                issues.error(
+                    "page-coverage-extra",
+                    f"{artifact.artifact_id}#target-page={page_number}",
+                )
 
 
 def _check_exceptions(
@@ -498,13 +653,17 @@ def _check_exceptions(
     exceptions: ExceptionsDocument | None,
     issues: _Issues,
 ) -> None:
-    if exceptions is None:
-        return
     declared_ids = set(manifest.exception_ids)
-    document_ids = {item.exception_id for item in exceptions.items}
+    document_ids = (
+        {item.exception_id for item in exceptions.items}
+        if exceptions is not None
+        else set()
+    )
     unresolved_references = declared_ids ^ document_ids
     if unresolved_references:
         issues.error("exception-reference-unknown", *sorted(unresolved_references))
+    if exceptions is None:
+        return
     for item in sorted(exceptions.items, key=lambda value: value.exception_id):
         if item.resolution != "open":
             continue

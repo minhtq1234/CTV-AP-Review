@@ -102,6 +102,20 @@ def test_manifest_round_trips_the_document_shape_with_no_extra_fields():
         PackageManifest.model_validate(_manifest(unexpected="not-allowed"))
 
 
+def test_source_page_count_is_optional_but_one_based_when_present():
+    document = _manifest()
+    document["sources"][0]["pageCount"] = 2
+
+    manifest = PackageManifest.model_validate(document)
+
+    assert manifest.sources[0].page_count == 2
+    document["sources"][0].pop("pageCount")
+    assert PackageManifest.model_validate(document).sources[0].page_count is None
+    document["sources"][0]["pageCount"] = 0
+    with pytest.raises(ValidationError):
+        PackageManifest.model_validate(document)
+
+
 @pytest.mark.parametrize("path", ["/outside/source.pdf", "../source.pdf", "folder/../source.pdf"])
 def test_manifest_rejects_absolute_and_traversing_workspace_paths(path):
     document = _manifest()

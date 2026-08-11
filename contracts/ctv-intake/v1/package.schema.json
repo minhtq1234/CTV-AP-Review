@@ -247,6 +247,19 @@
           "title": "Mediatype",
           "type": "string"
         },
+        "pageCount": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pagecount"
+        },
         "path": {
           "minLength": 1,
           "title": "Path",

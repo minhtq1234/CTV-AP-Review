@@ -67,6 +67,7 @@ class Source(_ContractModel):
     source_id: str = Field(alias="sourceId", min_length=1)
     path: str = Field(min_length=1)
     media_type: str = Field(alias="mediaType", min_length=1)
+    page_count: int | None = Field(default=None, alias="pageCount", ge=1)
     size: int = Field(ge=0)
     sha256: str
     coverage_state: CoverageState = Field(alias="coverageState")
