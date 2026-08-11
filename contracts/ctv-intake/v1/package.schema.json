@@ -1,0 +1,404 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "minLength": 1,
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "input-pdf",
+            "roster",
+            "cccd",
+            "exceptions",
+            "validation-report"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "Decision": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "user",
+          "title": "Actor",
+          "type": "string"
+        },
+        "decisionId": {
+          "minLength": 1,
+          "title": "Decisionid",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "proposalVersion": {
+          "minLength": 1,
+          "title": "Proposalversion",
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "assign-source",
+            "share-source",
+            "mark-duplicate",
+            "exclude-source",
+            "assign-page",
+            "select-roster-sheet",
+            "map-roster-column",
+            "approve-preview",
+            "accept-partial"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decisionId",
+        "proposalVersion",
+        "type",
+        "actor",
+        "timestamp",
+        "evidenceRefs"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "PdfPage": {
+      "additionalProperties": false,
+      "properties": {
+        "coverageState": {
+          "enum": [
+            "assigned",
+            "shared",
+            "duplicate",
+            "unsupported",
+            "unreadable",
+            "excluded-by-user",
+            "unresolved"
+          ],
+          "title": "Coveragestate",
+          "type": "string"
+        },
+        "decisionId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decisionid"
+        },
+        "sourceId": {
+          "minLength": 1,
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "sourcePage": {
+          "minimum": 1,
+          "title": "Sourcepage",
+          "type": "integer"
+        },
+        "targetPage": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetpage"
+        }
+      },
+      "required": [
+        "sourceId",
+        "sourcePage",
+        "coverageState"
+      ],
+      "title": "PdfPage",
+      "type": "object"
+    },
+    "RosterMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalToSourceColumns": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Canonicaltosourcecolumns",
+          "type": "object"
+        },
+        "sheetName": {
+          "minLength": 1,
+          "title": "Sheetname",
+          "type": "string"
+        },
+        "sourceId": {
+          "minLength": 1,
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "sheetName",
+        "canonicalToSourceColumns"
+      ],
+      "title": "RosterMapping",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "coverageState": {
+          "enum": [
+            "assigned",
+            "shared",
+            "duplicate",
+            "unsupported",
+            "unreadable",
+            "excluded-by-user",
+            "unresolved"
+          ],
+          "title": "Coveragestate",
+          "type": "string"
+        },
+        "decisionId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decisionid"
+        },
+        "duplicateSourceId": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicatesourceid"
+        },
+        "mediaType": {
+          "minLength": 1,
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceId": {
+          "minLength": 1,
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "path",
+        "mediaType",
+        "size",
+        "sha256",
+        "coverageState"
+      ],
+      "title": "Source",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "batchId": {
+      "minLength": 1,
+      "title": "Batchid",
+      "type": "string"
+    },
+    "caseId": {
+      "minLength": 1,
+      "title": "Caseid",
+      "type": "string"
+    },
+    "compatibilityTarget": {
+      "minLength": 1,
+      "title": "Compatibilitytarget",
+      "type": "string"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/Decision"
+      },
+      "title": "Decisions",
+      "type": "array"
+    },
+    "exceptionIds": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Exceptionids",
+      "type": "array"
+    },
+    "faCode": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Facode"
+    },
+    "packageVersion": {
+      "minLength": 1,
+      "title": "Packageversion",
+      "type": "string"
+    },
+    "pdfPages": {
+      "items": {
+        "$ref": "#/$defs/PdfPage"
+      },
+      "title": "Pdfpages",
+      "type": "array"
+    },
+    "rosterMapping": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RosterMapping"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schemaVersion": {
+      "const": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/Source"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "prepared",
+        "partially_prepared"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "validatedAt": {
+      "format": "date-time",
+      "title": "Validatedat",
+      "type": "string"
+    },
+    "validatorVersion": {
+      "minLength": 1,
+      "title": "Validatorversion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "batchId",
+    "caseId",
+    "packageVersion",
+    "status",
+    "compatibilityTarget",
+    "sources",
+    "pdfPages",
+    "artifacts",
+    "decisions",
+    "exceptionIds",
+    "validatedAt",
+    "validatorVersion"
+  ],
+  "title": "PackageManifest",
+  "type": "object"
+}

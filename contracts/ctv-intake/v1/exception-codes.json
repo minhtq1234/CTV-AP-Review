@@ -1,0 +1,9 @@
+{
+  "artifact-outside-package": "Artifact path is outside the package artifact directory.",
+  "blocking-exception": "A blocking exception prevents a prepared package.",
+  "duplicate-id": "A document contains duplicate stable identifiers.",
+  "malformed-sha256": "A SHA-256 value is malformed.",
+  "path-not-workspace-relative": "A path is not workspace-relative.",
+  "unresolved-coverage": "Coverage remains unresolved.",
+  "zero-based-page": "A PDF page number must be one-based."
+}

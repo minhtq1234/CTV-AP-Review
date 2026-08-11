@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "ExceptionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "exceptionId": {
+          "minLength": 1,
+          "title": "Exceptionid",
+          "type": "string"
+        },
+        "explanation": {
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "requiredAction": {
+          "minLength": 1,
+          "title": "Requiredaction",
+          "type": "string"
+        },
+        "resolution": {
+          "enum": [
+            "open",
+            "accepted-partial",
+            "resolved"
+          ],
+          "title": "Resolution",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "exceptionId",
+        "code",
+        "severity",
+        "evidenceRefs",
+        "explanation",
+        "requiredAction",
+        "resolution"
+      ],
+      "title": "ExceptionItem",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ExceptionItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "items"
+  ],
+  "title": "ExceptionsDocument",
+  "type": "object"
+}

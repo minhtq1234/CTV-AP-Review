@@ -1,0 +1,99 @@
+{
+  "$defs": {
+    "ValidationCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "passed",
+        "evidenceRefs"
+      ],
+      "title": "ValidationCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/ValidationCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "errors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "outcome": {
+      "enum": [
+        "valid",
+        "invalid"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "packageStatus": {
+      "enum": [
+        "prepared",
+        "partially_prepared"
+      ],
+      "title": "Packagestatus",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "validatedAt": {
+      "format": "date-time",
+      "title": "Validatedat",
+      "type": "string"
+    },
+    "validatorVersion": {
+      "minLength": 1,
+      "title": "Validatorversion",
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "outcome",
+    "packageStatus",
+    "checks",
+    "errors",
+    "warnings",
+    "validatedAt",
+    "validatorVersion"
+  ],
+  "title": "ValidationReport",
+  "type": "object"
+}

@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "rowId": {
+      "minLength": 1,
+      "title": "Rowid",
+      "type": "string"
+    },
+    "values": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Values",
+      "type": "object"
+    }
+  },
+  "required": [
+    "rowId",
+    "values"
+  ],
+  "title": "CanonicalRosterRow",
+  "type": "object"
+}
