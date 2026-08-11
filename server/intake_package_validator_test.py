@@ -1819,6 +1819,7 @@ def test_unreadable_source_pdf_is_rejected_from_the_verified_snapshot(tmp_path):
     report = _validate_with_source(package_dir)
 
     assert "source-pdf-unreadable" in report.errors
+    assert "source-media-type-mismatch" not in report.errors
 
 
 def test_oversized_source_is_rejected_before_reading(tmp_path):
@@ -1995,3 +1996,146 @@ def test_declared_historical_valid_report_with_empty_checks_is_rejected(tmp_path
     report = _validate_with_source(package_dir)
 
     assert "validation-report-invalid" in report.errors
+
+
+def test_verified_pdf_bytes_cannot_hide_behind_a_generic_media_type(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    hidden_pdf = _source_root(package_dir) / "workspace" / "hidden-evidence.bin"
+    _write_pdf(hidden_pdf, page_count=2)
+    manifest["sources"].append(
+        {
+            "sourceId": "source-hidden-pdf",
+            "path": "workspace/hidden-evidence.bin",
+            "mediaType": "application/octet-stream",
+            "size": hidden_pdf.stat().st_size,
+            "sha256": _sha256(hidden_pdf),
+            "coverageState": "assigned",
+        }
+    )
+    roster_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "roster"
+    )
+    roster_artifact["sourceIds"].append("source-hidden-pdf")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert report.outcome == "invalid"
+    assert "source-media-type-mismatch" in report.errors
+    assert _check(report, "source-media-type-mismatch").evidence_refs == [
+        "source-hidden-pdf"
+    ]
+    assert "source-provenance-missing" in report.errors
+    assert "source-hidden-pdf" in _check(
+        report, "source-provenance-missing"
+    ).evidence_refs
+    assert "source-hidden-pdf#pages=1-2" in _check(
+        report, "page-coverage-missing"
+    ).evidence_refs
+
+
+def test_non_pdf_bytes_remain_non_pdf_even_with_a_pdf_filename(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    opaque_source = _source_root(package_dir) / "workspace" / "not-a-pdf.pdf"
+    opaque_source.write_bytes(b"SYNTHETIC OPAQUE SOURCE\n")
+    manifest["sources"].append(
+        {
+            "sourceId": "source-opaque",
+            "path": "workspace/not-a-pdf.pdf",
+            "mediaType": "application/octet-stream",
+            "size": opaque_source.stat().st_size,
+            "sha256": _sha256(opaque_source),
+            "coverageState": "assigned",
+        }
+    )
+    roster_artifact = next(
+        artifact for artifact in manifest["artifacts"] if artifact["kind"] == "roster"
+    )
+    roster_artifact["sourceIds"].append("source-opaque")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert report.outcome == "valid"
+    assert "source-media-type-mismatch" not in report.errors
+
+
+def test_detected_pdf_membership_drives_input_pdf_provenance(tmp_path):
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    hidden_pdf = _source_root(package_dir) / "workspace" / "hidden-page.bin"
+    _write_pdf(hidden_pdf, page_count=1)
+    manifest["sources"].append(
+        {
+            "sourceId": "source-hidden-page",
+            "path": "workspace/hidden-page.bin",
+            "mediaType": "application/octet-stream",
+            "pageCount": 1,
+            "size": hidden_pdf.stat().st_size,
+            "sha256": _sha256(hidden_pdf),
+            "coverageState": "assigned",
+        }
+    )
+    manifest["pdfPages"].append(
+        {
+            "sourceId": "source-hidden-page",
+            "sourcePage": 1,
+            "coverageState": "assigned",
+            "targetPage": 3,
+        }
+    )
+    input_artifact = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["kind"] == "input-pdf"
+    )
+    input_artifact["sourceIds"].append("source-hidden-page")
+    _write_pdf(package_dir / "input.pdf", page_count=3)
+    _refresh_artifact(package_dir, manifest, "input-pdf")
+    _save_manifest(package_dir, manifest)
+
+    report = _validate_with_source(package_dir)
+
+    assert report.errors == ["source-media-type-mismatch"]
+    assert "input-pdf-provenance-mismatch" not in report.errors
+    assert "page-coverage-extra" not in report.errors
+
+
+def test_detected_generic_pdf_is_capped_before_page_loading(tmp_path, monkeypatch):
+    import intake_package_validator as validator
+
+    package_dir = tmp_path / "package"
+    manifest = _write_package(package_dir)
+    manifest["sources"][0]["mediaType"] = "application/octet-stream"
+    _save_manifest(package_dir, manifest)
+    source_pdf = _source_root(package_dir) / "workspace" / "source.pdf"
+    source_content = source_pdf.read_bytes()
+    real_open = validator.fitz.open
+
+    class OversizedDocument:
+        is_pdf = True
+        needs_pass = False
+        page_count = 10_001
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def load_page(self, *_args):
+            pytest.fail("misdeclared oversized PDF pages were loaded")
+
+    def open_source_as_oversized(*args, **kwargs):
+        if kwargs.get("stream") == source_content:
+            return OversizedDocument()
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(validator.fitz, "open", open_source_as_oversized)
+
+    report = _validate_with_source(package_dir)
+
+    assert "source-media-type-mismatch" in report.errors
+    assert "source-page-count-mismatch" in report.errors

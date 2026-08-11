@@ -45,6 +45,7 @@ _MANIFEST_NAME = "case-manifest.json"
 _REQUIRED_ARTIFACT_KINDS = frozenset({"input-pdf", "roster", "exceptions"})
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _SOURCE_PAGE_EVIDENCE_RE = re.compile(r"^(.+)#page=([1-9][0-9]*)$")
+_PDF_HEADER_RE = re.compile(br"%PDF-[0-9]\.[0-9]")
 _CLOSE_ON_EXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _NO_FOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -386,6 +387,13 @@ class _Issues:
         )
 
 
+@dataclass(frozen=True)
+class _SourceVerification:
+    detected_pdf_source_ids: frozenset[str]
+    pdf_source_ids: frozenset[str]
+    actual_pdf_page_counts: tuple[tuple[str, int], ...]
+
+
 def validate_package(
     package_dir: Path, source_root: Path | None = None
 ) -> ValidationReport:
@@ -473,14 +481,16 @@ def _validate_open_package(
         return issues.report(None)
     issues.pass_check("manifest-valid", _MANIFEST_NAME)
 
-    _verify_sources(
+    source_verification = _verify_sources(
         manifest,
         source_reader=source_reader,
         source_root_failure=source_root_failure,
         issues=issues,
     )
 
-    page_limits_exceeded = _check_page_count_limits(manifest, issues)
+    page_limits_exceeded = _check_page_count_limits(
+        manifest, source_verification, issues
+    )
 
     artifact_gate_before = issues.issue_count()
     artifacts_by_kind: dict[str, list] = defaultdict(list)
@@ -564,19 +574,27 @@ def _validate_open_package(
     _inspect_validation_reports(artifacts_by_kind, usable_artifacts, issues)
     issues.pass_gate("validation-report-valid", "validation-report", report_gate_before)
     reference_gate_before = issues.issue_count()
-    _check_references(manifest, exceptions, issues)
+    _check_references(manifest, exceptions, source_verification, issues)
     issues.pass_gate("references-valid", "references", reference_gate_before)
     state_gate_before = issues.issue_count()
     _check_coverage_state_and_decisions(manifest, issues)
     issues.pass_gate("coverage-state-valid", "coverage-state", state_gate_before)
     provenance_gate_before = issues.issue_count()
-    _check_input_pdf_provenance(manifest, artifacts_by_kind, issues)
-    _check_source_provenance(manifest, issues)
+    _check_input_pdf_provenance(
+        manifest, artifacts_by_kind, source_verification.pdf_source_ids, issues
+    )
+    _check_source_provenance(
+        manifest, source_verification.pdf_source_ids, issues
+    )
     issues.pass_gate("provenance-valid", "sources", provenance_gate_before)
     coverage_gate_before = issues.issue_count()
     if not page_limits_exceeded:
         _check_pdf_coverage(
-            manifest, artifacts_by_kind, derived_pdf_page_counts, issues
+            manifest,
+            artifacts_by_kind,
+            derived_pdf_page_counts,
+            source_verification,
+            issues,
         )
         issues.pass_gate("coverage-valid", "pdfPages", coverage_gate_before)
     approval_gate_before = issues.issue_count()
@@ -651,11 +669,28 @@ def _verify_sources(
     source_reader: _SourceReader | None,
     source_root_failure: str | None,
     issues: _Issues,
-) -> None:
+) -> _SourceVerification:
+    declared_pdf_source_ids = {
+        source.source_id
+        for source in manifest.sources
+        if source.media_type == "application/pdf"
+    }
+    detected_pdf_source_ids: set[str] = set()
+    actual_pdf_page_counts: dict[str, int] = {}
+
+    def result() -> _SourceVerification:
+        return _SourceVerification(
+            detected_pdf_source_ids=frozenset(detected_pdf_source_ids),
+            pdf_source_ids=frozenset(
+                declared_pdf_source_ids | detected_pdf_source_ids
+            ),
+            actual_pdf_page_counts=tuple(sorted(actual_pdf_page_counts.items())),
+        )
+
     gate_before = issues.issue_count()
     if not manifest.sources:
         issues.pass_check("sources-valid", "sources")
-        return
+        return result()
     if source_reader is None:
         code = (
             "source-symlink-not-allowed"
@@ -663,7 +698,7 @@ def _verify_sources(
             else "source-verification-unavailable"
         )
         issues.error(code, "source-root")
-        return
+        return result()
 
     sources_by_path: dict[str, list] = defaultdict(list)
     for source in manifest.sources:
@@ -695,34 +730,63 @@ def _verify_sources(
                 if len(content) > _source_byte_limit(source.media_type):
                     issues.error("source-too-large", source.source_id)
                     continue
-                if len(content) != source.size:
+                size_matches = len(content) == source.size
+                if not size_matches:
                     issues.error("source-size-mismatch", source.source_id)
-                if hashlib.sha256(content).hexdigest() != source.sha256:
+                digest_matches = hashlib.sha256(content).hexdigest() == source.sha256
+                if not digest_matches:
                     issues.error("source-digest-mismatch", source.source_id)
-                if source.media_type == "application/pdf":
-                    _verify_source_pdf(source, content, issues)
+                if not size_matches or not digest_matches:
+                    if source.media_type == "application/pdf":
+                        _verify_source_pdf(source, content, issues)
+                    continue
+
+                detected_pdf = _snapshot_is_pdf(content)
+                if detected_pdf:
+                    detected_pdf_source_ids.add(source.source_id)
+                    if source.media_type != "application/pdf":
+                        issues.error(
+                            "source-media-type-mismatch", source.source_id
+                        )
+                if detected_pdf or source.media_type == "application/pdf":
+                    actual_page_count = _verify_source_pdf(source, content, issues)
+                    if actual_page_count is not None:
+                        detected_pdf_source_ids.add(source.source_id)
+                        actual_pdf_page_counts[source.source_id] = actual_page_count
         finally:
             source_reader.discard_cached(declared_path)
 
     issues.pass_gate("sources-valid", "sources", gate_before)
+    return result()
 
 
-def _verify_source_pdf(source, content: bytes, issues: _Issues) -> None:
+def _snapshot_is_pdf(content: bytes) -> bool:
+    try:
+        with fitz.open(stream=content) as document:
+            if document.is_pdf:
+                return True
+    except (OSError, RuntimeError, ValueError, fitz.FileDataError):
+        pass
+    return _PDF_HEADER_RE.search(content[:1032]) is not None
+
+
+def _verify_source_pdf(source, content: bytes, issues: _Issues) -> int | None:
     try:
         with fitz.open(stream=content, filetype="pdf") as document:
             if not document.is_pdf or document.needs_pass:
                 raise ValueError("PDF is encrypted or has the wrong format")
             actual_page_count = document.page_count
-            if (
-                actual_page_count > MAX_PDF_PAGES_PER_SOURCE
-                or actual_page_count != source.page_count
-            ):
+            if actual_page_count > MAX_PDF_PAGES_PER_SOURCE:
                 issues.error("source-page-count-mismatch", source.source_id)
-                return
+                return actual_page_count
+            if actual_page_count != source.page_count:
+                issues.error("source-page-count-mismatch", source.source_id)
             for page_index in range(actual_page_count):
                 document.load_page(page_index)
+            return actual_page_count
     except (OSError, RuntimeError, ValueError, fitz.FileDataError):
         issues.error("source-pdf-unreadable", source.source_id)
+        return None
 
 
 def _inspect_raw_unresolved_coverage(raw_manifest: object, issues: _Issues) -> None:
@@ -953,10 +1017,14 @@ def _inspect_cccd_workbooks(
 
 
 def _check_page_count_limits(
-    manifest: PackageManifest, issues: _Issues
+    manifest: PackageManifest,
+    source_verification: _SourceVerification,
+    issues: _Issues,
 ) -> bool:
     pdf_sources = [
-        source for source in manifest.sources if source.media_type == "application/pdf"
+        source
+        for source in manifest.sources
+        if source.source_id in source_verification.pdf_source_ids
     ]
     exceeded = False
     declared_total = 0
@@ -975,6 +1043,19 @@ def _check_page_count_limits(
         issues.error(
             "page-count-limit-exceeded",
             f"package#declared-pdf-pages={declared_total}",
+        )
+    actual_page_counts = dict(source_verification.actual_pdf_page_counts)
+    actual_total = sum(actual_page_counts.values())
+    if any(
+        page_count > MAX_PDF_PAGES_PER_SOURCE
+        for page_count in actual_page_counts.values()
+    ):
+        exceeded = True
+    if actual_total > MAX_PDF_PAGES_PER_PACKAGE:
+        exceeded = True
+        issues.error(
+            "page-count-limit-exceeded",
+            f"package#actual-pdf-pages={actual_total}",
         )
     return exceeded
 
@@ -1032,7 +1113,11 @@ def _check_coverage_state_and_decisions(
                 issues.error("decision-type-mismatch", evidence)
 
 
-def _check_source_provenance(manifest: PackageManifest, issues: _Issues) -> None:
+def _check_source_provenance(
+    manifest: PackageManifest,
+    pdf_source_ids: frozenset[str],
+    issues: _Issues,
+) -> None:
     artifact_source_ids = {
         source_id
         for artifact in manifest.artifacts
@@ -1049,7 +1134,7 @@ def _check_source_provenance(manifest: PackageManifest, issues: _Issues) -> None
             continue
         represented = (
             source.source_id in mapped_pdf_sources
-            if source.media_type == "application/pdf"
+            if source.source_id in pdf_source_ids
             else source.source_id in artifact_source_ids
         )
         if not represented:
@@ -1084,6 +1169,7 @@ def _mapping_is_unambiguous(mapping) -> bool:
 def _check_references(
     manifest: PackageManifest,
     exceptions: ExceptionsDocument | None,
+    source_verification: _SourceVerification,
     issues: _Issues,
 ) -> None:
     source_ids = {source.source_id for source in manifest.sources}
@@ -1097,11 +1183,14 @@ def _check_references(
         f"{page.source_id}#page={page.source_page}"
         for page in manifest.pdf_pages
     )
-    pdf_page_counts = {
-        source.source_id: source.page_count
-        for source in manifest.sources
-        if source.media_type == "application/pdf" and source.page_count is not None
-    }
+    actual_pdf_page_counts = dict(source_verification.actual_pdf_page_counts)
+    pdf_page_counts: dict[str, int] = {}
+    for source in manifest.sources:
+        if source.source_id not in source_verification.pdf_source_ids:
+            continue
+        page_count = actual_pdf_page_counts.get(source.source_id, source.page_count)
+        if page_count is not None:
+            pdf_page_counts[source.source_id] = page_count
 
     unknown_sources: set[str] = set()
     unknown_decisions: set[str] = set()
@@ -1174,6 +1263,7 @@ def _evidence_reference_is_known(
 def _check_input_pdf_provenance(
     manifest: PackageManifest,
     artifacts_by_kind: dict[str, list],
+    pdf_source_ids: frozenset[str],
     issues: _Issues,
 ) -> None:
     sources_by_id = {source.source_id: source for source in manifest.sources}
@@ -1190,7 +1280,7 @@ def _check_input_pdf_provenance(
             source_id
             for source_id in declared_source_ids
             if source_id in sources_by_id
-            and sources_by_id[source_id].media_type != "application/pdf"
+            and source_id not in pdf_source_ids
         )
         evidence_refs = [
             f"{artifact.artifact_id}#omitted-source={index}"
@@ -1212,6 +1302,7 @@ def _check_pdf_coverage(
     manifest: PackageManifest,
     artifacts_by_kind: dict[str, list],
     derived_page_counts: dict[str, int],
+    source_verification: _SourceVerification,
     issues: _Issues,
 ) -> None:
     source_coverage = Counter(
@@ -1222,16 +1313,18 @@ def _check_pdf_coverage(
         (
             source
             for source in manifest.sources
-            if source.media_type == "application/pdf"
+            if source.source_id in source_verification.pdf_source_ids
         ),
         key=lambda source: source.source_id,
     )
     pdf_source_ids = {source.source_id for source in pdf_sources}
+    actual_pdf_page_counts = dict(source_verification.actual_pdf_page_counts)
     for source in pdf_sources:
         source_id = source.source_id
-        page_count = source.page_count
-        if page_count is None:
+        if source.page_count is None:
             issues.error("page-coverage-missing", f"{source_id}#page-count")
+        page_count = actual_pdf_page_counts.get(source_id, source.page_count)
+        if page_count is None:
             continue
         observed = sorted(
             page_number
