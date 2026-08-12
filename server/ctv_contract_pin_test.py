@@ -243,11 +243,71 @@ def test_aggregate_over_64_mib_is_rejected(tmp_path):
     )
 
 
-def test_missing_secure_open_primitive_fails_closed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("primitive", ["O_NOFOLLOW", "O_NONBLOCK"])
+def test_missing_secure_open_primitive_fails_closed(
+    tmp_path, monkeypatch, primitive
+):
     root = _copy_contract(tmp_path)
-    monkeypatch.delattr(os, "O_NOFOLLOW")
+    monkeypatch.delattr(os, primitive)
 
     _assert_error_code("secure-open-unavailable", lambda: verify_contract(root))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable")
+def test_pin_fifo_is_opened_nonblocking_and_rejected(tmp_path, monkeypatch):
+    root = _copy_contract(tmp_path)
+    pin_path = root / "contracts/ctv-intake/PIN.json"
+    pin_path.unlink()
+    os.mkfifo(pin_path)
+    original_open = os.open
+
+    def require_nonblocking_pin_open(path, flags, *args, **kwargs):
+        if path == "PIN.json" and kwargs.get("dir_fd") is not None:
+            assert flags & os.O_NONBLOCK
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", require_nonblocking_pin_open)
+    monkeypatch.setattr(contract_pin_module, "_require_secure_open", lambda: None)
+
+    error = _assert_error_code("contract-pin-invalid", lambda: load_contract_pin(root))
+
+    assert str(tmp_path) not in str(error)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable")
+def test_regular_contract_entry_raced_to_fifo_is_opened_nonblocking(
+    tmp_path, monkeypatch
+):
+    version_root = tmp_path / "repository/contracts/ctv-intake/v1"
+    version_root.mkdir(parents=True)
+    contract_file = version_root / "entry.json"
+    contract_file.write_text("{}\n", encoding="utf-8")
+    original_open = os.open
+    replaced = False
+
+    def replace_with_fifo_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if (
+            path == "entry.json"
+            and kwargs.get("dir_fd") is not None
+            and not replaced
+        ):
+            replaced = True
+            contract_file.unlink()
+            os.mkfifo(contract_file)
+            assert flags & os.O_NONBLOCK
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_with_fifo_before_open)
+    monkeypatch.setattr(contract_pin_module, "_require_secure_open", lambda: None)
+
+    error = _assert_error_code(
+        "contract-tree-changed",
+        lambda: compute_contract_tree_sha256(version_root),
+    )
+
+    assert replaced is True
+    assert str(tmp_path) not in str(error)
 
 
 @pytest.mark.parametrize("mutation", ["renamed", "same-size-content"])

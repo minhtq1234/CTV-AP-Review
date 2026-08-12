@@ -92,6 +92,7 @@ def _require_secure_open() -> None:
     supported = (
         hasattr(os, "O_NOFOLLOW")
         and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NONBLOCK")
         and os.open in os.supports_dir_fd
         and os.stat in os.supports_dir_fd
         and os.stat in os.supports_follow_symlinks
@@ -106,6 +107,8 @@ def _open_flags(*, directory: bool) -> int:
     flags |= getattr(os, "O_CLOEXEC", 0)
     if directory:
         flags |= os.O_DIRECTORY
+    else:
+        flags |= os.O_NONBLOCK
     return flags
 
 
