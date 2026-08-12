@@ -2,9 +2,12 @@ from pathlib import Path
 import json
 import os
 import shutil
+import sys
+import threading
 
 import pytest
 
+import ctv_contract_pin as contract_pin_module
 from ctv_contract_pin import (
     ContractPinError,
     compute_contract_tree_sha256,
@@ -245,3 +248,112 @@ def test_missing_secure_open_primitive_fails_closed(tmp_path, monkeypatch):
     monkeypatch.delattr(os, "O_NOFOLLOW")
 
     _assert_error_code("secure-open-unavailable", lambda: verify_contract(root))
+
+
+@pytest.mark.parametrize("mutation", ["renamed", "same-size-content"])
+def test_descendant_mutation_after_its_final_snapshot_is_rejected(
+    tmp_path, monkeypatch, mutation
+):
+    root = tmp_path / "repository"
+    intake_root = root / "contracts/ctv-intake"
+    nested = intake_root / "v1/nested"
+    nested.mkdir(parents=True)
+    approved_file = nested / "a.txt"
+    approved_file.write_bytes(b"approved\n")
+
+    payload = _pin_payload()
+    payload["contractTreeSha256"] = compute_contract_tree_sha256(
+        intake_root / "v1"
+    )
+    (intake_root / "PIN.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    original_snapshot = contract_pin_module._snapshot_directory
+    nested_identity = (nested.stat().st_dev, nested.stat().st_ino)
+    nested_snapshots = 0
+    mutate_now = threading.Event()
+    mutation_done = threading.Event()
+
+    def mutate_descendant():
+        if not mutate_now.wait(timeout=5):
+            return
+        if mutation == "renamed":
+            approved_file.rename(nested / "b.txt")
+        else:
+            approved_file.write_bytes(b"tampered\n")
+        mutation_done.set()
+
+    def snapshot_then_mutate(directory_fd):
+        nonlocal nested_snapshots
+        snapshot = original_snapshot(directory_fd)
+        opened = os.fstat(directory_fd)
+        if (opened.st_dev, opened.st_ino) == nested_identity:
+            nested_snapshots += 1
+            if nested_snapshots == 2:
+                mutate_now.set()
+                assert mutation_done.wait(timeout=5)
+        return snapshot
+
+    mutator = threading.Thread(target=mutate_descendant)
+    mutator.start()
+    monkeypatch.setattr(
+        contract_pin_module, "_snapshot_directory", snapshot_then_mutate
+    )
+    try:
+        error = _assert_error_code(
+            "contract-tree-changed", lambda: verify_contract(root)
+        )
+    finally:
+        mutate_now.set()
+        mutator.join(timeout=5)
+
+    assert not mutator.is_alive()
+    assert str(tmp_path) not in str(error)
+
+
+def test_deep_tree_fails_with_stable_bounded_error(tmp_path):
+    version_root = tmp_path / "repository/contracts/ctv-intake/v1"
+    current = version_root
+    for _ in range(90):
+        current = current / "d"
+        current.mkdir(parents=True)
+    (current / "leaf.txt").write_text("leaf\n", encoding="utf-8")
+
+    original_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(80)
+    try:
+        error = _assert_error_code(
+            "contract-depth-exceeded",
+            lambda: compute_contract_tree_sha256(version_root),
+        )
+    finally:
+        sys.setrecursionlimit(original_limit)
+
+    assert str(tmp_path) not in str(error)
+
+
+def test_more_than_1000_directories_is_rejected(tmp_path):
+    version_root = tmp_path / "repository/contracts/ctv-intake/v1"
+    version_root.mkdir(parents=True)
+    for index in range(1_001):
+        (version_root / f"directory-{index:04d}").mkdir()
+
+    error = _assert_error_code(
+        "contract-directory-count-exceeded",
+        lambda: compute_contract_tree_sha256(version_root),
+    )
+
+    assert str(tmp_path) not in str(error)
+
+
+def test_single_directory_enumeration_is_bounded(tmp_path):
+    version_root = tmp_path / "repository/contracts/ctv-intake/v1"
+    version_root.mkdir(parents=True)
+    for index in range(2_001):
+        (version_root / f"entry-{index:04d}").mkdir()
+
+    error = _assert_error_code(
+        "contract-entry-count-exceeded",
+        lambda: compute_contract_tree_sha256(version_root),
+    )
+
+    assert str(tmp_path) not in str(error)

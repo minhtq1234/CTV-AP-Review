@@ -4,7 +4,7 @@ import json
 import os
 import re
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -12,6 +12,9 @@ _PIN_LIMIT = 16 * 1024
 _FILE_LIMIT = 16 * 1024 * 1024
 _TREE_LIMIT = 64 * 1024 * 1024
 _FILE_COUNT_LIMIT = 1_000
+_DIRECTORY_COUNT_LIMIT = 1_000
+_DIRECTORY_ENTRY_LIMIT = _FILE_COUNT_LIMIT + _DIRECTORY_COUNT_LIMIT
+_DEPTH_LIMIT = 32
 _READ_CHUNK = 64 * 1024
 _PIN_FIELDS = frozenset(
     {"sourceCommit", "contractTreeSha256", "compatibilityTarget"}
@@ -56,7 +59,11 @@ class _DuplicatePinKey(ValueError):
 @dataclass
 class _HashState:
     file_count: int = 0
+    directory_count: int = 0
     aggregate_bytes: int = 0
+    directory_snapshots: dict[bytes, tuple["_DirectoryEntry", ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,18 @@ class _DirectoryEntry:
     device: int
     inode: int
     size: int | None
+    modified_ns: int
+    changed_ns: int
+
+
+@dataclass
+class _RevalidationFrame:
+    descriptor: int
+    relative_path: bytes
+    depth: int
+    owned: bool
+    directories: tuple[_DirectoryEntry, ...] | None = None
+    next_directory: int = 0
 
 
 def _require_secure_open() -> None:
@@ -76,7 +95,7 @@ def _require_secure_open() -> None:
         and os.open in os.supports_dir_fd
         and os.stat in os.supports_dir_fd
         and os.stat in os.supports_follow_symlinks
-        and os.listdir in os.supports_fd
+        and os.scandir in os.supports_fd
     )
     if not supported:
         raise ContractPinError("secure-open-unavailable")
@@ -282,25 +301,30 @@ def _entry_kind(mode: int) -> str:
 
 def _snapshot_directory(directory_fd: int) -> tuple[_DirectoryEntry, ...]:
     try:
-        names = os.listdir(directory_fd)
         entries = []
-        for name in names:
-            try:
-                encoded_name = name.encode("utf-8")
-            except UnicodeEncodeError:
-                raise ContractPinError("contract-entry-unsafe") from None
-            entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            kind = _entry_kind(entry_stat.st_mode)
-            entries.append(
-                _DirectoryEntry(
-                    name=name,
-                    encoded_name=encoded_name,
-                    kind=kind,
-                    device=entry_stat.st_dev,
-                    inode=entry_stat.st_ino,
-                    size=entry_stat.st_size if kind == "file" else None,
+        with os.scandir(directory_fd) as iterator:
+            for entry in iterator:
+                if len(entries) >= _DIRECTORY_ENTRY_LIMIT:
+                    raise ContractPinError("contract-entry-count-exceeded")
+                name = entry.name
+                try:
+                    encoded_name = name.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise ContractPinError("contract-entry-unsafe") from None
+                entry_stat = entry.stat(follow_symlinks=False)
+                kind = _entry_kind(entry_stat.st_mode)
+                entries.append(
+                    _DirectoryEntry(
+                        name=name,
+                        encoded_name=encoded_name,
+                        kind=kind,
+                        device=entry_stat.st_dev,
+                        inode=entry_stat.st_ino,
+                        size=entry_stat.st_size if kind == "file" else None,
+                        modified_ns=entry_stat.st_mtime_ns,
+                        changed_ns=entry_stat.st_ctime_ns,
+                    )
                 )
-            )
         return tuple(sorted(entries, key=lambda entry: entry.encoded_name))
     except ContractPinError:
         raise
@@ -338,8 +362,20 @@ def _open_snapshotted_entry(
     opened_size = opened.st_size if opened_kind == "file" else None
     if (
         opened_kind != entry.kind
-        or (opened.st_dev, opened.st_ino, opened_size)
-        != (entry.device, entry.inode, entry.size)
+        or (
+            opened.st_dev,
+            opened.st_ino,
+            opened_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        != (
+            entry.device,
+            entry.inode,
+            entry.size,
+            entry.modified_ns,
+            entry.changed_ns,
+        )
     ):
         _close(descriptor)
         raise ContractPinError("contract-tree-changed")
@@ -394,8 +430,16 @@ def _walk_contract_tree(
     relative_parent: bytes,
     state: _HashState,
     lines: list[tuple[bytes, bytes]],
+    depth: int = 0,
 ) -> None:
+    if depth > _DEPTH_LIMIT:
+        raise ContractPinError("contract-depth-exceeded")
+    state.directory_count += 1
+    if state.directory_count > _DIRECTORY_COUNT_LIMIT:
+        raise ContractPinError("contract-directory-count-exceeded")
+
     before = _snapshot_directory(directory_fd)
+    state.directory_snapshots[relative_parent] = before
     for entry in before:
         if entry.kind == "unsafe":
             raise ContractPinError("contract-entry-unsafe")
@@ -407,7 +451,9 @@ def _walk_contract_tree(
         if entry.kind == "directory":
             child_fd = _open_snapshotted_entry(directory_fd, entry, directory=True)
             try:
-                _walk_contract_tree(child_fd, relative_path, state, lines)
+                _walk_contract_tree(
+                    child_fd, relative_path, state, lines, depth=depth + 1
+                )
             finally:
                 _close(child_fd)
         else:
@@ -423,6 +469,70 @@ def _walk_contract_tree(
         raise ContractPinError("contract-tree-changed")
 
 
+def _revalidate_contract_tree(
+    version_fd: int,
+    expected_snapshots: dict[bytes, tuple[_DirectoryEntry, ...]],
+) -> None:
+    seen: set[bytes] = set()
+    stack = [
+        _RevalidationFrame(
+            descriptor=version_fd,
+            relative_path=b"",
+            depth=0,
+            owned=False,
+        )
+    ]
+    try:
+        while stack:
+            frame = stack[-1]
+            if frame.directories is None:
+                if frame.depth > _DEPTH_LIMIT:
+                    raise ContractPinError("contract-depth-exceeded")
+                expected = expected_snapshots.get(frame.relative_path)
+                if expected is None:
+                    raise ContractPinError("contract-tree-changed")
+                actual = _snapshot_directory(frame.descriptor)
+                if actual != expected:
+                    raise ContractPinError("contract-tree-changed")
+                seen.add(frame.relative_path)
+                frame.directories = tuple(
+                    entry for entry in actual if entry.kind == "directory"
+                )
+                continue
+
+            if frame.next_directory >= len(frame.directories):
+                finished = stack.pop()
+                if finished.owned:
+                    _close(finished.descriptor)
+                continue
+
+            entry = frame.directories[frame.next_directory]
+            frame.next_directory += 1
+            relative_path = (
+                entry.encoded_name
+                if not frame.relative_path
+                else frame.relative_path + b"/" + entry.encoded_name
+            )
+            child_fd = _open_snapshotted_entry(
+                frame.descriptor, entry, directory=True
+            )
+            stack.append(
+                _RevalidationFrame(
+                    descriptor=child_fd,
+                    relative_path=relative_path,
+                    depth=frame.depth + 1,
+                    owned=True,
+                )
+            )
+    finally:
+        for frame in reversed(stack):
+            if frame.owned:
+                _close(frame.descriptor)
+
+    if seen != expected_snapshots.keys():
+        raise ContractPinError("contract-tree-changed")
+
+
 def _compute_contract_tree_from_intake(intake_fd: int) -> str:
     version_fd = _open_at(
         intake_fd,
@@ -433,7 +543,12 @@ def _compute_contract_tree_from_intake(intake_fd: int) -> str:
     )
     try:
         lines: list[tuple[bytes, bytes]] = []
-        _walk_contract_tree(version_fd, b"", _HashState(), lines)
+        state = _HashState()
+        try:
+            _walk_contract_tree(version_fd, b"", state, lines)
+        except RecursionError:
+            raise ContractPinError("contract-depth-exceeded") from None
+        _revalidate_contract_tree(version_fd, state.directory_snapshots)
     finally:
         _close(version_fd)
 
