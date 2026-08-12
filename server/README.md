@@ -72,9 +72,10 @@ python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py contract verify 
 
 Before any future CTV processing, a WP agent must run `version`, then `doctor`,
 then `contract verify`, and stop if a check fails. Exit code `0` means the check
-succeeded, `2` means a valid check found a user-correctable environment or
-contract problem, and `1` means invalid invocation or an unexpected toolkit
-failure. For a parsed `--json` operation, stdout contains JSON only.
+succeeded, and `2` means a valid check found a user-correctable environment or
+contract problem. Exit code `1` means invalid invocation, a safely handled
+structural or configuration failure that prevents a valid check, or an unexpected
+toolkit failure. For a parsed `--json` operation, stdout contains JSON only.
 
 These foundation commands do not accept document folders and do not write files.
 WP contains no CTV implementation and performs no automatic toolkit discovery;

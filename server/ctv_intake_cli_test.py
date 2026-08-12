@@ -221,6 +221,43 @@ def test_invalid_invocation_emits_only_bounded_guidance(argv, capsysbinary):
 @pytest.mark.parametrize(
     "argv",
     [
+        ["version", "--j"],
+        ["doctor", "--j"],
+        ["contract", "verify", "--j"],
+        ["version", "--json", "--json"],
+        ["doctor", "--json", "--json"],
+        ["contract", "verify", "--json", "--json"],
+    ],
+)
+def test_abbreviated_and_repeated_json_flags_are_rejected(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert len(result.stderr) <= 512
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "version"],
+        ["--json", "doctor"],
+        ["contract", "--json", "verify"],
+    ],
+)
+def test_reordered_json_flags_are_rejected(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert len(result.stderr) <= 512
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
         ["version", "--json"],
         ["doctor", "--json"],
         ["contract", "verify", "--json"],

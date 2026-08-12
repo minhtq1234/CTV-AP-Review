@@ -15,6 +15,13 @@ _INVOCATION_GUIDANCE = (
     "usage: ctv_intake_cli.py "
     "{version --json | doctor --json | contract verify --json}\n"
 )
+_APPROVED_ARGV = frozenset(
+    {
+        ("version", "--json"),
+        ("doctor", "--json"),
+        ("contract", "verify", "--json"),
+    }
+)
 _RETRYABLE_DOCTOR_CODES = frozenset(
     {"dependency-missing", "dependency-incompatible"}
 )
@@ -30,6 +37,10 @@ class CliInvocationError(RuntimeError):
 
 
 class _ArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> None:
         raise CliInvocationError from None
 
@@ -156,8 +167,14 @@ def _operation_failure(operation: str, code: str, message: str):
 
 
 def main(argv: list[str] | None = None) -> int:
+    invocation = list(sys.argv[1:] if argv is None else argv)
+    if tuple(invocation) not in _APPROVED_ARGV:
+        sys.stderr.write(_INVOCATION_GUIDANCE)
+        sys.stderr.flush()
+        return 1
+
     try:
-        args = _parser().parse_args(argv)
+        args = _parser().parse_args(invocation)
     except CliInvocationError:
         sys.stderr.write(_INVOCATION_GUIDANCE)
         sys.stderr.flush()
