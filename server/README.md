@@ -58,6 +58,30 @@ Binds `127.0.0.1` only — this is a local, single-user tool, not a hosted
 service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
 5173-5175).
 
+## Checking the standalone CTV toolkit
+
+The caller supplies the explicit local path to the script. These commands work
+from outside the checkout, so the current working directory does not need to be
+the CTV repository:
+
+```bash
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py version --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py doctor --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py contract verify --json
+```
+
+Before any future CTV processing, a WP agent must run `version`, then `doctor`,
+then `contract verify`, and stop if a check fails. Exit code `0` means the check
+succeeded, `2` means a valid check found a user-correctable environment or
+contract problem, and `1` means invalid invocation or an unexpected toolkit
+failure. For a parsed `--json` operation, stdout contains JSON only.
+
+These foundation commands do not accept document folders and do not write files.
+WP contains no CTV implementation and performs no automatic toolkit discovery;
+the toolkit path must be supplied explicitly. A successful preflight establishes
+only toolkit, runtime, and contract readiness. It does not validate or approve a
+payment package.
+
 ## Validating a prepared intake package
 
 The CTV intake contract validator is a read-only mechanical gate for a prepared
