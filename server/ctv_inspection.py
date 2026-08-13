@@ -54,6 +54,26 @@ INSPECTION_ERROR_CODES = (
 )
 
 _INSPECTION_ERROR_CODE_SET = frozenset(INSPECTION_ERROR_CODES)
+_RETAINED_INVENTORY_ERROR_CODES = frozenset(
+    {
+        "inventory-depth-exceeded",
+        "inventory-directory-count-exceeded",
+        "inventory-directory-unreadable",
+        "inventory-entry-count-exceeded",
+        "inventory-entry-unsafe",
+        "inventory-item-count-exceeded",
+        "inventory-output-too-large",
+        "inventory-regular-file-count-exceeded",
+        "secure-open-unavailable",
+        "source-root-missing",
+        "source-root-unsafe",
+    }
+)
+_ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+_RAR_SIGNATURES = (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")
+_UNSAFE_SOURCE_ISSUES = frozenset(
+    {"type-detection-failed", "changed-during-read"}
+)
 
 
 class InspectionError(RuntimeError):
@@ -88,17 +108,26 @@ def _source_only(
     status: str,
     unit_count: int | None,
     *added_issues: str,
+    detected_type: str | None = None,
 ) -> tuple[InspectionSource, tuple[InspectionUnitEvidence, ...]]:
     return (
         InspectionSource(
             source.evidence_id,
-            source.detected_type,
+            source.detected_type if detected_type is None else detected_type,
             status,
             unit_count,
             _ordered_issues(source.issue_codes, added_issues),
         ),
         (),
     )
+
+
+def _leading_archive_type(snapshot: bytes) -> str | None:
+    if snapshot.startswith(_ZIP_SIGNATURES):
+        return "zip"
+    if snapshot.startswith(_RAR_SIGNATURES):
+        return "rar"
+    return None
 
 
 def _inspect_observed_source(
@@ -113,6 +142,8 @@ def _inspect_observed_source(
     if "symlink" in inventory_issues or "special-file" in inventory_issues:
         return _source_only(source, "not-applicable", 0)
     if "unreadable" in inventory_issues:
+        return _source_only(source, "unreadable", None, "document-unreadable")
+    if _UNSAFE_SOURCE_ISSUES.intersection(inventory_issues):
         return _source_only(source, "unreadable", None, "document-unreadable")
     if source.detected_type in {"zip", "rar"}:
         return _source_only(source, "opaque", 0, "opaque-archive")
@@ -142,6 +173,16 @@ def _inspect_observed_source(
             return _source_only(source, "over-limit", None, "document-over-limit")
     else:
         snapshot = observation.snapshot(source.evidence_id, max_bytes=source_cap)
+        archive_type = _leading_archive_type(snapshot)
+        if archive_type is not None and source.detected_type != "xlsx":
+            snapshot = b""
+            return _source_only(
+                source,
+                "opaque",
+                0,
+                "opaque-archive",
+                detected_type=archive_type,
+            )
         if source.detected_type == "pdf":
             adapter_result = inspect_pdf(
                 snapshot,
@@ -258,13 +299,15 @@ def _inspection_result(
     return result
 
 
-def _mapped_inventory_error(error: InventoryError) -> InspectionError:
+def _mapped_inventory_error(error: InventoryError) -> InspectionError | None:
     code = getattr(error, "code", None)
+    if type(code) is not str:
+        return None
     if code == "inventory-tree-changed":
         return InspectionError("inspection-tree-changed")
-    if type(code) is str and code in _INSPECTION_ERROR_CODE_SET:
+    if code in _RETAINED_INVENTORY_ERROR_CODES:
         return InspectionError(code)
-    return InspectionError("inspection-tree-changed")
+    return None
 
 
 def inspect_source(
@@ -283,7 +326,10 @@ def inspect_source(
                 ocr_session=ocr_session,
             )
     except InventoryError as error:
-        raise _mapped_inventory_error(error) from None
+        mapped_error = _mapped_inventory_error(error)
+        if mapped_error is None:
+            raise RuntimeError("inspection-internal-error") from None
+        raise mapped_error from None
     except PdfPageCountExceededError:
         raise InspectionError("inspection-pdf-page-count-exceeded") from None
     except WorkbookParserBoundaryExceededError:

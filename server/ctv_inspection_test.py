@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import traceback
 import zipfile
 
 import fitz
@@ -108,6 +109,16 @@ def _workbook() -> bytes:
     output = BytesIO()
     workbook.save(output)
     workbook.close()
+    return output.getvalue()
+
+
+def _zip_with_pdf_marker() -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(
+            "private-member-%PDF-1.7.txt",
+            b"private archive payload %PDF-1.7",
+        )
     return output.getvalue()
 
 
@@ -375,6 +386,46 @@ def test_source_failures_and_exact_source_caps_are_honestly_accounted(
     )
 
 
+@pytest.mark.parametrize(
+    ("archive_bytes", "expected_type"),
+    [
+        (_zip_with_pdf_marker(), "zip"),
+        (b"PK\x05\x06" + b"\x00" * 18 + b"%PDF-1.7 private", "zip"),
+        (b"PK\x07\x08%PDF-1.7 private", "zip"),
+        (b"Rar!\x1a\x07\x00%PDF-1.7 private", "rar"),
+        (b"Rar!\x1a\x07\x01\x00%PDF-1.7 private", "rar"),
+    ],
+)
+def test_leading_archive_signatures_override_broad_pdf_marker_without_dispatch(
+    tmp_path,
+    monkeypatch,
+    archive_bytes,
+    expected_type,
+):
+    import ctv_inspection as inspection
+
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "private.pdf").write_bytes(archive_bytes)
+
+    def forbidden_adapter(*_args, **_kwargs):
+        raise AssertionError("opaque archive reached a document adapter")
+
+    monkeypatch.setattr(inspection, "inspect_pdf", forbidden_adapter)
+    monkeypatch.setattr(inspection, "inspect_workbook", forbidden_adapter)
+    monkeypatch.setattr(inspection, "inspect_image", forbidden_adapter)
+
+    result = inspect_source(source)
+
+    assert len(result.sources) == 1
+    assert result.sources[0].detected_type == expected_type
+    assert result.sources[0].inspection_status == "opaque"
+    assert result.sources[0].unit_count == 0
+    assert result.sources[0].issue_codes == ("opaque-archive",)
+    assert result.units == ()
+
+
 def test_one_ocr_session_precedes_observation_and_one_budget_is_sequential(
     tmp_path, monkeypatch
 ):
@@ -624,6 +675,54 @@ def test_hash_read_failure_remains_an_accounted_unreadable_source(
     assert result.units == ()
 
 
+@pytest.mark.parametrize(
+    "inventory_issue",
+    ["type-detection-failed", "changed-during-read"],
+)
+def test_unsafe_inventory_read_states_are_unreadable_without_snapshot_or_units(
+    tmp_path,
+    monkeypatch,
+    inventory_issue,
+):
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "private.pdf").write_bytes(b"%PDF-1.7\nprivate bounded content")
+
+    if inventory_issue == "type-detection-failed":
+        def fail_sample(*_args, **_kwargs):
+            raise ctv_inventory._SampleReadFailed()
+
+        monkeypatch.setattr(ctv_inventory, "_read_sample", fail_sample)
+    else:
+        monkeypatch.setattr(
+            ctv_inventory,
+            "_read_observation_is_stable",
+            lambda *_args, **_kwargs: False,
+        )
+
+    def forbidden_snapshot(self, evidence_id, *, max_bytes):
+        raise AssertionError("unsafe inventory source was snapshotted")
+
+    monkeypatch.setattr(
+        ctv_inventory.InventoryObservation,
+        "snapshot",
+        forbidden_snapshot,
+    )
+
+    result = inspect_source(source)
+
+    assert len(result.sources) == 1
+    assert result.sources[0].detected_type == "unknown"
+    assert result.sources[0].inspection_status == "unreadable"
+    assert result.sources[0].unit_count is None
+    assert result.sources[0].issue_codes == (
+        inventory_issue,
+        "document-unreadable",
+    )
+    assert result.units == ()
+
+
 def test_mutation_during_adapter_work_invalidates_the_whole_result(
     tmp_path, monkeypatch
 ):
@@ -852,6 +951,42 @@ def test_inventory_operation_errors_are_retained_or_mapped_exactly(
     assert raised.value.code == expected
     assert str(raised.value) == expected
     assert raised.value.args == (expected,)
+
+
+def test_unknown_inventory_error_becomes_fixed_internal_runtime_failure_without_leak(
+    tmp_path, monkeypatch
+):
+    import ctv_inspection as inspection
+
+    _unavailable_ocr(monkeypatch)
+    hostile_code = "private/path/079123456789/parser-diagnostic"
+
+    @contextmanager
+    def fail_inventory(*_args, **_kwargs):
+        raise InventoryError(hostile_code)
+        yield
+
+    monkeypatch.setattr(inspection, "open_inventory_observation", fail_inventory)
+
+    with pytest.raises(RuntimeError) as raised:
+        inspect_source(tmp_path)
+
+    error = raised.value
+    public = "\n".join(
+        (
+            str(error),
+            repr(error),
+            "".join(traceback.format_exception(error)),
+        )
+    )
+    assert type(error) is RuntimeError
+    assert not isinstance(error, InspectionError)
+    assert str(error) == "inspection-internal-error"
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
+    assert hostile_code not in public
+    assert "079123456789" not in public
+    assert "parser-diagnostic" not in public
 
 
 def test_inspection_error_surface_is_exact_allowlisted_and_private_safe():
