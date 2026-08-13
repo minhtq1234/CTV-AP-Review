@@ -12,6 +12,7 @@ import weakref
 
 import pytest
 
+import ctv_local_ocr as ocr_module
 from ctv_local_ocr import (
     MAX_IMAGE_BYTES,
     MAX_TSV_BYTES,
@@ -230,6 +231,53 @@ def test_session_finalization_releases_registry_owned_runner_authority():
 
     assert session_reference() is None
     assert runner_reference() is None
+
+
+def test_module_registry_and_lookup_cannot_return_authority_for_custom_caps():
+    session, runner = _open_available_session()
+    calls_before = len(runner.calls)
+    registry = getattr(ocr_module, "_SESSION_STATES", None)
+    lookup = getattr(ocr_module, "_state_for_session", None)
+    escaped_result = None
+
+    if registry is not None and lookup is not None:
+        state = lookup(session)
+        assert registry[id(session)] is state
+        escaped_result = state.authority(b"attacker-selected", 9999, 9999)
+
+    assert registry is None
+    assert lookup is None
+    assert escaped_result is None
+    assert len(runner.calls) == calls_before
+
+
+def test_module_exports_no_registry_state_or_authority_container():
+    session, _ = _open_available_session()
+    forbidden_names = {
+        "_SESSION_STATES",
+        "_SESSION_STATES_LOCK",
+        "_SessionState",
+        "_state_for_session",
+        "_register_session",
+        "_discard_session_state",
+        "_OcrAuthority",
+    }
+
+    assert forbidden_names.isdisjoint(dir(ocr_module))
+    for name in dir(ocr_module):
+        value = getattr(ocr_module, name)
+        if isinstance(value, dict):
+            assert id(session) not in value
+        if not callable(value):
+            continue
+        callable_value = getattr(value, "__func__", value)
+        for cell in getattr(callable_value, "__closure__", ()) or ():
+            try:
+                closure_value = cell.cell_contents
+            except ValueError:
+                continue
+            assert not isinstance(closure_value, dict)
+            assert not hasattr(closure_value, "authority")
 
 
 def test_relative_lookup_result_is_privately_bound_as_an_absolute_executable(

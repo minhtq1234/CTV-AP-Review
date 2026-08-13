@@ -70,15 +70,6 @@ class _BoundedRunner(Protocol):
     ) -> _BoundedProcessResult: ...
 
 
-class _OcrAuthority(Protocol):
-    def __call__(
-        self,
-        input_bytes: bytes,
-        timeout_seconds: float,
-        output_limit: int,
-    ) -> _BoundedProcessResult: ...
-
-
 class LocalOcrSession:
     __slots__ = ("__capability", "__weakref__")
 
@@ -94,63 +85,6 @@ class LocalOcrSession:
 
     def __str__(self) -> str:
         return "LocalOcrSession()"
-
-
-class _SessionState:
-    __slots__ = ("authority", "capability", "lock", "session_reference")
-
-    def __init__(
-        self,
-        capability: OcrCapability,
-        authority: _OcrAuthority,
-        session_reference: weakref.ReferenceType[LocalOcrSession],
-    ) -> None:
-        self.capability = capability
-        self.authority = authority
-        self.lock = threading.Lock()
-        self.session_reference = session_reference
-
-
-_SESSION_STATES: dict[int, _SessionState] = {}
-_SESSION_STATES_LOCK = threading.Lock()
-
-
-def _discard_session_state(
-    session_identity: int,
-    session_reference: weakref.ReferenceType[LocalOcrSession],
-) -> None:
-    with _SESSION_STATES_LOCK:
-        state = _SESSION_STATES.get(session_identity)
-        if state is not None and state.session_reference is session_reference:
-            del _SESSION_STATES[session_identity]
-
-
-def _register_session(
-    capability: OcrCapability,
-    authority: _OcrAuthority,
-) -> LocalOcrSession:
-    session = LocalOcrSession(capability)
-    session_identity = id(session)
-
-    def discard(reference: weakref.ReferenceType[LocalOcrSession]) -> None:
-        _discard_session_state(session_identity, reference)
-
-    session_reference = weakref.ref(session, discard)
-    state = _SessionState(capability, authority, session_reference)
-    with _SESSION_STATES_LOCK:
-        _SESSION_STATES[session_identity] = state
-    return session
-
-
-def _state_for_session(session: object) -> _SessionState | None:
-    if type(session) is not LocalOcrSession:
-        return None
-    session_identity = id(session)
-    with _SESSION_STATES_LOCK:
-        state = _SESSION_STATES.get(session_identity)
-        if state is None or state.session_reference() is not session:
-            return None
-        return state
 
 
 @dataclass
@@ -430,76 +364,6 @@ def probe_local_ocr(
     return _capability_for_executable(executable, bounded_runner)
 
 
-def open_local_ocr(
-    executable_lookup: Callable[[str], str | None] = shutil.which,
-    process_factory: Callable[..., object] = subprocess.Popen,
-    *,
-    selector_factory: Callable[[], object] = selectors.DefaultSelector,
-    monotonic: Callable[[], float] = time.monotonic,
-    runner: _BoundedRunner | None = None,
-    recorder: Callable[[tuple[str, ...], bytes, float, int], None] | None = None,
-) -> LocalOcrSession:
-    """Resolve and bind one private executable exactly once for an inspect call."""
-    if runner is None:
-        def bounded_runner(
-            argv: Sequence[str],
-            input_bytes: bytes,
-            timeout_seconds: float,
-            output_limit: int,
-        ) -> _BoundedProcessResult:
-            return _run_bounded_process(
-                argv,
-                input_bytes,
-                timeout_seconds,
-                output_limit,
-                process_factory=process_factory,
-                selector_factory=selector_factory,
-                monotonic=monotonic,
-                recorder=recorder,
-            )
-    else:
-        bounded_runner = runner
-
-    try:
-        executable = executable_lookup("tesseract")
-    except Exception:
-        executable = None
-    if not executable:
-        def unavailable_authority(
-            _input_bytes: bytes,
-            _timeout_seconds: float,
-            _output_limit: int,
-        ) -> _BoundedProcessResult:
-            return _BoundedProcessResult("failed", None, b"")
-
-        return _register_session(OcrCapability(False, None), unavailable_authority)
-    executable = os.path.abspath(executable)
-    capability = _capability_for_executable(executable, bounded_runner)
-
-    def authority(
-        input_bytes: bytes,
-        timeout_seconds: float,
-        output_limit: int,
-    ) -> _BoundedProcessResult:
-        return bounded_runner(
-            [
-                executable,
-                "stdin",
-                "stdout",
-                "-l",
-                "vie",
-                "--psm",
-                "6",
-                "tsv",
-            ],
-            input_bytes,
-            timeout_seconds,
-            output_limit,
-        )
-
-    return _register_session(capability, authority)
-
-
 def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
     try:
         lines = stdout.decode("utf-8", errors="strict").splitlines()
@@ -532,90 +396,197 @@ def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
         return None
 
 
-def _run_local_ocr_bound(
-    image_bytes: bytes,
-    *,
-    capability: OcrCapability,
-    authority: _OcrAuthority,
-    budget: OcrBudget,
-    timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> OcrOutcome:
-    """Run sequential bounded OCR and retain extracted text only in private state."""
-    if not capability.available:
-        return OcrOutcome("unavailable", "")
-    if not image_bytes or not image_bytes.startswith(_PNG_SIGNATURE):
-        return OcrOutcome("failed", "")
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        return OcrOutcome("over-limit", "")
+def _build_local_ocr_operations():
+    registry = {}
+    registry_lock = threading.Lock()
 
-    now = monotonic()
-    elapsed = now - budget.started_at
-    remaining_total = budget.max_total_seconds - elapsed
-    if budget.used_units >= budget.max_units or remaining_total <= 0:
-        return OcrOutcome("over-limit", "")
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(float(timeout_seconds))
-        or timeout_seconds <= 0
-    ):
-        return OcrOutcome("failed", "")
+    class PrivateRequest:
+        __slots__ = ("budget", "image_bytes", "monotonic", "timeout_seconds")
 
-    effective_timeout = min(
-        float(timeout_seconds),
-        float(DEFAULT_OCR_TIMEOUT_SECONDS),
-        float(remaining_total),
-    )
-    if effective_timeout <= 0:
-        return OcrOutcome("over-limit", "")
+        def __init__(self, image_bytes, budget, timeout_seconds, monotonic):
+            self.image_bytes = image_bytes
+            self.budget = budget
+            self.timeout_seconds = timeout_seconds
+            self.monotonic = monotonic
 
-    budget.used_units += 1
-    try:
-        process_result = authority(
-            image_bytes,
-            effective_timeout,
-            MAX_TSV_BYTES,
-        )
-        if process_result.status == "timeout":
-            return OcrOutcome("timeout", "")
-        if process_result.status == "over-limit":
+    class RegistryState:
+        __slots__ = ("capability", "invoke", "lock", "session_reference")
+
+        def __init__(self, capability, invoke, session_reference):
+            self.capability = capability
+            self.invoke = invoke
+            self.lock = threading.Lock()
+            self.session_reference = session_reference
+
+    def register_session(capability, invoke):
+        session = LocalOcrSession(capability)
+        session_identity = id(session)
+
+        def discard(reference):
+            with registry_lock:
+                state = registry.get(session_identity)
+                if state is not None and state.session_reference is reference:
+                    del registry[session_identity]
+
+        session_reference = weakref.ref(session, discard)
+        state = RegistryState(capability, invoke, session_reference)
+        with registry_lock:
+            registry[session_identity] = state
+        return session
+
+    def open_local_ocr_impl(
+        executable_lookup: Callable[[str], str | None] = shutil.which,
+        process_factory: Callable[..., object] = subprocess.Popen,
+        *,
+        selector_factory: Callable[[], object] = selectors.DefaultSelector,
+        monotonic: Callable[[], float] = time.monotonic,
+        runner: _BoundedRunner | None = None,
+        recorder: Callable[[tuple[str, ...], bytes, float, int], None] | None = None,
+    ) -> LocalOcrSession:
+        """Resolve and bind one private executable exactly once for an inspect call."""
+        if runner is None:
+            def bounded_runner(
+                argv: Sequence[str],
+                input_bytes: bytes,
+                timeout_seconds: float,
+                output_limit: int,
+            ) -> _BoundedProcessResult:
+                return _run_bounded_process(
+                    argv,
+                    input_bytes,
+                    timeout_seconds,
+                    output_limit,
+                    process_factory=process_factory,
+                    selector_factory=selector_factory,
+                    monotonic=monotonic,
+                    recorder=recorder,
+                )
+        else:
+            bounded_runner = runner
+
+        try:
+            executable = executable_lookup("tesseract")
+        except Exception:
+            executable = None
+        if not executable:
+            def unavailable_invoke(_input_bytes, _timeout_seconds, _output_limit):
+                return _BoundedProcessResult("failed", None, b"")
+
+            return register_session(OcrCapability(False, None), unavailable_invoke)
+        executable = os.path.abspath(executable)
+        capability = _capability_for_executable(executable, bounded_runner)
+
+        def invoke(input_bytes, timeout_seconds, output_limit):
+            return bounded_runner(
+                [
+                    executable,
+                    "stdin",
+                    "stdout",
+                    "-l",
+                    "vie",
+                    "--psm",
+                    "6",
+                    "tsv",
+                ],
+                input_bytes,
+                timeout_seconds,
+                output_limit,
+            )
+
+        return register_session(capability, invoke)
+
+    def execute_request(state, request):
+        if not state.capability.available:
+            return OcrOutcome("unavailable", "")
+        image_bytes = request.image_bytes
+        if not image_bytes or not image_bytes.startswith(_PNG_SIGNATURE):
+            return OcrOutcome("failed", "")
+        if len(image_bytes) > 25 * 1024 * 1024:
             return OcrOutcome("over-limit", "")
-        if process_result.status != "succeeded" or process_result.returncode != 0:
+
+        budget = request.budget
+        try:
+            now = request.monotonic()
+            elapsed = now - budget.started_at
+            total_limit = min(float(budget.max_total_seconds), 1800.0)
+            unit_limit = min(int(budget.max_units), 500)
+            remaining_total = total_limit - elapsed
+            if budget.used_units >= unit_limit or remaining_total <= 0:
+                return OcrOutcome("over-limit", "")
+            timeout_seconds = request.timeout_seconds
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, (int, float))
+                or not math.isfinite(float(timeout_seconds))
+                or timeout_seconds <= 0
+            ):
+                return OcrOutcome("failed", "")
+            effective_timeout = min(
+                float(timeout_seconds),
+                30.0,
+                float(remaining_total),
+            )
+            if effective_timeout <= 0:
+                return OcrOutcome("over-limit", "")
+            budget.used_units += 1
+        except Exception:
             return OcrOutcome("failed", "")
 
-        parsed = _parse_tsv(process_result._stdout)
-        if parsed is None:
+        try:
+            process_result = state.invoke(
+                image_bytes,
+                effective_timeout,
+                4 * 1024 * 1024,
+            )
+            if process_result.status == "timeout":
+                return OcrOutcome("timeout", "")
+            if process_result.status == "over-limit":
+                return OcrOutcome("over-limit", "")
+            if process_result.status != "succeeded" or process_result.returncode != 0:
+                return OcrOutcome("failed", "")
+
+            parsed = _parse_tsv(process_result._stdout)
+            if parsed is None:
+                return OcrOutcome("failed", "")
+            private_text, mean_confidence = parsed
+            status: OcrStatus = (
+                "succeeded" if mean_confidence >= 70 else "low-confidence"
+            )
+            return OcrOutcome(status, private_text)
+        except subprocess.TimeoutExpired:
+            return OcrOutcome("timeout", "")
+        except Exception:
             return OcrOutcome("failed", "")
-        private_text, mean_confidence = parsed
-        status: OcrStatus = (
-            "succeeded" if mean_confidence >= 70 else "low-confidence"
-        )
-        return OcrOutcome(status, private_text)
-    except subprocess.TimeoutExpired:
-        return OcrOutcome("timeout", "")
-    except Exception:
-        return OcrOutcome("failed", "")
+
+    def dispatch_private_request(session, request):
+        if type(request) is not PrivateRequest or type(session) is not LocalOcrSession:
+            return OcrOutcome("failed", "")
+        session_identity = id(session)
+        with registry_lock:
+            state = registry.get(session_identity)
+            if state is None or state.session_reference() is not session:
+                return OcrOutcome("failed", "")
+        with state.lock:
+            return execute_request(state, request)
+
+    def run_local_ocr_impl(
+        image_bytes: bytes,
+        *,
+        session: LocalOcrSession,
+        budget: OcrBudget,
+        timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> OcrOutcome:
+        """Run one validated request through its exact registered session."""
+        request = PrivateRequest(image_bytes, budget, timeout_seconds, monotonic)
+        return dispatch_private_request(session, request)
+
+    return open_local_ocr_impl, run_local_ocr_impl
 
 
-def run_local_ocr(
-    image_bytes: bytes,
-    *,
-    session: LocalOcrSession,
-    budget: OcrBudget,
-    timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> OcrOutcome:
-    """Serialize all OCR work through the session's single bounded process lane."""
-    state = _state_for_session(session)
-    if state is None:
-        return OcrOutcome("failed", "")
-    with state.lock:
-        return _run_local_ocr_bound(
-            image_bytes,
-            capability=state.capability,
-            authority=state.authority,
-            budget=budget,
-            timeout_seconds=timeout_seconds,
-            monotonic=monotonic,
-        )
+open_local_ocr, run_local_ocr = _build_local_ocr_operations()
+open_local_ocr.__name__ = "open_local_ocr"
+open_local_ocr.__qualname__ = "open_local_ocr"
+run_local_ocr.__name__ = "run_local_ocr"
+run_local_ocr.__qualname__ = "run_local_ocr"
+del _build_local_ocr_operations
