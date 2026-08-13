@@ -224,6 +224,51 @@ such reflection recovers the private OCR registry invocation, that innermost
 boundary still rechecks exact PNG bytes and enforces the 25-MiB input, 30-second
 timeout, and 4-MiB output ceilings before or around the local runner.
 
+### Reviewing a preparation proposal with WP
+
+WP calls the toolkit installed on the user's local machine; WP does not bundle,
+copy, or reimplement any CTV code. The local script path and source folder are
+both explicit. Run the preflights first and stop if any one fails, then use only
+this exact review command:
+
+```bash
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py version --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py doctor --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py contract verify --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py proposal review --source-root /explicit/local/source --json
+```
+
+The review command retains one read-only observation from inspection through
+final revalidation. It opens a temporary browser screen on `127.0.0.1` using an
+OS-assigned port. The user selects the roster, reviews every unit and source-only
+item, and explicitly approves, returns a draft, or cancels. The screen stops and
+clears its memory-only session before the CLI emits one JSON envelope. It binds
+only to loopback, writes no source, output, report, cache, draft, or package file,
+and makes no external network request.
+
+The local review lasts no more than two hours and times out after five minutes of
+inactivity. A timeout, browser/server failure, parser or source failure, or any
+source-tree change returns a fixed failure with no partial proposal. Retry always
+starts a fresh observation and a fresh review; a draft cannot be resumed.
+
+Exit `0` returns one privacy-safe `approved`, `draft`, or `cancelled` result under
+operation `proposal.review`. An approved result has `readyToPrepare: true`; draft
+and cancelled results do not. Exit `2` is a controlled source/environment/session
+failure, while exit `1` is invalid invocation or a fixed internal failure.
+Invalid invocation leaves stdout empty. Parsed operations emit canonical JSON no
+larger than 16 MiB.
+
+CLI JSON contains only opaque observation, participant, evidence, and unit IDs;
+fixed decisions, roles, scopes, issue/error codes; bounded counts; and the local
+approval digest/status where applicable. Names, identity values, roster cells,
+paths, filenames, previews, raw OCR/text, tokens, ports, private notes, and parser
+diagnostics stay local and are never returned to WP.
+
+This milestone returns a preparation proposal only. It does not create a prepared
+package, prove authenticity, completeness, ownership, or user identity, or grant
+payment readiness or payment approval. Any package writer remains a separate,
+explicitly approved milestone.
+
 The 2026-08-13 acceptance snapshot used Python 3.14.3, PyMuPDF 1.27.2.3,
 OpenPyXL 3.1.5, Pillow 12.1.1, and Pydantic 2.13.4. These are privacy-safe test
 environment identifiers, not minimum-version promises. Dependency versions are

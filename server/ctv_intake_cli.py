@@ -23,7 +23,8 @@ _INVOCATION_GUIDANCE = (
     "usage: ctv_intake_cli.py "
     "{version --json | doctor --json | contract verify --json | "
     "inventory --source-root <path> --json | "
-    "inspect --source-root <path> --json}\n"
+    "inspect --source-root <path> --json | "
+    "proposal review --source-root <path> --json}\n"
 )
 _APPROVED_ARGV = frozenset(
     {
@@ -80,7 +81,9 @@ _INSPECTION_ERROR_CODES = frozenset(
 )
 _INSPECTION_ERROR_MESSAGE = "The source folder could not be inspected safely."
 _INSPECTION_MAX_JSON_BYTES = 16 * 1024 * 1024
+_PROPOSAL_MAX_JSON_BYTES = 16 * 1024 * 1024
 _INSPECT_INTERNAL_FAILURE = object()
+_PROPOSAL_INTERNAL_FAILURE = object()
 _INSPECT_INTERNAL_ERROR_BYTES = (
     b'{\n'
     b'  "errors": [\n'
@@ -97,6 +100,48 @@ _INSPECT_INTERNAL_ERROR_BYTES = (
     b'  "summary": "The local toolkit could not complete the check"\n'
     b'}\n'
 )
+_PROPOSAL_INTERNAL_ERROR_BYTES = (
+    b'{\n'
+    b'  "errors": [\n'
+    b'    {\n'
+    b'      "code": "internal-error",\n'
+    b'      "message": "The local toolkit could not complete the check."\n'
+    b'    }\n'
+    b'  ],\n'
+    b'  "operation": "proposal.review",\n'
+    b'  "result": {},\n'
+    b'  "retryable": false,\n'
+    b'  "schemaVersion": "1.0",\n'
+    b'  "status": "failed",\n'
+    b'  "summary": "The local toolkit could not complete the check"\n'
+    b'}\n'
+)
+_PROPOSAL_REVIEW_ERRORS = {
+    "review-browser-open-failed": (
+        "proposal-browser-unavailable",
+        "The local proposal review browser could not be opened.",
+    ),
+    "review-timeout": (
+        "proposal-session-timeout",
+        "The local proposal review session timed out.",
+    ),
+    "review-server-failed": (
+        "proposal-session-failed",
+        "The local proposal review session could not be completed.",
+    ),
+    "review-source-changed": (
+        "proposal-source-changed",
+        "The source folder changed during local proposal review.",
+    ),
+}
+_PROPOSAL_SOURCE_ERROR_CODES = _INSPECTION_ERROR_CODES | frozenset(
+    {"inventory-tree-changed"}
+)
+_PROPOSAL_SUMMARIES = {
+    "approved": "Proposal review approved",
+    "draft": "Proposal review returned a draft",
+    "cancelled": "Proposal review cancelled",
+}
 
 
 class CliInvocationError(RuntimeError):
@@ -139,6 +184,15 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("--source-root", type=Path, required=True)
     inspect.add_argument("--json", action="store_true", required=True)
     inspect.set_defaults(operation="inspect")
+
+    proposal = commands.add_parser("proposal", add_help=False)
+    proposal_commands = proposal.add_subparsers(
+        dest="proposal_command", required=True
+    )
+    review = proposal_commands.add_parser("review", add_help=False)
+    review.add_argument("--source-root", type=Path, required=True)
+    review.add_argument("--json", action="store_true", required=True)
+    review.set_defaults(operation="proposal.review")
     return parser
 
 
@@ -167,6 +221,26 @@ def _is_inventory_argv(invocation: list[str]) -> bool:
 
 def _is_inspect_argv(invocation: list[str]) -> bool:
     return _is_source_root_argv(invocation, "inspect")
+
+
+def _is_proposal_review_argv(invocation: list[str]) -> bool:
+    if (
+        len(invocation) != 5
+        or invocation[0] != "proposal"
+        or invocation[1] != "review"
+        or invocation[2] != "--source-root"
+        or invocation[4] != "--json"
+    ):
+        return False
+    raw_source = invocation[3]
+    if not raw_source or raw_source.startswith("-"):
+        return False
+    if raw_source == os.sep:
+        return True
+    components = raw_source.split(os.sep)
+    if raw_source.startswith(os.sep):
+        components = components[1:]
+    return bool(components) and all(components)
 
 
 def _emit_stdout(content: bytes) -> None:
@@ -321,6 +395,115 @@ def _inspection_result(source_root: Path):
         return _INSPECT_INTERNAL_FAILURE, 1
 
 
+def proposal_review_source(source_root: Path, *, review_driver=None):
+    """Run one review against one retained observation and return after close."""
+    from ctv_inspection import inspect_observation
+    from ctv_inventory import open_inventory_observation
+    from ctv_proposal import ProposalState
+
+    if review_driver is None:
+        from ctv_proposal_review import run_local_review
+
+        review_driver = run_local_review
+    if not callable(review_driver):
+        raise TypeError("review driver must be callable")
+
+    with open_inventory_observation(source_root) as observation:
+        inspection = inspect_observation(observation)
+        state = ProposalState.from_inspection(observation, inspection)
+        result = review_driver(state)
+    return result
+
+
+def _safe_fixed_error_code(error, error_type, allowed) -> str | None:
+    if error_type is None or type(error) is not error_type:
+        return None
+    try:
+        code = error.code
+    except BaseException:
+        try:
+            arguments = error.args
+            code = arguments[0] if len(arguments) == 1 else None
+        except BaseException:
+            return None
+    if type(code) is str and code in allowed:
+        return code
+    return None
+
+
+def _proposal_result(source_root: Path, *, review_driver=None):
+    inspection_error_type = None
+    review_error_type = None
+    try:
+        from ctv_inspection import InspectionError
+        from ctv_proposal_review import ReviewError
+
+        inspection_error_type = InspectionError
+        review_error_type = ReviewError
+        result = proposal_review_source(
+            source_root,
+            review_driver=review_driver,
+        )
+        if type(result) is not dict:
+            raise TypeError("proposal result must be a dictionary")
+        outcome = result.get("outcome")
+        if type(outcome) is not str or outcome not in _PROPOSAL_SUMMARIES:
+            raise ValueError("proposal outcome must be terminal")
+        return (
+            succeeded(
+                "proposal.review",
+                _PROPOSAL_SUMMARIES[outcome],
+                result,
+            ),
+            0,
+        )
+    except BaseException as error:
+        review_code = _safe_fixed_error_code(
+            error,
+            review_error_type,
+            frozenset(_PROPOSAL_REVIEW_ERRORS),
+        )
+        if review_code is not None:
+            public_code, message = _PROPOSAL_REVIEW_ERRORS[review_code]
+            return (
+                failed(
+                    "proposal.review",
+                    "Local proposal review could not be completed",
+                    [CliError(public_code, message)],
+                    retryable=False,
+                ),
+                2,
+            )
+
+        inventory_code = _safe_fixed_error_code(
+            error,
+            InventoryError,
+            _PROPOSAL_SOURCE_ERROR_CODES,
+        )
+        inspection_code = _safe_fixed_error_code(
+            error,
+            inspection_error_type,
+            _INSPECTION_ERROR_CODES,
+        )
+        code = inventory_code if inventory_code is not None else inspection_code
+        if code is not None:
+            if code in {"inventory-tree-changed", "inspection-tree-changed"}:
+                code = "proposal-source-changed"
+                message = "The source folder changed during local proposal review."
+            else:
+                message = "The source folder could not be reviewed safely."
+            return (
+                failed(
+                    "proposal.review",
+                    "Local proposal review could not be completed",
+                    [CliError(code, message)],
+                    retryable=False,
+                ),
+                2,
+            )
+        return _PROPOSAL_INTERNAL_FAILURE, 1
+
+
 def _operation_failure(operation: str, code: str, message: str):
     return failed(
         operation,
@@ -378,12 +561,50 @@ def _emit_inspection_result(envelope, exit_code: int) -> int:
     return exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
+def _emit_proposal_result(envelope, exit_code: int) -> int:
+    if envelope is _PROPOSAL_INTERNAL_FAILURE:
+        content = _PROPOSAL_INTERNAL_ERROR_BYTES
+        exit_code = 1
+    else:
+        try:
+            content = canonical_json_bytes(envelope)
+            if type(content) is not bytes:
+                raise TypeError("canonical proposal output must be bytes")
+            if len(content) > _PROPOSAL_MAX_JSON_BYTES:
+                content = canonical_json_bytes(
+                    failed(
+                        "proposal.review",
+                        "Local proposal review could not be completed",
+                        [
+                            CliError(
+                                "proposal-output-too-large",
+                                "The local proposal review result exceeded its safe limit.",
+                            )
+                        ],
+                        retryable=False,
+                    )
+                )
+                if type(content) is not bytes or len(content) > _PROPOSAL_MAX_JSON_BYTES:
+                    raise ValueError("canonical proposal failure exceeds output limit")
+                exit_code = 2
+        except BaseException:
+            content = _PROPOSAL_INTERNAL_ERROR_BYTES
+            exit_code = 1
+    _emit_stdout(content)
+    return exit_code
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    proposal_review_driver=None,
+) -> int:
     invocation = list(sys.argv[1:] if argv is None else argv)
     if (
         tuple(invocation) not in _APPROVED_ARGV
         and not _is_inventory_argv(invocation)
         and not _is_inspect_argv(invocation)
+        and not _is_proposal_review_argv(invocation)
     ):
         sys.stderr.write(_INVOCATION_GUIDANCE)
         sys.stderr.flush()
@@ -406,8 +627,13 @@ def main(argv: list[str] | None = None) -> int:
             envelope, exit_code = _contract_result()
         elif operation == "inventory":
             envelope, exit_code = _inventory_result(args.source_root)
-        else:
+        elif operation == "inspect":
             envelope, exit_code = _inspection_result(args.source_root)
+        else:
+            envelope, exit_code = _proposal_result(
+                args.source_root,
+                review_driver=proposal_review_driver,
+            )
     except InventoryError as error:
         if isinstance(error.code, str) and error.code in _INVENTORY_ERROR_CODES:
             envelope = _operation_failure(
@@ -435,6 +661,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if operation == "inspect":
         return _emit_inspection_result(envelope, exit_code)
+    if operation == "proposal.review":
+        return _emit_proposal_result(envelope, exit_code)
 
     content = canonical_json_bytes(envelope)
     if operation == "inventory" and len(content) > DEFAULT_LIMITS.max_json_bytes:

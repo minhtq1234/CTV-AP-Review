@@ -27,6 +27,11 @@ INSPECTION_MODULE_FILENAMES = (
     "ctv_inspection_model.py",
     "ctv_inspection_workbook.py",
 )
+PROPOSAL_MODULE_FILENAMES = (
+    "ctv_proposal.py",
+    "ctv_proposal_review.py",
+    "ctv_proposal_review_ui.py",
+)
 
 
 def _run(
@@ -1159,6 +1164,9 @@ def test_invalid_invocation_emits_only_bounded_guidance(argv, capsysbinary):
     assert captured.err.count(b"contract verify --json") == 1
     assert captured.err.count(b"inventory --source-root <path> --json") == 1
     assert captured.err.count(b"inspect --source-root <path> --json") == 1
+    assert captured.err.count(
+        b"proposal review --source-root <path> --json"
+    ) == 1
 
 
 @pytest.mark.parametrize(
@@ -1267,6 +1275,59 @@ def test_invalid_inspect_surface_emits_only_fixed_private_guidance(argv):
     assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
     assert 0 < len(result.stderr) <= 512
     assert "Tên tuyệt mật".encode() not in result.stderr
+    assert b"--private-source" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["proposal"],
+        ["proposal", "review"],
+        ["proposal", "review", "--source-root", "", "--json"],
+        ["proposal", "review", "--source-root", "--json"],
+        ["proposal", "rev", "--source-root", "/private/Ten", "--json"],
+        ["proposal", "review", "--source-r", "/private/Ten", "--json"],
+        ["proposal", "review", "--source-root", "/private/Ten", "--j"],
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "/private/Ten",
+            "--source-root",
+            "/private/Khac",
+            "--json",
+        ],
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "/private/Ten",
+            "--json",
+            "--json",
+        ],
+        ["proposal", "review", "--json", "--source-root", "/private/Ten"],
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "/private/Ten",
+            "--json",
+            "extra",
+        ],
+        ["proposal", "review", "--source-root", "--private-source", "--json"],
+        ["proposal", "review", "--source-root", "/private/Ten/", "--json"],
+        ["proposal", "review", "--source-root", "/private//Ten", "--json"],
+        ["proposal", "review", "--source-root", "////", "--json"],
+    ],
+)
+def test_invalid_proposal_review_surface_emits_only_fixed_private_guidance(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert 0 < len(result.stderr) <= 512
+    assert b"/private/Ten" not in result.stderr
     assert b"--private-source" not in result.stderr
 
 
@@ -1414,6 +1475,120 @@ def test_every_legacy_form_survives_each_broken_inspection_module(
         assert result.returncode == 0
         assert result.stderr == b""
         assert b"private-poisoned-inspection-import" not in result.stdout
+
+
+@pytest.mark.parametrize("module_filename", PROPOSAL_MODULE_FILENAMES)
+@pytest.mark.parametrize("module_fault", ["missing", "poisoned"])
+def test_legacy_and_invalid_forms_do_not_import_proposal_or_browser_modules(
+    module_filename, module_fault, tmp_path
+):
+    root = _copy_toolkit(tmp_path)
+    module_path = root / "server" / module_filename
+    if module_fault == "missing":
+        module_path.unlink()
+    else:
+        module_path.write_text(
+            "raise KeyboardInterrupt('private-poisoned-proposal-import')\n",
+            encoding="utf-8",
+        )
+    source = tmp_path / "synthetic-source"
+    source.mkdir()
+    invocations = (
+        (("version", "--json"), "version", 0),
+        (("doctor", "--json"), "doctor", 0),
+        (("contract", "verify", "--json"), "contract.verify", 0),
+        (("inventory", "--source-root", str(source), "--json"), "inventory", 0),
+        (("inspect", "--source-root", str(source), "--json"), "inspect", 0),
+        (("proposal", "review", "--json"), None, 1),
+    )
+
+    for argv, operation, expected_exit in invocations:
+        result = _run(*argv, cwd=tmp_path, script=root / "server" / SCRIPT.name)
+
+        assert result.returncode == expected_exit
+        if operation is None:
+            assert result.stdout == b""
+            assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+        else:
+            _envelope(result, operation, "succeeded")
+            assert result.stderr == b""
+        assert b"private-poisoned-proposal-import" not in result.stdout
+        assert b"private-poisoned-proposal-import" not in result.stderr
+
+
+def test_exact_proposal_review_argv_dispatches_source_root_lazily(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    dispatched = []
+
+    def review(source_root, *, review_driver=None):
+        dispatched.append((source_root, review_driver))
+        return {
+            "version": "1.0",
+            "outcome": "cancelled",
+            "readyToPrepare": False,
+        }
+
+    marker = object()
+    monkeypatch.setattr(cli, "proposal_review_source", review, raising=False)
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "synthetic-source",
+            "--json",
+        ],
+        proposal_review_driver=marker,
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "succeeded")
+    assert exit_code == 0
+    assert dispatched == [(Path("synthetic-source"), marker)]
+    assert payload["result"] == {
+        "version": "1.0",
+        "outcome": "cancelled",
+        "readyToPrepare": False,
+    }
+
+
+def test_proposal_review_output_over_16_mib_is_replaced_before_one_stdout_write(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    monkeypatch.setattr(
+        cli,
+        "proposal_review_source",
+        lambda _root, *, review_driver=None: {
+            "version": "1.0",
+            "outcome": "draft",
+            "readyToPrepare": False,
+            "oversized": "x" * (16 * 1024 * 1024),
+        },
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "synthetic-source",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "failed")
+    assert exit_code == 2
+    assert payload["result"] == {}
+    assert payload["errors"] == [
+        {
+            "code": "proposal-output-too-large",
+            "message": "The local proposal review result exceeded its safe limit.",
+        }
+    ]
 
 
 @pytest.mark.parametrize("module_filename", INSPECTION_MODULE_FILENAMES)
@@ -1753,7 +1928,14 @@ def test_all_production_modules_keep_process_archive_network_ai_and_shell_bounda
     for path in production_modules:
         roots = _import_roots(path)
         assert roots.isdisjoint(archive_extractors)
-        assert roots.isdisjoint(remote_or_ai)
+        if path.name == "ctv_proposal_review.py":
+            assert roots.intersection(remote_or_ai) == {
+                "http",
+                "urllib",
+                "webbrowser",
+            }
+        else:
+            assert roots.isdisjoint(remote_or_ai)
         assert _called_attribute_names(path).isdisjoint(
             {"extract", "extractall", "unpack_archive"}
         )
@@ -1974,7 +2156,7 @@ def _parser_destinations(parser) -> set[str]:
     return seen
 
 
-def test_parser_exposes_source_root_only_on_inventory_and_inspect():
+def test_parser_exposes_source_root_only_on_document_commands():
     cli = _module()
     parser = cli._parser()
     command_action = next(
@@ -1983,6 +2165,7 @@ def test_parser_exposes_source_root_only_on_inventory_and_inspect():
     commands = command_action.choices
     assert "source-root" in _parser_destinations(commands["inventory"])
     assert "source-root" in _parser_destinations(commands["inspect"])
+    assert "source-root" in _parser_destinations(commands["proposal"])
     for command in ("version", "doctor", "contract"):
         assert "source-root" not in _parser_destinations(commands[command])
 

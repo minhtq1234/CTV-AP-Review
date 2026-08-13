@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-_OPERATIONS = frozenset({"version", "doctor", "contract.verify", "inventory", "inspect"})
+_OPERATIONS = frozenset(
+    {"version", "doctor", "contract.verify", "inventory", "inspect", "proposal.review"}
+)
 _ERROR_CODE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
