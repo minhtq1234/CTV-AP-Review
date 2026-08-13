@@ -255,6 +255,52 @@ def test_http_boundary_rejects_malformed_authorization_routes_and_json(tmp_path)
         context.__exit__(None, None, None)
 
 
+def test_huge_ascii_content_length_is_bounded_without_terminating_session(
+    tmp_path,
+):
+    _source, context, state = _state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        csrf = _json(body)["csrfToken"]
+
+        connection = http.client.HTTPConnection(
+            parsed.hostname, parsed.port, timeout=3
+        )
+        connection.putrequest("POST", "/api/heartbeat", skip_host=True)
+        connection.putheader("Host", f"127.0.0.1:{parsed.port}")
+        connection.putheader("Cookie", cookie)
+        connection.putheader("Origin", f"http://127.0.0.1:{parsed.port}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("X-CSRF-Token", csrf)
+        connection.putheader("Content-Length", "9" * 5_000)
+        connection.endheaders()
+        response = connection.getresponse()
+        assert response.status == 413
+        assert _json(response.read()) == {"error": "request-too-large"}
+        connection.close()
+
+        status, _headers, body = _post(
+            parsed, "/api/heartbeat", cookie, csrf, {}
+        )
+        assert status == 200
+        assert _json(body) == {"status": "active"}
+        status, _headers, body = _post(parsed, "/api/draft", cookie, csrf, {})
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        result = run_local_review(state, browser_open=drive)
+        assert result["outcome"] == "draft"
+    finally:
+        context.__exit__(None, None, None)
+
+
 def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_path):
     _source, context, state = _state(tmp_path)
     approved_response = {}

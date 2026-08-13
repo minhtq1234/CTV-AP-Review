@@ -533,10 +533,15 @@ class _ReviewHandler(BaseHTTPRequestHandler):
         ):
             self._reject(400, "invalid-request")
             return None
-        length = int(length_text)
-        if length > _MAX_REQUEST_BYTES:
+        normalized_length = length_text.lstrip("0") or "0"
+        maximum_length = str(_MAX_REQUEST_BYTES)
+        if len(normalized_length) > len(maximum_length) or (
+            len(normalized_length) == len(maximum_length)
+            and normalized_length > maximum_length
+        ):
             self._reject(413, "request-too-large")
             return None
+        length = int(normalized_length)
         try:
             content = self.rfile.read(length)
         except Exception:
