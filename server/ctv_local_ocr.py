@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from typing import Callable, Literal, Protocol, Sequence
+import weakref
 
 
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
@@ -79,33 +80,77 @@ class _OcrAuthority(Protocol):
 
 
 class LocalOcrSession:
-    __slots__ = ("__authority", "__capability", "__lock")
+    __slots__ = ("__capability", "__weakref__")
 
-    def __init__(
-        self,
-        capability: OcrCapability,
-        authority: _OcrAuthority,
-    ) -> None:
+    def __init__(self, capability: OcrCapability) -> None:
         self.__capability = capability
-        self.__authority = authority
-        self.__lock = threading.Lock()
 
     @property
     def capability(self) -> OcrCapability:
         return self.__capability
-
-    def _run_exclusive(
-        self,
-        operation: Callable[[_OcrAuthority], OcrOutcome],
-    ) -> OcrOutcome:
-        with self.__lock:
-            return operation(self.__authority)
 
     def __repr__(self) -> str:
         return f"LocalOcrSession(capability={self.capability!r})"
 
     def __str__(self) -> str:
         return "LocalOcrSession()"
+
+
+class _SessionState:
+    __slots__ = ("authority", "capability", "lock", "session_reference")
+
+    def __init__(
+        self,
+        capability: OcrCapability,
+        authority: _OcrAuthority,
+        session_reference: weakref.ReferenceType[LocalOcrSession],
+    ) -> None:
+        self.capability = capability
+        self.authority = authority
+        self.lock = threading.Lock()
+        self.session_reference = session_reference
+
+
+_SESSION_STATES: dict[int, _SessionState] = {}
+_SESSION_STATES_LOCK = threading.Lock()
+
+
+def _discard_session_state(
+    session_identity: int,
+    session_reference: weakref.ReferenceType[LocalOcrSession],
+) -> None:
+    with _SESSION_STATES_LOCK:
+        state = _SESSION_STATES.get(session_identity)
+        if state is not None and state.session_reference is session_reference:
+            del _SESSION_STATES[session_identity]
+
+
+def _register_session(
+    capability: OcrCapability,
+    authority: _OcrAuthority,
+) -> LocalOcrSession:
+    session = LocalOcrSession(capability)
+    session_identity = id(session)
+
+    def discard(reference: weakref.ReferenceType[LocalOcrSession]) -> None:
+        _discard_session_state(session_identity, reference)
+
+    session_reference = weakref.ref(session, discard)
+    state = _SessionState(capability, authority, session_reference)
+    with _SESSION_STATES_LOCK:
+        _SESSION_STATES[session_identity] = state
+    return session
+
+
+def _state_for_session(session: object) -> _SessionState | None:
+    if type(session) is not LocalOcrSession:
+        return None
+    session_identity = id(session)
+    with _SESSION_STATES_LOCK:
+        state = _SESSION_STATES.get(session_identity)
+        if state is None or state.session_reference() is not session:
+            return None
+        return state
 
 
 @dataclass
@@ -427,7 +472,7 @@ def open_local_ocr(
         ) -> _BoundedProcessResult:
             return _BoundedProcessResult("failed", None, b"")
 
-        return LocalOcrSession(OcrCapability(False, None), unavailable_authority)
+        return _register_session(OcrCapability(False, None), unavailable_authority)
     executable = os.path.abspath(executable)
     capability = _capability_for_executable(executable, bounded_runner)
 
@@ -452,7 +497,7 @@ def open_local_ocr(
             output_limit,
         )
 
-    return LocalOcrSession(capability, authority)
+    return _register_session(capability, authority)
 
 
 def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
@@ -562,14 +607,15 @@ def run_local_ocr(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> OcrOutcome:
     """Serialize all OCR work through the session's single bounded process lane."""
-    def operation(authority: _OcrAuthority) -> OcrOutcome:
+    state = _state_for_session(session)
+    if state is None:
+        return OcrOutcome("failed", "")
+    with state.lock:
         return _run_local_ocr_bound(
             image_bytes,
-            capability=session.capability,
-            authority=authority,
+            capability=state.capability,
+            authority=state.authority,
             budget=budget,
             timeout_seconds=timeout_seconds,
             monotonic=monotonic,
         )
-
-    return session._run_exclusive(operation)

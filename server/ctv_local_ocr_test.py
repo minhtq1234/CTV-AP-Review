@@ -1,17 +1,21 @@
 import builtins
+import copy
 import dataclasses
+import gc
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import time
+import weakref
 
 import pytest
 
 from ctv_local_ocr import (
     MAX_IMAGE_BYTES,
     MAX_TSV_BYTES,
+    LocalOcrSession,
     OcrBudget,
     OcrCapability,
     _BoundedProcessResult,
@@ -127,6 +131,105 @@ def test_session_has_no_structural_executable_path_field_or_value():
             continue
         assert PRIVATE_EXECUTABLE not in repr(value)
         assert PRIVATE_EXECUTABLE not in str(value)
+        callable_value = getattr(value, "__func__", value)
+        for cell in getattr(callable_value, "__closure__", ()) or ():
+            try:
+                closure_value = cell.cell_contents
+            except ValueError:
+                continue
+            assert PRIVATE_EXECUTABLE not in repr(closure_value)
+            assert PRIVATE_EXECUTABLE not in str(closure_value)
+
+
+def test_session_exposes_no_callback_path_that_can_return_the_authority():
+    session, _ = _open_available_session()
+
+    escape = getattr(session, "_run_exclusive", None)
+    escaped_authority = (
+        escape(lambda authority: authority) if escape is not None else None
+    )
+
+    assert escape is None
+    assert escaped_authority is None
+
+
+def test_copied_session_is_untrusted_and_fails_before_process_or_budget_use():
+    session, runner = _open_available_session()
+    fabricated = copy.copy(session)
+    calls_before = len(runner.calls)
+    budget = OcrBudget(started_at=0.0)
+
+    outcome = run_local_ocr(
+        SYNTHETIC_PNG,
+        session=fabricated,
+        budget=budget,
+        monotonic=lambda: 1.0,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.private_text == ""
+    assert len(runner.calls) == calls_before
+    assert budget.used_units == 0
+
+
+def test_directly_fabricated_session_fails_before_process_or_budget_use():
+    legitimate_session, runner = _open_available_session()
+    fabricated = LocalOcrSession(legitimate_session.capability)
+    calls_before = len(runner.calls)
+    budget = OcrBudget(started_at=0.0)
+
+    outcome = run_local_ocr(
+        SYNTHETIC_PNG,
+        session=fabricated,
+        budget=budget,
+        monotonic=lambda: 1.0,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.private_text == ""
+    assert len(runner.calls) == calls_before
+    assert budget.used_units == 0
+
+
+def test_equality_forged_session_fails_safely_before_process_io():
+    session, runner = _open_available_session()
+    calls_before = len(runner.calls)
+    budget = OcrBudget(started_at=0.0)
+
+    class EqualityForgedSession:
+        capability = OcrCapability(True, "vie")
+
+        def __eq__(self, other):
+            return other is session
+
+    outcome = run_local_ocr(
+        SYNTHETIC_PNG,
+        session=EqualityForgedSession(),
+        budget=budget,
+        monotonic=lambda: 1.0,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.private_text == ""
+    assert len(runner.calls) == calls_before
+    assert budget.used_units == 0
+
+
+def test_session_finalization_releases_registry_owned_runner_authority():
+    runner = _RecordingRunner()
+    session = open_local_ocr(
+        executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
+        runner=runner,
+    )
+    session_reference = weakref.ref(session)
+    runner_reference = weakref.ref(runner)
+
+    del runner
+    del session
+    gc.collect()
+
+    assert session_reference() is None
+    assert runner_reference() is None
 
 
 def test_relative_lookup_result_is_privately_bound_as_an_absolute_executable(
