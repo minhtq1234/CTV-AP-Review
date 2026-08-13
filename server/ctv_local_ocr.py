@@ -418,17 +418,35 @@ def _build_local_ocr_operations():
             self.lock = threading.Lock()
             self.session_reference = session_reference
 
+    def revoke_finalized_session(session_identity, reference):
+        if reference() is not None:
+            return
+        with registry_lock:
+            state = registry.get(session_identity)
+            if (
+                state is not None
+                and state.session_reference is reference
+                and state.session_reference() is None
+            ):
+                del registry[session_identity]
+
+    class SessionFinalizer:
+        __slots__ = ("session_identity",)
+        __revoke = staticmethod(revoke_finalized_session)
+
+        def __init__(self, session_identity):
+            self.session_identity = session_identity
+
+        def __call__(self, reference):
+            self.__revoke(self.session_identity, reference)
+
     def register_session(capability, invoke):
         session = LocalOcrSession(capability)
         session_identity = id(session)
-
-        def discard(reference):
-            with registry_lock:
-                state = registry.get(session_identity)
-                if state is not None and state.session_reference is reference:
-                    del registry[session_identity]
-
-        session_reference = weakref.ref(session, discard)
+        session_reference = weakref.ref(
+            session,
+            SessionFinalizer(session_identity),
+        )
         state = RegistryState(capability, invoke, session_reference)
         with registry_lock:
             registry[session_identity] = state

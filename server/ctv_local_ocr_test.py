@@ -233,6 +233,90 @@ def test_session_finalization_releases_registry_owned_runner_authority():
     assert runner_reference() is None
 
 
+def _immediate_callback_values(callback):
+    values = []
+    try:
+        values.extend(vars(callback).values())
+    except TypeError:
+        pass
+
+    for owner in type(callback).__mro__:
+        slots = owner.__dict__.get("__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots:
+            if slot in {"__dict__", "__weakref__"}:
+                continue
+            try:
+                values.append(object.__getattribute__(callback, slot))
+            except AttributeError:
+                continue
+
+    callback_method = getattr(getattr(callback, "__call__", None), "__func__", None)
+    callable_callback = (
+        getattr(callback, "__func__", None) or callback_method or callback
+    )
+    values.extend(getattr(callable_callback, "__defaults__", ()) or ())
+    values.extend((getattr(callable_callback, "__kwdefaults__", {}) or {}).values())
+    for cell in getattr(callable_callback, "__closure__", ()) or ():
+        try:
+            values.append(cell.cell_contents)
+        except ValueError:
+            continue
+    return values
+
+
+def _assert_session_weakref_callbacks_capture_only_an_opaque_integer(session):
+    callback_references = [
+        reference
+        for reference in weakref.getweakrefs(session)
+        if reference.__callback__ is not None
+    ]
+    assert callback_references
+    for reference in callback_references:
+        immediate_values = _immediate_callback_values(reference.__callback__)
+
+        assert len(immediate_values) == 1
+        assert type(immediate_values[0]) is int
+        assert immediate_values[0] > 0
+        assert not isinstance(immediate_values[0], dict)
+        assert not callable(immediate_values[0])
+        assert PRIVATE_EXECUTABLE not in repr(immediate_values[0])
+        assert not hasattr(immediate_values[0], "session_reference")
+
+        assert reference.__callback__(lambda: None) is None
+        assert reference.__callback__(reference) is None
+
+
+def test_session_weakref_callback_is_narrow_without_breaking_run_or_cleanup():
+    runner = _RecordingRunner()
+    session = open_local_ocr(
+        executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
+        runner=runner,
+    )
+    session_reference = weakref.ref(session)
+    runner_reference = weakref.ref(runner)
+
+    _assert_session_weakref_callbacks_capture_only_an_opaque_integer(session)
+
+    outcome = run_local_ocr(
+        SYNTHETIC_PNG,
+        session=session,
+        budget=OcrBudget(started_at=0.0),
+        monotonic=lambda: 1.0,
+    )
+
+    assert outcome.status == "succeeded"
+    assert runner.calls[-1][1:] == (SYNTHETIC_PNG, 30.0, MAX_TSV_BYTES)
+
+    del runner
+    del session
+    gc.collect()
+
+    assert session_reference() is None
+    assert runner_reference() is None
+
+
 def test_module_registry_and_lookup_cannot_return_authority_for_custom_caps():
     session, runner = _open_available_session()
     calls_before = len(runner.calls)
