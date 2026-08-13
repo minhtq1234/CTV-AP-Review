@@ -1,5 +1,9 @@
 # CTV Preparation Proposal Review Implementation Plan
 
+> **Superseded:** This six-task defensive plan is preserved for traceability and
+> is not to be executed. Use
+> `docs/superpowers/plans/2026-08-14-ctv-preparation-proposal-review-lean.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an ephemeral local hybrid review screen that turns one unchanged CTV inspection observation into a deterministic, privacy-safe, locally approved preparation proposal without writing files.
@@ -734,4 +738,3 @@ After all six tasks have task-scoped independent approval:
 
 Do not merge, push, release, prepare a package, or clean the worktree without the
 user's explicit choice.
-

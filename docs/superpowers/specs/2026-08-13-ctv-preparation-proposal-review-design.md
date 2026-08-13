@@ -1,9 +1,15 @@
 # CTV Preparation Proposal Review Design
 
 **Date:** 2026-08-13  
-**Status:** Approved for implementation  
+**Status:** Superseded by the lean v1 design below
 **Base:** local `ver1` after safe document inspection (`e9f86ab`)  
 **Prior design:** `docs/superpowers/specs/2026-08-13-ctv-safe-document-inspection-design.md`
+
+> This detailed defensive design is preserved for traceability. It was paused
+> after implementation reviews focused on malicious same-interpreter mutation of
+> trusted frozen Python objects. That attacker is outside the v1 threat model.
+> The approved replacement is
+> `docs/superpowers/specs/2026-08-14-ctv-preparation-proposal-review-lean-design.md`.
 
 ## 1. Decision
 
