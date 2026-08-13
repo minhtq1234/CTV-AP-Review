@@ -418,35 +418,20 @@ def _build_local_ocr_operations():
             self.lock = threading.Lock()
             self.session_reference = session_reference
 
-    def revoke_finalized_session(session_identity, reference):
-        if reference() is not None:
-            return
+    def sweep_dead_sessions():
         with registry_lock:
-            state = registry.get(session_identity)
-            if (
-                state is not None
-                and state.session_reference is reference
-                and state.session_reference() is None
-            ):
+            dead_session_identities = [
+                session_identity
+                for session_identity, state in registry.items()
+                if state.session_reference() is None
+            ]
+            for session_identity in dead_session_identities:
                 del registry[session_identity]
-
-    class SessionFinalizer:
-        __slots__ = ("session_identity",)
-        __revoke = staticmethod(revoke_finalized_session)
-
-        def __init__(self, session_identity):
-            self.session_identity = session_identity
-
-        def __call__(self, reference):
-            self.__revoke(self.session_identity, reference)
 
     def register_session(capability, invoke):
         session = LocalOcrSession(capability)
         session_identity = id(session)
-        session_reference = weakref.ref(
-            session,
-            SessionFinalizer(session_identity),
-        )
+        session_reference = weakref.ref(session)
         state = RegistryState(capability, invoke, session_reference)
         with registry_lock:
             registry[session_identity] = state
@@ -462,6 +447,7 @@ def _build_local_ocr_operations():
         recorder: Callable[[tuple[str, ...], bytes, float, int], None] | None = None,
     ) -> LocalOcrSession:
         """Resolve and bind one private executable exactly once for an inspect call."""
+        sweep_dead_sessions()
         if runner is None:
             def bounded_runner(
                 argv: Sequence[str],
@@ -596,6 +582,7 @@ def _build_local_ocr_operations():
         monotonic: Callable[[], float] = time.monotonic,
     ) -> OcrOutcome:
         """Run one validated request through its exact registered session."""
+        sweep_dead_sessions()
         request = PrivateRequest(image_bytes, budget, timeout_seconds, monotonic)
         return dispatch_private_request(session, request)
 

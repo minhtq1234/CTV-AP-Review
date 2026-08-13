@@ -216,31 +216,28 @@ def test_equality_forged_session_fails_safely_before_process_io():
     assert budget.used_units == 0
 
 
-def test_session_finalization_releases_registry_owned_runner_authority():
-    runner = _RecordingRunner()
-    session = open_local_ocr(
-        executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
-        runner=runner,
-    )
-    session_reference = weakref.ref(session)
-    runner_reference = weakref.ref(runner)
-
-    del runner
-    del session
-    gc.collect()
-
-    assert session_reference() is None
-    assert runner_reference() is None
+def _immediate_callable_values(callable_value):
+    values = []
+    function = getattr(callable_value, "__func__", callable_value)
+    values.extend(getattr(function, "__defaults__", ()) or ())
+    values.extend((getattr(function, "__kwdefaults__", {}) or {}).values())
+    for cell in getattr(function, "__closure__", ()) or ():
+        try:
+            values.append(cell.cell_contents)
+        except ValueError:
+            continue
+    return values
 
 
-def _immediate_callback_values(callback):
+def _direct_callback_surface(callback):
     values = []
     try:
         values.extend(vars(callback).values())
     except TypeError:
         pass
 
-    for owner in type(callback).__mro__:
+    callback_type = type(callback)
+    for owner in callback_type.__mro__:
         slots = owner.__dict__.get("__slots__", ())
         if isinstance(slots, str):
             slots = (slots,)
@@ -252,43 +249,74 @@ def _immediate_callback_values(callback):
             except AttributeError:
                 continue
 
-    callback_method = getattr(getattr(callback, "__call__", None), "__func__", None)
-    callable_callback = (
-        getattr(callback, "__func__", None) or callback_method or callback
-    )
-    values.extend(getattr(callable_callback, "__defaults__", ()) or ())
-    values.extend((getattr(callable_callback, "__kwdefaults__", {}) or {}).values())
-    for cell in getattr(callable_callback, "__closure__", ()) or ():
-        try:
-            values.append(cell.cell_contents)
-        except ValueError:
-            continue
+    for class_value in callback_type.__dict__.values():
+        if isinstance(class_value, (staticmethod, classmethod)):
+            callables = (class_value.__func__,)
+        elif isinstance(class_value, property):
+            callables = tuple(
+                value
+                for value in (class_value.fget, class_value.fset, class_value.fdel)
+                if value is not None
+            )
+        else:
+            callables = (class_value,)
+        for callable_value in callables:
+            values.extend(_immediate_callable_values(callable_value))
     return values
 
 
-def _assert_session_weakref_callbacks_capture_only_an_opaque_integer(session):
-    callback_references = [
-        reference
+def test_session_weakrefs_expose_no_callback_or_class_owned_authority_path():
+    runner = _RecordingRunner()
+    session = open_local_ocr(
+        executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
+        runner=runner,
+    )
+    calls_before = len(runner.calls)
+    callbacks = [
+        reference.__callback__
         for reference in weakref.getweakrefs(session)
         if reference.__callback__ is not None
     ]
-    assert callback_references
-    for reference in callback_references:
-        immediate_values = _immediate_callback_values(reference.__callback__)
+    callback_surface = [
+        value for callback in callbacks for value in _direct_callback_surface(callback)
+    ]
+    reachable_states = []
+    for value in callback_surface:
+        if isinstance(value, dict):
+            state = value.get(id(session))
+            if state is not None:
+                reachable_states.append(state)
 
-        assert len(immediate_values) == 1
-        assert type(immediate_values[0]) is int
-        assert immediate_values[0] > 0
-        assert not isinstance(immediate_values[0], dict)
-        assert not callable(immediate_values[0])
-        assert PRIVATE_EXECUTABLE not in repr(immediate_values[0])
-        assert not hasattr(immediate_values[0], "session_reference")
+    reachable_authority_values = []
+    for state in reachable_states:
+        invoke = getattr(state, "invoke", None)
+        if callable(invoke):
+            reachable_authority_values.extend(_immediate_callable_values(invoke))
+            invoke(b"attacker-selected", 9999, 9999)
 
-        assert reference.__callback__(lambda: None) is None
-        assert reference.__callback__(reference) is None
+    observed = {
+        "callback_count": len(callbacks),
+        "registry_state_count": len(reachable_states),
+        "runner_count": sum(value is runner for value in reachable_authority_values),
+        "executable_count": sum(
+            value == PRIVATE_EXECUTABLE for value in reachable_authority_values
+        ),
+        "custom_runner_call_count": len(runner.calls) - calls_before,
+    }
+    assert observed == {
+        "callback_count": 0,
+        "registry_state_count": 0,
+        "runner_count": 0,
+        "executable_count": 0,
+        "custom_runner_call_count": 0,
+    }
 
 
-def test_session_weakref_callback_is_narrow_without_breaking_run_or_cleanup():
+@pytest.mark.parametrize("sweep_operation", ["open", "run"])
+def test_dead_session_runner_is_released_by_the_next_registry_operation(
+    sweep_operation,
+):
+    live_session, live_runner = _open_available_session()
     runner = _RecordingRunner()
     session = open_local_ocr(
         executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
@@ -297,23 +325,31 @@ def test_session_weakref_callback_is_narrow_without_breaking_run_or_cleanup():
     session_reference = weakref.ref(session)
     runner_reference = weakref.ref(runner)
 
-    _assert_session_weakref_callbacks_capture_only_an_opaque_integer(session)
-
-    outcome = run_local_ocr(
-        SYNTHETIC_PNG,
-        session=session,
-        budget=OcrBudget(started_at=0.0),
-        monotonic=lambda: 1.0,
-    )
-
-    assert outcome.status == "succeeded"
-    assert runner.calls[-1][1:] == (SYNTHETIC_PNG, 30.0, MAX_TSV_BYTES)
-
     del runner
     del session
     gc.collect()
 
     assert session_reference() is None
+    assert runner_reference() is not None
+
+    if sweep_operation == "open":
+        replacement_session, replacement_runner = _open_available_session()
+        assert replacement_session.capability.available is True
+        assert replacement_runner.calls
+    else:
+        outcome = run_local_ocr(
+            SYNTHETIC_PNG,
+            session=live_session,
+            budget=OcrBudget(started_at=0.0),
+            monotonic=lambda: 1.0,
+        )
+        assert outcome.status == "succeeded"
+        assert live_runner.calls[-1][1:] == (
+            SYNTHETIC_PNG,
+            30.0,
+            MAX_TSV_BYTES,
+        )
+
     assert runner_reference() is None
 
 
