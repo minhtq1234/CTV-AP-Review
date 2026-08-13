@@ -20,6 +20,13 @@ SCRIPT = Path(__file__).with_name("ctv_intake_cli.py")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_COMMIT = "75b3b3bc7e3d4edef1b24a0cfc9bb6c039320f3a"
 EXPECTED_TREE = "83d0523ffdf871d79597310d2a24424c8bb17b6fcdb208d9bf28afc70da6900d"
+INSPECTION_MODULE_FILENAMES = (
+    "ctv_inspection.py",
+    "ctv_inspection_classifier.py",
+    "ctv_inspection_media.py",
+    "ctv_inspection_model.py",
+    "ctv_inspection_workbook.py",
+)
 
 
 def _run(
@@ -785,6 +792,226 @@ def test_inspection_runtime_failure_is_separate_from_controlled_errors(
     assert b"private-task-7-internal-detail" not in json.dumps(payload).encode()
 
 
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_inspection_process_control_failure_is_fixed_internal_error(
+    error_type, monkeypatch, capsysbinary
+):
+    cli = _module()
+
+    def fail(_source_root):
+        raise error_type("private-process-control-detail")
+
+    monkeypatch.setattr(cli, "inspect_source", fail)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inspect", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert b"private-process-control-detail" not in json.dumps(payload).encode()
+
+
+def test_inspection_generator_exit_remains_process_fatal(monkeypatch, capsysbinary):
+    cli = _module()
+
+    def fail(_source_root):
+        raise GeneratorExit("private-generator-exit-detail")
+
+    monkeypatch.setattr(cli, "inspect_source", fail)
+
+    with pytest.raises(GeneratorExit):
+        cli.main(["inspect", "--source-root", "synthetic-source", "--json"])
+
+    captured = capsysbinary.readouterr()
+    assert captured.out == captured.err == b""
+
+
+def test_inspection_error_subclass_is_never_trusted_as_controlled(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    from ctv_inspection import InspectionError
+
+    class DerivedInspectionError(InspectionError):
+        pass
+
+    def fail(_source_root):
+        raise DerivedInspectionError("source-root-missing")
+
+    monkeypatch.setattr(cli, "inspect_source", fail)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inspect", "failed")
+    assert exit_code == 1
+    assert [error["code"] for error in payload["errors"]] == ["internal-error"]
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_exact_inspection_error_with_hostile_code_accessor_is_fixed_internal(
+    error_type, monkeypatch, capsysbinary
+):
+    cli = _module()
+    from ctv_inspection import InspectionError
+
+    error = InspectionError("source-root-missing")
+
+    def hostile_code(_self):
+        raise error_type("private-code-accessor-control-detail")
+
+    monkeypatch.setattr(
+        InspectionError,
+        "code",
+        property(hostile_code),
+        raising=False,
+    )
+
+    def fail(_source_root):
+        raise error
+
+    monkeypatch.setattr(cli, "inspect_source", fail)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inspect", "failed")
+    assert exit_code == 1
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"private-code-accessor-control-detail" not in json.dumps(payload).encode()
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_inspection_to_dict_process_control_failure_uses_fixed_fallback(
+    error_type, monkeypatch, capsysbinary
+):
+    cli = _module()
+
+    class HostileResult:
+        def to_dict(self):
+            raise error_type("private-result-serialization-detail")
+
+    monkeypatch.setattr(cli, "inspect_source", lambda _root: HostileResult())
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inspect", "failed")
+    assert exit_code == 1
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"private-result-serialization-detail" not in json.dumps(payload).encode()
+
+
+def test_unserializable_inspection_result_uses_preconstructed_internal_bytes(
+    monkeypatch,
+):
+    cli = _module()
+
+    class UnserializableResult:
+        def to_dict(self):
+            result = _inspection_result().to_dict()
+            result["privateUnserializable"] = object()
+            return result
+
+    writes = []
+    monkeypatch.setattr(cli, "inspect_source", lambda _root: UnserializableResult())
+    monkeypatch.setattr(cli, "_emit_stdout", writes.append)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    assert exit_code == 1
+    assert writes == [cli._INSPECT_INTERNAL_ERROR_BYTES]
+    payload = _envelope(SimpleNamespace(stdout=writes[0]), "inspect", "failed")
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"privateUnserializable" not in writes[0]
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_inspect_canonical_serializer_failure_does_not_recurse(
+    error_type, monkeypatch
+):
+    cli = _module()
+    calls = []
+    writes = []
+
+    def fail_serialization(_envelope):
+        calls.append("called")
+        raise error_type("private-canonical-serialization-detail")
+
+    monkeypatch.setattr(cli, "inspect_source", lambda _root: _inspection_result())
+    monkeypatch.setattr(cli, "canonical_json_bytes", fail_serialization)
+    monkeypatch.setattr(cli, "_emit_stdout", writes.append)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    assert exit_code == 1
+    assert calls == ["called"]
+    assert writes == [cli._INSPECT_INTERNAL_ERROR_BYTES]
+    assert b"private-canonical-serialization-detail" not in writes[0]
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_inspect_output_cap_failure_uses_fixed_internal_bytes(
+    error_type, monkeypatch
+):
+    cli = _module()
+
+    class HostileCanonicalContent:
+        def __len__(self):
+            raise error_type("private-output-cap-detail")
+
+    writes = []
+    monkeypatch.setattr(cli, "inspect_source", lambda _root: _inspection_result())
+    monkeypatch.setattr(
+        cli, "canonical_json_bytes", lambda _envelope: HostileCanonicalContent()
+    )
+    monkeypatch.setattr(cli, "_emit_stdout", writes.append)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    assert exit_code == 1
+    assert writes == [cli._INSPECT_INTERNAL_ERROR_BYTES]
+
+
+def test_inspect_oversized_replacement_cannot_bypass_the_output_cap(monkeypatch):
+    cli = _module()
+    calls = []
+    writes = []
+
+    def always_oversized(_envelope):
+        calls.append("called")
+        return b"x" * (cli._INSPECTION_MAX_JSON_BYTES + 1)
+
+    monkeypatch.setattr(cli, "inspect_source", lambda _root: _inspection_result())
+    monkeypatch.setattr(cli, "canonical_json_bytes", always_oversized)
+    monkeypatch.setattr(cli, "_emit_stdout", writes.append)
+
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
+
+    assert exit_code == 1
+    assert calls == ["called", "called"]
+    assert writes == [cli._INSPECT_INTERNAL_ERROR_BYTES]
+    assert len(writes[0]) <= cli._INSPECTION_MAX_JSON_BYTES
+
+
 def test_inspect_full_envelope_over_limit_is_replaced_before_one_stdout_write(
     monkeypatch,
 ):
@@ -793,7 +1020,7 @@ def test_inspect_full_envelope_over_limit_is_replaced_before_one_stdout_write(
     class OversizedResult:
         def to_dict(self):
             result = _inspection_result().to_dict()
-            result["oversized"] = "x" * cli.DEFAULT_INSPECTION_LIMITS.max_json_bytes
+            result["oversized"] = "x" * cli._INSPECTION_MAX_JSON_BYTES
             return result
 
     writes = []
@@ -1069,31 +1296,69 @@ def test_all_commands_launch_from_a_relocated_unicode_repository(
             assert private not in serialized
 
 
-@pytest.mark.parametrize(
-    ("argv", "operation"),
-    [
+@pytest.mark.parametrize("module_filename", INSPECTION_MODULE_FILENAMES)
+@pytest.mark.parametrize("module_fault", ["missing", "poisoned"])
+def test_every_legacy_form_survives_each_broken_inspection_module(
+    module_filename, module_fault, tmp_path
+):
+    root = _copy_toolkit(tmp_path)
+    module_path = root / "server" / module_filename
+    if module_fault == "missing":
+        module_path.unlink()
+    else:
+        module_path.write_text(
+            "raise KeyboardInterrupt('private-poisoned-inspection-import')\n",
+            encoding="utf-8",
+        )
+    source = tmp_path / "synthetic-source"
+    source.mkdir()
+    invocations = (
         (("version", "--json"), "version"),
         (("doctor", "--json"), "doctor"),
         (("contract", "verify", "--json"), "contract.verify"),
-        (
-            ("inventory", "--source-root", "synthetic-source", "--json"),
-            "inventory",
-        ),
-    ],
-)
-def test_legacy_forms_do_not_import_the_inspection_engine(argv, operation, tmp_path):
+        (("inventory", "--source-root", str(source), "--json"), "inventory"),
+    )
+
+    for argv, operation in invocations:
+        result = _run(*argv, cwd=tmp_path, script=root / "server" / SCRIPT.name)
+
+        _envelope(result, operation, "succeeded")
+        assert result.returncode == 0
+        assert result.stderr == b""
+        assert b"private-poisoned-inspection-import" not in result.stdout
+
+
+@pytest.mark.parametrize("module_filename", INSPECTION_MODULE_FILENAMES)
+@pytest.mark.parametrize("module_fault", ["missing", "poisoned"])
+def test_inspect_broken_module_import_is_fixed_internal_error(
+    module_filename, module_fault, tmp_path
+):
     root = _copy_toolkit(tmp_path)
-    (root / "server" / "ctv_inspection.py").unlink()
-    if operation == "inventory":
-        source = tmp_path / "synthetic-source"
-        source.mkdir()
-        argv = ("inventory", "--source-root", str(source), "--json")
+    module_path = root / "server" / module_filename
+    if module_fault == "missing":
+        module_path.unlink()
+    else:
+        module_path.write_text(
+            "raise SystemExit('private-poisoned-inspection-import')\n",
+            encoding="utf-8",
+        )
+    source = tmp_path / "synthetic-source"
+    source.mkdir()
 
-    result = _run(*argv, cwd=tmp_path, script=root / "server" / SCRIPT.name)
+    result = _run(
+        "inspect",
+        "--source-root",
+        str(source),
+        "--json",
+        cwd=tmp_path,
+        script=root / "server" / SCRIPT.name,
+    )
 
-    _envelope(result, operation, "succeeded")
-    assert result.returncode == 0
+    payload = _envelope(result, "inspect", "failed")
+    assert result.returncode == 1
     assert result.stderr == b""
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"private-poisoned-inspection-import" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -1317,7 +1582,9 @@ def test_inspection_modules_keep_process_archive_network_and_ai_boundaries_stati
         if not path.name.endswith("_test.py")
     )
     zip_importers = {
-        path.name for path in inspection_modules if "zipfile" in _import_roots(path)
+        path.name
+        for path in production_ctv_modules
+        if "zipfile" in _import_roots(path)
     }
     assert zip_importers == {"ctv_inspection_workbook.py"}
 
@@ -1459,17 +1726,21 @@ def test_inspection_cli_error_allowlist_matches_literal_engine_declaration():
             and node.test.comparators[0].id == "_RETAINED_INVENTORY_ERROR_CODES"
         ):
             continue
-        for guarded in ast.walk(node):
-            if (
-                isinstance(guarded, ast.Call)
-                and isinstance(guarded.func, ast.Name)
-                and guarded.func.id == "InspectionError"
-                and not guarded.keywords
-                and len(guarded.args) == 1
-                and isinstance(guarded.args[0], ast.Name)
-                and guarded.args[0].id == "code"
-            ):
-                guarded_dynamic_calls.add(id(guarded))
+        if node.orelse or len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
+            continue
+        guarded = node.body[0].value
+        if (
+            isinstance(guarded, ast.Call)
+            and isinstance(guarded.func, ast.Name)
+            and guarded.func.id == "InspectionError"
+            and not guarded.keywords
+            and len(guarded.args) == 1
+            and isinstance(guarded.args[0], ast.Name)
+            and guarded.args[0].id == "code"
+        ):
+            guarded_dynamic_calls.add(id(guarded))
+
+    assert len(guarded_dynamic_calls) == 1
 
     emitted_codes = set(retained_codes)
     unsupported_calls = []

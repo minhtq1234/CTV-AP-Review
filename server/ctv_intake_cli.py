@@ -14,7 +14,6 @@ from pathlib import Path
 from ctv_cli_doctor import run_doctor
 from ctv_cli_protocol import CliError, canonical_json_bytes, failed, succeeded
 from ctv_contract_pin import ContractPinError, load_contract_pin, verify_contract
-from ctv_inspection_model import DEFAULT_INSPECTION_LIMITS
 from ctv_inventory import InventoryError, inventory_source
 from ctv_inventory_model import DEFAULT_LIMITS
 
@@ -80,6 +79,24 @@ _INSPECTION_ERROR_CODES = frozenset(
     }
 )
 _INSPECTION_ERROR_MESSAGE = "The source folder could not be inspected safely."
+_INSPECTION_MAX_JSON_BYTES = 16 * 1024 * 1024
+_INSPECT_INTERNAL_FAILURE = object()
+_INSPECT_INTERNAL_ERROR_BYTES = (
+    b'{\n'
+    b'  "errors": [\n'
+    b'    {\n'
+    b'      "code": "internal-error",\n'
+    b'      "message": "The local toolkit could not complete the check."\n'
+    b'    }\n'
+    b'  ],\n'
+    b'  "operation": "inspect",\n'
+    b'  "result": {},\n'
+    b'  "retryable": false,\n'
+    b'  "schemaVersion": "1.0",\n'
+    b'  "status": "failed",\n'
+    b'  "summary": "The local toolkit could not complete the check"\n'
+    b'}\n'
+)
 
 
 class CliInvocationError(RuntimeError):
@@ -272,35 +289,38 @@ def inspect_source(source_root: Path):
 
 
 def _inspection_result(source_root: Path):
-    from ctv_inspection import InspectionError
-
+    inspection_error_type = None
     try:
+        from ctv_inspection import InspectionError
+
+        inspection_error_type = InspectionError
         result = inspect_source(source_root)
-    except InspectionError as error:
-        code = _safe_inspection_error_code(error)
-        if code is None:
-            return _internal_failure("inspect"), 1
+        result_dict = result.to_dict()
+        totals = result_dict["totals"]
         return (
-            _operation_failure(
+            succeeded(
                 "inspect",
-                code,
-                _INSPECTION_ERROR_MESSAGE,
+                f"Inspection completed: {totals['units']} units, "
+                f"{totals['needsUserReview']} need attention",
+                result_dict,
             ),
-            2,
+            0,
         )
-    except RuntimeError:
-        return _internal_failure("inspect"), 1
-    result_dict = result.to_dict()
-    totals = result_dict["totals"]
-    return (
-        succeeded(
-            "inspect",
-            f"Inspection completed: {totals['units']} units, "
-            f"{totals['needsUserReview']} need attention",
-            result_dict,
-        ),
-        0,
-    )
+    except GeneratorExit:
+        raise
+    except BaseException as error:
+        if inspection_error_type is not None and type(error) is inspection_error_type:
+            code = _safe_inspection_error_code(error)
+            if code is not None:
+                return (
+                    _operation_failure(
+                        "inspect",
+                        code,
+                        _INSPECTION_ERROR_MESSAGE,
+                    ),
+                    2,
+                )
+        return _INSPECT_INTERNAL_FAILURE, 1
 
 
 def _operation_failure(operation: str, code: str, message: str):
@@ -315,7 +335,9 @@ def _operation_failure(operation: str, code: str, message: str):
 def _safe_inspection_error_code(error) -> str | None:
     try:
         code = error.code
-    except Exception:
+    except GeneratorExit:
+        raise
+    except BaseException:
         return None
     if type(code) is str and code in _INSPECTION_ERROR_CODES:
         return code
@@ -328,6 +350,38 @@ def _internal_failure(operation: str):
         "internal-error",
         "The local toolkit could not complete the check.",
     )
+
+
+def _emit_inspection_result(envelope, exit_code: int) -> int:
+    if envelope is _INSPECT_INTERNAL_FAILURE:
+        content = _INSPECT_INTERNAL_ERROR_BYTES
+        exit_code = 1
+    else:
+        try:
+            content = canonical_json_bytes(envelope)
+            if type(content) is not bytes:
+                raise TypeError("canonical inspect output must be bytes")
+            if len(content) > _INSPECTION_MAX_JSON_BYTES:
+                content = canonical_json_bytes(
+                    _operation_failure(
+                        "inspect",
+                        "inspection-output-too-large",
+                        _INSPECTION_ERROR_MESSAGE,
+                    )
+                )
+                if (
+                    type(content) is not bytes
+                    or len(content) > _INSPECTION_MAX_JSON_BYTES
+                ):
+                    raise ValueError("canonical inspect failure exceeds output limit")
+                exit_code = 2
+        except GeneratorExit:
+            raise
+        except BaseException:
+            content = _INSPECT_INTERNAL_ERROR_BYTES
+            exit_code = 1
+    _emit_stdout(content)
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -385,20 +439,15 @@ def main(argv: list[str] | None = None) -> int:
         envelope = _internal_failure(operation)
         exit_code = 1
 
+    if operation == "inspect":
+        return _emit_inspection_result(envelope, exit_code)
+
     content = canonical_json_bytes(envelope)
     if operation == "inventory" and len(content) > DEFAULT_LIMITS.max_json_bytes:
         envelope = _operation_failure(
             "inventory",
             "inventory-output-too-large",
             _INVENTORY_ERROR_MESSAGE,
-        )
-        exit_code = 2
-        content = canonical_json_bytes(envelope)
-    elif operation == "inspect" and len(content) > DEFAULT_INSPECTION_LIMITS.max_json_bytes:
-        envelope = _operation_failure(
-            "inspect",
-            "inspection-output-too-large",
-            _INSPECTION_ERROR_MESSAGE,
         )
         exit_code = 2
         content = canonical_json_bytes(envelope)
