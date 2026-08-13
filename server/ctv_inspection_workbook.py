@@ -73,14 +73,16 @@ _STYLES_CONTENT_TYPE = (
 _SHARED_STRINGS_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"
 )
-_WORKSHEET_RELATIONSHIP_TYPES = frozenset({
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
-    "http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet",
-})
-_DRAWING_RELATIONSHIP_TYPES = frozenset({
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing",
-    "http://purl.oclc.org/ooxml/officeDocument/relationships/drawing",
-})
+_WORKSHEET_RELATIONSHIP_TYPE_BY_SPREADSHEET_NAMESPACE = {
+    namespace: f"{relationship_namespace}/worksheet"
+    for namespace, relationship_namespace
+    in _OFFICE_RELATIONSHIPS_BY_SPREADSHEET_NAMESPACE.items()
+}
+_DRAWING_RELATIONSHIP_TYPE_BY_SPREADSHEET_NAMESPACE = {
+    namespace: f"{relationship_namespace}/drawing"
+    for namespace, relationship_namespace
+    in _OFFICE_RELATIONSHIPS_BY_SPREADSHEET_NAMESPACE.items()
+}
 
 
 class WorkbookParserBoundaryExceededError(RuntimeError):
@@ -192,11 +194,15 @@ def _xml_declaration_text(content: bytes) -> str:
         raise _UnreadableWorkbookError() from None
 
 
-def _safe_xml_events(content: bytes):
+def _reject_unsafe_xml_declarations(content: bytes) -> None:
     declaration_text = _xml_declaration_text(content).upper()
     if "<!DOCTYPE" in declaration_text or "<!ENTITY" in declaration_text:
         raise _UnreadableWorkbookError()
     declaration_text = ""
+
+
+def _safe_xml_events(content: bytes):
+    _reject_unsafe_xml_declarations(content)
     parser = ElementTree.XMLPullParser(events=("start", "end"))
     try:
         for offset in range(0, len(content), _READ_CHUNK_BYTES):
@@ -398,14 +404,65 @@ def _part_content_type(part_name: str, content_types) -> str | None:
     return defaults.get(extension.lower())
 
 
+def _strict_xml_tree(content: bytes):
+    _reject_unsafe_xml_declarations(content)
+    try:
+        return ElementTree.fromstring(content)
+    except Exception:
+        raise _UnreadableWorkbookError() from None
+
+
+def _transitional_qname(name: object):
+    expanded = _expanded_name(name)
+    if expanded is None:
+        return name
+    namespace, local = expanded
+    replacement_namespace = {
+        _STRICT_SPREADSHEET_NAMESPACE: _TRANSITIONAL_SPREADSHEET_NAMESPACE,
+        _STRICT_OFFICE_RELATIONSHIPS_NAMESPACE: (
+            _TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE
+        ),
+    }.get(namespace)
+    if replacement_namespace is None:
+        return name
+    return f"{{{replacement_namespace}}}{local}"
+
+
+def _serialized_xml(root) -> bytes:
+    try:
+        return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+    except Exception:
+        raise _UnreadableWorkbookError() from None
+
+
 def _normalized_strict_xml(content: bytes) -> bytes:
-    return content.replace(
-        _STRICT_SPREADSHEET_NAMESPACE.encode("ascii"),
-        _TRANSITIONAL_SPREADSHEET_NAMESPACE.encode("ascii"),
-    ).replace(
-        _STRICT_OFFICE_RELATIONSHIPS_NAMESPACE.encode("ascii"),
-        _TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE.encode("ascii"),
-    )
+    root = _strict_xml_tree(content)
+    for element in root.iter():
+        element.tag = _transitional_qname(element.tag)
+        converted_attributes = {}
+        for name, value in element.attrib.items():
+            converted_name = _transitional_qname(name)
+            if converted_name in converted_attributes:
+                raise _UnreadableWorkbookError()
+            converted_attributes[converted_name] = value
+        element.attrib.clear()
+        element.attrib.update(converted_attributes)
+    return _serialized_xml(root)
+
+
+def _normalized_strict_relationships_xml(content: bytes) -> bytes:
+    root = _strict_xml_tree(content)
+    strict_prefix = f"{_STRICT_OFFICE_RELATIONSHIPS_NAMESPACE}/"
+    transitional_prefix = f"{_TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE}/"
+    for element in root:
+        relationship_type = element.attrib.get("Type")
+        if isinstance(relationship_type, str) and relationship_type.startswith(
+            strict_prefix
+        ):
+            element.attrib["Type"] = (
+                transitional_prefix + relationship_type[len(strict_prefix):]
+            )
+    return _serialized_xml(root)
 
 
 def _strict_loader_snapshot(parts) -> tuple[bytes, int]:
@@ -417,6 +474,38 @@ def _strict_loader_snapshot(parts) -> tuple[bytes, int]:
         return stream.getvalue(), sum(len(content) for content in parts.values())
     except Exception:
         raise _UnreadableWorkbookError() from None
+
+
+def _strict_loader_content_types(parts, workbook_content_type: str) -> bytes:
+    root = ElementTree.Element(f"{{{_CONTENT_TYPES_NAMESPACE}}}Types")
+    ElementTree.SubElement(
+        root,
+        f"{{{_CONTENT_TYPES_NAMESPACE}}}Default",
+        {
+            "Extension": "rels",
+            "ContentType": (
+                "application/vnd.openxmlformats-package.relationships+xml"
+            ),
+        },
+    )
+    content_types = {
+        _WORKBOOK_PART: workbook_content_type,
+        "xl/styles.xml": _STYLES_CONTENT_TYPE,
+        "xl/sharedStrings.xml": _SHARED_STRINGS_CONTENT_TYPE,
+    }
+    for part_name in parts:
+        if part_name.startswith("xl/worksheets/"):
+            content_type = _WORKSHEET_CONTENT_TYPE
+        else:
+            content_type = content_types.get(part_name)
+        if content_type is None:
+            continue
+        ElementTree.SubElement(
+            root,
+            f"{{{_CONTENT_TYPES_NAMESPACE}}}Override",
+            {"PartName": f"/{part_name}", "ContentType": content_type},
+        )
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def _workbook_sheet_relationship_ids(
@@ -659,7 +748,6 @@ def _worksheet_package_metadata(
     strict_parts = None
     if spreadsheet_namespace == _STRICT_SPREADSHEET_NAMESPACE:
         strict_parts = {
-            _CONTENT_TYPES_PART: content_types,
             _WORKBOOK_PART: _normalized_strict_xml(workbook_xml),
         }
     content_types = b""
@@ -669,7 +757,9 @@ def _worksheet_package_metadata(
     rels_xml = _read_member(archive, members[_WORKBOOK_RELS_PART], budget)
     workbook_relationships = _relationships(rels_xml, relationship_ids)
     if strict_parts is not None:
-        strict_parts[_WORKBOOK_RELS_PART] = _normalized_strict_xml(rels_xml)
+        strict_parts[_WORKBOOK_RELS_PART] = (
+            _normalized_strict_relationships_xml(rels_xml)
+        )
     rels_xml = b""
 
     worksheet_parts = []
@@ -678,7 +768,13 @@ def _worksheet_package_metadata(
         if relationship is None:
             raise _UnreadableWorkbookError()
         relationship_type, target, external = relationship
-        if external or relationship_type not in _WORKSHEET_RELATIONSHIP_TYPES:
+        if (
+            external
+            or relationship_type
+            != _WORKSHEET_RELATIONSHIP_TYPE_BY_SPREADSHEET_NAMESPACE[
+                spreadsheet_namespace
+            ]
+        ):
             raise _UnreadableWorkbookError()
         worksheet_part = _resolve_part(_WORKBOOK_PART, target, external)
         if (
@@ -719,7 +815,13 @@ def _worksheet_package_metadata(
             if relationship is None:
                 raise _UnreadableWorkbookError()
             relationship_type, target, external = relationship
-            if external or relationship_type not in _DRAWING_RELATIONSHIP_TYPES:
+            if (
+                external
+                or relationship_type
+                != _DRAWING_RELATIONSHIP_TYPE_BY_SPREADSHEET_NAMESPACE[
+                    spreadsheet_namespace
+                ]
+            ):
                 raise _UnreadableWorkbookError()
             drawing_part = _resolve_part(worksheet_part, target, external)
             if (
@@ -736,30 +838,17 @@ def _worksheet_package_metadata(
     strict_snapshot = None
     strict_declared_total = None
     if strict_parts is not None:
-        auxiliary_parts = []
-        for part_name in members:
-            content_type = _part_content_type(part_name, content_type_map)
-            if content_type in {_STYLES_CONTENT_TYPE, _SHARED_STRINGS_CONTENT_TYPE}:
-                auxiliary_parts.append(part_name)
-        if len(auxiliary_parts) > 2:
-            raise _UnreadableWorkbookError()
-        seen_auxiliary_types = set()
-        for part_name in auxiliary_parts:
-            content_type = _part_content_type(part_name, content_type_map)
-            if content_type in seen_auxiliary_types:
-                raise _UnreadableWorkbookError()
+        auxiliary_parts = (
+            ("xl/styles.xml", _STYLES_CONTENT_TYPE, "styleSheet"),
+            ("xl/sharedStrings.xml", _SHARED_STRINGS_CONTENT_TYPE, "sst"),
+        )
+        for part_name, content_type, expected_root in auxiliary_parts:
             if (
-                content_type == _STYLES_CONTENT_TYPE
-                and part_name != "xl/styles.xml"
+                part_name not in members
+                or content_type_map[1].get(f"/{part_name}") != content_type
             ):
-                raise _UnreadableWorkbookError()
-            seen_auxiliary_types.add(content_type)
+                continue
             auxiliary_xml = _read_member(archive, members[part_name], budget)
-            expected_root = (
-                "styleSheet"
-                if content_type == _STYLES_CONTENT_TYPE
-                else "sst"
-            )
             root_seen = False
             for event, element in _safe_xml_events(auxiliary_xml):
                 if event == "start" and not root_seen:
@@ -781,7 +870,10 @@ def _worksheet_package_metadata(
                 raise _UnreadableWorkbookError()
             strict_parts[part_name] = _normalized_strict_xml(auxiliary_xml)
             auxiliary_xml = b""
-        auxiliary_parts.clear()
+        strict_parts[_CONTENT_TYPES_PART] = _strict_loader_content_types(
+            strict_parts,
+            content_type_map[1]["/xl/workbook.xml"],
+        )
         strict_snapshot, strict_declared_total = _strict_loader_snapshot(strict_parts)
         strict_parts.clear()
     content_type_map[0].clear()
@@ -813,10 +905,10 @@ def _preflight(snapshot: bytes, limits: InspectionLimits):
                 limits.max_cells_per_workbook,
             )
             if strict_snapshot is None:
-                budget.reserve(declared_total)
+                budget.reserve(declared_total * 2)
                 loader_snapshot = snapshot
             else:
-                budget.reserve(strict_declared_total)
+                budget.reserve(strict_declared_total * 2)
                 loader_snapshot = strict_snapshot
             return metadata, spreadsheet_namespace, loader_snapshot
     except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):

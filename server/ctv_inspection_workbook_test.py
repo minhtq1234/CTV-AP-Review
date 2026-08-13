@@ -1,5 +1,6 @@
 import ast
 import builtins
+from collections import Counter
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -161,6 +162,18 @@ def _strict_package(snapshot):
                 )
                 replacements[info.filename] = content
     return _rewrite_package(snapshot, replacements=replacements)
+
+
+def _encoded_xml(content, encoding):
+    text = content.decode("utf-8")
+    if text.startswith("<?xml"):
+        text = text[text.index("?>") + 2:]
+    declaration = '<?xml version="1.0" encoding="UTF-16"?>'
+    byte_order_mark = {
+        "utf-16-le": b"\xff\xfe",
+        "utf-16-be": b"\xfe\xff",
+    }[encoding]
+    return byte_order_mark + (declaration + text).encode(encoding)
 
 
 def _patch_central_sizes(snapshot, patches):
@@ -793,6 +806,56 @@ def test_spoofed_worksheet_relationship_type_is_rejected_before_openpyxl(monkeyp
     _assert_private_values_absent(result, "private.invalid")
 
 
+@pytest.mark.parametrize("dialect", ["transitional", "strict"])
+@pytest.mark.parametrize("relationship_kind", ["worksheet", "drawing"])
+def test_relationship_type_must_match_the_selected_workbook_dialect(
+    monkeypatch, dialect, relationship_kind
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(_roster_workbook(with_image=relationship_kind == "drawing"))
+    if dialect == "strict":
+        snapshot = _strict_package(snapshot)
+        selected_prefix = STRICT_OFFICE_RELATIONSHIPS
+        mismatched_prefix = TRANSITIONAL_OFFICE_RELATIONSHIPS
+    else:
+        selected_prefix = TRANSITIONAL_OFFICE_RELATIONSHIPS
+        mismatched_prefix = STRICT_OFFICE_RELATIONSHIPS
+    relationship_part = (
+        "xl/_rels/workbook.xml.rels"
+        if relationship_kind == "worksheet"
+        else "xl/worksheets/_rels/sheet3.xml.rels"
+    )
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        relationships = archive.read(relationship_part)
+    selected_type = selected_prefix + b"/" + relationship_kind.encode("ascii")
+    mismatched_type = mismatched_prefix + b"/" + relationship_kind.encode("ascii")
+    assert selected_type in relationships
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            relationship_part: relationships.replace(
+                selected_type,
+                mismatched_type,
+                1,
+            ),
+        },
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append(True)
+        raise AssertionError("relationship dialect mismatch must fail in preflight")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+
+
 @pytest.mark.parametrize(
     ("part_name", "original_namespace", "attacker_namespace"),
     (
@@ -901,6 +964,110 @@ def test_strict_namespace_workbook_is_inspected_with_its_cell_signals():
     assert result.unit_count == 1
     assert result.units[0].inspection_method == "worksheet-structure"
     assert "roster-column-pattern" in result.units[0].signal_codes
+
+
+def test_strict_qname_conversion_preserves_cell_text_and_formula(monkeypatch):
+    import ctv_inspection_workbook as workbook_adapter
+
+    private_text = STRICT_SPREADSHEET_NAMESPACE.decode("ascii")
+    private_formula = f'="{private_text}"'
+    workbook = Workbook()
+    workbook.active["A1"] = private_text
+    workbook.active["A2"] = private_formula
+    snapshot = _strict_package(_save(workbook))
+    reduced_text = []
+    real_reducer = workbook_adapter.signals_from_private_text
+
+    def recording_reducer(text, context):
+        reduced_text.append(text)
+        return real_reducer(text, context)
+
+    monkeypatch.setattr(
+        workbook_adapter,
+        "signals_from_private_text",
+        recording_reducer,
+    )
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert private_text in reduced_text
+    assert private_formula in reduced_text
+    assert TRANSITIONAL_SPREADSHEET_NAMESPACE.decode("ascii") not in reduced_text
+    _assert_private_values_absent(result, private_text, private_formula)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_utf16_strict_workbook_is_structurally_converted_and_inspected(encoding):
+    workbook = Workbook()
+    workbook.active["A1"] = "DANH SACH CHI TRA"
+    snapshot = _strict_package(_save(workbook))
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        workbook_xml = _encoded_xml(archive.read("xl/workbook.xml"), encoding)
+        worksheet_xml = _encoded_xml(
+            archive.read("xl/worksheets/sheet1.xml"),
+            encoding,
+        )
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            "xl/workbook.xml": workbook_xml,
+            "xl/worksheets/sheet1.xml": worksheet_xml,
+        },
+    )
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+    assert result.units[0].inspection_method == "worksheet-structure"
+    assert "roster-column-pattern" in result.units[0].signal_codes
+
+
+@pytest.mark.parametrize(
+    "attacker_content_type",
+    (
+        b"application/vnd.openxmlformats-officedocument."
+        b"spreadsheetml.styles+xml",
+        b"application/vnd.openxmlformats-officedocument."
+        b"spreadsheetml.sharedStrings+xml",
+    ),
+)
+def test_strict_auxiliary_selection_never_opens_same_mime_attacker_member(
+    monkeypatch, attacker_content_type
+):
+    attacker_part = "xl/media/private-same-mime-079123456789.xml"
+    snapshot = _strict_package(_save(_roster_workbook()))
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content_types = archive.read("[Content_Types].xml")
+    content_types = content_types.replace(
+        b"</Types>",
+        b'<Override PartName="/xl/media/private-same-mime-079123456789.xml" '
+        b'ContentType="' + attacker_content_type + b'"/></Types>',
+    )
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={"[Content_Types].xml": content_types},
+        additions={attacker_part: b"PRIVATE-AUXILIARY-079123456789"},
+    )
+    opened = []
+    original_open = zipfile.ZipFile.open
+
+    def guarded_open(self, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if member_name == attacker_part:
+            opened.append(member_name)
+            raise AssertionError("same-MIME attacker member was opened")
+        return original_open(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", guarded_open)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 3
+    assert attacker_part not in opened
+    _assert_private_values_absent(result, "PRIVATE-AUXILIARY-079123456789")
 
 
 @pytest.mark.parametrize("target_kind", ["worksheet", "drawing"])
@@ -1148,10 +1315,16 @@ def test_zip_entry_count_boundary_raises_before_zipfile_allocation(monkeypatch):
     _assert_private_values_absent(raised.value, "private-extra")
 
 
-def test_operation_decompression_budget_includes_manual_and_openpyxl_passes():
+def test_operation_decompression_budget_includes_both_openpyxl_worksheet_reads(
+    monkeypatch,
+):
     extra_names = tuple(f"private-boundary-{index}.bin" for index in range(4))
+    base_snapshot = _save(_roster_workbook())
+    with zipfile.ZipFile(BytesIO(base_snapshot), "r") as archive:
+        workbook_xml = archive.read("xl/workbook.xml")
     original = _rewrite_package(
-        _save(_roster_workbook()),
+        base_snapshot,
+        replacements={"xl/workbook.xml": workbook_xml + b" "},
         additions={name: b"X" for name in extra_names},
     )
     with zipfile.ZipFile(BytesIO(original), "r") as archive:
@@ -1167,28 +1340,52 @@ def test_operation_decompression_budget_includes_manual_and_openpyxl_passes():
             )
         )
     operation_limit = 100 * 1024 * 1024
+    assert manual_total % 2 == 0
     accepted_snapshot = _patch_declared_total(
         original,
         extra_names,
-        operation_limit - manual_total,
+        (operation_limit - manual_total) // 2,
     )
+    with zipfile.ZipFile(BytesIO(accepted_snapshot), "r") as archive:
+        accepted_declared_total = sum(
+            info.file_size for info in archive.infolist()
+        )
+    assert manual_total + 2 * accepted_declared_total == operation_limit
+    opened = []
+    original_open = zipfile.ZipFile.open
+
+    def recording_open(self, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        opened.append(member_name)
+        return original_open(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", recording_open)
 
     result = _inspect(accepted_snapshot)
 
     assert result.inspection_status == "inspected"
     assert result.unit_count == 3
+    open_counts = Counter(opened)
+    assert open_counts["[Content_Types].xml"] == 2
+    assert open_counts["xl/workbook.xml"] == 2
+    assert open_counts["xl/_rels/workbook.xml.rels"] == 2
+    assert open_counts["xl/worksheets/sheet1.xml"] == 3
+    assert open_counts["xl/worksheets/sheet2.xml"] == 3
+    assert open_counts["xl/worksheets/sheet3.xml"] == 3
     _assert_private_values_absent(result, "private-boundary")
 
+    opened.clear()
     rejected_snapshot = _patch_declared_total(
         original,
         extra_names,
-        operation_limit - manual_total + 1,
+        (operation_limit - manual_total) // 2 + 1,
     )
     from ctv_inspection_workbook import WorkbookParserBoundaryExceededError
 
     with pytest.raises(WorkbookParserBoundaryExceededError) as raised:
         _inspect(rejected_snapshot)
     assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert Counter(opened)["xl/worksheets/sheet1.xml"] == 1
 
 
 @pytest.mark.parametrize("adversary", ["member", "aggregate", "ratio"])
