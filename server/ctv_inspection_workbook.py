@@ -22,6 +22,7 @@ _MAX_ARCHIVE_ENTRIES = 10_000
 _MAX_DECOMPRESSED_BYTES = 100 * 1024 * 1024
 _MAX_MEMBER_BYTES = 25 * 1024 * 1024
 _MAX_COMPRESSION_RATIO = 100
+_MAX_XML_ELEMENTS = 200_000
 _READ_CHUNK_BYTES = 64 * 1024
 _CONTENT_TYPES_PART = "[Content_Types].xml"
 _WORKBOOK_PART = "xl/workbook.xml"
@@ -204,12 +205,25 @@ def _reject_unsafe_xml_declarations(content: bytes) -> None:
 def _safe_xml_events(content: bytes):
     _reject_unsafe_xml_declarations(content)
     parser = ElementTree.XMLPullParser(events=("start", "end"))
+    element_count = 0
     try:
         for offset in range(0, len(content), _READ_CHUNK_BYTES):
             parser.feed(content[offset:offset + _READ_CHUNK_BYTES])
-            yield from parser.read_events()
+            for event, element in parser.read_events():
+                if event == "start":
+                    element_count += 1
+                    if element_count > _MAX_XML_ELEMENTS:
+                        raise WorkbookParserBoundaryExceededError()
+                yield event, element
         parser.close()
-        yield from parser.read_events()
+        for event, element in parser.read_events():
+            if event == "start":
+                element_count += 1
+                if element_count > _MAX_XML_ELEMENTS:
+                    raise WorkbookParserBoundaryExceededError()
+            yield event, element
+    except WorkbookParserBoundaryExceededError:
+        raise
     except Exception:
         raise _UnreadableWorkbookError() from None
     finally:
@@ -405,7 +419,9 @@ def _part_content_type(part_name: str, content_types) -> str | None:
 
 
 def _strict_xml_tree(content: bytes):
-    _reject_unsafe_xml_declarations(content)
+    for event, element in _safe_xml_events(content):
+        if event == "end":
+            element.clear()
     try:
         return ElementTree.fromstring(content)
     except Exception:
@@ -428,9 +444,60 @@ def _transitional_qname(name: object):
     return f"{{{replacement_namespace}}}{local}"
 
 
+class _CappedXmlOutput(BytesIO):
+    def write(self, content: bytes) -> int:
+        if self.tell() + len(content) > _MAX_MEMBER_BYTES:
+            raise WorkbookParserBoundaryExceededError()
+        return super().write(content)
+
+
+def _escaped_utf8_size(text: object, *, attribute: bool) -> int:
+    if not isinstance(text, str):
+        raise _UnreadableWorkbookError()
+    size = 0
+    for offset in range(0, len(text), _READ_CHUNK_BYTES):
+        chunk = text[offset:offset + _READ_CHUNK_BYTES]
+        try:
+            size += len(chunk.encode("utf-8", errors="xmlcharrefreplace"))
+        except Exception:
+            raise _UnreadableWorkbookError() from None
+        size += chunk.count("&") * 4
+        size += chunk.count("<") * 3
+        size += chunk.count(">") * 3
+        if attribute:
+            size += chunk.count('"') * 5
+            size += chunk.count("\r") * 4
+            size += chunk.count("\n") * 4
+            size += chunk.count("\t") * 4
+        if size > _MAX_MEMBER_BYTES:
+            raise WorkbookParserBoundaryExceededError()
+    return size
+
+
+def _validate_serialized_value_bytes(root) -> None:
+    value_bytes = 0
+    for element in root.iter():
+        for text in (element.text, element.tail):
+            if text is not None:
+                value_bytes += _escaped_utf8_size(text, attribute=False)
+        for value in element.attrib.values():
+            value_bytes += _escaped_utf8_size(value, attribute=True)
+        if value_bytes > _MAX_MEMBER_BYTES:
+            raise WorkbookParserBoundaryExceededError()
+
+
 def _serialized_xml(root) -> bytes:
+    _validate_serialized_value_bytes(root)
+    output = _CappedXmlOutput()
     try:
-        return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+        ElementTree.ElementTree(root).write(
+            output,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        return output.getvalue()
+    except WorkbookParserBoundaryExceededError:
+        raise
     except Exception:
         raise _UnreadableWorkbookError() from None
 
@@ -465,18 +532,29 @@ def _normalized_strict_relationships_xml(content: bytes) -> bytes:
     return _serialized_xml(root)
 
 
-def _strict_loader_snapshot(parts) -> tuple[bytes, int]:
+def _loader_snapshot(parts) -> tuple[bytes, int]:
+    declared_total = 0
+    for content in parts.values():
+        if type(content) is not bytes or len(content) > _MAX_MEMBER_BYTES:
+            raise WorkbookParserBoundaryExceededError()
+        declared_total += len(content)
+        if declared_total > _MAX_DECOMPRESSED_BYTES:
+            raise WorkbookParserBoundaryExceededError()
     stream = BytesIO()
     try:
         with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for part_name, content in parts.items():
+            for part_name in tuple(parts):
+                content = parts.pop(part_name)
                 archive.writestr(part_name, content)
-        return stream.getvalue(), sum(len(content) for content in parts.values())
+                content = b""
+        return stream.getvalue(), declared_total
+    except WorkbookParserBoundaryExceededError:
+        raise
     except Exception:
         raise _UnreadableWorkbookError() from None
 
 
-def _strict_loader_content_types(parts, workbook_content_type: str) -> bytes:
+def _loader_content_types(parts, workbook_content_type: str) -> bytes:
     root = ElementTree.Element(f"{{{_CONTENT_TYPES_NAMESPACE}}}Types")
     ElementTree.SubElement(
         root,
@@ -505,7 +583,7 @@ def _strict_loader_content_types(parts, workbook_content_type: str) -> bytes:
             f"{{{_CONTENT_TYPES_NAMESPACE}}}Override",
             {"PartName": f"/{part_name}", "ContentType": content_type},
         )
-    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+    return _serialized_xml(root)
 
 
 def _workbook_sheet_relationship_ids(
@@ -745,22 +823,27 @@ def _worksheet_package_metadata(
         workbook_xml,
         max_worksheets,
     )
-    strict_parts = None
-    if spreadsheet_namespace == _STRICT_SPREADSHEET_NAMESPACE:
-        strict_parts = {
-            _WORKBOOK_PART: _normalized_strict_xml(workbook_xml),
-        }
+    normalize_strict = spreadsheet_namespace == _STRICT_SPREADSHEET_NAMESPACE
+    loader_parts = {
+        _WORKBOOK_PART: (
+            _normalized_strict_xml(workbook_xml)
+            if normalize_strict
+            else workbook_xml
+        ),
+    }
     content_types = b""
     workbook_xml = b""
     if _WORKBOOK_RELS_PART not in members:
         raise _UnreadableWorkbookError()
     rels_xml = _read_member(archive, members[_WORKBOOK_RELS_PART], budget)
     workbook_relationships = _relationships(rels_xml, relationship_ids)
-    if strict_parts is not None:
-        strict_parts[_WORKBOOK_RELS_PART] = (
+    loader_parts[_WORKBOOK_RELS_PART] = (
+        (
             _normalized_strict_relationships_xml(rels_xml)
         )
-    rels_xml = b""
+        if normalize_strict
+        else rels_xml
+    )
 
     worksheet_parts = []
     for relationship_id in relationship_ids:
@@ -798,8 +881,11 @@ def _worksheet_package_metadata(
             cell_budget,
             spreadsheet_namespace,
         )
-        if strict_parts is not None:
-            strict_parts[worksheet_part] = _normalized_strict_xml(worksheet_xml)
+        loader_parts[worksheet_part] = (
+            _normalized_strict_xml(worksheet_xml)
+            if normalize_strict
+            else worksheet_xml
+        )
         worksheet_xml = b""
         if not drawing_ids:
             metadata.append((False, cell_bound))
@@ -835,54 +921,56 @@ def _worksheet_package_metadata(
         metadata.append((True, cell_bound))
     worksheet_parts.clear()
 
-    strict_snapshot = None
-    strict_declared_total = None
-    if strict_parts is not None:
-        auxiliary_parts = (
-            ("xl/styles.xml", _STYLES_CONTENT_TYPE, "styleSheet"),
-            ("xl/sharedStrings.xml", _SHARED_STRINGS_CONTENT_TYPE, "sst"),
+    auxiliary_parts = (
+        ("xl/styles.xml", _STYLES_CONTENT_TYPE, "styleSheet"),
+        ("xl/sharedStrings.xml", _SHARED_STRINGS_CONTENT_TYPE, "sst"),
+    )
+    for part_name, content_type, expected_root in auxiliary_parts:
+        member_exists = part_name in members
+        exact_override = (
+            content_type_map[1].get(f"/{part_name}") == content_type
         )
-        for part_name, content_type, expected_root in auxiliary_parts:
-            if (
-                part_name not in members
-                or content_type_map[1].get(f"/{part_name}") != content_type
-            ):
-                continue
-            auxiliary_xml = _read_member(archive, members[part_name], budget)
-            root_seen = False
-            for event, element in _safe_xml_events(auxiliary_xml):
-                if event == "start" and not root_seen:
-                    if _expanded_name(element.tag) != (
-                        _STRICT_SPREADSHEET_NAMESPACE,
-                        expected_root,
-                    ):
-                        raise _UnreadableWorkbookError()
-                    root_seen = True
-                elif event == "start" and (
-                    _expanded_name(element.tag) is None
-                    or _expanded_name(element.tag)[0]
-                    != _STRICT_SPREADSHEET_NAMESPACE
+        if member_exists != exact_override:
+            raise _UnreadableWorkbookError()
+        if not member_exists:
+            continue
+        auxiliary_xml = _read_member(archive, members[part_name], budget)
+        root_seen = False
+        for event, element in _safe_xml_events(auxiliary_xml):
+            if event == "start" and not root_seen:
+                if _expanded_name(element.tag) != (
+                    spreadsheet_namespace,
+                    expected_root,
                 ):
                     raise _UnreadableWorkbookError()
-                if event == "end":
-                    element.clear()
-            if not root_seen:
+                root_seen = True
+            elif event == "start" and (
+                _expanded_name(element.tag) is None
+                or _expanded_name(element.tag)[0] != spreadsheet_namespace
+            ):
                 raise _UnreadableWorkbookError()
-            strict_parts[part_name] = _normalized_strict_xml(auxiliary_xml)
-            auxiliary_xml = b""
-        strict_parts[_CONTENT_TYPES_PART] = _strict_loader_content_types(
-            strict_parts,
-            content_type_map[1]["/xl/workbook.xml"],
+            if event == "end":
+                element.clear()
+        if not root_seen:
+            raise _UnreadableWorkbookError()
+        loader_parts[part_name] = (
+            _normalized_strict_xml(auxiliary_xml)
+            if normalize_strict
+            else auxiliary_xml
         )
-        strict_snapshot, strict_declared_total = _strict_loader_snapshot(strict_parts)
-        strict_parts.clear()
+        auxiliary_xml = b""
+    loader_parts[_CONTENT_TYPES_PART] = _loader_content_types(
+        loader_parts,
+        content_type_map[1]["/xl/workbook.xml"],
+    )
+    loader_snapshot, loader_declared_total = _loader_snapshot(loader_parts)
     content_type_map[0].clear()
     content_type_map[1].clear()
     return (
         tuple(metadata),
         spreadsheet_namespace,
-        strict_snapshot,
-        strict_declared_total,
+        loader_snapshot,
+        loader_declared_total,
     )
 
 
@@ -890,13 +978,13 @@ def _preflight(snapshot: bytes, limits: InspectionLimits):
     expected_entries = _validate_eocd(snapshot)
     try:
         with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
-            members, declared_total = _central_directory(archive, expected_entries)
+            members, _declared_total = _central_directory(archive, expected_entries)
             budget = _ActualByteBudget()
             (
                 metadata,
                 spreadsheet_namespace,
-                strict_snapshot,
-                strict_declared_total,
+                loader_snapshot,
+                loader_declared_total,
             ) = _worksheet_package_metadata(
                 archive,
                 members,
@@ -904,12 +992,7 @@ def _preflight(snapshot: bytes, limits: InspectionLimits):
                 limits.max_worksheets_per_workbook,
                 limits.max_cells_per_workbook,
             )
-            if strict_snapshot is None:
-                budget.reserve(declared_total * 2)
-                loader_snapshot = snapshot
-            else:
-                budget.reserve(strict_declared_total * 2)
-                loader_snapshot = strict_snapshot
+            budget.reserve(loader_declared_total * 2)
             return metadata, spreadsheet_namespace, loader_snapshot
     except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
         raise

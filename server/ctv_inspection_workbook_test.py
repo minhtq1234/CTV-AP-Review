@@ -125,6 +125,25 @@ def _rewrite_package(snapshot, *, replacements=None, additions=None, drop=()):
     return output.getvalue()
 
 
+def _rewrite_package_with_stored_member(snapshot, member_name, content):
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as source:
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for info in source.infolist():
+                member_content = content if info.filename == member_name else source.read(info)
+                compression = (
+                    zipfile.ZIP_STORED
+                    if info.filename == member_name
+                    else zipfile.ZIP_DEFLATED
+                )
+                target.writestr(
+                    info.filename,
+                    member_content,
+                    compress_type=compression,
+                )
+    return output.getvalue()
+
+
 def _strict_package(snapshot):
     replacements = {}
     with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
@@ -197,27 +216,6 @@ def _patch_central_sizes(snapshot, patches):
         cursor = name_start + name_length + extra_length + comment_length
     assert seen == set(patches)
     return bytes(data)
-
-
-def _patch_declared_total(snapshot, member_names, declared_total):
-    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
-        ordinary_total = sum(
-            info.file_size
-            for info in archive.infolist()
-            if info.filename not in member_names
-        )
-    remaining = declared_total - ordinary_total
-    assert 0 <= remaining <= len(member_names) * 25 * 1024 * 1024
-    patches = {}
-    for member_name in member_names:
-        member_size = min(25 * 1024 * 1024, remaining)
-        patches[member_name] = (
-            max(1, (member_size + 99) // 100),
-            member_size,
-        )
-        remaining -= member_size
-    assert remaining == 0
-    return _patch_central_sizes(snapshot, patches)
 
 
 def _patch_encrypted_flag(snapshot, member_name):
@@ -322,7 +320,16 @@ def test_workbook_passes_only_bytesio_and_exact_safe_openpyxl_options(monkeypatc
     assert result.inspection_status == "inspected"
     assert len(calls) == 1
     assert isinstance(calls[0][0], BytesIO)
-    assert calls[0][0].getvalue() == snapshot
+    with zipfile.ZipFile(BytesIO(calls[0][0].getvalue()), "r") as loader_archive:
+        assert set(loader_archive.namelist()) == {
+            "[Content_Types].xml",
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+            "xl/worksheets/sheet1.xml",
+            "xl/worksheets/sheet2.xml",
+            "xl/worksheets/sheet3.xml",
+            "xl/styles.xml",
+        }
     assert calls[0][1] == {
         "read_only": True,
         "data_only": False,
@@ -1070,6 +1077,181 @@ def test_strict_auxiliary_selection_never_opens_same_mime_attacker_member(
     _assert_private_values_absent(result, "PRIVATE-AUXILIARY-079123456789")
 
 
+@pytest.mark.parametrize(
+    "attacker_content_type",
+    (
+        b"application/vnd.openxmlformats-officedocument."
+        b"spreadsheetml.styles+xml",
+        b"application/vnd.openxmlformats-officedocument."
+        b"spreadsheetml.sharedStrings+xml",
+    ),
+)
+def test_transitional_loader_never_opens_same_mime_attacker_member(
+    monkeypatch, attacker_content_type
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    attacker_part = "xl/media/private-transitional-079123456789.xml"
+    snapshot = _save(_roster_workbook())
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content_types = archive.read("[Content_Types].xml")
+    first_override = content_types.index(b"<Override")
+    attacker_override = (
+        b'<Override PartName="/xl/media/private-transitional-079123456789.xml" '
+        b'ContentType="' + attacker_content_type + b'"/>'
+    )
+    content_types = (
+        content_types[:first_override]
+        + attacker_override
+        + content_types[first_override:]
+    )
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={"[Content_Types].xml": content_types},
+        additions={attacker_part: b"PRIVATE-TRANSITIONAL-AUX-079123456789"},
+    )
+    opened = []
+    original_open = zipfile.ZipFile.open
+    real_loader = workbook_adapter.openpyxl.load_workbook
+
+    def guarded_open(self, name, *args, **kwargs):
+        member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if member_name == attacker_part:
+            opened.append(member_name)
+            raise AssertionError("same-MIME transitional attacker member was opened")
+        return original_open(self, name, *args, **kwargs)
+
+    def guarded_loader(source, **kwargs):
+        with zipfile.ZipFile(BytesIO(source.getvalue()), "r") as loader_archive:
+            assert attacker_part not in loader_archive.namelist()
+        return real_loader(source, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", guarded_open)
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", guarded_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 3
+    assert attacker_part not in opened
+    _assert_private_values_absent(result, "PRIVATE-TRANSITIONAL-AUX-079123456789")
+
+
+def test_xml_element_ceiling_rejects_before_full_tree_or_openpyxl(monkeypatch):
+    import ctv_inspection_workbook as workbook_adapter
+
+    strict_namespace = STRICT_SPREADSHEET_NAMESPACE
+    worksheet_xml = (
+        b'<worksheet xmlns="'
+        + strict_namespace
+        + b'"><dimension ref="A1:A1"/>'
+        + b"<x/>" * 199_999
+        + b"</worksheet>"
+    )
+    snapshot = _strict_package(_save(Workbook()))
+    snapshot = _rewrite_package_with_stored_member(
+        snapshot,
+        "xl/worksheets/sheet1.xml",
+        worksheet_xml,
+    )
+    tree_calls = []
+    loader_calls = []
+    real_fromstring = workbook_adapter.ElementTree.fromstring
+
+    def guarded_tree(content, *args, **kwargs):
+        if content == worksheet_xml:
+            tree_calls.append(True)
+            raise AssertionError("full tree must not be built past the element ceiling")
+        return real_fromstring(content, *args, **kwargs)
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append((args, kwargs))
+        raise AssertionError("OpenPyXL must not receive over-element XML")
+
+    monkeypatch.setattr(workbook_adapter.ElementTree, "fromstring", guarded_tree)
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    with pytest.raises(
+        workbook_adapter.WorkbookParserBoundaryExceededError
+    ) as raised:
+        _inspect(snapshot)
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert tree_calls == []
+    assert loader_calls == []
+
+
+def test_normalized_member_output_cap_precedes_loader_zip_and_openpyxl(monkeypatch):
+    import ctv_inspection_workbook as workbook_adapter
+
+    repeated_element = b"<x>" + b"A" * 117 + b"</x>"
+    worksheet_xml = (
+        b'<worksheet xmlns="'
+        + STRICT_SPREADSHEET_NAMESPACE
+        + b'"><dimension ref="A1:A1"/><sheetData/>'
+        + repeated_element * 199_997
+        + b"</worksheet>"
+    )
+    assert len(worksheet_xml) < 25 * 1024 * 1024
+    snapshot = _strict_package(_save(Workbook()))
+    snapshot = _rewrite_package_with_stored_member(
+        snapshot,
+        "xl/worksheets/sheet1.xml",
+        worksheet_xml,
+    )
+    loader_zip_calls = []
+    loader_calls = []
+    real_zipfile = workbook_adapter.zipfile.ZipFile
+
+    def recording_zipfile(source, mode="r", *args, **kwargs):
+        if mode == "w":
+            loader_zip_calls.append(True)
+        return real_zipfile(source, mode, *args, **kwargs)
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append((args, kwargs))
+        raise AssertionError("OpenPyXL must not receive oversized normalized XML")
+
+    monkeypatch.setattr(workbook_adapter.zipfile, "ZipFile", recording_zipfile)
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    with pytest.raises(
+        workbook_adapter.WorkbookParserBoundaryExceededError
+    ) as raised:
+        _inspect(snapshot)
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert loader_zip_calls == []
+    assert loader_calls == []
+
+
+def test_normalized_text_expansion_is_rejected_before_large_writer_chunk(
+    monkeypatch,
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    content = (
+        b'<workbook xmlns="'
+        + STRICT_SPREADSHEET_NAMESPACE
+        + b'">'
+        + b">" * (7 * 1024 * 1024)
+        + b"</workbook>"
+    )
+    write_sizes = []
+    real_write = workbook_adapter._CappedXmlOutput.write
+
+    def recording_write(self, output):
+        write_sizes.append(len(output))
+        return real_write(self, output)
+
+    monkeypatch.setattr(workbook_adapter._CappedXmlOutput, "write", recording_write)
+
+    with pytest.raises(
+        workbook_adapter.WorkbookParserBoundaryExceededError
+    ) as raised:
+        workbook_adapter._normalized_strict_xml(content)
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert not write_sizes or max(write_sizes) <= 64 * 1024
+
+
 @pytest.mark.parametrize("target_kind", ["worksheet", "drawing"])
 def test_wrong_target_content_type_fails_safe_before_openpyxl(
     monkeypatch, target_kind
@@ -1315,19 +1497,13 @@ def test_zip_entry_count_boundary_raises_before_zipfile_allocation(monkeypatch):
     _assert_private_values_absent(raised.value, "private-extra")
 
 
-def test_operation_decompression_budget_includes_both_openpyxl_worksheet_reads(
+def test_sanitized_loader_work_is_reserved_for_both_openpyxl_worksheet_reads(
     monkeypatch,
 ):
-    extra_names = tuple(f"private-boundary-{index}.bin" for index in range(4))
-    base_snapshot = _save(_roster_workbook())
-    with zipfile.ZipFile(BytesIO(base_snapshot), "r") as archive:
-        workbook_xml = archive.read("xl/workbook.xml")
-    original = _rewrite_package(
-        base_snapshot,
-        replacements={"xl/workbook.xml": workbook_xml + b" "},
-        additions={name: b"X" for name in extra_names},
-    )
-    with zipfile.ZipFile(BytesIO(original), "r") as archive:
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(_roster_workbook())
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
         manual_total = sum(
             archive.getinfo(name).file_size
             for name in (
@@ -1337,31 +1513,45 @@ def test_operation_decompression_budget_includes_both_openpyxl_worksheet_reads(
                 "xl/worksheets/sheet1.xml",
                 "xl/worksheets/sheet2.xml",
                 "xl/worksheets/sheet3.xml",
+                "xl/styles.xml",
             )
         )
-    operation_limit = 100 * 1024 * 1024
-    assert manual_total % 2 == 0
-    accepted_snapshot = _patch_declared_total(
-        original,
-        extra_names,
-        (operation_limit - manual_total) // 2,
+    loader_snapshots = []
+    real_loader = workbook_adapter.openpyxl.load_workbook
+
+    def capturing_loader(source, **kwargs):
+        loader_snapshots.append(source.getvalue())
+        return real_loader(source, **kwargs)
+
+    monkeypatch.setattr(
+        workbook_adapter.openpyxl,
+        "load_workbook",
+        capturing_loader,
     )
-    with zipfile.ZipFile(BytesIO(accepted_snapshot), "r") as archive:
-        accepted_declared_total = sum(
-            info.file_size for info in archive.infolist()
-        )
-    assert manual_total + 2 * accepted_declared_total == operation_limit
+    characterized = _inspect(snapshot)
+    assert characterized.inspection_status == "inspected"
+    assert len(loader_snapshots) == 1
+    with zipfile.ZipFile(BytesIO(loader_snapshots[0]), "r") as loader_archive:
+        loader_total = sum(info.file_size for info in loader_archive.infolist())
+    exact_operation_limit = manual_total + 2 * loader_total
+    monkeypatch.setattr(
+        workbook_adapter,
+        "_MAX_DECOMPRESSED_BYTES",
+        exact_operation_limit,
+    )
     opened = []
     original_open = zipfile.ZipFile.open
 
     def recording_open(self, name, *args, **kwargs):
         member_name = name.filename if isinstance(name, zipfile.ZipInfo) else name
-        opened.append(member_name)
+        if self.mode == "r":
+            opened.append(member_name)
         return original_open(self, name, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "open", recording_open)
 
-    result = _inspect(accepted_snapshot)
+    loader_snapshots.clear()
+    result = _inspect(snapshot)
 
     assert result.inspection_status == "inspected"
     assert result.unit_count == 3
@@ -1372,20 +1562,21 @@ def test_operation_decompression_budget_includes_both_openpyxl_worksheet_reads(
     assert open_counts["xl/worksheets/sheet1.xml"] == 3
     assert open_counts["xl/worksheets/sheet2.xml"] == 3
     assert open_counts["xl/worksheets/sheet3.xml"] == 3
-    _assert_private_values_absent(result, "private-boundary")
+    assert open_counts["xl/styles.xml"] == 2
 
     opened.clear()
-    rejected_snapshot = _patch_declared_total(
-        original,
-        extra_names,
-        (operation_limit - manual_total) // 2 + 1,
+    loader_snapshots.clear()
+    monkeypatch.setattr(
+        workbook_adapter,
+        "_MAX_DECOMPRESSED_BYTES",
+        exact_operation_limit - 1,
     )
     from ctv_inspection_workbook import WorkbookParserBoundaryExceededError
 
     with pytest.raises(WorkbookParserBoundaryExceededError) as raised:
-        _inspect(rejected_snapshot)
+        _inspect(snapshot)
     assert str(raised.value) == "inspection-parser-boundary-exceeded"
-    assert Counter(opened)["xl/worksheets/sheet1.xml"] == 1
+    assert loader_snapshots == []
 
 
 @pytest.mark.parametrize("adversary", ["member", "aggregate", "ratio"])
