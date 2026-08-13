@@ -298,6 +298,63 @@ def test_inventory_controlled_failure_is_safe_and_non_retryable(
     assert private_fragment not in json.dumps(payload).encode()
 
 
+@pytest.mark.parametrize(
+    "private_code",
+    [
+        "private-client-identifier",
+        "/private/client/record-012345678901",
+    ],
+)
+def test_unapproved_inventory_error_code_becomes_private_safe_internal_error(
+    private_code, monkeypatch, capsysbinary
+):
+    cli = _module()
+    from ctv_inventory import InventoryError
+
+    def fail(_source_root):
+        raise InventoryError(private_code)
+
+    monkeypatch.setattr(cli, "inventory_source", fail)
+
+    exit_code = cli.main(
+        ["inventory", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inventory", "failed")
+    assert exit_code == 1
+    assert payload["retryable"] is False
+    assert payload["result"] == {}
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert private_code.encode() not in json.dumps(payload).encode()
+
+
+def test_inventory_error_allowlist_matches_every_engine_emitted_code():
+    cli = _module()
+    inventory_path = SCRIPT.with_name("ctv_inventory.py")
+    tree = ast.parse(inventory_path.read_text(encoding="utf-8"))
+    engine_codes = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "InventoryError"
+            and node.args
+        ):
+            engine_codes.update(
+                child.value
+                for child in ast.walk(node.args[0])
+                if isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+            )
+
+    assert engine_codes == cli._INVENTORY_ERROR_CODES
+
+
 def test_unexpected_inventory_error_never_exposes_private_details(
     tmp_path, monkeypatch, capsysbinary
 ):

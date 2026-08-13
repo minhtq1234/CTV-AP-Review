@@ -34,6 +34,22 @@ _DOCTOR_ERROR_MESSAGES = {
     "dependency-incompatible": "A required local dependency is incompatible.",
     "secure-open-unavailable": "Secure local file opening is unavailable.",
 }
+_INVENTORY_ERROR_CODES = frozenset(
+    {
+        "inventory-depth-exceeded",
+        "inventory-directory-count-exceeded",
+        "inventory-directory-unreadable",
+        "inventory-entry-count-exceeded",
+        "inventory-entry-unsafe",
+        "inventory-item-count-exceeded",
+        "inventory-output-too-large",
+        "inventory-regular-file-count-exceeded",
+        "inventory-tree-changed",
+        "secure-open-unavailable",
+        "source-root-missing",
+        "source-root-unsafe",
+    }
+)
 _INVENTORY_ERROR_MESSAGE = "The source folder could not be inventoried safely."
 
 
@@ -238,12 +254,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             envelope, exit_code = _inventory_result(args.source_root)
     except InventoryError as error:
-        envelope = _operation_failure(
-            operation,
-            error.code,
-            _INVENTORY_ERROR_MESSAGE,
-        )
-        exit_code = 2
+        if isinstance(error.code, str) and error.code in _INVENTORY_ERROR_CODES:
+            envelope = _operation_failure(
+                operation,
+                error.code,
+                _INVENTORY_ERROR_MESSAGE,
+            )
+            exit_code = 2
+        else:
+            envelope = _operation_failure(
+                operation,
+                "internal-error",
+                "The local toolkit could not complete the check.",
+            )
+            exit_code = 1
     except ContractPinError as error:
         envelope = _operation_failure(
             operation,
