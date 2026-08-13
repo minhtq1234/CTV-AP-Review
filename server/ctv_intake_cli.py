@@ -306,8 +306,6 @@ def _inspection_result(source_root: Path):
             ),
             0,
         )
-    except GeneratorExit:
-        raise
     except BaseException as error:
         if inspection_error_type is not None and type(error) is inspection_error_type:
             code = _safe_inspection_error_code(error)
@@ -335,8 +333,6 @@ def _operation_failure(operation: str, code: str, message: str):
 def _safe_inspection_error_code(error) -> str | None:
     try:
         code = error.code
-    except GeneratorExit:
-        raise
     except BaseException:
         return None
     if type(code) is str and code in _INSPECTION_ERROR_CODES:
@@ -375,8 +371,6 @@ def _emit_inspection_result(envelope, exit_code: int) -> int:
                 ):
                     raise ValueError("canonical inspect failure exceeds output limit")
                 exit_code = 2
-        except GeneratorExit:
-            raise
         except BaseException:
             content = _INSPECT_INTERNAL_ERROR_BYTES
             exit_code = 1

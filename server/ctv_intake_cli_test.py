@@ -91,6 +91,60 @@ def _copy_toolkit(tmp_path: Path) -> Path:
     return root
 
 
+def _install_generator_exit_injection(root: Path, injection: str) -> None:
+    inspection_path = root / "server" / "ctv_inspection.py"
+    if injection == "import":
+        inspection_path.write_text(
+            "raise GeneratorExit('PRIVATE_GENERATOR_DETAIL')\n",
+            encoding="utf-8",
+        )
+        return
+
+    if injection == "engine":
+        module_source = """
+class InspectionError(RuntimeError):
+    pass
+
+def inspect_source(_source_root):
+    raise GeneratorExit("PRIVATE_GENERATOR_DETAIL")
+"""
+    elif injection == "error-accessor":
+        module_source = """
+class InspectionError(RuntimeError):
+    @property
+    def code(self):
+        raise GeneratorExit("PRIVATE_GENERATOR_DETAIL")
+
+def inspect_source(_source_root):
+    raise InspectionError("PRIVATE_GENERATOR_DETAIL")
+"""
+    elif injection == "to-dict":
+        module_source = """
+class InspectionError(RuntimeError):
+    pass
+
+class HostileResult:
+    def to_dict(self):
+        raise GeneratorExit("PRIVATE_GENERATOR_DETAIL")
+
+def inspect_source(_source_root):
+    return HostileResult()
+"""
+    elif injection == "serializer":
+        protocol_path = root / "server" / "ctv_cli_protocol.py"
+        protocol_path.write_text(
+            protocol_path.read_text(encoding="utf-8")
+            + "\ndef canonical_json_bytes(_envelope):\n"
+            + "    raise GeneratorExit('PRIVATE_GENERATOR_DETAIL')\n",
+            encoding="utf-8",
+        )
+        return
+    else:
+        raise AssertionError(f"unknown injection: {injection}")
+
+    inspection_path.write_text(module_source, encoding="utf-8")
+
+
 def _external_tree_snapshot(root: Path):
     snapshot = {}
     for path in (root, *root.rglob("*")):
@@ -818,19 +872,24 @@ def test_inspection_process_control_failure_is_fixed_internal_error(
     assert b"private-process-control-detail" not in json.dumps(payload).encode()
 
 
-def test_inspection_generator_exit_remains_process_fatal(monkeypatch, capsysbinary):
+def test_inspection_generator_exit_is_fixed_internal_error(
+    monkeypatch, capsysbinary
+):
     cli = _module()
 
     def fail(_source_root):
-        raise GeneratorExit("private-generator-exit-detail")
+        raise GeneratorExit("PRIVATE_GENERATOR_DETAIL")
 
     monkeypatch.setattr(cli, "inspect_source", fail)
 
-    with pytest.raises(GeneratorExit):
-        cli.main(["inspect", "--source-root", "synthetic-source", "--json"])
+    exit_code = cli.main(
+        ["inspect", "--source-root", "synthetic-source", "--json"]
+    )
 
-    captured = capsysbinary.readouterr()
-    assert captured.out == captured.err == b""
+    payload = _captured_envelope(capsysbinary, "inspect", "failed")
+    assert exit_code == 1
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"PRIVATE_GENERATOR_DETAIL" not in json.dumps(payload).encode()
 
 
 def test_inspection_error_subclass_is_never_trusted_as_controlled(
@@ -1362,6 +1421,35 @@ def test_inspect_broken_module_import_is_fixed_internal_error(
 
 
 @pytest.mark.parametrize(
+    "injection",
+    ("import", "engine", "error-accessor", "to-dict", "serializer"),
+)
+def test_inspect_contains_generator_exit_at_every_safety_boundary(
+    injection, tmp_path
+):
+    root = _copy_toolkit(tmp_path)
+    _install_generator_exit_injection(root, injection)
+    source = tmp_path / "synthetic-source"
+    source.mkdir()
+
+    result = _run(
+        "inspect",
+        "--source-root",
+        str(source),
+        "--json",
+        cwd=tmp_path,
+        script=root / "server" / SCRIPT.name,
+    )
+
+    payload = _envelope(result, "inspect", "failed")
+    assert result.returncode == 1
+    assert result.stderr == b""
+    assert [entry["code"] for entry in payload["errors"]] == ["internal-error"]
+    assert b"PRIVATE_GENERATOR_DETAIL" not in result.stdout
+    assert b"Traceback" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
     ("controlled_failure", "expected_exit", "expected_status"),
     [(False, 0, "succeeded"), (True, 2, "failed")],
 )
@@ -1507,6 +1595,30 @@ def _attribute_calls(path: Path) -> set[str]:
     return calls
 
 
+def _called_attribute_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+
+def _shell_enabled_call_lines(path: Path) -> set[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            keyword.arg == "shell"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
+    }
+
+
 def test_inventory_modules_have_no_network_subprocess_parser_ocr_or_ai_imports():
     network_forbidden = {
         "socket",
@@ -1565,51 +1677,72 @@ def test_inventory_modules_have_no_network_subprocess_parser_ocr_or_ai_imports()
     assert _attribute_calls(SCRIPT).isdisjoint(forbidden_shell_calls)
 
 
-def test_inspection_modules_keep_process_archive_network_and_ai_boundaries_static():
-    production_ctv_modules = tuple(
+def test_all_production_modules_keep_process_archive_network_ai_and_shell_boundaries_static():
+    production_modules = tuple(
         path
-        for path in SCRIPT.parent.glob("ctv_*.py")
+        for path in SCRIPT.parent.glob("*.py")
         if not path.name.endswith("_test.py")
     )
+    assert {path.name for path in production_modules} >= {
+        "app.py",
+        "ctv_intake_cli.py",
+        "pipeline.py",
+        "roster_workbook.py",
+    }
     subprocess_importers = {
-        path.name for path in production_ctv_modules if "subprocess" in _import_roots(path)
+        path.name
+        for path in production_modules
+        if "subprocess" in _import_roots(path)
     }
     assert subprocess_importers == {"ctv_local_ocr.py"}
 
-    inspection_modules = tuple(
-        path
-        for path in SCRIPT.parent.glob("ctv_inspection*.py")
-        if not path.name.endswith("_test.py")
-    )
     zip_importers = {
         path.name
-        for path in production_ctv_modules
+        for path in production_modules
         if "zipfile" in _import_roots(path)
     }
-    assert zip_importers == {"ctv_inspection_workbook.py"}
+    assert zip_importers == {
+        "cccd_workbook.py",
+        "ctv_inspection_workbook.py",
+        "roster_workbook.py",
+    }
 
-    forbidden = {
+    archive_extractors = {"tarfile", "rarfile", "py7zr"}
+    remote_or_ai = {
         "anthropic",
         "ftplib",
         "http",
         "httpx",
         "openai",
-        "py7zr",
-        "pytesseract",
-        "rarfile",
         "requests",
-        "shlex",
         "socket",
-        "subprocess",
-        "tarfile",
-        "tempfile",
         "torch",
         "transformers",
         "urllib",
         "webbrowser",
     }
-    for path in inspection_modules:
-        assert _import_roots(path).isdisjoint(forbidden)
+    for path in production_modules:
+        roots = _import_roots(path)
+        assert roots.isdisjoint(archive_extractors)
+        assert roots.isdisjoint(remote_or_ai)
+        assert _called_attribute_names(path).isdisjoint(
+            {"extract", "extractall", "unpack_archive"}
+        )
+
+    local_ocr_importers = {
+        path.name
+        for path in production_modules
+        if "pytesseract" in _import_roots(path)
+    }
+    assert local_ocr_importers == {"cccd_ocr.py", "ocr_extract.py"}
+
+    temporary_file_importers = {
+        path.name
+        for path in production_modules
+        if "tempfile" in _import_roots(path)
+    }
+    assert temporary_file_importers == {"cccd_ingest.py", "cccd_ocr.py"}
+    assert all("shlex" not in _import_roots(path) for path in production_modules)
 
     forbidden_shell_calls = {
         "os.system",
@@ -1623,8 +1756,9 @@ def test_inspection_modules_keep_process_archive_network_and_ai_boundaries_stati
         "os.spawnvp",
         "os.spawnvpe",
     }
-    for path in (*inspection_modules, SCRIPT):
+    for path in production_modules:
         assert _attribute_calls(path).isdisjoint(forbidden_shell_calls)
+        assert not _shell_enabled_call_lines(path)
 
 
 def test_inspection_cli_error_allowlist_matches_literal_engine_declaration():
