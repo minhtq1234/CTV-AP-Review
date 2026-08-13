@@ -12,6 +12,7 @@ from PIL import Image
 
 from ctv_inspection_classifier import TextSignalContext, signals_from_private_text
 from ctv_inspection_model import (
+    DEFAULT_INSPECTION_LIMITS,
     InspectionAdapterResult,
     InspectionLimits,
     InspectionUnitCountExceededError,
@@ -86,6 +87,19 @@ class PdfParserBoundaryExceededError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("inspection-parser-boundary-exceeded")
+
+
+class MediaPreviewError(RuntimeError):
+    """Fixed local-preview failure without parser or document details."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {
+            "preview-unavailable",
+            "preview-over-limit",
+            "preview-parser-boundary-exceeded",
+        }:
+            raise ValueError("media preview error code must be fixed")
+        super().__init__(code)
 
 
 def _pdf_boundary() -> None:
@@ -895,3 +909,80 @@ def inspect_image(
     )
     normalized = b""
     return InspectionAdapterResult("inspected", 1, (), (unit,))
+
+
+def render_pdf_page_preview(
+    snapshot: bytes,
+    unit_index: int,
+    *,
+    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+) -> bytes:
+    """Render one proved PDF page to a bounded 150-DPI in-memory PNG."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("preview input must use bounded snapshot bytes and limits")
+    if type(unit_index) is not int or not 1 <= unit_index <= limits.max_pdf_pages:
+        raise MediaPreviewError("preview-unavailable")
+    if len(snapshot) > limits.max_pdf_source_bytes:
+        raise MediaPreviewError("preview-over-limit")
+    try:
+        document = fitz.open(stream=snapshot, filetype="pdf")
+    except Exception:
+        raise MediaPreviewError("preview-unavailable") from None
+    try:
+        with document:
+            if document.needs_pass:
+                raise MediaPreviewError("preview-unavailable")
+            page_count = document.page_count
+            if (
+                type(page_count) is not int
+                or page_count < 0
+                or page_count > limits.max_pdf_pages
+                or unit_index > page_count
+            ):
+                raise MediaPreviewError("preview-unavailable")
+            page = document.load_page(unit_index - 1)
+            if _page_predicted_over_limit(page, limits.max_decoded_image_pixels):
+                raise MediaPreviewError("preview-over-limit")
+            _prove_pdf_page_bounds(document, page, limits)
+            pixmap = page.get_pixmap(dpi=_PDF_DPI, alpha=False, annots=False)
+            width = pixmap.width
+            height = pixmap.height
+            if (
+                type(width) is not int
+                or type(height) is not int
+                or width <= 0
+                or height <= 0
+                or width * height > limits.max_decoded_image_pixels
+            ):
+                raise MediaPreviewError("preview-over-limit")
+            rendered = pixmap.tobytes("png")
+            if type(rendered) is not bytes or len(rendered) > _OCR_IMAGE_BYTES:
+                raise MediaPreviewError("preview-over-limit")
+            return rendered
+    except MediaPreviewError:
+        raise
+    except PdfParserBoundaryExceededError:
+        raise MediaPreviewError("preview-parser-boundary-exceeded") from None
+    except Exception:
+        raise MediaPreviewError("preview-unavailable") from None
+
+
+def render_image_preview(
+    snapshot: bytes,
+    *,
+    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+) -> bytes:
+    """Normalize the first image frame to the existing bounded in-memory PNG."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("preview input must use bounded snapshot bytes and limits")
+    if len(snapshot) > limits.max_image_source_bytes:
+        raise MediaPreviewError("preview-over-limit")
+    try:
+        normalized, _multi_frame, over_limit = _normalize_image(snapshot, limits)
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+        raise MediaPreviewError("preview-over-limit") from None
+    except Exception:
+        raise MediaPreviewError("preview-unavailable") from None
+    if over_limit or normalized is None or len(normalized) > _OCR_IMAGE_BYTES:
+        raise MediaPreviewError("preview-over-limit")
+    return normalized

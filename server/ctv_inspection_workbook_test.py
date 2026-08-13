@@ -104,6 +104,53 @@ def _roster_workbook(*, with_image=False):
     return workbook
 
 
+def test_worksheet_preview_is_current_unit_only_and_bounded_to_200_by_50_by_256():
+    import ctv_inspection_workbook as workbook_adapter
+
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "private-first"
+    first.append(("first-only",))
+    second = workbook.create_sheet("private-second")
+    for row_index in range(1, 202):
+        second.append(
+            tuple(
+                ("Z" * 256 if row_index == 1 and column_index == 1 else f"r{row_index}c{column_index}")
+                for column_index in range(1, 52)
+            )
+        )
+
+    preview = workbook_adapter.worksheet_preview(_save(workbook), 2)
+
+    assert set(preview) == {"rows", "rowCount", "columnCount", "truncated"}
+    assert preview["rowCount"] == 200
+    assert preview["columnCount"] == 50
+    assert preview["truncated"] is True
+    assert len(preview["rows"]) == 200
+    assert all(len(row) <= 50 for row in preview["rows"])
+    assert max(len(cell) for row in preview["rows"] for cell in row) == 256
+    assert "first-only" not in repr(preview)
+
+    for invalid_index in (0, 3, True, "2"):
+        with pytest.raises(
+            workbook_adapter.WorkbookPreviewError,
+            match="^preview-unavailable$",
+        ):
+            workbook_adapter.worksheet_preview(_save(Workbook()), invalid_index)
+
+
+def test_worksheet_preview_rejects_overlong_cell_with_fixed_error():
+    import ctv_inspection_workbook as workbook_adapter
+
+    workbook = Workbook()
+    workbook.active["A1"] = "P" * 257
+    with pytest.raises(
+        workbook_adapter.WorkbookPreviewError,
+        match="^preview-over-limit$",
+    ):
+        workbook_adapter.worksheet_preview(_save(workbook), 1)
+
+
 def _inspect(snapshot, *, limits=None):
     from ctv_inspection_workbook import inspect_workbook
 

@@ -14,6 +14,7 @@ from ctv_inspection_classifier import (
     signals_from_private_text,
 )
 from ctv_inspection_model import (
+    DEFAULT_INSPECTION_LIMITS,
     InspectionAdapterResult,
     InspectionLimits,
     InspectionUnitCountExceededError,
@@ -106,6 +107,19 @@ class WorkbookWorksheetCountExceededError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("inspection-worksheet-count-exceeded")
+
+
+class WorkbookPreviewError(RuntimeError):
+    """Fixed local-preview failure without workbook or parser details."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {
+            "preview-unavailable",
+            "preview-over-limit",
+            "preview-parser-boundary-exceeded",
+        }:
+            raise ValueError("workbook preview error code must be fixed")
+        super().__init__(code)
 
 
 class _UnreadableWorkbookError(ValueError):
@@ -1476,6 +1490,92 @@ def inspect_workbook(
         raise
     except Exception:
         return _source_problem("unreadable", "document-unreadable")
+    finally:
+        if workbook is not None:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+
+
+def worksheet_preview(
+    snapshot: bytes,
+    unit_index: int,
+    *,
+    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+) -> dict:
+    """Return one proved worksheet's bounded local-only cell preview."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("preview input must use bounded snapshot bytes and limits")
+    if (
+        type(unit_index) is not int
+        or not 1 <= unit_index <= limits.max_worksheets_per_workbook
+    ):
+        raise WorkbookPreviewError("preview-unavailable")
+    if len(snapshot) > limits.max_workbook_source_bytes:
+        raise WorkbookPreviewError("preview-over-limit")
+    if snapshot.startswith(_OLE_COMPOUND_HEADER):
+        raise WorkbookPreviewError("preview-unavailable")
+    try:
+        worksheet_metadata, _spreadsheet_namespace, loader_snapshot = _preflight(
+            snapshot, limits
+        )
+    except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
+        raise WorkbookPreviewError("preview-parser-boundary-exceeded") from None
+    except Exception:
+        raise WorkbookPreviewError("preview-unavailable") from None
+    if unit_index > len(worksheet_metadata):
+        raise WorkbookPreviewError("preview-unavailable")
+
+    workbook = None
+    try:
+        workbook = openpyxl.load_workbook(
+            BytesIO(loader_snapshot),
+            read_only=True,
+            data_only=False,
+            keep_links=False,
+        )
+        worksheets = workbook.worksheets
+        if len(worksheets) != len(worksheet_metadata) or unit_index > len(worksheets):
+            raise WorkbookPreviewError("preview-unavailable")
+        worksheet = worksheets[unit_index - 1]
+        max_row = worksheet.max_row
+        max_column = worksheet.max_column
+        if (
+            type(max_row) is not int
+            or type(max_column) is not int
+            or max_row < 0
+            or max_column < 0
+            or max_row * max_column > limits.max_cells_per_workbook
+        ):
+            raise WorkbookPreviewError("preview-over-limit")
+        row_limit = min(max_row, 200)
+        column_limit = min(max_column, 50)
+        rows = []
+        if row_limit and column_limit:
+            for row in worksheet.iter_rows(
+                min_row=1,
+                max_row=row_limit,
+                min_col=1,
+                max_col=column_limit,
+            ):
+                values = []
+                for cell in row:
+                    text, over_limit = _private_scalar_text(cell.value, 256)
+                    if over_limit:
+                        raise WorkbookPreviewError("preview-over-limit")
+                    values.append(text)
+                rows.append(values)
+        return {
+            "rows": rows,
+            "rowCount": len(rows),
+            "columnCount": max((len(row) for row in rows), default=0),
+            "truncated": max_row > 200 or max_column > 50,
+        }
+    except WorkbookPreviewError:
+        raise
+    except Exception:
+        raise WorkbookPreviewError("preview-unavailable") from None
     finally:
         if workbook is not None:
             try:

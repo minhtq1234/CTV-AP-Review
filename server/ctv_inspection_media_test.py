@@ -136,6 +136,52 @@ def _animated_gif():
     return stream.getvalue()
 
 
+def test_preview_helpers_render_only_the_requested_bounded_media_unit(monkeypatch):
+    import ctv_inspection_media as media
+
+    rendered_page = media.render_pdf_page_preview(_scanned_pdf(), 1)
+    assert rendered_page.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(rendered_page) <= 25 * 1024 * 1024
+    with Image.open(BytesIO(rendered_page)) as preview:
+        assert preview.size == (250, 167)
+
+    normalized_image = media.render_image_preview(
+        _image_bytes("JPEG", size=(12, 8), color=(10, 20, 30))
+    )
+    assert normalized_image.startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(BytesIO(normalized_image)) as preview:
+        assert preview.size == (12, 8)
+        assert preview.mode == "RGB"
+
+    for invalid_index in (0, 2, True, "1"):
+        with pytest.raises(media.MediaPreviewError, match="^preview-unavailable$"):
+            media.render_pdf_page_preview(_scanned_pdf(), invalid_index)
+
+    monkeypatch.setattr(media, "_OCR_IMAGE_BYTES", len(normalized_image) - 1)
+    with pytest.raises(media.MediaPreviewError, match="^preview-over-limit$"):
+        media.render_image_preview(_image_bytes("PNG", size=(12, 8)))
+
+
+def test_pdf_preview_reuses_parser_proof_and_existing_pixel_limit(monkeypatch):
+    import ctv_inspection_media as media
+
+    with pytest.raises(media.MediaPreviewError, match="^preview-over-limit$"):
+        media.render_pdf_page_preview(
+            _scanned_pdf(),
+            1,
+            limits=InspectionLimits(max_decoded_image_pixels=100),
+        )
+
+    def reject_page(*_args, **_kwargs):
+        raise media.PdfParserBoundaryExceededError()
+
+    monkeypatch.setattr(media, "_prove_pdf_page_bounds", reject_page)
+    with pytest.raises(
+        media.MediaPreviewError, match="^preview-parser-boundary-exceeded$"
+    ):
+        media.render_pdf_page_preview(_scanned_pdf(), 1)
+
+
 class RecordingOcr:
     def __init__(self, outcome=None):
         self.outcome = outcome or OcrOutcome("succeeded", PRIVATE_TEXT)
