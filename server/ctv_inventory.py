@@ -108,7 +108,12 @@ def _normalize_source(source_root: Path) -> tuple[str, ...]:
         raise InventoryError("source-root-unsafe") from None
     if not isinstance(raw_path, str) or not raw_path or "\0" in raw_path:
         raise InventoryError("source-root-unsafe")
-    if any(component in {".", ".."} for component in raw_path.split(os.sep)):
+    lexical_components = raw_path.split(os.sep)
+    if raw_path.startswith(os.sep):
+        lexical_components = lexical_components[1:]
+    if not lexical_components or any(
+        component in {"", ".", ".."} for component in lexical_components
+    ):
         raise InventoryError("source-root-unsafe")
     try:
         normalized = os.path.abspath(raw_path)
@@ -687,6 +692,7 @@ def _process_regular(
                 hashed_bytes,
             )
 
+        reserved_hashed_bytes = hashed_bytes + fact.size
         hash_failed = False
         hash_short = False
         try:
@@ -701,9 +707,9 @@ def _process_regular(
             refreshed = _refresh_regular_fact(
                 root_descriptor, fact, directory_facts
             )
-            return _changed_draft(refreshed), refreshed, hashed_bytes
+            return _changed_draft(refreshed), refreshed, reserved_hashed_bytes
         if hash_failed or digest is None:
-            return _unreadable_draft(fact), fact, hashed_bytes
+            return _unreadable_draft(fact), fact, reserved_hashed_bytes
         return (
             InventoryItemDraft(
                 depth=fact.depth,
@@ -715,7 +721,7 @@ def _process_regular(
                 issue_codes=detected_issues,
             ),
             fact,
-            hashed_bytes + fact.size,
+            reserved_hashed_bytes,
         )
     finally:
         _close(descriptor)
@@ -761,6 +767,9 @@ def _revalidate_tree(
         or (reopened_metadata.st_dev, reopened_metadata.st_ino) != root_identity
         or (retained_metadata.st_dev, retained_metadata.st_ino) != root_identity
     ):
+        raise InventoryError("inventory-tree-changed")
+    post_reopen_facts = _enumerate_tree(root_descriptor, limits)
+    if post_reopen_facts != authoritative:
         raise InventoryError("inventory-tree-changed")
 
 

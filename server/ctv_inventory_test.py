@@ -343,6 +343,89 @@ def test_sorted_files_consume_aggregate_hash_budget_deterministically(tmp_path):
     assert result.inventory_status == "complete-with-issues"
 
 
+def test_late_mutation_still_consumes_the_reserved_hash_budget(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    changed = source / "a-changed.bin"
+    changed.write_bytes(b"12345678")
+    (source / "b-later.bin").write_bytes(b"abcdefgh")
+    _inject_one_read_metadata_mutation(
+        monkeypatch, changed, phase="hash", field="time"
+    )
+
+    result = inventory_source(
+        source,
+        limits=_small_limits(
+            sample_bytes=4,
+            max_hash_file_bytes=8,
+            max_hash_total_bytes=8,
+        ),
+    )
+
+    assert result.items[0].issue_codes == ("changed-during-read",)
+    assert result.items[0].hash_status == "not-applicable"
+    assert result.items[1].issue_codes == ("hash-budget-exhausted",)
+    assert result.items[1].hash_status == "budget-exhausted"
+    assert result.items[1].sha256 is None
+
+
+def test_partial_hash_read_failure_still_consumes_the_reserved_budget(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    failed = source / "a-failed.bin"
+    failed.write_bytes(b"12345678")
+    (source / "b-later.bin").write_bytes(b"abcdefgh")
+    target = (failed.stat().st_dev, failed.stat().st_ino)
+    original_read = os.read
+    original_lseek = os.lseek
+    phase = "sample"
+    hash_reads = 0
+
+    def track_hash_start(descriptor, offset, whence):
+        nonlocal phase
+        opened = os.fstat(descriptor)
+        if (
+            (opened.st_dev, opened.st_ino) == target
+            and offset == 0
+            and whence == os.SEEK_SET
+        ):
+            phase = "hash"
+        return original_lseek(descriptor, offset, whence)
+
+    def fail_after_partial_hash_read(descriptor, count):
+        nonlocal hash_reads
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == target and phase == "hash":
+            hash_reads += 1
+            if hash_reads == 1:
+                return original_read(descriptor, min(count, 4))
+            raise OSError("private hash read failure")
+        return original_read(descriptor, count)
+
+    monkeypatch.setattr(os, "lseek", track_hash_start)
+    monkeypatch.setattr(os, "read", fail_after_partial_hash_read)
+
+    result = inventory_source(
+        source,
+        limits=_small_limits(
+            sample_bytes=4,
+            max_hash_file_bytes=8,
+            max_hash_total_bytes=8,
+        ),
+    )
+
+    assert hash_reads == 2
+    assert result.items[0].issue_codes == ("unreadable",)
+    assert result.items[0].hash_status == "not-applicable"
+    assert result.items[1].issue_codes == ("hash-budget-exhausted",)
+    assert result.items[1].hash_status == "budget-exhausted"
+    assert result.items[1].sha256 is None
+
+
 def test_same_digest_with_different_sizes_never_forms_duplicate_group(
     tmp_path, monkeypatch
 ):
@@ -409,6 +492,35 @@ def test_empty_or_dot_source_components_are_rejected(
         "source-root-unsafe",
         lambda: inventory_source(private_input, limits=_small_limits()),
     )
+
+
+@pytest.mark.parametrize("spelling", ["trailing", "repeated", "all-separator"])
+def test_raw_empty_source_components_are_rejected(tmp_path, spelling):
+    source = tmp_path / "source"
+    source.mkdir()
+    if spelling == "trailing":
+        raw_source = f"{source}{os.sep}"
+    elif spelling == "repeated":
+        raw_source = f"{source.parent}{os.sep}{os.sep}{source.name}"
+    else:
+        raw_source = os.sep * 4
+
+    _assert_inventory_error(
+        "source-root-unsafe",
+        lambda: inventory_source(raw_source, limits=_small_limits()),
+    )
+
+
+def test_path_caller_normalization_cannot_be_reconstructed_by_inventory(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    raw_spelling = f"{source}{os.sep}{os.sep}"
+    caller_normalized = Path(raw_spelling)
+    assert os.fspath(caller_normalized) == str(source)
+
+    result = inventory_source(caller_normalized, limits=_small_limits())
+
+    assert result.inventory_status == "complete"
 
 
 def test_intermediate_source_symlink_is_rejected(tmp_path):
@@ -491,6 +603,41 @@ def test_injected_limits_cannot_relax_the_hard_depth_cap(tmp_path):
     _assert_inventory_error(
         "inventory-depth-exceeded",
         lambda: inventory_source(source, limits=InventoryLimits(max_depth=40)),
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_depth",
+        "max_directories",
+        "max_regular_files",
+        "max_items",
+        "max_entries",
+        "sample_bytes",
+        "max_hash_file_bytes",
+        "max_hash_total_bytes",
+        "max_json_bytes",
+    ],
+)
+def test_every_injected_limit_is_capped_by_its_hard_ceiling(monkeypatch, field):
+    hard_values = {
+        name: 2 for name in InventoryLimits.__dataclass_fields__
+    }
+    injected_values = {
+        name: 1 for name in InventoryLimits.__dataclass_fields__
+    }
+    injected_values[field] = 3
+    monkeypatch.setattr(
+        inventory_module, "DEFAULT_LIMITS", InventoryLimits(**hard_values)
+    )
+
+    bounded = inventory_module._bounded_limits(InventoryLimits(**injected_values))
+
+    assert getattr(bounded, field) == 2
+    assert all(
+        getattr(bounded, name) == (2 if name == field else 1)
+        for name in InventoryLimits.__dataclass_fields__
     )
 
 
@@ -777,6 +924,41 @@ def test_descendant_mutation_before_final_observation_is_detected(
         lambda: inventory_source(source, limits=_small_limits()),
         private_path=descendant,
     )
+
+
+def test_descendant_mutation_from_final_root_reopen_is_detected(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    descendant = source / "private.bin"
+    original_content = b"approved"
+    changed_content = b"tampered"
+    descendant.write_bytes(original_content)
+    original_open = os.open
+    source_component_opens = 0
+
+    def mutate_during_final_root_reopen(path, flags, *args, **kwargs):
+        nonlocal source_component_opens
+        if path == source.name and kwargs.get("dir_fd") is not None:
+            source_component_opens += 1
+            if source_component_opens == 2:
+                descendant.write_bytes(changed_content)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", mutate_during_final_root_reopen)
+    monkeypatch.setattr(inventory_module, "_require_secure_open", lambda: None)
+
+    _assert_inventory_error(
+        "inventory-tree-changed",
+        lambda: inventory_source(source, limits=_small_limits()),
+        private_path=descendant,
+    )
+    assert source_component_opens == 2
+    assert descendant.read_bytes() == changed_content
+    assert hashlib.sha256(descendant.read_bytes()).hexdigest() != hashlib.sha256(
+        original_content
+    ).hexdigest()
 
 
 def test_serialized_result_limit_fails_instead_of_truncating(tmp_path):
