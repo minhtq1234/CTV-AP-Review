@@ -5,6 +5,7 @@ from io import BytesIO
 import re
 import socket
 import tempfile
+import traceback
 import warnings
 import zlib
 
@@ -168,6 +169,22 @@ def _inspect_image(snapshot, *, runner=None, limits=None):
     )
 
 
+def _assert_private_free_pdf_boundary(error, private_marker):
+    import ctv_inspection_media as media
+
+    assert type(error) is media.PdfParserBoundaryExceededError
+    assert str(error) == "inspection-parser-boundary-exceeded"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert private_marker not in "".join(traceback.format_exception(error))
+    current_traceback = error.__traceback__
+    while current_traceback is not None:
+        frame = current_traceback.tb_frame
+        if frame.f_globals.get("__name__") == "ctv_inspection_media":
+            assert private_marker not in repr(frame.f_locals)
+        current_traceback = current_traceback.tb_next
+
+
 def test_pdf_embedded_text_reduces_service_contract_and_acceptance_pages_in_order():
     result = _inspect_pdf(_pdf(
         "HOP DONG DICH VU BEN A va BEN B NOI DUNG DICH VU CHU KY "
@@ -284,6 +301,143 @@ def test_pdf_resource_parent_traversal_is_bounded(ancestry):
     if ancestry == "parser-failure":
         assert raised.value.__context__ is None
         assert "private parent parser diagnostic" not in repr(raised.value)
+
+
+def test_pdf_page_xref_parser_failure_has_private_free_fixed_boundary():
+    import ctv_inspection_media as media
+
+    private_marker = "private-page-xref-parser-diagnostic-079123456789"
+
+    class Page:
+        @property
+        def xref(self):
+            raise RuntimeError(private_marker)
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._resource_xref(object(), Page())
+
+    _assert_private_free_pdf_boundary(raised.value, private_marker)
+
+
+def test_pdf_resource_key_parser_failure_has_private_free_fixed_boundary():
+    import ctv_inspection_media as media
+
+    private_marker = "private-resource-key-parser-diagnostic-079123456789"
+
+    class Page:
+        xref = 1
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            values = {
+                (1, "Parent"): ("xref", "2 0 R"),
+                (2, "Type"): ("name", "/Pages"),
+                (1, "Resources"): ("xref", "3 0 R"),
+                (2, "Parent"): ("null", "null"),
+            }
+            return values.get((xref, key), ("null", "null"))
+
+        def xref_get_keys(self, xref):
+            assert xref == 3
+            raise RuntimeError(private_marker)
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._resource_xref(Document(), Page())
+
+    _assert_private_free_pdf_boundary(raised.value, private_marker)
+
+
+def test_pdf_page_without_pages_ancestor_fails_before_parser_acquisition():
+    import ctv_inspection_media as media
+
+    parser_calls = []
+
+    class Page:
+        xref = 1
+        rect = fitz.Rect(0, 0, 100, 100)
+
+        def get_contents(self):
+            parser_calls.append("contents")
+            return []
+
+        def get_fonts(self, *, full):
+            assert full is True
+            parser_calls.append("fonts")
+            return []
+
+        def get_images(self, *, full):
+            assert full is True
+            parser_calls.append("images")
+            return []
+
+        def get_xobjects(self):
+            parser_calls.append("xobjects")
+            return []
+
+        def get_text(self, _kind):
+            parser_calls.append("text")
+            return ""
+
+        def get_pixmap(self, **_kwargs):
+            parser_calls.append("render")
+            raise AssertionError("rendering malformed page is forbidden")
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            assert xref == 1
+            assert key in {"Resources", "Parent"}
+            return "null", "null"
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._inspect_pdf_page(
+            Document(),
+            Page(),
+            1,
+            limits=InspectionLimits(),
+            ocr_budget=OcrBudget(),
+            ocr_runner=RecordingOcr(),
+        )
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert parser_calls == []
+
+
+@pytest.mark.parametrize("reference_path", ["resource", "parent"])
+def test_pdf_xref_numeric_token_is_bounded(reference_path):
+    import ctv_inspection_media as media
+
+    oversized_xref = "9" * 5_000 + " 0 R"
+
+    class Page:
+        xref = 1
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            if xref == 2:
+                assert key in {"Type", "Parent"}
+                return (
+                    ("name", "/Pages")
+                    if key == "Type"
+                    else ("null", "null")
+                )
+            assert xref == 1
+            if key == "Resources":
+                return (
+                    ("xref", oversized_xref)
+                    if reference_path == "resource"
+                    else ("null", "null")
+                )
+            assert key == "Parent"
+            return (
+                ("xref", "2 0 R")
+                if reference_path == "resource"
+                else ("xref", oversized_xref)
+            )
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._resource_xref(Document(), Page())
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
 
 
 def test_pdf_rejected_inherited_resource_precedes_text_and_render():

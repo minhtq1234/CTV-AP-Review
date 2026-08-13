@@ -42,6 +42,8 @@ _MAX_CONTENT_STREAMS_PER_PAGE = 256
 _MAX_RESOURCE_RECORDS_PER_PAGE = 256
 _MAX_RAW_RESOURCE_BYTES_PER_PAGE = 25 * 1024 * 1024
 _MAX_PAGE_TREE_PARENT_DEPTH = 32
+_MAX_XREF_DIGITS = 10
+_MAX_XREF_REFERENCE_CHARS = 32
 _STANDARD_TYPE1_FONTS = frozenset(
     {
         "Courier",
@@ -110,6 +112,24 @@ def _positive_int_key(document: object, xref: int, key: str) -> int:
     if value_type != "int" or not value.isascii() or not value.isdigit():
         _pdf_boundary()
     parsed = int(value)
+    if parsed <= 0:
+        _pdf_boundary()
+    return parsed
+
+
+def _xref_reference(value: object) -> int:
+    if type(value) is not str or len(value) > _MAX_XREF_REFERENCE_CHARS:
+        _pdf_boundary()
+    pieces = value.split()
+    if (
+        len(pieces) != 3
+        or pieces[1:] != ["0", "R"]
+        or not pieces[0].isascii()
+        or not pieces[0].isdigit()
+        or len(pieces[0]) > _MAX_XREF_DIGITS
+    ):
+        _pdf_boundary()
+    parsed = int(pieces[0])
     if parsed <= 0:
         _pdf_boundary()
     return parsed
@@ -242,12 +262,13 @@ def _resource_xref(document: object, page: object) -> int | None:
     try:
         page_xref = page.xref  # type: ignore[attr-defined]
     except Exception:
-        _pdf_boundary()
+        page_xref = None
     if type(page_xref) is not int or page_xref <= 0:
         _pdf_boundary()
     current_xref = page_xref
     visited = set()
     parent_depth = 0
+    resource_xref = None
     while True:
         if current_xref in visited:
             _pdf_boundary()
@@ -257,52 +278,39 @@ def _resource_xref(document: object, page: object) -> int | None:
             "/Pages",
         ):
             _pdf_boundary()
-        value_type, value = _xref_key(document, current_xref, "Resources")
-        if (value_type, value) != ("null", "null"):
-            if value_type != "xref":
-                _pdf_boundary()
-            pieces = value.split()
-            if (
-                len(pieces) != 3
-                or pieces[1:] != ["0", "R"]
-                or not pieces[0].isdigit()
-            ):
-                _pdf_boundary()
-            resource_xref = int(pieces[0])
-            if resource_xref <= 0:
-                _pdf_boundary()
-            try:
-                keys = document.xref_get_keys(  # type: ignore[attr-defined]
-                    resource_xref
-                )
-            except Exception:
-                _pdf_boundary()
-            if (
-                type(keys) not in {list, tuple}
-                or len(keys) > len(_SAFE_RESOURCE_KEYS)
-                or any(
-                    type(key) is not str or key not in _SAFE_RESOURCE_KEYS
-                    for key in keys
-                )
-            ):
-                _pdf_boundary()
-            return resource_xref
+        if resource_xref is None:
+            value_type, value = _xref_key(document, current_xref, "Resources")
+            if (value_type, value) != ("null", "null"):
+                if value_type != "xref":
+                    _pdf_boundary()
+                resource_xref = _xref_reference(value)
+                keys = None
+                try:
+                    keys = document.xref_get_keys(  # type: ignore[attr-defined]
+                        resource_xref
+                    )
+                except Exception:
+                    pass
+                if (
+                    type(keys) not in {list, tuple}
+                    or len(keys) > len(_SAFE_RESOURCE_KEYS)
+                    or any(
+                        type(key) is not str or key not in _SAFE_RESOURCE_KEYS
+                        for key in keys
+                    )
+                ):
+                    _pdf_boundary()
 
         parent_type, parent_value = _xref_key(document, current_xref, "Parent")
         if (parent_type, parent_value) == ("null", "null"):
-            return None
+            if parent_depth == 0:
+                _pdf_boundary()
+            return resource_xref
         if parent_type != "xref":
             _pdf_boundary()
-        pieces = parent_value.split()
-        if (
-            len(pieces) != 3
-            or pieces[1:] != ["0", "R"]
-            or not pieces[0].isdigit()
-        ):
-            _pdf_boundary()
-        current_xref = int(pieces[0])
+        current_xref = _xref_reference(parent_value)
         parent_depth += 1
-        if current_xref <= 0 or parent_depth > _MAX_PAGE_TREE_PARENT_DEPTH:
+        if parent_depth > _MAX_PAGE_TREE_PARENT_DEPTH:
             _pdf_boundary()
 
 
