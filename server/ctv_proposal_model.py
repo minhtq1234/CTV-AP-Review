@@ -97,7 +97,7 @@ class AssignmentTarget:
         if self.scope == "shared":
             if len(handles) < 2 or len(set(handles)) != len(handles):
                 raise ValueError("shared scope requires distinct participant handles")
-            if tuple(sorted(handles)) != handles:
+            if tuple(sorted(handles, key=lambda handle: int(handle.removeprefix("participant-")))) != handles:
                 raise ValueError("shared participant handles must be in roster order")
         if self.scope == "case" and handles:
             raise ValueError("case scope must not include participant handles")

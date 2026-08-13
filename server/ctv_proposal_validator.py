@@ -4,6 +4,8 @@ import copy
 import hashlib
 import hmac
 import json
+import re
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -30,18 +32,27 @@ _ALLOWED_ROLES = {
         "other-supporting-evidence",
     }),
 }
+_OBSERVATION_ID = re.compile(r"^observation-[a-f0-9]{64}$")
+_UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
+_MAX_PROPOSAL_RECORDS = 10_000
+_VALIDATION_PROVENANCE: dict[int, tuple[weakref.ReferenceType, bytes]] = {}
 
 
 def _records(values: object, expected: type, field_name: str) -> tuple:
     if isinstance(values, (str, bytes)):
         raise ValueError(f"{field_name} must be a sequence")
     try:
-        copied = tuple(copy.deepcopy(tuple(values)))
+        iterator = iter(values)
     except TypeError:
         raise ValueError(f"{field_name} must be a sequence") from None
-    if not all(type(value) is expected for value in copied):
-        raise ValueError(f"{field_name} must contain {expected.__name__} values")
-    return copied
+    copied = []
+    for value in iterator:
+        if len(copied) >= _MAX_PROPOSAL_RECORDS:
+            raise ValueError(f"{field_name} must not exceed {_MAX_PROPOSAL_RECORDS}")
+        if type(value) is not expected:
+            raise ValueError(f"{field_name} must contain {expected.__name__} values")
+        copied.append(copy.deepcopy(value))
+    return tuple(copied)
 
 
 @dataclass(frozen=True)
@@ -56,9 +67,11 @@ class ProposalValidation:
     ready_to_prepare: bool
 
     def __post_init__(self) -> None:
-        if type(self.observation_id) is not str:
+        if type(self.observation_id) is not str or not _OBSERVATION_ID.fullmatch(self.observation_id):
             raise ValueError("observation_id must be an opaque observation ID")
-        if self.roster_unit_id is not None and type(self.roster_unit_id) is not str:
+        if self.roster_unit_id is not None and (
+            type(self.roster_unit_id) is not str or not _UNIT_ID.fullmatch(self.roster_unit_id)
+        ):
             raise ValueError("roster_unit_id must be an opaque unit ID or null")
         object.__setattr__(self, "participants", _records(self.participants, Participant, "participants"))
         object.__setattr__(self, "source_dispositions", _records(self.source_dispositions, SourceDisposition, "source_dispositions"))
@@ -75,6 +88,36 @@ class ProposalValidation:
         if self.ready_to_prepare != (not issues and self.totals.unresolved == 0):
             raise ValueError("ready_to_prepare must agree with proposal readiness")
         object.__setattr__(self, "issue_codes", issues)
+
+
+def _canonical_bytes(validation: ProposalValidation) -> bytes:
+    return json.dumps(
+        canonical_approval_payload(validation), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _register_validation(validation: ProposalValidation) -> None:
+    identifier = id(validation)
+
+    def cleanup(reference: weakref.ReferenceType) -> None:
+        entry = _VALIDATION_PROVENANCE.get(identifier)
+        if entry is not None and entry[0] is reference:
+            _VALIDATION_PROVENANCE.pop(identifier, None)
+
+    _VALIDATION_PROVENANCE[identifier] = (weakref.ref(validation, cleanup), _canonical_bytes(validation))
+
+
+def _has_unchanged_provenance(validation: object) -> bool:
+    if type(validation) is not ProposalValidation:
+        return False
+    entry = _VALIDATION_PROVENANCE.get(id(validation))
+    if entry is None or entry[0]() is not validation:
+        return False
+    try:
+        return hmac.compare_digest(entry[1], _canonical_bytes(validation))
+    except (TypeError, ValueError):
+        return False
 
 
 def _unique_map(records: tuple, identifier: str) -> tuple[dict[str, object], bool]:
@@ -134,13 +177,18 @@ def validate_proposal(
     participants_valid = bool(participants) and len(set(participant_handles)) == len(participant_handles)
     participant_positions = {handle: index for index, handle in enumerate(participant_handles)}
 
-    units_by_id = {unit.unit_id: unit for unit in inspection.units}
+    units_by_id: dict[str, InspectionUnit] = {}
+    for unit in inspection.units:
+        if unit.unit_id in units_by_id:
+            raise ValueError("inspection units must have unique unit_id values")
+        units_by_id[unit.unit_id] = unit
     units_by_evidence = {source.evidence_id: 0 for source in inspection.sources}
     for unit in inspection.units:
         units_by_evidence[unit.evidence_id] += 1
     source_only_ids = tuple(
         source.evidence_id for source in inspection.sources if units_by_evidence[source.evidence_id] == 0
     )
+    source_only_id_set = set(source_only_ids)
 
     roster_valid = False
     if type(roster_unit_id) is str:
@@ -154,7 +202,7 @@ def validate_proposal(
     source_map, invalid_source_records = _unique_map(source_dispositions, "evidence_id")
     unit_map, invalid_unit_records = _unique_map(unit_decisions, "unit_id")
     invalid_source_records = invalid_source_records or any(
-        evidence_id not in source_only_ids for evidence_id in source_map
+        evidence_id not in source_only_id_set for evidence_id in source_map
     )
     invalid_unit_records = invalid_unit_records or any(unit_id not in units_by_id for unit_id in unit_map)
 
@@ -190,9 +238,17 @@ def validate_proposal(
         else:
             excluded += 1
 
+    roster_decision = unit_map.get(roster_unit_id) if roster_valid else None
+    roster_assignment_valid = (
+        roster_decision is not None
+        and roster_decision.decision in {"accepted", "reassigned"}
+        and roster_decision.role == "payment-roster"
+        and _valid_unit_decision(roster_decision, units_by_id[roster_unit_id], participant_positions)
+    )
+
     invalid = (
         invalid_source_records or invalid_unit_records or invalid_semantics
-        or not participants_valid or not roster_valid
+        or not participants_valid or not roster_valid or not roster_assignment_valid
     )
     issue_codes = ("proposal-unresolved",) if unresolved or invalid else ()
     totals = ProposalTotals(
@@ -201,11 +257,13 @@ def validate_proposal(
         reassigned=reassigned, excluded=excluded, unresolved=unresolved,
         issues=len(issue_codes),
     )
-    return ProposalValidation(
+    validation = ProposalValidation(
         inspection.observation_id, roster_unit_id, participants,
         tuple(canonical_sources), tuple(canonical_units), totals, issue_codes,
         not issue_codes,
     )
+    _register_validation(validation)
+    return validation
 
 
 def canonical_approval_payload(validation: ProposalValidation) -> dict[str, object]:
@@ -224,15 +282,13 @@ def canonical_approval_payload(validation: ProposalValidation) -> dict[str, obje
 
 
 def proposal_digest(validation: ProposalValidation) -> str:
-    payload = canonical_approval_payload(validation)
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return "proposal-" + hashlib.sha256(encoded).hexdigest()
+    return "proposal-" + hashlib.sha256(_canonical_bytes(validation)).hexdigest()
 
 
 def approve_proposal(validation: ProposalValidation, expected_digest: str) -> ApprovedProposal:
-    if type(validation) is not ProposalValidation or not validation.ready_to_prepare:
+    if not _has_unchanged_provenance(validation):
+        raise ValueError("proposal validation provenance is unavailable or changed")
+    if not validation.ready_to_prepare:
         raise ValueError("proposal validation is not ready for approval")
     if type(expected_digest) is not str or not PROPOSAL_DIGEST.fullmatch(expected_digest):
         raise ValueError("expected_digest must be a proposal digest")

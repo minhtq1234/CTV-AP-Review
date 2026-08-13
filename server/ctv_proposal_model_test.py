@@ -45,6 +45,14 @@ def test_shared_target_requires_two_distinct_handles_in_roster_order():
     }
 
 
+def test_shared_target_uses_numeric_participant_suffix_order_at_five_digit_boundary():
+    assert AssignmentTarget(
+        "shared", ("participant-9999", "participant-10000")
+    ).participant_handles == ("participant-9999", "participant-10000")
+    with pytest.raises(ValueError):
+        AssignmentTarget("shared", ("participant-10000", "participant-9999"))
+
+
 def test_unknown_role_cannot_be_resolved_or_approved():
     with pytest.raises(ValueError):
         UnitDecision(

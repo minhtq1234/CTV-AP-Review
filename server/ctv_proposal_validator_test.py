@@ -3,8 +3,9 @@ import copy
 import pytest
 
 from ctv_inspection_model import InspectionResult, InspectionSource, InspectionTotals, InspectionUnit
-from ctv_proposal_model import AssignmentTarget, Participant, SourceDisposition, UnitDecision
+from ctv_proposal_model import AssignmentTarget, Participant, ProposalTotals, SourceDisposition, UnitDecision
 from ctv_proposal_validator import (
+    ProposalValidation,
     approve_proposal,
     canonical_approval_payload,
     proposal_digest,
@@ -166,6 +167,112 @@ def test_validation_canonicalizes_to_inspection_order_regardless_of_caller_order
     assert [decision.unit_id for decision in result.unit_decisions] == ["unit-0001", "unit-0002"]
     assert [disposition.evidence_id for disposition in result.source_dispositions] == ["evidence-0003"]
     assert result.ready_to_prepare is True
+
+
+@pytest.mark.parametrize(
+    "roster_decision",
+    [
+        UnitDecision("unit-0001", "excluded", None, None, "irrelevant"),
+        UnitDecision("unit-0001", "unresolved", None, None, None),
+    ],
+)
+def test_selected_roster_must_remain_an_active_payment_roster_assignment(roster_decision):
+    source_dispositions, decisions = _resolved()
+    result = validate_proposal(
+        _inspection(), _participants(), "unit-0001", source_dispositions,
+        (roster_decision,) + decisions[1:],
+    )
+    assert result.ready_to_prepare is False
+    assert result.issue_codes == ("proposal-unresolved",)
+
+
+def test_selected_roster_can_be_reassigned_to_active_payment_roster_only_when_needed():
+    source_dispositions, decisions = _resolved()
+    inspection = _inspection()
+    object.__setattr__(
+        inspection, "units", (
+            _unit(suggested_role="other-supporting-evidence"), inspection.units[1],
+        ),
+    )
+    result = validate_proposal(
+        inspection, _participants(), "unit-0001", source_dispositions,
+        (
+            UnitDecision("unit-0001", "reassigned", "payment-roster", AssignmentTarget("case", ()), None),
+            decisions[1],
+        ),
+    )
+    assert result.ready_to_prepare is True
+
+
+@pytest.mark.parametrize(
+    "observation_id, roster_unit_id",
+    [
+        ("observation-private", "unit-0001"),
+        ("observation-" + "A" * 64, "unit-0001"),
+        ("observation-" + "a" * 64, "unit-private"),
+    ],
+)
+def test_proposal_validation_rejects_nonopaque_observation_or_roster_identifiers(
+    observation_id, roster_unit_id
+):
+    with pytest.raises(ValueError):
+        ProposalValidation(
+            observation_id, roster_unit_id, (), (), (),
+            ProposalTotals(0, 0, 0, 0, 0, 0, 0, 0, 0), (), True,
+        )
+
+
+def test_validation_rejects_duplicate_authoritative_unit_id_before_map_collapse():
+    inspection = _inspection()
+    object.__setattr__(inspection, "units", (inspection.units[0], inspection.units[0]))
+    with pytest.raises(ValueError, match="unique unit_id"):
+        validate_proposal(inspection, _participants(), "unit-0001", (), ())
+
+
+def test_validation_bounds_iterable_before_full_materialization():
+    class OversizedParticipants:
+        def __iter__(self):
+            for index in range(10_001):
+                yield Participant(f"participant-{index + 1:04d}")
+            raise AssertionError("validator consumed beyond the hard bound")
+
+    with pytest.raises(ValueError, match="participants must not exceed"):
+        validate_proposal(_inspection(), OversizedParticipants(), "unit-0001", (), ())
+
+
+def test_approval_rejects_forged_copied_subclassed_or_mutated_validation():
+    totals = ProposalTotals(1, 0, 1, 0, 0, 0, 0, 0, 0)
+    forged = ProposalValidation(
+        "observation-" + "a" * 64, "unit-9999", (Participant("participant-0001"),),
+        (), (), totals, (), True,
+    )
+    for candidate in (forged, copy.copy(forged)):
+        with pytest.raises(ValueError, match="provenance"):
+            approve_proposal(candidate, "proposal-" + "a" * 64)
+
+    class ValidationSubclass(ProposalValidation):
+        pass
+
+    subclass = ValidationSubclass(
+        "observation-" + "a" * 64, "unit-9999", (Participant("participant-0001"),),
+        (), (), totals, (), True,
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        approve_proposal(subclass, "proposal-" + "a" * 64)
+
+    source_dispositions, decisions = _resolved()
+    genuine = validate_proposal(_inspection(), _participants(), "unit-0001", source_dispositions, decisions)
+    equivalent = ProposalValidation(
+        genuine.observation_id, genuine.roster_unit_id, genuine.participants,
+        genuine.source_dispositions, genuine.unit_decisions, genuine.totals,
+        genuine.issue_codes, genuine.ready_to_prepare,
+    )
+    assert equivalent == genuine
+    with pytest.raises(ValueError, match="provenance"):
+        approve_proposal(equivalent, proposal_digest(genuine))
+    object.__setattr__(genuine, "roster_unit_id", "unit-9999")
+    with pytest.raises(ValueError, match="provenance"):
+        approve_proposal(genuine, proposal_digest(genuine))
 
 
 def test_digest_changes_for_each_mutable_approval_field_and_excludes_private_labels_or_notes():
