@@ -5,6 +5,17 @@ import pytest
 from ctv_cli_protocol import CliEnvelope, CliError, canonical_json_bytes, failed, succeeded
 
 
+def test_inventory_is_a_supported_canonical_operation():
+    envelope = succeeded(
+        "inventory",
+        "Inventory completed",
+        {"inventoryVersion": "1.0", "items": []},
+    )
+    payload = json.loads(canonical_json_bytes(envelope))
+    assert payload["operation"] == "inventory"
+    assert payload["status"] == "succeeded"
+
+
 def test_success_envelope_is_exact_canonical_utf8_json():
     envelope = succeeded(
         "doctor",
