@@ -100,11 +100,14 @@ the `--source-root`; the inventory output uses opaque evidence and duplicate-gro
 IDs and contains no source filenames or paths. Evidence IDs describe one
 deterministic observation and are not stable after the folder changes.
 
-Inventory identifies only broad file types from extensions and bounded signature
-bytes. Exact-byte SHA-256 matches form duplicate groups; matching names or similar
-content do not. Archives remain listed as files and are never opened. Files above
-the per-file hash limit, and files reached after the total hash budget is
-exhausted, remain listed without a digest and carry an item issue.
+Inventory derives `detectedType` only from bounded leading-byte signatures. The
+normalized extension is returned separately as a safe syntax hint and never
+overrides the detected bytes. Exact-byte SHA-256 matches form duplicate groups;
+matching names or similar content do not. Archives are opened only as ordinary
+regular files for the bounded signature sample and, within the hashing limits, the
+byte stream used for SHA-256. They are never parsed, decompressed, listed, or
+extracted. Files above the per-file hash limit, and files reached after the total
+hash budget is exhausted, remain listed without a digest and carry an item issue.
 
 Item issues produce `complete-with-issues` while the inventory operation still
 succeeds. A source that cannot be safely and completely observed produces an

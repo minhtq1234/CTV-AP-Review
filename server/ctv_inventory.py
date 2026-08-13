@@ -108,6 +108,8 @@ def _normalize_source(source_root: Path) -> tuple[str, ...]:
         raise InventoryError("source-root-unsafe") from None
     if not isinstance(raw_path, str) or not raw_path or "\0" in raw_path:
         raise InventoryError("source-root-unsafe")
+    if raw_path == os.sep:
+        return ()
     lexical_components = raw_path.split(os.sep)
     if raw_path.startswith(os.sep):
         lexical_components = lexical_components[1:]

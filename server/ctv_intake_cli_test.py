@@ -1,8 +1,10 @@
 import ast
 import importlib
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -16,10 +18,16 @@ EXPECTED_COMMIT = "75b3b3bc7e3d4edef1b24a0cfc9bb6c039320f3a"
 EXPECTED_TREE = "83d0523ffdf871d79597310d2a24424c8bb17b6fcdb208d9bf28afc70da6900d"
 
 
-def _run(*args: str, cwd: Path | None = None, script: Path = SCRIPT):
+def _run(
+    *args: str,
+    cwd: Path | None = None,
+    script: Path = SCRIPT,
+    env: dict[str, str] | None = None,
+):
     return subprocess.run(
         [sys.executable, str(script), *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         check=False,
     )
@@ -70,6 +78,32 @@ def _copy_toolkit(tmp_path: Path) -> Path:
         intake / "v1",
     )
     return root
+
+
+def _external_tree_snapshot(root: Path):
+    snapshot = {}
+    for path in (root, *root.rglob("*")):
+        metadata = path.lstat()
+        relative_name = path.relative_to(root).as_posix()
+        content = path.read_bytes() if stat.S_ISREG(metadata.st_mode) else None
+        snapshot[relative_name] = (
+            metadata.st_mode,
+            metadata.st_mtime_ns,
+            content,
+        )
+    return snapshot
+
+
+def _assert_external_tree_unchanged(root: Path, before) -> None:
+    after = _external_tree_snapshot(root)
+    added = sorted(after.keys() - before.keys())
+    removed = sorted(before.keys() - after.keys())
+    changed = sorted(
+        name for name in after.keys() & before.keys() if after[name] != before[name]
+    )
+    assert not (added or removed or changed), (
+        f"external tree mutated: added={added}, removed={removed}, changed={changed}"
+    )
 
 
 def _inventory_result(*, with_issue: bool = False):
@@ -338,20 +372,40 @@ def test_inventory_error_allowlist_matches_every_engine_emitted_code():
     inventory_path = SCRIPT.with_name("ctv_inventory.py")
     tree = ast.parse(inventory_path.read_text(encoding="utf-8"))
     engine_codes = set()
+    unsupported_shapes = []
     for node in ast.walk(tree):
-        if (
+        if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "InventoryError"
-            and node.args
         ):
-            engine_codes.update(
-                child.value
-                for child in ast.walk(node.args[0])
-                if isinstance(child, ast.Constant)
-                and isinstance(child.value, str)
+            continue
+        if node.keywords or len(node.args) != 1:
+            unsupported_shapes.append(
+                f"line {node.lineno}: expected one positional argument and no keywords"
             )
+            continue
+        argument = node.args[0]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            engine_codes.add(argument.value)
+            continue
+        if (
+            isinstance(argument, ast.IfExp)
+            and isinstance(argument.body, ast.Constant)
+            and isinstance(argument.body.value, str)
+            and isinstance(argument.orelse, ast.Constant)
+            and isinstance(argument.orelse.value, str)
+        ):
+            engine_codes.update((argument.body.value, argument.orelse.value))
+            continue
+        unsupported_shapes.append(
+            f"line {node.lineno}: expected a string literal or conditional string literals"
+        )
 
+    assert not unsupported_shapes, (
+        "Unsupported InventoryError call shape; allowlist extraction would drift:\n"
+        + "\n".join(unsupported_shapes)
+    )
     assert engine_codes == cli._INVENTORY_ERROR_CODES
 
 
@@ -629,6 +683,66 @@ def test_all_commands_launch_from_a_relocated_unicode_repository(
         serialized = json.dumps(payload, ensure_ascii=False)
         assert str(source) not in serialized
         assert source.name not in serialized
+
+
+@pytest.mark.parametrize(
+    ("controlled_failure", "expected_exit", "expected_status"),
+    [(False, 0, "succeeded"), (True, 2, "failed")],
+)
+def test_relocated_toolkit_inside_selected_root_never_mutates_external_tree(
+    tmp_path, controlled_failure, expected_exit, expected_status
+):
+    selected_root = _copy_toolkit(tmp_path)
+    if controlled_failure:
+        nested = selected_root
+        for index in range(33):
+            nested = nested / f"synthetic-depth-{index:02d}"
+            nested.mkdir()
+    before = _external_tree_snapshot(selected_root)
+    environment = dict(os.environ)
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+
+    result = _run(
+        "inventory",
+        "--source-root",
+        str(selected_root),
+        "--json",
+        cwd=tmp_path,
+        script=selected_root / "server" / SCRIPT.name,
+        env=environment,
+    )
+
+    payload = _envelope(result, "inventory", expected_status)
+    assert result.returncode == expected_exit
+    assert result.stderr == b""
+    if controlled_failure:
+        assert [error["code"] for error in payload["errors"]] == [
+            "inventory-depth-exceeded"
+        ]
+    else:
+        assert payload["result"]["inventoryStatus"] == "complete"
+    _assert_external_tree_unchanged(selected_root, before)
+
+
+def test_canonical_root_path_is_dispatched_without_traversing_it(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    dispatched = []
+
+    def record(source_root):
+        dispatched.append(source_root)
+        return _inventory_result()
+
+    monkeypatch.setattr(cli, "inventory_source", record)
+
+    exit_code = cli.main(["inventory", "--source-root", os.sep, "--json"])
+
+    payload = _captured_envelope(capsysbinary, "inventory", "succeeded")
+    assert exit_code == 0
+    assert payload["result"]["inventoryStatus"] == "complete"
+    assert dispatched == [Path(os.sep)]
 
 
 def _import_roots(path: Path) -> set[str]:

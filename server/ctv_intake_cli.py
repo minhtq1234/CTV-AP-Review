@@ -1,10 +1,15 @@
 """Read-only preflight commands for the standalone local CTV toolkit."""
 from __future__ import annotations
 
+import sys
+
+# The exact CLI may itself be located beneath the selected inventory root.
+# Disable import cache writes before loading any source-backed module.
+sys.dont_write_bytecode = True
+
 import argparse
 import os
 from pathlib import Path
-import sys
 
 from ctv_cli_doctor import run_doctor
 from ctv_cli_protocol import CliError, canonical_json_bytes, failed, succeeded
@@ -102,6 +107,8 @@ def _is_inventory_argv(invocation: list[str]) -> bool:
     raw_source = invocation[2]
     if not raw_source or raw_source.startswith("-"):
         return False
+    if raw_source == os.sep:
+        return True
     components = raw_source.split(os.sep)
     if raw_source.startswith(os.sep):
         components = components[1:]

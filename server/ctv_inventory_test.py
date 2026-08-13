@@ -511,6 +511,10 @@ def test_raw_empty_source_components_are_rejected(tmp_path, spelling):
     )
 
 
+def test_canonical_root_normalizes_to_zero_components_without_traversal():
+    assert inventory_module._normalize_source(os.sep) == ()
+
+
 def test_path_caller_normalization_cannot_be_reconstructed_by_inventory(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
