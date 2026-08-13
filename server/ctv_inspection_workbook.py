@@ -24,6 +24,7 @@ _MAX_MEMBER_BYTES = 25 * 1024 * 1024
 _MAX_COMPRESSION_RATIO = 100
 _MAX_XML_ELEMENTS = 200_000
 _READ_CHUNK_BYTES = 64 * 1024
+_SERIALIZE_TEXT_CHARS = 4 * 1024
 _CONTENT_TYPES_PART = "[Content_Types].xml"
 _WORKBOOK_PART = "xl/workbook.xml"
 _WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
@@ -34,6 +35,8 @@ _CONTENT_TYPES_NAMESPACE = (
 _PACKAGE_RELATIONSHIPS_NAMESPACE = (
     "http://schemas.openxmlformats.org/package/2006/relationships"
 )
+_XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
+_XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/"
 _TRANSITIONAL_SPREADSHEET_NAMESPACE = (
     "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 )
@@ -446,7 +449,10 @@ def _transitional_qname(name: object):
 
 class _CappedXmlOutput(BytesIO):
     def write(self, content: bytes) -> int:
-        if self.tell() + len(content) > _MAX_MEMBER_BYTES:
+        if (
+            len(content) > _READ_CHUNK_BYTES
+            or self.tell() + len(content) > _MAX_MEMBER_BYTES
+        ):
             raise WorkbookParserBoundaryExceededError()
         return super().write(content)
 
@@ -455,8 +461,8 @@ def _escaped_utf8_size(text: object, *, attribute: bool) -> int:
     if not isinstance(text, str):
         raise _UnreadableWorkbookError()
     size = 0
-    for offset in range(0, len(text), _READ_CHUNK_BYTES):
-        chunk = text[offset:offset + _READ_CHUNK_BYTES]
+    for offset in range(0, len(text), _SERIALIZE_TEXT_CHARS):
+        chunk = text[offset:offset + _SERIALIZE_TEXT_CHARS]
         try:
             size += len(chunk.encode("utf-8", errors="xmlcharrefreplace"))
         except Exception:
@@ -486,15 +492,143 @@ def _validate_serialized_value_bytes(root) -> None:
             raise WorkbookParserBoundaryExceededError()
 
 
+def _xml_namespaces(root) -> dict[str, str]:
+    namespaces = {}
+    generated_prefix_count = 0
+
+    def register(name: object) -> None:
+        nonlocal generated_prefix_count
+        if not isinstance(name, str):
+            raise _UnreadableWorkbookError()
+        expanded = _expanded_name(name)
+        if expanded is None:
+            if name.startswith("{"):
+                raise _UnreadableWorkbookError()
+            return
+        namespace = expanded[0]
+        if namespace in namespaces:
+            return
+        if namespace == _XMLNS_NAMESPACE:
+            raise _UnreadableWorkbookError()
+        if namespace == _XML_NAMESPACE:
+            namespaces[namespace] = "xml"
+        else:
+            namespaces[namespace] = f"ns{generated_prefix_count}"
+            generated_prefix_count += 1
+
+    for element in root.iter():
+        register(element.tag)
+        for name in element.attrib:
+            register(name)
+    return namespaces
+
+
+def _write_utf8(output: _CappedXmlOutput, text: object) -> None:
+    if not isinstance(text, str):
+        raise _UnreadableWorkbookError()
+    for offset in range(0, len(text), _SERIALIZE_TEXT_CHARS):
+        chunk = text[offset:offset + _SERIALIZE_TEXT_CHARS]
+        try:
+            encoded = chunk.encode("utf-8", errors="xmlcharrefreplace")
+        except Exception:
+            raise _UnreadableWorkbookError() from None
+        output.write(encoded)
+
+
+def _write_escaped_utf8(
+    output: _CappedXmlOutput,
+    text: object,
+    *,
+    attribute: bool,
+) -> None:
+    if not isinstance(text, str):
+        raise _UnreadableWorkbookError()
+    for offset in range(0, len(text), _SERIALIZE_TEXT_CHARS):
+        chunk = text[offset:offset + _SERIALIZE_TEXT_CHARS]
+        chunk = chunk.replace("&", "&amp;")
+        chunk = chunk.replace("<", "&lt;")
+        chunk = chunk.replace(">", "&gt;")
+        if attribute:
+            chunk = chunk.replace('"', "&quot;")
+            chunk = chunk.replace("\r", "&#13;")
+            chunk = chunk.replace("\n", "&#10;")
+            chunk = chunk.replace("\t", "&#09;")
+        try:
+            encoded = chunk.encode("utf-8", errors="xmlcharrefreplace")
+        except Exception:
+            raise _UnreadableWorkbookError() from None
+        output.write(encoded)
+
+
+def _write_qname(
+    output: _CappedXmlOutput,
+    name: object,
+    namespaces: dict[str, str],
+) -> None:
+    if not isinstance(name, str):
+        raise _UnreadableWorkbookError()
+    expanded = _expanded_name(name)
+    if expanded is None:
+        if name.startswith("{"):
+            raise _UnreadableWorkbookError()
+        _write_utf8(output, name)
+        return
+    namespace, local = expanded
+    try:
+        prefix = namespaces[namespace]
+    except KeyError:
+        raise _UnreadableWorkbookError() from None
+    _write_utf8(output, prefix)
+    output.write(b":")
+    _write_utf8(output, local)
+
+
+def _write_xml_element(
+    output: _CappedXmlOutput,
+    element,
+    namespaces: dict[str, str],
+    *,
+    root: bool,
+) -> None:
+    output.write(b"<")
+    _write_qname(output, element.tag, namespaces)
+    if root:
+        for namespace, prefix in namespaces.items():
+            if namespace == _XML_NAMESPACE:
+                continue
+            output.write(b" xmlns:")
+            _write_utf8(output, prefix)
+            output.write(b'=\"')
+            _write_escaped_utf8(output, namespace, attribute=True)
+            output.write(b'\"')
+    for name, value in element.attrib.items():
+        output.write(b" ")
+        _write_qname(output, name, namespaces)
+        output.write(b'=\"')
+        _write_escaped_utf8(output, value, attribute=True)
+        output.write(b'\"')
+    if len(element) == 0 and not element.text:
+        output.write(b" />")
+    else:
+        output.write(b">")
+        if element.text:
+            _write_escaped_utf8(output, element.text, attribute=False)
+        for child in element:
+            _write_xml_element(output, child, namespaces, root=False)
+        output.write(b"</")
+        _write_qname(output, element.tag, namespaces)
+        output.write(b">")
+    if element.tail:
+        _write_escaped_utf8(output, element.tail, attribute=False)
+
+
 def _serialized_xml(root) -> bytes:
     _validate_serialized_value_bytes(root)
     output = _CappedXmlOutput()
     try:
-        ElementTree.ElementTree(root).write(
-            output,
-            encoding="utf-8",
-            xml_declaration=True,
-        )
+        namespaces = _xml_namespaces(root)
+        output.write(b"<?xml version='1.0' encoding='utf-8'?>\n")
+        _write_xml_element(output, root, namespaces, root=True)
         return output.getvalue()
     except WorkbookParserBoundaryExceededError:
         raise

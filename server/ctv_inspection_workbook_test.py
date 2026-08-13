@@ -1252,6 +1252,42 @@ def test_normalized_text_expansion_is_rejected_before_large_writer_chunk(
     assert not write_sizes or max(write_sizes) <= 64 * 1024
 
 
+def test_accepted_normalized_text_is_escaped_in_bounded_writer_chunks(
+    monkeypatch,
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    private_text = ">" * (6 * 1024 * 1024)
+    content = (
+        b'<workbook xmlns="'
+        + STRICT_SPREADSHEET_NAMESPACE
+        + b'" private="&quot;&gt;&lt;&amp;" xml:space="preserve"><child/>'
+        + private_text.encode("ascii")
+        + b"&amp;&lt;&gt;</workbook>"
+    )
+    write_sizes = []
+    real_write = workbook_adapter._CappedXmlOutput.write
+
+    def recording_write(self, output):
+        write_sizes.append(len(output))
+        return real_write(self, output)
+
+    monkeypatch.setattr(workbook_adapter._CappedXmlOutput, "write", recording_write)
+
+    normalized = workbook_adapter._normalized_strict_xml(content)
+    parsed = workbook_adapter.ElementTree.fromstring(normalized)
+
+    assert len(normalized) < 25 * 1024 * 1024
+    assert write_sizes
+    assert max(write_sizes) <= 64 * 1024
+    assert parsed.tag == (
+        "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}workbook"
+    )
+    assert parsed.attrib["private"] == '"><&'
+    assert parsed.attrib["{http://www.w3.org/XML/1998/namespace}space"] == "preserve"
+    assert parsed[0].tail == private_text + "&<>"
+
+
 @pytest.mark.parametrize("target_kind", ["worksheet", "drawing"])
 def test_wrong_target_content_type_fails_safe_before_openpyxl(
     monkeypatch, target_kind
