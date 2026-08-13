@@ -52,23 +52,9 @@ UI_HTML = """<!doctype html>
       <p class="eyebrow">Decision</p>
       <h2 id="active-unit-title">No unit selected</h2>
       <label for="decision-control">Decision</label>
-      <select id="decision-control">
-        <option value="unresolved">Unresolved</option>
-        <option value="accepted">Accept suggestion</option>
-        <option value="reassigned">Reassign role</option>
-        <option value="excluded">Exclude</option>
-      </select>
+      <select id="decision-control" disabled></select>
       <label for="role-control">Role</label>
-      <select id="role-control">
-        <option value="payment-roster">Payment roster</option>
-        <option value="service-contract">Service contract</option>
-        <option value="acceptance-record">Acceptance record</option>
-        <option value="payment-tax-form">Payment tax form</option>
-        <option value="identity-front">Identity front</option>
-        <option value="identity-back">Identity back</option>
-        <option value="shared-supporting-evidence">Shared supporting evidence</option>
-        <option value="other-supporting-evidence">Other supporting evidence</option>
-      </select>
+      <select id="role-control" disabled></select>
       <label for="scope-control">Assignment scope</label>
       <select id="scope-control">
         <option value="individual">Individual</option>
@@ -95,6 +81,10 @@ UI_HTML = """<!doctype html>
           <button id="summary-button" type="button" class="quiet">Refresh</button>
         </div>
         <dl id="summary-counts"></dl>
+        <h3>Current decisions</h3>
+        <ul id="decision-records"></ul>
+        <h3>Issue codes</h3>
+        <ul id="issue-list"></ul>
         <p class="digest-label">Proposal digest</p>
         <code id="proposal-digest">Not ready</code>
       </section>
@@ -158,10 +148,13 @@ h2 { margin-bottom: 10px; font-size: 16px; }
 #apply-button, #approve-button { border: 0; border-radius: 6px; padding: 10px 13px; background: var(--accent); color: white; font-weight: 700; }
 .quiet { border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; background: white; color: var(--ink); }
 .summary-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.summary-panel h3 { margin: 14px 0 6px; font-size: 12px; }
 #summary-counts { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; margin: 0; }
 #summary-counts div { display: contents; }
 #summary-counts dt { color: var(--muted); }
 #summary-counts dd { margin: 0; font-weight: 700; }
+#decision-records, #issue-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 11px; }
+#decision-records li, #issue-list li { margin-bottom: 5px; overflow-wrap: anywhere; }
 .digest-label { margin: 13px 0 4px; color: var(--muted); font-size: 11px; }
 #proposal-digest { display: block; overflow-wrap: anywhere; font-size: 10px; }
 #message { min-height: 20px; margin-top: 10px; color: var(--warn); font-size: 12px; }
@@ -181,9 +174,11 @@ const localReview = {
   units: [],
   sources: [],
   participants: [],
+  review: { unitDecisions: [], sourceDispositions: [], issueCodes: [] },
   summary: null,
   activeUnitId: null,
   activeSourceId: null,
+  previewObjectUrl: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -197,6 +192,10 @@ function textElement(tag, value, className) {
   element.textContent = String(value);
   if (className) element.className = className;
   return element;
+}
+
+function displayLabel(value) {
+  return String(value).replaceAll("-", " ");
 }
 
 async function readJson(response) {
@@ -218,15 +217,26 @@ async function api(route, body) {
   return readJson(response);
 }
 
+function unitRecord(unitId) {
+  return localReview.review.unitDecisions.find((record) => record.unitId === unitId) || null;
+}
+
+function sourceRecord(evidenceId) {
+  return localReview.review.sourceDispositions.find((record) => record.evidenceId === evidenceId) || null;
+}
+
 function applyState(payload) {
   localReview.csrfToken = payload.csrfToken || localReview.csrfToken;
   localReview.units = payload.units || localReview.units;
   localReview.sources = payload.sources || localReview.sources;
   localReview.participants = payload.participants || localReview.participants;
+  localReview.review = payload.review || localReview.review;
   localReview.summary = payload.summary || payload;
   renderNavigation();
   renderParticipantChoices();
+  renderDecisionSummary();
   renderSummary(localReview.summary);
+  restoreActiveControls();
 }
 
 function buttonFor(label, active, onClick) {
@@ -261,11 +271,15 @@ function renderNavigation() {
   });
 
   localReview.units.forEach((unit) => {
-    unitList.appendChild(buttonFor(`${unit.unitId} · ${unit.suggestedRole}`, localReview.activeUnitId === unit.unitId, () => selectUnit(unit)));
+    const record = unitRecord(unit.unitId);
+    const decision = record ? record.decision.decision : "unresolved";
+    unitList.appendChild(buttonFor(`${unit.unitId} · ${unit.suggestedRole} · ${decision}`, localReview.activeUnitId === unit.unitId, () => selectUnit(unit)));
   });
-  const unitEvidence = new Set(localReview.units.map((unit) => unit.evidenceId));
-  localReview.sources.filter((source) => !unitEvidence.has(source.evidenceId)).forEach((source) => {
-    sourceList.appendChild(buttonFor(`${source.evidenceId} · source only`, localReview.activeSourceId === source.evidenceId, () => selectSource(source)));
+  localReview.review.sourceDispositions.forEach((record) => {
+    const source = localReview.sources.find((item) => item.evidenceId === record.evidenceId);
+    if (source) {
+      sourceList.appendChild(buttonFor(`${source.evidenceId} · source only · ${record.decision.decision}`, localReview.activeSourceId === source.evidenceId, () => selectSource(source)));
+    }
   });
 }
 
@@ -279,9 +293,126 @@ function renderParticipantChoices() {
     input.type = "checkbox";
     input.value = participant.participantHandle;
     label.appendChild(input);
-    label.appendChild(document.createTextNode(participant.name));
+    label.appendChild(document.createTextNode(`${participant.name} (${participant.participantHandle})`));
     options.appendChild(label);
   });
+}
+
+function populateSelect(select, values, selected) {
+  clearNode(select);
+  values.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = displayLabel(value);
+    select.appendChild(option);
+  });
+  if (values.includes(selected)) select.value = selected;
+}
+
+function setParticipantSelection(handles) {
+  const selected = new Set(handles || []);
+  byId("participant-options").querySelectorAll("input").forEach((input) => {
+    input.checked = selected.has(input.value);
+  });
+}
+
+function activeRecord() {
+  if (localReview.activeUnitId) return unitRecord(localReview.activeUnitId);
+  if (localReview.activeSourceId) return sourceRecord(localReview.activeSourceId);
+  return null;
+}
+
+function restoreActiveControls() {
+  const record = activeRecord();
+  const decisionControl = byId("decision-control");
+  const roleControl = byId("role-control");
+  if (!record) {
+    populateSelect(decisionControl, [], "");
+    populateSelect(roleControl, [], "");
+    byId("apply-button").disabled = true;
+    byId("scope-control").disabled = true;
+    byId("reason-control").disabled = true;
+    setParticipantSelection([]);
+    byId("participant-options").querySelectorAll("input").forEach((input) => { input.disabled = true; });
+    return;
+  }
+  const current = record.decision;
+  populateSelect(decisionControl, record.allowedDecisions, current.decision);
+  const defaultRole = current.role || (record.suggestedRole !== "unknown" ? record.suggestedRole : record.allowedRoles[0]);
+  populateSelect(roleControl, record.allowedRoles, defaultRole);
+  byId("scope-control").value = current.target ? current.target.scope : "individual";
+  byId("reason-control").value = current.reason || "irrelevant";
+  setParticipantSelection(current.target ? current.target.participantHandles : []);
+  byId("apply-button").disabled = false;
+  updateControlContext();
+}
+
+function updateControlContext() {
+  const record = activeRecord();
+  if (!record) return;
+  const sourceOnly = Boolean(localReview.activeSourceId);
+  const decision = byId("decision-control").value;
+  const role = byId("role-control");
+  const scope = byId("scope-control");
+  const reason = byId("reason-control");
+  const assignment = !sourceOnly && (decision === "accepted" || decision === "reassigned");
+
+  if (decision === "accepted" && record.suggestedRole !== "unknown") {
+    role.value = record.suggestedRole;
+  } else if (decision === "reassigned" && record.suggestedRole !== "unknown" && role.value === record.suggestedRole) {
+    const alternative = record.allowedRoles.find((value) => value !== record.suggestedRole);
+    if (alternative) role.value = alternative;
+  }
+  role.disabled = !assignment || decision === "accepted";
+  scope.disabled = !assignment;
+  reason.disabled = decision !== "excluded";
+  const caseTarget = scope.value === "case";
+  byId("participant-options").querySelectorAll("input").forEach((input) => {
+    if (caseTarget) input.checked = false;
+    input.disabled = !assignment || caseTarget;
+  });
+}
+
+function participantTargetLabel(handle) {
+  const participant = localReview.participants.find((item) => item.participantHandle === handle);
+  return participant ? `${participant.name} (${handle})` : handle;
+}
+
+function decisionText(record, id) {
+  const decision = record.decision;
+  const parts = [id, decision.decision];
+  if (decision.role) parts.push(decision.role);
+  if (decision.target) {
+    parts.push(decision.target.scope);
+    if (decision.target.participantHandles.length) {
+      parts.push(decision.target.participantHandles.map(participantTargetLabel).join(", "));
+    }
+  }
+  if (decision.reason) parts.push(decision.reason);
+  return parts.join(" · ");
+}
+
+function renderDecisionSummary() {
+  const records = byId("decision-records");
+  const issues = byId("issue-list");
+  clearNode(records);
+  clearNode(issues);
+  localReview.review.unitDecisions.forEach((record) => {
+    records.appendChild(textElement("li", decisionText(record, record.unitId)));
+  });
+  localReview.review.sourceDispositions.forEach((record) => {
+    records.appendChild(textElement("li", decisionText(record, record.evidenceId)));
+  });
+  const issueCodes = localReview.review.issueCodes.length ? localReview.review.issueCodes : ["none"];
+  issueCodes.forEach((code) => issues.appendChild(textElement("li", code)));
+}
+
+function releasePreviewObjectUrl(expectedUrl) {
+  const current = localReview.previewObjectUrl;
+  if (current && (!expectedUrl || expectedUrl === current)) {
+    URL.revokeObjectURL(current);
+    localReview.previewObjectUrl = null;
+  }
 }
 
 async function selectUnit(unit) {
@@ -289,8 +420,9 @@ async function selectUnit(unit) {
   localReview.activeSourceId = null;
   byId("active-unit-title").textContent = unit.unitId;
   byId("preview-title").textContent = `${unit.unitId} · ${unit.suggestedRole}`;
-  byId("role-control").value = unit.suggestedRole === "unknown" ? "other-supporting-evidence" : unit.suggestedRole;
   renderNavigation();
+  restoreActiveControls();
+  releasePreviewObjectUrl();
   const surface = byId("preview-content");
   clearNode(surface);
   try {
@@ -299,9 +431,11 @@ async function selectUnit(unit) {
       const payload = await response.json();
       throw new Error(payload.error || "preview-unavailable");
     }
+    if (localReview.activeUnitId !== unit.unitId) return;
     const contentType = response.headers.get("Content-Type") || "";
     if (contentType.startsWith("application/json")) {
       const preview = await response.json();
+      if (localReview.activeUnitId !== unit.unitId) return;
       const table = document.createElement("table");
       table.className = "preview-table";
       preview.rows.forEach((row) => {
@@ -311,43 +445,70 @@ async function selectUnit(unit) {
       });
       surface.appendChild(table);
     } else {
+      const previewBlob = await response.blob();
+      if (localReview.activeUnitId !== unit.unitId) return;
+      const objectUrl = URL.createObjectURL(previewBlob);
+      localReview.previewObjectUrl = objectUrl;
       const image = document.createElement("img");
       image.alt = `Preview of ${unit.unitId}`;
-      image.src = `/api/preview?unitId=${encodeURIComponent(unit.unitId)}`;
+      image.addEventListener("load", () => releasePreviewObjectUrl(objectUrl), { once: true });
+      image.addEventListener("error", () => releasePreviewObjectUrl(objectUrl), { once: true });
+      image.src = objectUrl;
       surface.appendChild(image);
     }
   } catch (error) {
-    surface.appendChild(textElement("p", error.message));
+    if (localReview.activeUnitId === unit.unitId) surface.appendChild(textElement("p", error.message));
   }
 }
 
 function selectSource(source) {
   localReview.activeUnitId = null;
   localReview.activeSourceId = source.evidenceId;
+  releasePreviewObjectUrl();
   byId("active-unit-title").textContent = source.evidenceId;
   byId("preview-title").textContent = "Source-only item has no unit preview";
   clearNode(byId("preview-content"));
   renderNavigation();
+  restoreActiveControls();
 }
 
 function checkedHandles() {
   return Array.from(byId("participant-options").querySelectorAll("input:checked"), (input) => input.value);
 }
 
+function assignmentTarget() {
+  const scope = byId("scope-control").value;
+  const participantHandles = checkedHandles();
+  if (scope === "individual" && participantHandles.length !== 1) {
+    throw new Error("Select exactly one participant for an individual assignment");
+  }
+  if (scope === "shared" && participantHandles.length < 2) {
+    throw new Error("Select at least two participants for a shared assignment");
+  }
+  if (scope === "case" && participantHandles.length) {
+    throw new Error("Whole-case assignments cannot select participants");
+  }
+  return { scope, participantHandles };
+}
+
 async function applyDecision() {
   const decision = byId("decision-control").value;
   try {
     if (localReview.activeSourceId) {
+      const record = sourceRecord(localReview.activeSourceId);
+      if (!record || !record.allowedDecisions.includes(decision)) throw new Error("Select a valid source disposition");
       const payload = { evidenceId: localReview.activeSourceId, decision };
       if (decision === "excluded") payload.reason = byId("reason-control").value;
       applyState(await api("/api/source", payload));
       return;
     }
-    if (!localReview.activeUnitId) throw new Error("Select an evidence unit first");
-    const payload = { unitId: localReview.activeUnitId, decision };
+    const record = unitRecord(localReview.activeUnitId);
+    if (!record || !record.allowedDecisions.includes(decision)) throw new Error("Select a valid unit decision");
+    const payload = { unitId: record.unitId, decision };
     if (decision === "accepted" || decision === "reassigned") {
-      payload.role = byId("role-control").value;
-      payload.target = { scope: byId("scope-control").value, participantHandles: checkedHandles() };
+      payload.role = decision === "accepted" ? record.suggestedRole : byId("role-control").value;
+      if (!record.allowedRoles.includes(payload.role)) throw new Error("Select a valid role for this evidence unit");
+      payload.target = assignmentTarget();
     } else if (decision === "excluded") {
       payload.reason = byId("reason-control").value;
     }
@@ -359,6 +520,7 @@ async function applyDecision() {
 
 function renderSummary(summary) {
   if (!summary || !summary.counts) return;
+  localReview.summary = summary;
   const counts = byId("summary-counts");
   clearNode(counts);
   Object.entries(summary.counts).forEach(([name, value]) => {
@@ -369,8 +531,8 @@ function renderSummary(summary) {
   });
   byId("proposal-digest").textContent = summary.proposalDigest || "Not ready";
   byId("approve-button").disabled = !summary.readyToPrepare;
-  const reviewed = summary.counts.units - summary.counts.unresolved;
-  byId("progress-status").textContent = `${reviewed} of ${summary.counts.units} reviewed`;
+  const resolved = summary.counts.accepted + summary.counts.reassigned + summary.counts.excluded;
+  byId("progress-status").textContent = `${resolved} resolved`;
   byId("unresolved-status").textContent = `${summary.counts.unresolved} unresolved`;
 }
 
@@ -381,6 +543,7 @@ function showMessage(message) {
 async function terminal(route, body) {
   try {
     const result = await api(route, body);
+    releasePreviewObjectUrl();
     showMessage(`Review finished: ${result.outcome}`);
     document.querySelectorAll("button, select, input").forEach((control) => { control.disabled = true; });
   } catch (error) {
@@ -388,6 +551,8 @@ async function terminal(route, body) {
   }
 }
 
+byId("decision-control").addEventListener("change", updateControlContext);
+byId("scope-control").addEventListener("change", updateControlContext);
 byId("apply-button").addEventListener("click", applyDecision);
 byId("summary-button").addEventListener("click", async () => {
   try { renderSummary(await api("/api/summary", {})); }
@@ -396,6 +561,7 @@ byId("summary-button").addEventListener("click", async () => {
 byId("draft-button").addEventListener("click", () => terminal("/api/draft", {}));
 byId("cancel-button").addEventListener("click", () => terminal("/api/cancel", {}));
 byId("approve-button").addEventListener("click", () => terminal("/api/approve", { expectedProposalDigest: localReview.summary.proposalDigest }));
+window.addEventListener("beforeunload", () => releasePreviewObjectUrl());
 
 window.setInterval(() => { api("/api/heartbeat", {}).catch(() => {}); }, 60000);
 

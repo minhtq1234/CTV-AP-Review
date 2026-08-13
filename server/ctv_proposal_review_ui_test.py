@@ -40,6 +40,8 @@ def test_static_ui_uses_selected_c_layout_and_complete_review_controls():
         "cancel-button",
         "summary-button",
         "proposal-digest",
+        "decision-records",
+        "issue-list",
         "approve-button",
     } <= parser.ids
     assert 'id="approve-button" type="button" disabled' in UI_HTML
@@ -64,6 +66,14 @@ def test_static_ui_is_self_contained_and_builds_private_data_with_text_content()
     assert "document.createElement" in UI_JS
     assert "fetch(" in UI_JS
     assert "X-CSRF-Token" in UI_JS
+    assert "allowedDecisions" in UI_JS
+    assert "allowedRoles" in UI_JS
+    assert "restoreActiveControls" in UI_JS
+    assert "renderDecisionSummary" in UI_JS
+    assert "URL.createObjectURL" in UI_JS
+    assert "URL.revokeObjectURL" in UI_JS
+    assert UI_JS.count("fetch(`/api/preview?unitId=") == 1
+    assert "image.src = `/api/preview" not in UI_JS
     assert "PRIVATE-ROSTER-079123456789" not in combined
     assert "https://" not in combined
     assert "http://" not in combined

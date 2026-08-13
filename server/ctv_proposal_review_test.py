@@ -108,6 +108,7 @@ def _security_headers(headers):
     assert "default-src 'self'" in csp
     assert "script-src 'self'" in csp
     assert "style-src 'self'" in csp
+    assert "img-src 'self' blob:" in csp
     assert "connect-src 'self'" in csp
     assert "frame-ancestors 'none'" in csp
 
@@ -148,8 +149,30 @@ def test_bootstrap_is_one_time_static_routes_are_authenticated_and_shutdown_is_t
         assert status == 200
         _security_headers(headers)
         local_state = _json(body)
-        assert set(local_state) == {"csrfToken", "units", "sources", "participants", "summary"}
+        assert set(local_state) == {
+            "csrfToken", "units", "sources", "participants", "review", "summary"
+        }
         captured["csrf"] = local_state["csrfToken"]
+
+        status, _headers, body = _request(
+            parsed,
+            "GET",
+            "/api/state",
+            cookie=f"theme=light; {cookie}; locale=vi",
+        )
+        assert status == 200
+        assert _json(body)["csrfToken"] == local_state["csrfToken"]
+        for malformed_cookie in (
+            f"{cookie}; {cookie}",
+            f"theme; {cookie}",
+            f"bad name=value; {cookie}",
+            f"=value; {cookie}",
+            f"theme=light;; {cookie}",
+        ):
+            status, _headers, _body = _request(
+                parsed, "GET", "/api/state", cookie=malformed_cookie
+            )
+            assert status == 403
 
         raw = socket.create_connection(("127.0.0.1", parsed.port), timeout=2)
         raw.sendall(b"GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\n")
@@ -247,8 +270,23 @@ def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_
             parsed, "/api/roster", cookie, csrf, {"rosterUnitId": roster["unitId"]}
         )
         assert status == 200
-        assert _json(body)["participants"] == [
+        roster_state = _json(body)
+        assert roster_state["participants"] == [
             {"participantHandle": "participant-0001", "name": PRIVATE_NAME, "identityHint": "***-001"}
+        ]
+        assert set(roster_state["review"]) == {
+            "issueCodes", "sourceDispositions", "unitDecisions"
+        }
+        roster_record = next(
+            record for record in roster_state["review"]["unitDecisions"]
+            if record["unitId"] == roster["unitId"]
+        )
+        assert roster_record["decision"] == {"decision": "unresolved"}
+        assert roster_record["allowedRoles"] == [
+            "payment-roster", "other-supporting-evidence"
+        ]
+        assert roster_record["allowedDecisions"] == [
+            "accepted", "reassigned", "excluded", "unresolved"
         ]
 
         status, headers, body = _request(
@@ -269,15 +307,37 @@ def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_
             status, _headers, _body = _request(parsed, "GET", route, cookie=cookie)
             assert status in {400, 404}
 
+        assigned_unit = next(
+            unit for unit in client_state["units"]
+            if unit["suggestedRole"] not in {"payment-roster", "unknown"}
+        )
+        latest_state = roster_state
         for unit in client_state["units"]:
+            if unit["unitId"] == assigned_unit["unitId"]:
+                payload = {
+                    "unitId": unit["unitId"],
+                    "decision": "accepted",
+                    "role": unit["suggestedRole"],
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                }
+            else:
+                payload = {
+                    "unitId": unit["unitId"],
+                    "decision": "excluded",
+                    "reason": "irrelevant",
+                }
             status, _headers, _body = _post(
                 parsed,
                 "/api/unit",
                 cookie,
                 csrf,
-                {"unitId": unit["unitId"], "decision": "excluded", "reason": "irrelevant"},
+                payload,
             )
             assert status == 200
+            latest_state = _json(_body)
         unit_evidence = {unit["evidenceId"] for unit in client_state["units"]}
         for source in client_state["sources"]:
             if source["evidenceId"] not in unit_evidence:
@@ -289,6 +349,39 @@ def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_
                     {"evidenceId": source["evidenceId"], "decision": "excluded", "reason": "irrelevant"},
                 )
                 assert status == 200
+                latest_state = _json(_body)
+
+        assigned_record = next(
+            record for record in latest_state["review"]["unitDecisions"]
+            if record["unitId"] == assigned_unit["unitId"]
+        )
+        assert assigned_record["decision"] == {
+            "decision": "accepted",
+            "role": assigned_unit["suggestedRole"],
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0001"],
+            },
+        }
+        excluded_record = next(
+            record for record in latest_state["review"]["unitDecisions"]
+            if record["unitId"] == roster["unitId"]
+        )
+        assert excluded_record["decision"] == {
+            "decision": "excluded", "reason": "irrelevant"
+        }
+        assert excluded_record["issueCodes"] == roster["issueCodes"]
+        assert all(
+            record["allowedDecisions"] == ["excluded", "unresolved"]
+            and record["allowedRoles"] == []
+            for record in latest_state["review"]["sourceDispositions"]
+        )
+        assert all(
+            record["decision"] == {"decision": "excluded", "reason": "irrelevant"}
+            for record in latest_state["review"]["sourceDispositions"]
+        )
+        assert latest_state["review"]["issueCodes"] == latest_state["summary"]["issueCodes"]
+        assert PRIVATE_NAME not in repr(latest_state["review"])
 
         status, _headers, body = _post(parsed, "/api/summary", cookie, csrf, {})
         summary = _json(body)
@@ -315,6 +408,7 @@ def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_
         result = run_local_review(state, browser_open=drive)
         assert result == approved_response
         assert result["outcome"] == "approved"
+        assert "review" not in result
         assert PRIVATE_NAME not in repr(result)
     finally:
         context.__exit__(None, None, None)

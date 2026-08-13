@@ -32,9 +32,11 @@ _TOTAL_TIMEOUT_SECONDS = 2 * 60 * 60
 _SESSION_COOKIE = "ctv_review_session"
 _UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
+_COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_COOKIE_VALUE = re.compile(r'^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$')
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; "
-    "img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+    "img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
     "form-action 'none'; frame-ancestors 'none'"
 )
 _POST_ROUTES = frozenset({
@@ -47,6 +49,25 @@ _POST_ROUTES = frozenset({
     "/api/cancel",
     "/api/heartbeat",
 })
+_ALLOWED_ROLES_BY_KIND = {
+    "pdf-page": (
+        "payment-roster",
+        "service-contract",
+        "acceptance-record",
+        "payment-tax-form",
+        "identity-front",
+        "identity-back",
+        "shared-supporting-evidence",
+        "other-supporting-evidence",
+    ),
+    "worksheet": ("payment-roster", "other-supporting-evidence"),
+    "image": (
+        "identity-front",
+        "identity-back",
+        "shared-supporting-evidence",
+        "other-supporting-evidence",
+    ),
+}
 
 
 class ReviewError(RuntimeError):
@@ -98,6 +119,81 @@ def _strict_json(content: bytes) -> dict:
 def _exact_empty(mapping: dict) -> None:
     if type(mapping) is not dict or mapping:
         raise ValueError("request must use an empty object")
+
+
+def _cookie_pairs(value: str):
+    pairs = []
+    for raw_pair in value.split(";"):
+        pair = raw_pair.strip(" \t")
+        if not pair:
+            return None
+        name, separator, cookie_value = pair.partition("=")
+        if not separator or not _COOKIE_NAME.fullmatch(name):
+            return None
+        if cookie_value.startswith('"') or cookie_value.endswith('"'):
+            if len(cookie_value) < 2 or not (
+                cookie_value.startswith('"') and cookie_value.endswith('"')
+            ):
+                return None
+            cookie_value = cookie_value[1:-1]
+        if not _COOKIE_VALUE.fullmatch(cookie_value):
+            return None
+        pairs.append((name, cookie_value))
+    return pairs
+
+
+def _local_decision(record) -> dict:
+    if record is None:
+        return {"decision": "unresolved"}
+    result = {"decision": record["decision"]}
+    if "role" in record:
+        result["role"] = record["role"]
+        result["target"] = {
+            "scope": record["target"]["scope"],
+            "participantHandles": list(record["target"]["participantHandles"]),
+        }
+    if "reason" in record:
+        result["reason"] = record["reason"]
+    return result
+
+
+def _local_review_projection(state: ProposalState, issue_codes) -> dict:
+    unit_records = []
+    for unit in state.units:
+        decisions = (
+            ("reassigned", "excluded", "unresolved")
+            if unit["suggestedRole"] == "unknown"
+            else ("accepted", "reassigned", "excluded", "unresolved")
+        )
+        unit_records.append({
+            "unitId": unit["unitId"],
+            "evidenceId": unit["evidenceId"],
+            "unitKind": unit["unitKind"],
+            "suggestedRole": unit["suggestedRole"],
+            "issueCodes": list(unit["issueCodes"]),
+            "allowedDecisions": list(decisions),
+            "allowedRoles": list(_ALLOWED_ROLES_BY_KIND[unit["unitKind"]]),
+            "decision": _local_decision(state._unit_decisions.get(unit["unitId"])),
+        })
+    unit_evidence_ids = {unit["evidenceId"] for unit in state.units}
+    source_records = []
+    for source in state.sources:
+        if source["evidenceId"] in unit_evidence_ids:
+            continue
+        source_records.append({
+            "evidenceId": source["evidenceId"],
+            "issueCodes": list(source["issueCodes"]),
+            "allowedDecisions": ["excluded", "unresolved"],
+            "allowedRoles": [],
+            "decision": _local_decision(
+                state._source_dispositions.get(source["evidenceId"])
+            ),
+        })
+    return {
+        "unitDecisions": unit_records,
+        "sourceDispositions": source_records,
+        "issueCodes": list(issue_codes),
+    }
 
 
 class _Session:
@@ -214,11 +310,19 @@ class _ReviewHandler(BaseHTTPRequestHandler):
 
     def _cookie_token(self) -> str | None:
         value = self._one_header("Cookie")
-        prefix = f"{_SESSION_COOKIE}="
-        if value is None or not value.startswith(prefix) or ";" in value:
+        if value is None:
             return None
-        token = value[len(prefix):]
-        return token if token else None
+        pairs = _cookie_pairs(value)
+        if pairs is None:
+            return None
+        review_values = [
+            cookie_value
+            for name, cookie_value in pairs
+            if name == _SESSION_COOKIE
+        ]
+        if len(review_values) != 1 or not review_values[0]:
+            return None
+        return review_values[0]
 
     def _authenticated(self) -> bool:
         token = self._cookie_token()
@@ -296,12 +400,14 @@ class _ReviewHandler(BaseHTTPRequestHandler):
 
     def _client_state(self) -> dict:
         state = self.session.state
+        summary = state.approval_summary()
         return {
             "csrfToken": self.session.csrf_token,
             "units": [dict(unit) for unit in state.units],
             "sources": [dict(source) for source in state.sources],
             "participants": state.participants_for_local_review(),
-            "summary": state.approval_summary(),
+            "review": _local_review_projection(state, summary["issueCodes"]),
+            "summary": summary,
         }
 
     def _bootstrap(self, target) -> None:
