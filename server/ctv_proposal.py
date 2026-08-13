@@ -92,6 +92,7 @@ class ProposalState:
         self._source_dispositions = {}
         self._roster_unit_id = None
         self._participant_handles = ()
+        self._participant_display = ()
         self._roster_issues = ()
         self.units = tuple(
             {
@@ -166,10 +167,12 @@ class ProposalState:
                     elif not name or not identity:
                         issues.add("roster-row-invalid")
                     else:
-                        rows.append(identity)
+                        rows.append((name, identity))
                 if header is None:
                     issues.add("roster-header-missing")
-                if len(rows) != len(set(rows)):
+                if not rows:
+                    issues.add("roster-row-invalid")
+                if len(rows) != len({identity for _name, identity in rows}):
                     issues.add("roster-identity-duplicate")
                 return tuple(rows), tuple(code for code in _ROSTER_ISSUE_ORDER if code in issues)
             finally:
@@ -184,11 +187,32 @@ class ProposalState:
         if unit is None or unit.unit_kind != "worksheet" or unit.suggested_role != "payment-roster":
             raise ValueError("rosterUnitId must identify an inspected roster worksheet")
         rows, issues = self._roster_rows(unit)
+        if self._roster_unit_id is not None and self._roster_unit_id != unit_id:
+            self._unit_decisions = {
+                decision_unit_id: record
+                for decision_unit_id, record in self._unit_decisions.items()
+                if not (
+                    record["decision"] in {"accepted", "reassigned"}
+                    and record["target"]["participantHandles"]
+                )
+            }
         self._roster_unit_id = unit_id
         self._participant_handles = tuple(
-            f"participant-{index:04d}" for index, _identity in enumerate(rows, start=1)
+            f"participant-{index:04d}" for index, _row in enumerate(rows, start=1)
+        )
+        self._participant_display = tuple(
+            {
+                "participantHandle": handle,
+                "name": name,
+                "identityHint": f"***-{identity[-3:]}",
+            }
+            for handle, (name, identity) in zip(self._participant_handles, rows)
         )
         self._roster_issues = issues
+
+    def participants_for_local_review(self):
+        """Return private roster display fields only to the local review session."""
+        return [dict(participant) for participant in self._participant_display]
 
     def _target(self, value):
         value = _mapping(value, {"scope", "participantHandles"})
@@ -222,6 +246,14 @@ class ProposalState:
         record = {"decision": decision}
         if decision in {"accepted", "reassigned"}:
             role = _enum(mapping["role"], _ROLES_BY_KIND[unit.unit_kind], "role")
+            if decision == "accepted" and (
+                unit.suggested_role == "unknown" or role != unit.suggested_role
+            ):
+                raise ValueError("accepted role must equal a concrete suggested role")
+            if decision == "reassigned" and (
+                unit.suggested_role != "unknown" and role == unit.suggested_role
+            ):
+                raise ValueError("reassigned role must differ from a concrete suggested role")
             record.update({"role": role, "target": self._target(mapping["target"])})
         elif decision == "excluded":
             record["reason"] = _enum(mapping["reason"], _EXCLUSION_REASONS, "reason")
