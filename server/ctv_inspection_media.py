@@ -41,6 +41,7 @@ _OCR_STATUSES = (
 _MAX_CONTENT_STREAMS_PER_PAGE = 256
 _MAX_RESOURCE_RECORDS_PER_PAGE = 256
 _MAX_RAW_RESOURCE_BYTES_PER_PAGE = 25 * 1024 * 1024
+_MAX_PAGE_TREE_PARENT_DEPTH = 32
 _STANDARD_TYPE1_FONTS = frozenset(
     {
         "Courier",
@@ -59,7 +60,7 @@ _STANDARD_TYPE1_FONTS = frozenset(
         "ZapfDingbats",
     }
 )
-_SAFE_RESOURCE_KEYS = frozenset({"ColorSpace", "Font", "ProcSet", "XObject"})
+_SAFE_RESOURCE_KEYS = frozenset({"Font", "ProcSet", "XObject"})
 _SAFE_IMAGE_FILTERS = frozenset({"/FlateDecode"})
 _DEVICE_COLOR_SPACES = frozenset({"/DeviceGray", "/DeviceRGB", "/DeviceCMYK"})
 _ICC_COLOR_SPACE = re.compile(r"\[\s*/ICCBased\s+(\d+)\s+0\s+R\s*\]")
@@ -93,7 +94,7 @@ def _xref_key(document: object, xref: int, key: str) -> tuple[str, str]:
     try:
         result = document.xref_get_key(xref, key)  # type: ignore[attr-defined]
     except Exception:
-        _pdf_boundary()
+        result = None
     if (
         type(result) is not tuple
         or len(result) != 2
@@ -238,31 +239,71 @@ def _bounded_stream_size(
 
 
 def _resource_xref(document: object, page: object) -> int | None:
-    page_xref = getattr(page, "xref", None)
-    if type(page_xref) is not int or page_xref <= 0:
-        _pdf_boundary()
-    value_type, value = _xref_key(document, page_xref, "Resources")
-    if (value_type, value) == ("null", "null"):
-        return None
-    if value_type != "xref":
-        _pdf_boundary()
-    pieces = value.split()
-    if len(pieces) != 3 or pieces[1:] != ["0", "R"] or not pieces[0].isdigit():
-        _pdf_boundary()
-    resource_xref = int(pieces[0])
-    if resource_xref <= 0:
-        _pdf_boundary()
     try:
-        keys = document.xref_get_keys(resource_xref)  # type: ignore[attr-defined]
+        page_xref = page.xref  # type: ignore[attr-defined]
     except Exception:
         _pdf_boundary()
-    if (
-        type(keys) not in {list, tuple}
-        or len(keys) > len(_SAFE_RESOURCE_KEYS)
-        or any(type(key) is not str or key not in _SAFE_RESOURCE_KEYS for key in keys)
-    ):
+    if type(page_xref) is not int or page_xref <= 0:
         _pdf_boundary()
-    return resource_xref
+    current_xref = page_xref
+    visited = set()
+    parent_depth = 0
+    while True:
+        if current_xref in visited:
+            _pdf_boundary()
+        visited.add(current_xref)
+        if parent_depth and _xref_key(document, current_xref, "Type") != (
+            "name",
+            "/Pages",
+        ):
+            _pdf_boundary()
+        value_type, value = _xref_key(document, current_xref, "Resources")
+        if (value_type, value) != ("null", "null"):
+            if value_type != "xref":
+                _pdf_boundary()
+            pieces = value.split()
+            if (
+                len(pieces) != 3
+                or pieces[1:] != ["0", "R"]
+                or not pieces[0].isdigit()
+            ):
+                _pdf_boundary()
+            resource_xref = int(pieces[0])
+            if resource_xref <= 0:
+                _pdf_boundary()
+            try:
+                keys = document.xref_get_keys(  # type: ignore[attr-defined]
+                    resource_xref
+                )
+            except Exception:
+                _pdf_boundary()
+            if (
+                type(keys) not in {list, tuple}
+                or len(keys) > len(_SAFE_RESOURCE_KEYS)
+                or any(
+                    type(key) is not str or key not in _SAFE_RESOURCE_KEYS
+                    for key in keys
+                )
+            ):
+                _pdf_boundary()
+            return resource_xref
+
+        parent_type, parent_value = _xref_key(document, current_xref, "Parent")
+        if (parent_type, parent_value) == ("null", "null"):
+            return None
+        if parent_type != "xref":
+            _pdf_boundary()
+        pieces = parent_value.split()
+        if (
+            len(pieces) != 3
+            or pieces[1:] != ["0", "R"]
+            or not pieces[0].isdigit()
+        ):
+            _pdf_boundary()
+        current_xref = int(pieces[0])
+        parent_depth += 1
+        if current_xref <= 0 or parent_depth > _MAX_PAGE_TREE_PARENT_DEPTH:
+            _pdf_boundary()
 
 
 def _prove_standard_fonts(page: object, document: object) -> bool:

@@ -65,6 +65,40 @@ def _small_pdf_with_hostile_expanded_content_stream():
     return snapshot
 
 
+def _pdf_with_resource(resource_key, *, inherited):
+    document = fitz.open()
+    page = document.new_page()
+    resource_value = document.xref_get_key(page.xref, "Resources")[1]
+    resource_xref = int(resource_value.split()[0])
+    pattern_xref = None
+    if resource_key == "Pattern":
+        pattern_xref = document.get_new_xref()
+        document.update_object(
+            pattern_xref,
+            "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 "
+            "/BBox [0 0 1 1] /XStep 1 /YStep 1 /Resources <<>> >>",
+        )
+        document.update_stream(
+            pattern_xref,
+            b"0 0 m 1 1 l S\n" * 75_000,
+            compress=True,
+        )
+        resource_object = f"<< /Pattern << /P0 {pattern_xref} 0 R >> >>"
+    elif resource_key == "ColorSpace":
+        resource_object = "<< /ColorSpace << /CS0 /DeviceRGB >> >>"
+    else:
+        raise ValueError("unsupported synthetic resource")
+    document.update_object(resource_xref, resource_object)
+    if inherited:
+        parent_value = document.xref_get_key(page.xref, "Parent")[1]
+        parent_xref = int(parent_value.split()[0])
+        document.xref_set_key(parent_xref, "Resources", f"{resource_xref} 0 R")
+        document.xref_set_key(page.xref, "Resources", "null")
+    snapshot = document.tobytes()
+    document.close()
+    return snapshot, pattern_xref
+
+
 def _encrypted_pdf():
     document = fitz.open()
     document.new_page()
@@ -173,6 +207,143 @@ def test_small_compressed_pdf_with_hostile_expanded_content_fails_closed():
         _inspect_pdf(snapshot)
 
     assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+def test_pdf_inherited_hostile_pattern_fails_closed():
+    import ctv_inspection_media as media
+
+    snapshot, pattern_xref = _pdf_with_resource("Pattern", inherited=True)
+    assert pattern_xref is not None
+    assert len(snapshot) < 16 * 1024
+    with fitz.open(stream=snapshot, filetype="pdf") as document:
+        assert len(document.xref_stream_raw(pattern_xref)) < 16 * 1024
+        assert len(document.xref_stream(pattern_xref)) > 1024 * 1024
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        _inspect_pdf(snapshot)
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+def test_pdf_top_level_colorspace_fails_closed(inherited):
+    import ctv_inspection_media as media
+
+    snapshot, _ = _pdf_with_resource("ColorSpace", inherited=inherited)
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        _inspect_pdf(snapshot)
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+@pytest.mark.parametrize(
+    "ancestry",
+    [
+        "cycle",
+        "over-depth",
+        "malformed-reference",
+        "parser-failure",
+        "wrong-parent-type",
+    ],
+)
+def test_pdf_resource_parent_traversal_is_bounded(ancestry):
+    import ctv_inspection_media as media
+
+    class Page:
+        xref = 1
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            if key == "Resources":
+                return "null", "null"
+            if key == "Type" and xref > 1:
+                return (
+                    ("name", "/Catalog")
+                    if ancestry == "wrong-parent-type"
+                    else ("name", "/Pages")
+                )
+            if key != "Parent":
+                raise AssertionError("unexpected synthetic key")
+            if ancestry == "malformed-reference":
+                return "xref", "private malformed parent reference"
+            if ancestry == "parser-failure":
+                raise RuntimeError("private parent parser diagnostic")
+            if ancestry == "cycle" and xref in {1, 2}:
+                return "xref", "2 0 R"
+            if ancestry == "over-depth" and xref <= 40:
+                return "xref", f"{xref + 1} 0 R"
+            if ancestry == "wrong-parent-type" and xref == 1:
+                return "xref", "2 0 R"
+            return "null", "null"
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._resource_xref(Document(), Page())
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    if ancestry == "parser-failure":
+        assert raised.value.__context__ is None
+        assert "private parent parser diagnostic" not in repr(raised.value)
+
+
+def test_pdf_rejected_inherited_resource_precedes_text_and_render():
+    import ctv_inspection_media as media
+
+    parser_calls = []
+
+    class Page:
+        xref = 1
+        rect = fitz.Rect(0, 0, 100, 100)
+
+        def get_contents(self):
+            return []
+
+        def get_fonts(self, *, full):
+            assert full is True
+            return [(4, 0, "Type1", "Helvetica", "F1", "WinAnsiEncoding", "")]
+
+        def get_images(self, *, full):
+            assert full is True
+            return []
+
+        def get_xobjects(self):
+            return []
+
+        def get_text(self, _kind):
+            parser_calls.append("text")
+            raise AssertionError("text extraction must not be reached")
+
+        def get_pixmap(self, **_kwargs):
+            parser_calls.append("render")
+            raise AssertionError("rendering must not be reached")
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            values = {
+                (1, "Resources"): ("null", "null"),
+                (1, "Parent"): ("xref", "2 0 R"),
+                (2, "Resources"): ("xref", "3 0 R"),
+                (4, "ToUnicode"): ("null", "null"),
+                (4, "FontDescriptor"): ("null", "null"),
+            }
+            return values.get((xref, key), ("null", "null"))
+
+        def xref_get_keys(self, xref):
+            assert xref == 3
+            return ["Pattern"]
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        media._inspect_pdf_page(
+            Document(),
+            Page(),
+            1,
+            limits=InspectionLimits(),
+            ocr_budget=OcrBudget(),
+            ocr_runner=RecordingOcr(),
+        )
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+    assert parser_calls == []
 
 
 def test_pdf_rendering_proves_bounded_icc_resource_before_pixmap():
