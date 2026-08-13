@@ -7,6 +7,8 @@ import platform
 from types import ModuleType
 from typing import Callable
 
+from ctv_local_ocr import OcrCapability, probe_local_ocr
+
 
 DEPENDENCY_PROBES = (
     ("fitz", "fitz", ("open",)),
@@ -28,6 +30,7 @@ class DoctorResult:
     validator_version: str | None
     checked: tuple[str, ...]
     issues: tuple[DoctorIssue, ...]
+    local_ocr: OcrCapability
 
     @property
     def ready(self) -> bool:
@@ -55,6 +58,7 @@ def _has_required_capability(module: ModuleType, dotted_name: str) -> bool:
 
 def run_doctor(
     import_module: Callable[[str], ModuleType] = importlib.import_module,
+    local_ocr_probe: Callable[[], OcrCapability] = probe_local_ocr,
 ) -> DoctorResult:
     """Inspect local dependencies without parsing files or opening user paths."""
     issues: list[DoctorIssue] = []
@@ -83,9 +87,16 @@ def run_doctor(
         if getattr(module, "_SUPPORTS_SECURE_RELATIVE_OPEN", None) is not True:
             issues.append(DoctorIssue("secure-open-unavailable", dependency))
 
+    checked.append("local-ocr")
+    try:
+        local_ocr = local_ocr_probe()
+    except Exception:
+        local_ocr = OcrCapability(False, None)
+
     return DoctorResult(
         python_version=platform.python_version(),
         validator_version=validator_version,
         checked=tuple(checked),
         issues=tuple(issues),
+        local_ocr=local_ocr,
     )
