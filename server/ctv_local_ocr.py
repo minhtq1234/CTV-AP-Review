@@ -19,8 +19,14 @@ MAX_OCR_UNITS = 500
 MAX_TOTAL_SECONDS = 1800
 DEFAULT_OCR_TIMEOUT_SECONDS = 30
 PROBE_TIMEOUT_SECONDS = 5
+_CLEANUP_TIMEOUT_SECONDS = 1.0
+_WRITER_POLL_SECONDS = 0.01
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _SAFE_ENV = {"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"}
+_TESSERACT_TSV_HEADER = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\t"
+    "width\theight\tconf\ttext"
+)
 
 ProcessStatus = Literal["succeeded", "timeout", "failed", "over-limit"]
 OcrStatus = Literal[
@@ -63,16 +69,40 @@ class _BoundedRunner(Protocol):
     ) -> _BoundedProcessResult: ...
 
 
-@dataclass(frozen=True)
+class _OcrAuthority(Protocol):
+    def __call__(
+        self,
+        input_bytes: bytes,
+        timeout_seconds: float,
+        output_limit: int,
+    ) -> _BoundedProcessResult: ...
+
+
 class LocalOcrSession:
-    capability: OcrCapability
-    _executable: str | None = field(repr=False)
-    _runner: _BoundedRunner = field(repr=False)
-    _lock: object = field(
-        default_factory=threading.Lock,
-        repr=False,
-        compare=False,
-    )
+    __slots__ = ("__authority", "__capability", "__lock")
+
+    def __init__(
+        self,
+        capability: OcrCapability,
+        authority: _OcrAuthority,
+    ) -> None:
+        self.__capability = capability
+        self.__authority = authority
+        self.__lock = threading.Lock()
+
+    @property
+    def capability(self) -> OcrCapability:
+        return self.__capability
+
+    def _run_exclusive(
+        self,
+        operation: Callable[[_OcrAuthority], OcrOutcome],
+    ) -> OcrOutcome:
+        with self.__lock:
+            return operation(self.__authority)
+
+    def __repr__(self) -> str:
+        return f"LocalOcrSession(capability={self.capability!r})"
 
     def __str__(self) -> str:
         return "LocalOcrSession()"
@@ -127,15 +157,20 @@ def _close_pipe(pipe: object | None) -> None:
         pass
 
 
-def _terminate_and_wait(process: object) -> None:
+def _kill_process(process: object) -> None:
     try:
         process.kill()  # type: ignore[attr-defined]
     except Exception:
         pass
+
+
+def _wait_bounded(process: object) -> int | None:
     try:
-        process.wait()  # type: ignore[attr-defined]
+        return process.wait(  # type: ignore[attr-defined]
+            timeout=_CLEANUP_TIMEOUT_SECONDS
+        )
     except Exception:
-        pass
+        return None
 
 
 def _run_bounded_process(
@@ -152,6 +187,7 @@ def _run_bounded_process(
     """Run one fixed direct process with bounded stdin, stdout, time, and cleanup."""
     process = None
     selector = None
+    stdin = None
     stdout = None
     writer = None
     selector_registered = False
@@ -161,6 +197,7 @@ def _run_bounded_process(
     output_parts: list[bytes] = []
     output_size = 0
     waited = False
+    writer_stop = threading.Event()
 
     if recorder is not None:
         recorder(tuple(argv), input_bytes, timeout_seconds, output_limit)
@@ -183,8 +220,21 @@ def _run_bounded_process(
 
         def write_stdin() -> None:
             try:
-                stdin.write(input_bytes)
-                stdin.flush()
+                stdin_fd = stdin.fileno()
+                os.set_blocking(stdin_fd, False)
+                remaining_input = memoryview(input_bytes)
+                while remaining_input and not writer_stop.is_set():
+                    try:
+                        written = os.write(
+                            stdin_fd,
+                            remaining_input[: 64 * 1024],
+                        )
+                    except BlockingIOError:
+                        writer_stop.wait(_WRITER_POLL_SECONDS)
+                        continue
+                    if written <= 0:
+                        raise BrokenPipeError("stdin closed")
+                    remaining_input = remaining_input[written:]
             except Exception:
                 writer_failed.set()
             finally:
@@ -246,16 +296,24 @@ def _run_bounded_process(
         status = "failed"
     finally:
         if process is not None and status != "succeeded":
-            _terminate_and_wait(process)
+            _kill_process(process)
+            writer_stop.set()
+            _close_pipe(stdin)
+            returncode = _wait_bounded(process)
             waited = True
         elif process is not None and not waited:
-            try:
-                returncode = process.wait()  # type: ignore[attr-defined]
-            except Exception:
+            returncode = _wait_bounded(process)
+            if returncode is None:
                 status = "failed"
 
         if writer is not None:
-            writer.join()
+            writer.join(timeout=_CLEANUP_TIMEOUT_SECONDS)
+            if writer.is_alive():
+                writer_stop.set()
+                _close_pipe(stdin)
+                writer.join(timeout=_CLEANUP_TIMEOUT_SECONDS)
+            if writer.is_alive():
+                status = "failed"
 
         if selector is not None and selector_registered and stdout is not None:
             try:
@@ -362,10 +420,39 @@ def open_local_ocr(
     except Exception:
         executable = None
     if not executable:
-        return LocalOcrSession(OcrCapability(False, None), None, bounded_runner)
+        def unavailable_authority(
+            _input_bytes: bytes,
+            _timeout_seconds: float,
+            _output_limit: int,
+        ) -> _BoundedProcessResult:
+            return _BoundedProcessResult("failed", None, b"")
+
+        return LocalOcrSession(OcrCapability(False, None), unavailable_authority)
     executable = os.path.abspath(executable)
     capability = _capability_for_executable(executable, bounded_runner)
-    return LocalOcrSession(capability, executable, bounded_runner)
+
+    def authority(
+        input_bytes: bytes,
+        timeout_seconds: float,
+        output_limit: int,
+    ) -> _BoundedProcessResult:
+        return bounded_runner(
+            [
+                executable,
+                "stdin",
+                "stdout",
+                "-l",
+                "vie",
+                "--psm",
+                "6",
+                "tsv",
+            ],
+            input_bytes,
+            timeout_seconds,
+            output_limit,
+        )
+
+    return LocalOcrSession(capability, authority)
 
 
 def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
@@ -373,9 +460,11 @@ def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
         lines = stdout.decode("utf-8", errors="strict").splitlines()
         if not lines:
             return None
-        header = lines[0].split("\t")
-        confidence_index = header.index("conf")
-        text_index = header.index("text")
+        if lines[0] != _TESSERACT_TSV_HEADER:
+            return None
+        header = _TESSERACT_TSV_HEADER.split("\t")
+        confidence_index = 10
+        text_index = 11
         tokens: list[str] = []
         confidences: list[float] = []
         for line in lines[1:]:
@@ -401,13 +490,14 @@ def _parse_tsv(stdout: bytes) -> tuple[str, float] | None:
 def _run_local_ocr_bound(
     image_bytes: bytes,
     *,
-    session: LocalOcrSession,
+    capability: OcrCapability,
+    authority: _OcrAuthority,
     budget: OcrBudget,
     timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> OcrOutcome:
     """Run sequential bounded OCR and retain extracted text only in private state."""
-    if not session.capability.available or session._executable is None:
+    if not capability.available:
         return OcrOutcome("unavailable", "")
     if not image_bytes or not image_bytes.startswith(_PNG_SIGNATURE):
         return OcrOutcome("failed", "")
@@ -436,19 +526,8 @@ def _run_local_ocr_bound(
         return OcrOutcome("over-limit", "")
 
     budget.used_units += 1
-    argv = [
-        session._executable,
-        "stdin",
-        "stdout",
-        "-l",
-        "vie",
-        "--psm",
-        "6",
-        "tsv",
-    ]
     try:
-        process_result = session._runner(
-            argv,
+        process_result = authority(
             image_bytes,
             effective_timeout,
             MAX_TSV_BYTES,
@@ -483,11 +562,14 @@ def run_local_ocr(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> OcrOutcome:
     """Serialize all OCR work through the session's single bounded process lane."""
-    with session._lock:  # type: ignore[attr-defined]
+    def operation(authority: _OcrAuthority) -> OcrOutcome:
         return _run_local_ocr_bound(
             image_bytes,
-            session=session,
+            capability=session.capability,
+            authority=authority,
             budget=budget,
             timeout_seconds=timeout_seconds,
             monotonic=monotonic,
         )
+
+    return session._run_exclusive(operation)

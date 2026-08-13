@@ -1,9 +1,11 @@
 import builtins
+import dataclasses
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -76,6 +78,20 @@ def _open_available_session(ocr_result: _BoundedProcessResult | None = None):
     return session, runner
 
 
+def _open_session_with_ocr_action(ocr_action):
+    def runner(argv, _input_bytes, _timeout_seconds, _output_limit):
+        if argv[-1] == "--version":
+            return _BoundedProcessResult("succeeded", 0, b"version\n")
+        if argv[-1] == "--list-langs":
+            return _BoundedProcessResult("succeeded", 0, b"vie\n")
+        return ocr_action()
+
+    return open_local_ocr(
+        executable_lookup=lambda _name: PRIVATE_EXECUTABLE,
+        runner=runner,
+    )
+
+
 def test_open_resolves_tesseract_once_and_session_repr_never_exposes_the_path():
     session, runner = _open_available_session()
 
@@ -87,6 +103,30 @@ def test_open_resolves_tesseract_once_and_session_repr_never_exposes_the_path():
     assert PRIVATE_EXECUTABLE not in str(session)
     assert not hasattr(session, "executable")
     assert not hasattr(session, "executable_path")
+
+
+def test_session_has_no_structural_executable_path_field_or_value():
+    session, _ = _open_available_session()
+
+    dataclass_names = (
+        tuple(field.name for field in dataclasses.fields(session))
+        if dataclasses.is_dataclass(session)
+        else ()
+    )
+    slot_names = tuple(getattr(type(session), "__slots__", ()))
+    dictionary = getattr(session, "__dict__", {})
+    visible_names = tuple(dir(session))
+
+    all_names = dataclass_names + slot_names + tuple(dictionary) + visible_names
+    assert all("executable" not in name.lower() for name in all_names)
+    assert PRIVATE_EXECUTABLE not in repr(dictionary)
+    for name in visible_names:
+        try:
+            value = getattr(session, name)
+        except Exception:
+            continue
+        assert PRIVATE_EXECUTABLE not in repr(value)
+        assert PRIVATE_EXECUTABLE not in str(value)
 
 
 def test_relative_lookup_result_is_privately_bound_as_an_absolute_executable(
@@ -223,6 +263,40 @@ def test_malformed_or_empty_usable_tsv_fails_without_returning_output(stdout):
 
 
 @pytest.mark.parametrize(
+    "header",
+    [
+        b"conf\ttext\n",
+        (
+            b"page_num\tlevel\tblock_num\tpar_num\tline_num\tword_num\tleft\t"
+            b"top\twidth\theight\tconf\ttext\n"
+        ),
+        TSV_HEADER.rstrip(b"\n") + b"\textra\n",
+        TSV_HEADER.replace(b"\twidth\t", b"\t"),
+    ],
+)
+def test_tsv_rejects_noncanonical_reordered_extra_or_missing_header(header):
+    column_count = len(header.rstrip(b"\n").split(b"\t"))
+    if column_count == 2:
+        row = b"90\tprivate-token\n"
+    else:
+        row = b"\t".join([b"1"] * (column_count - 2) + [b"90", b"private-token"])
+        row += b"\n"
+    session, _ = _open_available_session(
+        _BoundedProcessResult("succeeded", 0, header + row)
+    )
+
+    outcome = run_local_ocr(
+        SYNTHETIC_PNG,
+        session=session,
+        budget=OcrBudget(started_at=0.0),
+        monotonic=lambda: 1.0,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.private_text == ""
+
+
+@pytest.mark.parametrize(
     ("process_status", "expected_status"),
     [
         ("timeout", "timeout"),
@@ -249,14 +323,12 @@ def test_process_failures_have_empty_private_text(process_status, expected_statu
 
 
 def test_timeout_exception_and_private_exception_text_are_safely_reduced():
-    session, runner = _open_available_session()
-
-    def timeout_runner(*_args):
+    def timeout_action():
         raise subprocess.TimeoutExpired(
             [PRIVATE_EXECUTABLE, "private-source"], 30, output=b"private stdout"
         )
 
-    object.__setattr__(session, "_runner", timeout_runner)
+    session = _open_session_with_ocr_action(timeout_action)
     outcome = run_local_ocr(
         SYNTHETIC_PNG,
         session=session,
@@ -267,18 +339,15 @@ def test_timeout_exception_and_private_exception_text_are_safely_reduced():
     assert outcome.status == "timeout"
     assert outcome.private_text == ""
     assert PRIVATE_EXECUTABLE not in repr(outcome)
-    assert runner.calls[-1][0][-1] == "--list-langs"
 
 
 def test_malformed_runner_result_cannot_escape_private_exception_text():
-    session, _ = _open_available_session()
-
     class MalformedResult:
         @property
         def status(self):
             raise RuntimeError("/private/source/012345678901.png")
 
-    object.__setattr__(session, "_runner", lambda *_args: MalformedResult())
+    session = _open_session_with_ocr_action(MalformedResult)
 
     outcome = run_local_ocr(
         SYNTHETIC_PNG,
@@ -456,37 +525,23 @@ def test_one_bound_session_serializes_all_ocr_processes():
     assert budget.used_units == 2
 
 
-class _InputSink:
-    def __init__(self):
-        self.chunks = []
-        self.closed = False
-
-    def write(self, value):
-        self.chunks.append(value)
-        return len(value)
-
-    def flush(self):
-        return None
-
-    def close(self):
-        self.closed = True
-
-
 class _FakeProcess:
     def __init__(self, output=b"result", *, keep_stdout_open=False, stderr_secret=None):
-        read_fd, write_fd = os.pipe()
-        self.stdin = _InputSink()
-        self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-        self._write_fd = write_fd
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        stdout_read_fd, stdout_write_fd = os.pipe()
+        self.stdin = os.fdopen(stdin_write_fd, "wb", buffering=0)
+        self.stdout = os.fdopen(stdout_read_fd, "rb", buffering=0)
+        self._stdin_read_fd = stdin_read_fd
+        self._write_fd = stdout_write_fd
         self._keep_stdout_open = keep_stdout_open
         self._stderr_secret = stderr_secret
         self.kill_calls = 0
         self.wait_calls = 0
         self.returncode = None
         if output:
-            os.write(write_fd, output)
+            os.write(stdout_write_fd, output)
         if not keep_stdout_open:
-            os.close(write_fd)
+            os.close(stdout_write_fd)
             self._write_fd = None
 
     def poll(self):
@@ -495,6 +550,9 @@ class _FakeProcess:
     def kill(self):
         self.kill_calls += 1
         self.returncode = -9
+        if self._stdin_read_fd is not None:
+            os.close(self._stdin_read_fd)
+            self._stdin_read_fd = None
         if self._write_fd is not None:
             os.close(self._write_fd)
             self._write_fd = None
@@ -506,6 +564,17 @@ class _FakeProcess:
         if self.returncode is None:
             self.returncode = 0
         return self.returncode
+
+    def read_stdin(self):
+        chunks = []
+        while True:
+            chunk = os.read(self._stdin_read_fd, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        os.close(self._stdin_read_fd)
+        self._stdin_read_fd = None
+        return b"".join(chunks)
 
 
 class _Clock:
@@ -537,6 +606,58 @@ class _SilentSelector:
         self.closed = True
 
 
+class _EarlyExitProcess:
+    def __init__(self):
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        os.close(stdin_read_fd)
+        stdout_read_fd, stdout_write_fd = os.pipe()
+        os.close(stdout_write_fd)
+        self.stdin = os.fdopen(stdin_write_fd, "wb", buffering=0)
+        self.stdout = os.fdopen(stdout_read_fd, "rb", buffering=0)
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def kill(self):
+        self.kill_calls += 1
+        raise ProcessLookupError("already exited")
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        return 1
+
+
+class _RealBlockingPipeProcess:
+    def __init__(self):
+        stdin_read_fd, stdin_write_fd = os.pipe()
+        stdout_read_fd, stdout_write_fd = os.pipe()
+        self.stdin = os.fdopen(stdin_write_fd, "wb", buffering=0)
+        self.stdout = os.fdopen(stdout_read_fd, "rb", buffering=0)
+        self._stdin_read_fd = stdin_read_fd
+        self._stdout_write_fd = stdout_write_fd
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def kill(self):
+        self.kill_calls += 1
+        raise OSError("synthetic kill failure")
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        raise OSError("synthetic wait failure")
+
+    def release_writer(self):
+        if self._stdin_read_fd is not None:
+            os.close(self._stdin_read_fd)
+            self._stdin_read_fd = None
+
+    def close_test_fds(self):
+        self.release_writer()
+        try:
+            os.close(self._stdout_write_fd)
+        except OSError:
+            pass
+
+
 def test_bounded_process_uses_exact_safe_process_contract_and_one_writer():
     process = _FakeProcess(
         output=b"safe stdout", stderr_secret=b"private/source/012345678901"
@@ -566,7 +687,7 @@ def test_bounded_process_uses_exact_safe_process_contract_and_one_writer():
         "cwd": os.path.abspath(os.sep),
         "env": SAFE_ENV,
     }
-    assert process.stdin.chunks == [b"bounded stdin"]
+    assert process.read_stdin() == b"bounded stdin"
     assert process.stdin.closed is True
     assert process.stdout.closed is True
     assert process.wait_calls == 1
@@ -629,3 +750,69 @@ def test_bounded_process_output_cap_kills_waits_and_returns_no_bytes():
     assert process.wait_calls == 1
     assert process.stdin.closed is True
     assert process.stdout.closed is True
+
+
+def test_real_pipe_writer_returns_bounded_when_child_exits_before_reading():
+    process = _EarlyExitProcess()
+    started_at = time.monotonic()
+
+    result = _run_bounded_process(
+        [PRIVATE_EXECUTABLE, "--version"],
+        b"x" * (1024 * 1024),
+        1,
+        64 * 1024,
+        process_factory=lambda *_args, **_kwargs: process,
+    )
+
+    assert time.monotonic() - started_at < 0.5
+    assert result.status == "failed"
+    assert result._stdout == b""
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert not any(
+        thread.name == "ctv-local-ocr-writer" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
+def test_real_full_pipe_writer_is_stopped_when_kill_and_wait_fail():
+    process = _RealBlockingPipeProcess()
+    clock = _Clock()
+    selector = _SilentSelector(clock)
+    result_holder = []
+    finished = threading.Event()
+
+    def invoke():
+        result_holder.append(
+            _run_bounded_process(
+                [PRIVATE_EXECUTABLE, "--version"],
+                b"x" * (1024 * 1024),
+                0.01,
+                64 * 1024,
+                process_factory=lambda *_args, **_kwargs: process,
+                selector_factory=lambda: selector,
+                monotonic=clock,
+            )
+        )
+        finished.set()
+
+    caller = threading.Thread(target=invoke, daemon=True)
+    caller.start()
+    time.sleep(0.05)
+    returned_without_external_pipe_release = finished.wait(timeout=0.2)
+    if not returned_without_external_pipe_release:
+        process.release_writer()
+    caller.join(timeout=1)
+    process.close_test_fds()
+
+    assert returned_without_external_pipe_release is True
+    assert result_holder[0].status == "timeout"
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert process.kill_calls == 1
+    assert process.wait_calls == 1
+    assert not caller.is_alive()
+    assert not any(
+        thread.name == "ctv-local-ocr-writer" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
