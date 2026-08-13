@@ -5,9 +5,11 @@ import hashlib
 import json
 import os
 import stat
+import weakref
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from ctv_inventory_detection import detect_type, safe_extension, type_issue_codes
 from ctv_inventory_model import (
@@ -67,6 +69,68 @@ class _HashReadFailed(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class ObservedInventorySource:
+    """Public-safe source metadata bound to one retained observation."""
+
+    evidence_id: str
+    extension: str
+    detected_type: str
+    size: int | None
+    hash_status: str
+    issue_codes: tuple[str, ...]
+
+
+class InventoryObservation:
+    """A public-safe handle to one live descriptor-bound observation."""
+
+    __slots__ = ("__observation_id", "__result", "__sources", "__weakref__")
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("inventory observations are created by their context")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("inventory observation properties are read-only")
+
+    @property
+    def result(self) -> InventoryResult:
+        return self.__result
+
+    @property
+    def observation_id(self) -> str:
+        return self.__observation_id
+
+    @property
+    def sources(self) -> tuple[ObservedInventorySource, ...]:
+        return self.__sources
+
+    def snapshot(self, evidence_id: str, *, max_bytes: int) -> bytes:
+        return _snapshot_observed_source(self, evidence_id, max_bytes=max_bytes)
+
+    def __repr__(self) -> str:
+        return (
+            "InventoryObservation("
+            f"observation_id={self.__observation_id!r}, "
+            f"sources={len(self.__sources)})"
+        )
+
+
+@dataclass
+class _ObservationState:
+    root_descriptor: int | None
+    source_components: tuple[str, ...]
+    root_fact: _EntryFact
+    authoritative_facts: tuple[_EntryFact, ...]
+    directory_facts: dict[tuple[str, ...], _EntryFact]
+    evidence_facts: dict[str, _EntryFact]
+    limits: InventoryLimits
+
+
+_OBSERVATION_STATES: dict[
+    int, tuple[weakref.ReferenceType[InventoryObservation], _ObservationState]
+] = {}
+
+
 def _require_secure_open() -> None:
     required_flags = ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK", "O_CLOEXEC")
     supported = (
@@ -95,6 +159,66 @@ def _close(descriptor: int | None) -> None:
         os.close(descriptor)
     except OSError:
         pass
+
+
+def _new_inventory_observation(
+    result: InventoryResult,
+    observation_id: str,
+    sources: tuple[ObservedInventorySource, ...],
+) -> InventoryObservation:
+    observation = object.__new__(InventoryObservation)
+    object.__setattr__(
+        observation, "_InventoryObservation__observation_id", observation_id
+    )
+    object.__setattr__(observation, "_InventoryObservation__result", result)
+    object.__setattr__(observation, "_InventoryObservation__sources", sources)
+    return observation
+
+
+def _register_observation(
+    observation: InventoryObservation, state: _ObservationState
+) -> None:
+    key = id(observation)
+
+    def release_abandoned(
+        reference: weakref.ReferenceType[InventoryObservation], *, key: int = key
+    ) -> None:
+        current = _OBSERVATION_STATES.get(key)
+        if current is None or current[0] is not reference:
+            return
+        _, abandoned = _OBSERVATION_STATES.pop(key)
+        descriptor = abandoned.root_descriptor
+        abandoned.root_descriptor = None
+        _close(descriptor)
+
+    reference = weakref.ref(observation, release_abandoned)
+    if key in _OBSERVATION_STATES:
+        raise InventoryError("inventory-tree-changed")
+    _OBSERVATION_STATES[key] = (reference, state)
+
+
+def _observation_state(observation: InventoryObservation) -> _ObservationState:
+    if type(observation) is not InventoryObservation:
+        raise RuntimeError("inventory observation is closed")
+    current = _OBSERVATION_STATES.get(id(observation))
+    if (
+        current is None
+        or current[0]() is not observation
+        or current[1].root_descriptor is None
+    ):
+        raise RuntimeError("inventory observation is closed")
+    return current[1]
+
+
+def _release_observation(observation: InventoryObservation) -> None:
+    key = id(observation)
+    current = _OBSERVATION_STATES.get(key)
+    if current is None or current[0]() is not observation:
+        return
+    _, state = _OBSERVATION_STATES.pop(key)
+    descriptor = state.root_descriptor
+    state.root_descriptor = None
+    _close(descriptor)
 
 
 def _unavailable(error: OSError) -> bool:
@@ -536,6 +660,60 @@ def _read_observation_is_stable(
     )
 
 
+def _snapshot_observed_source(
+    observation: InventoryObservation,
+    evidence_id: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    state = _observation_state(observation)
+    if type(evidence_id) is not str:
+        raise ValueError("evidence_id is not bound to this observation")
+    fact = state.evidence_facts.get(evidence_id)
+    if fact is None:
+        raise ValueError("evidence_id is not bound to this observation")
+    if fact.kind != "regular" or fact.size is None:
+        raise ValueError("evidence_id does not identify a regular source")
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise TypeError("max_bytes must be a non-negative integer")
+    if fact.size > max_bytes:
+        raise ValueError("source exceeds max_bytes")
+
+    root_descriptor = state.root_descriptor
+    if root_descriptor is None:
+        raise RuntimeError("inventory observation is closed")
+    descriptor = _open_regular(
+        root_descriptor,
+        fact,
+        state.directory_facts,
+    )
+    if descriptor is None:
+        raise InventoryError("inventory-tree-changed")
+
+    try:
+        remaining = fact.size
+        snapshot = bytearray()
+        while remaining:
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK, remaining))
+            except OSError:
+                raise InventoryError("inventory-tree-changed") from None
+            if not chunk or len(chunk) > remaining:
+                raise InventoryError("inventory-tree-changed")
+            snapshot.extend(chunk)
+            remaining -= len(chunk)
+        if not _read_observation_is_stable(
+            root_descriptor,
+            descriptor,
+            fact,
+            state.directory_facts,
+        ):
+            raise InventoryError("inventory-tree-changed")
+        return bytes(snapshot)
+    finally:
+        _close(descriptor)
+
+
 def _refresh_regular_fact(
     root_descriptor: int,
     fact: _EntryFact,
@@ -745,7 +923,7 @@ def _minimal_draft(fact: _EntryFact) -> InventoryItemDraft:
 def _revalidate_tree(
     root_descriptor: int,
     source_components: tuple[str, ...],
-    root_identity: tuple[int, int],
+    root_fact: _EntryFact,
     authoritative: tuple[_EntryFact, ...],
     limits: InventoryLimits,
 ) -> None:
@@ -764,10 +942,9 @@ def _revalidate_tree(
     finally:
         _close(reopened)
     if (
-        not stat.S_ISDIR(reopened_metadata.st_mode)
-        or not stat.S_ISDIR(retained_metadata.st_mode)
-        or (reopened_metadata.st_dev, reopened_metadata.st_ino) != root_identity
-        or (retained_metadata.st_dev, retained_metadata.st_ino) != root_identity
+        root_fact.kind != "directory"
+        or not _fact_matches_metadata(root_fact, reopened_metadata)
+        or not _fact_matches_metadata(root_fact, retained_metadata)
     ):
         raise InventoryError("inventory-tree-changed")
     post_reopen_facts = _enumerate_tree(root_descriptor, limits)
@@ -810,10 +987,38 @@ def _bounded_limits(limits: InventoryLimits) -> InventoryLimits:
     )
 
 
-def inventory_source(
+def _update_observation_digest(digest, value: bytes) -> None:
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _observation_id(
+    root_fact: _EntryFact,
+    authoritative_facts: tuple[_EntryFact, ...],
+) -> str:
+    digest = hashlib.sha256()
+    _update_observation_digest(digest, b"ctv-inventory-observation-v1")
+    facts = (root_fact,) + authoritative_facts
+    _update_observation_digest(digest, str(len(facts)).encode("ascii"))
+    for fact in facts:
+        _update_observation_digest(digest, fact.private_sort_key)
+        _update_observation_digest(digest, fact.kind.encode("ascii"))
+        for value in (
+            fact.device,
+            fact.inode,
+            fact.mode,
+            fact.size,
+            fact.modified_ns,
+            fact.changed_ns,
+        ):
+            encoded = b"none" if value is None else str(value).encode("ascii")
+            _update_observation_digest(digest, encoded)
+    return f"observation-{digest.hexdigest()}"
+
+
+def _create_inventory_observation(
     source_root: Path, *, limits: InventoryLimits = DEFAULT_LIMITS
-) -> InventoryResult:
-    """Inventory one explicit source root without exposing private source names."""
+) -> InventoryObservation:
     _require_secure_open()
     if not isinstance(limits, InventoryLimits):
         raise TypeError("limits must be InventoryLimits")
@@ -828,7 +1033,7 @@ def inventory_source(
             raise InventoryError("source-root-unsafe") from None
         if not stat.S_ISDIR(root_metadata.st_mode):
             raise InventoryError("source-root-unsafe")
-        root_identity = (root_metadata.st_dev, root_metadata.st_ino)
+        root_fact = _fact_from_metadata((), root_metadata)
 
         initial_facts = _enumerate_tree(root_descriptor, limits)
         authoritative = list(initial_facts)
@@ -856,14 +1061,6 @@ def inventory_source(
             drafts.append(draft)
 
         authoritative_facts = tuple(authoritative)
-        _revalidate_tree(
-            root_descriptor,
-            source_components,
-            root_identity,
-            authoritative_facts,
-            limits,
-        )
-
         items = assign_evidence_and_duplicate_ids(tuple(drafts))
         issue_count = sum(len(item.issue_codes) for item in items)
         totals = InventoryTotals(
@@ -884,10 +1081,79 @@ def inventory_source(
         )
         if len(_canonical_result_bytes(result)) > limits.max_json_bytes:
             raise InventoryError("inventory-output-too-large")
-        return result
+
+        item_facts = tuple(
+            fact for fact in authoritative_facts if fact.kind != "directory"
+        )
+        if len(item_facts) != len(items):
+            raise InventoryError("inventory-tree-changed")
+        sources = tuple(
+            ObservedInventorySource(
+                evidence_id=item.evidence_id,
+                extension=item.extension,
+                detected_type=item.detected_type,
+                size=item.size,
+                hash_status=item.hash_status,
+                issue_codes=tuple(item.issue_codes),
+            )
+            for item in items
+        )
+        evidence_facts = {
+            item.evidence_id: fact for item, fact in zip(items, item_facts)
+        }
+        state = _ObservationState(
+            root_descriptor=root_descriptor,
+            source_components=source_components,
+            root_fact=root_fact,
+            authoritative_facts=authoritative_facts,
+            directory_facts=_directory_fact_map(authoritative_facts),
+            evidence_facts=evidence_facts,
+            limits=limits,
+        )
+        observation = _new_inventory_observation(
+            result,
+            _observation_id(root_fact, authoritative_facts),
+            sources,
+        )
+        _register_observation(observation, state)
+        root_descriptor = None
+        return observation
     except InventoryError:
         raise
     except OSError:
         raise InventoryError("inventory-tree-changed") from None
     finally:
         _close(root_descriptor)
+
+
+@contextmanager
+def open_inventory_observation(
+    source_root: Path, *, limits: InventoryLimits = DEFAULT_LIMITS
+) -> Iterator[InventoryObservation]:
+    """Retain one secure inventory observation until final tree validation."""
+    observation = _create_inventory_observation(source_root, limits=limits)
+    try:
+        yield observation
+    finally:
+        try:
+            state = _observation_state(observation)
+            root_descriptor = state.root_descriptor
+            if root_descriptor is None:
+                raise RuntimeError("inventory observation is closed")
+            _revalidate_tree(
+                root_descriptor,
+                state.source_components,
+                state.root_fact,
+                state.authoritative_facts,
+                state.limits,
+            )
+        finally:
+            _release_observation(observation)
+
+
+def inventory_source(
+    source_root: Path, *, limits: InventoryLimits = DEFAULT_LIMITS
+) -> InventoryResult:
+    """Inventory one explicit source root without exposing private source names."""
+    with open_inventory_observation(source_root, limits=limits) as observation:
+        return observation.result

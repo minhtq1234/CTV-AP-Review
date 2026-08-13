@@ -1,4 +1,6 @@
 import builtins
+from contextlib import contextmanager
+from dataclasses import FrozenInstanceError, fields
 import hashlib
 import importlib.util
 import json
@@ -13,7 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 import ctv_inventory as inventory_module
-from ctv_inventory import InventoryError, inventory_source
+from ctv_inventory import (
+    InventoryError,
+    ObservedInventorySource,
+    inventory_source,
+    open_inventory_observation,
+)
 from ctv_inventory_model import InventoryLimits
 
 
@@ -39,6 +46,15 @@ def _assert_inventory_error(expected, operation, *, private_path=None):
     assert raised.value.code == expected
     assert str(raised.value) == expected
     assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", str(raised.value))
+    if private_path is not None:
+        assert str(private_path) not in str(raised.value)
+    return raised.value
+
+
+def _assert_safe_error(error_type, expected, operation, *, private_path=None):
+    with pytest.raises(error_type) as raised:
+        operation()
+    assert str(raised.value) == expected
     if private_path is not None:
         assert str(private_path) not in str(raised.value)
     return raised.value
@@ -129,6 +145,549 @@ def _inject_one_read_metadata_mutation(monkeypatch, path, *, phase, field):
     monkeypatch.setattr(os, "lseek", tracked_lseek)
     monkeypatch.setattr(os, "fstat", mutated_fstat)
     return state
+
+
+def _observation_id(source, *, limits=None):
+    selected_limits = limits if limits is not None else _small_limits()
+    with open_inventory_observation(source, limits=selected_limits) as observation:
+        return observation.observation_id
+
+
+def test_observation_retains_safe_sources_and_returns_exact_immutable_snapshot(
+    tmp_path,
+):
+    source = tmp_path / "private selected root"
+    source.mkdir()
+    content = b"%PDF-1.7\nprivate immutable bytes"
+    (source / "private customer 012345678901.pdf").write_bytes(content)
+    limits = _small_limits()
+    legacy = inventory_source(source, limits=limits)
+
+    with open_inventory_observation(source, limits=limits) as observation:
+        assert observation.result.to_dict() == legacy.to_dict()
+        assert [item.evidence_id for item in observation.sources] == [
+            "evidence-0001"
+        ]
+        assert observation.snapshot("evidence-0001", max_bytes=1024) == content
+        assert re.fullmatch(r"observation-[a-f0-9]{64}", observation.observation_id)
+        first_id = observation.observation_id
+        observed_source = observation.sources[0]
+        assert tuple(field.name for field in fields(ObservedInventorySource)) == (
+            "evidence_id",
+            "extension",
+            "detected_type",
+            "size",
+            "hash_status",
+            "issue_codes",
+        )
+        with pytest.raises(FrozenInstanceError):
+            observed_source.size = 0
+        with pytest.raises(AttributeError):
+            observation.sources = ()
+        with pytest.raises(AttributeError):
+            observation.result = None
+
+    with open_inventory_observation(source, limits=limits) as again:
+        assert again.observation_id == first_id
+
+
+def test_inventory_source_delegates_to_one_observation_context(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "safe.pdf").write_bytes(b"%PDF-1.7\nsafe")
+    original_open_observation = inventory_module.open_inventory_observation
+    calls = 0
+
+    @contextmanager
+    def tracked_observation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        with original_open_observation(*args, **kwargs) as observation:
+            yield observation
+
+    monkeypatch.setattr(
+        inventory_module, "open_inventory_observation", tracked_observation
+    )
+
+    result = inventory_source(source, limits=_small_limits())
+
+    assert calls == 1
+    assert result.inventory_status == "complete"
+
+
+@pytest.mark.parametrize(
+    "evidence_id",
+    ["evidence-9999", "../../private-name.pdf", object()],
+)
+def test_snapshot_rejects_unknown_or_forged_evidence_id_privately(
+    tmp_path, evidence_id
+):
+    source = tmp_path / "private selected root"
+    source.mkdir()
+    private_file = source / "private client name.pdf"
+    private_file.write_bytes(b"%PDF-1.7\nprivate content")
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        error = _assert_safe_error(
+            ValueError,
+            "evidence_id is not bound to this observation",
+            lambda: observation.snapshot(evidence_id, max_bytes=1024),
+            private_path=private_file,
+        )
+
+    assert "private" not in str(error)
+    assert ".." not in str(error)
+
+
+def test_snapshot_rejects_non_regular_inventory_item_without_target_read(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "private-target.pdf"
+    target.write_bytes(b"%PDF-1.7\nprivate target")
+    (source / "private-link.pdf").symlink_to(target)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        monkeypatch.setattr(
+            os,
+            "read",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("non-regular source was read")
+            ),
+        )
+        _assert_safe_error(
+            ValueError,
+            "evidence_id does not identify a regular source",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+            private_path=target,
+        )
+
+
+def test_snapshot_enforces_max_bytes_before_any_source_read(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"%PDF-1.7\nprivate bytes"
+    private_file = source / "private.pdf"
+    private_file.write_bytes(content)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        monkeypatch.setattr(
+            os,
+            "read",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("oversized source was read")
+            ),
+        )
+        _assert_safe_error(
+            ValueError,
+            "source exceeds max_bytes",
+            lambda: observation.snapshot(
+                "evidence-0001", max_bytes=len(content) - 1
+            ),
+            private_path=private_file,
+        )
+
+
+@pytest.mark.parametrize("failure", ["read-error", "short-read"])
+def test_snapshot_never_returns_partial_bytes_on_read_failure(
+    tmp_path, monkeypatch, failure
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"%PDF-1.7\nprivate immutable content"
+    private_file = source / "private.pdf"
+    private_file.write_bytes(content)
+    identity = (private_file.stat().st_dev, private_file.stat().st_ino)
+    original_read = os.read
+    reads = 0
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        def fail_snapshot_read(descriptor, count):
+            nonlocal reads
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) == identity:
+                reads += 1
+                if failure == "read-error":
+                    raise OSError("private read diagnostic")
+                if reads == 1:
+                    return original_read(descriptor, min(count, 4))
+                return b""
+            return original_read(descriptor, count)
+
+        monkeypatch.setattr(os, "read", fail_snapshot_read)
+        error = _assert_inventory_error(
+            "inventory-tree-changed",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+            private_path=private_file,
+        )
+
+    assert reads >= 1
+    assert "diagnostic" not in str(error)
+    assert content.decode("ascii") not in str(error)
+
+
+@pytest.mark.parametrize("field", ["identity", "size", "time"])
+def test_snapshot_rejects_identity_size_or_time_mutation_after_exact_read(
+    tmp_path, monkeypatch, field
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"%PDF-1.7\nstable private bytes"
+    private_file = source / "private.pdf"
+    private_file.write_bytes(content)
+    target = private_file.stat()
+    original_read = os.read
+    original_fstat = os.fstat
+    inject = False
+    returned = False
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        def tracked_read(descriptor, count):
+            nonlocal inject
+            chunk = original_read(descriptor, count)
+            opened = original_fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino):
+                inject = True
+            return chunk
+
+        def mutated_fstat(descriptor):
+            nonlocal returned
+            metadata = original_fstat(descriptor)
+            if (
+                (metadata.st_dev, metadata.st_ino) == (target.st_dev, target.st_ino)
+                and inject
+                and not returned
+            ):
+                returned = True
+                if field == "identity":
+                    return _stat_copy(metadata, st_ino=metadata.st_ino + 1)
+                if field == "size":
+                    return _stat_copy(metadata, st_size=metadata.st_size + 1)
+                return _stat_copy(metadata, st_ctime_ns=metadata.st_ctime_ns + 1)
+            return metadata
+
+        monkeypatch.setattr(os, "read", tracked_read)
+        monkeypatch.setattr(os, "fstat", mutated_fstat)
+        _assert_inventory_error(
+            "inventory-tree-changed",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+            private_path=private_file,
+        )
+
+    assert returned is True
+
+
+def test_snapshot_rejects_source_replacement_and_context_exit_revalidates_tree(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.pdf"
+    private_file.write_bytes(b"%PDF-1.7\noriginal")
+    moved = tmp_path / "moved-private.pdf"
+
+    with pytest.raises(InventoryError, match="^inventory-tree-changed$"):
+        with open_inventory_observation(source, limits=_small_limits()) as observation:
+            private_file.rename(moved)
+            private_file.write_bytes(b"%PDF-1.7\nreplaced")
+            observation.snapshot("evidence-0001", max_bytes=1024)
+
+
+def test_observation_context_detects_mutation_during_final_exit(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.bin"
+    private_file.write_bytes(b"approved")
+    root_identity = (source.stat().st_dev, source.stat().st_ino)
+    original_scandir = os.scandir
+    root_scans = 0
+
+    def mutate_on_final_scan(descriptor):
+        nonlocal root_scans
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == root_identity:
+            root_scans += 1
+            if root_scans == 2:
+                private_file.write_bytes(b"tampered")
+        return original_scandir(descriptor)
+
+    monkeypatch.setattr(os, "scandir", mutate_on_final_scan)
+    monkeypatch.setattr(inventory_module, "_require_secure_open", lambda: None)
+
+    with pytest.raises(InventoryError, match="^inventory-tree-changed$"):
+        with open_inventory_observation(source, limits=_small_limits()):
+            pass
+
+    assert root_scans >= 2
+
+
+def test_observation_context_revalidates_before_returning_result(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.bin"
+    private_file.write_bytes(b"approved")
+
+    def return_from_context():
+        with open_inventory_observation(source, limits=_small_limits()) as observation:
+            private_file.write_bytes(b"tampered")
+            return observation.result
+
+    _assert_inventory_error(
+        "inventory-tree-changed", return_from_context, private_path=private_file
+    )
+
+
+def test_observation_double_close_is_safe_and_use_after_close_fails(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.pdf"
+    private_file.write_bytes(b"%PDF-1.7\nsafe")
+    manager = open_inventory_observation(source, limits=_small_limits())
+    observation = manager.__enter__()
+
+    assert manager.__exit__(None, None, None) is False
+    assert manager.__exit__(None, None, None) is False
+    _assert_safe_error(
+        RuntimeError,
+        "inventory observation is closed",
+        lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+        private_path=private_file,
+    )
+
+
+def test_observation_body_exception_is_preserved_after_final_revalidation(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "safe.pdf").write_bytes(b"%PDF-1.7\nsafe")
+    original_revalidate = inventory_module._revalidate_tree
+    revalidations = 0
+
+    def tracked_revalidation(*args, **kwargs):
+        nonlocal revalidations
+        revalidations += 1
+        return original_revalidate(*args, **kwargs)
+
+    monkeypatch.setattr(inventory_module, "_revalidate_tree", tracked_revalidation)
+
+    with pytest.raises(RuntimeError, match="^private caller exception$"):
+        with open_inventory_observation(source, limits=_small_limits()):
+            raise RuntimeError("private caller exception")
+
+    assert revalidations == 1
+
+
+def test_observation_descriptors_are_closed_exactly_once_on_all_paths(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.pdf"
+    private_file.write_bytes(b"%PDF-1.7\nsafe")
+    original_open = os.open
+    original_close = os.close
+    open_descriptors = set()
+
+    def track_open(path, flags, *args, **kwargs):
+        descriptor = original_open(path, flags, *args, **kwargs)
+        assert descriptor not in open_descriptors
+        open_descriptors.add(descriptor)
+        return descriptor
+
+    def close_exactly_once(descriptor):
+        assert descriptor in open_descriptors
+        open_descriptors.remove(descriptor)
+        return original_close(descriptor)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "close", close_exactly_once)
+    monkeypatch.setattr(inventory_module, "_require_secure_open", lambda: None)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        assert observation.snapshot("evidence-0001", max_bytes=1024)
+        _assert_safe_error(
+            ValueError,
+            "evidence_id is not bound to this observation",
+            lambda: observation.snapshot("evidence-9999", max_bytes=1024),
+        )
+
+    assert open_descriptors == set()
+
+    original_read = os.read
+    target = (private_file.stat().st_dev, private_file.stat().st_ino)
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        def fail_snapshot_read(descriptor, count):
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) == target:
+                raise OSError("private read failure")
+            return original_read(descriptor, count)
+
+        monkeypatch.setattr(os, "read", fail_snapshot_read)
+        _assert_inventory_error(
+            "inventory-tree-changed",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+        )
+
+    assert open_descriptors == set()
+    monkeypatch.setattr(os, "read", original_read)
+
+    with pytest.raises(RuntimeError, match="^caller failure$"):
+        with open_inventory_observation(source, limits=_small_limits()):
+            raise RuntimeError("caller failure")
+
+    assert open_descriptors == set()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "rename",
+        "metadata",
+        "same-size-content",
+        "entry-addition",
+        "entry-removal",
+        "directory-substitution",
+    ],
+)
+def test_observation_id_changes_for_every_authoritative_tree_mutation(
+    tmp_path, mutation
+):
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    private_file = nested / "private.bin"
+    private_file.write_bytes(b"original")
+    removable = source / "remove.bin"
+    removable.write_bytes(b"remove")
+    before = _observation_id(source)
+
+    if mutation == "rename":
+        private_file.rename(nested / "renamed.bin")
+    elif mutation == "metadata":
+        private_file.chmod(private_file.stat().st_mode ^ stat.S_IXUSR)
+    elif mutation == "same-size-content":
+        private_file.write_bytes(b"changed!")
+    elif mutation == "entry-addition":
+        (source / "added.bin").write_bytes(b"added")
+    elif mutation == "entry-removal":
+        removable.unlink()
+    else:
+        moved = tmp_path / "moved-private-directory"
+        nested.rename(moved)
+        nested.mkdir()
+        (nested / "private.bin").write_bytes(b"original")
+
+    after = _observation_id(source)
+
+    assert after != before
+    assert re.fullmatch(r"observation-[a-f0-9]{64}", before)
+    assert re.fullmatch(r"observation-[a-f0-9]{64}", after)
+
+
+def test_observation_public_surface_and_errors_hide_private_authority(tmp_path):
+    source = tmp_path / "private root 012345678901"
+    source.mkdir()
+    private_name = "private customer 012345678901.pdf"
+    private_content = b"%PDF-1.7\nPRIVATE-CONTENT-012345678901"
+    (source / private_name).write_bytes(private_content)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        public = " ".join(
+            (
+                json.dumps(observation.result.to_dict(), ensure_ascii=False),
+                repr(observation),
+                repr(observation.sources),
+                observation.observation_id,
+            )
+        )
+        public_names = {name for name in dir(observation) if not name.startswith("_")}
+        error = _assert_safe_error(
+            ValueError,
+            "evidence_id is not bound to this observation",
+            lambda: observation.snapshot("private-forged-id", max_bytes=1024),
+        )
+
+    assert public_names == {"observation_id", "result", "snapshot", "sources"}
+    for private in (
+        str(tmp_path),
+        source.name,
+        private_name,
+        private_content.decode("ascii"),
+        "private_sort_key",
+        "components",
+        "diagnostic",
+    ):
+        assert private not in public
+        assert private not in str(error)
+
+
+def test_observation_snapshot_uses_only_nofollow_descriptor_reads_and_never_writes(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    private_file = nested / "private.pdf"
+    content = b"%PDF-1.7\nprivate immutable bytes"
+    private_file.write_bytes(content)
+    original_open = os.open
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        def secure_read_open(path, flags, *args, **kwargs):
+            assert flags & write_flags == 0
+            if path in {nested.name, private_file.name}:
+                assert kwargs.get("dir_fd") is not None
+                assert not os.path.isabs(path)
+                assert flags & os.O_NOFOLLOW
+            if path == private_file.name:
+                assert flags & os.O_NONBLOCK
+            return original_open(path, flags, *args, **kwargs)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("snapshot invoked forbidden path/write primitive")
+
+        monkeypatch.setattr(os, "open", secure_read_open)
+        monkeypatch.setattr(builtins, "open", forbidden)
+        monkeypatch.setattr(Path, "read_bytes", forbidden)
+        monkeypatch.setattr(os, "write", forbidden)
+        monkeypatch.setattr(os, "mkdir", forbidden)
+        monkeypatch.setattr(os, "makedirs", forbidden)
+        monkeypatch.setattr(os, "rename", forbidden)
+        monkeypatch.setattr(os, "replace", forbidden)
+        monkeypatch.setattr(os, "unlink", forbidden)
+
+        assert observation.snapshot("evidence-0001", max_bytes=1024) == content
+
+
+def test_observation_snapshot_imports_no_parser_network_or_process_modules(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"PK\x03\x04private member strings"
+    (source / "opaque.zip").write_bytes(content)
+    forbidden = {
+        "zipfile", "tarfile", "fitz", "openpyxl", "PIL", "pytesseract",
+        "socket", "subprocess",
+    }
+    original_import = builtins.__import__
+    attempted = []
+
+    def reject_forbidden_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.split(".", 1)[0] in forbidden:
+            attempted.append(name)
+            raise AssertionError(f"forbidden import: {name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_forbidden_import)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        assert observation.snapshot("evidence-0001", max_bytes=1024) == content
+
+    assert attempted == []
 
 
 def test_nested_files_are_deterministic_private_and_fully_hashed(tmp_path):
