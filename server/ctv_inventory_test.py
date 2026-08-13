@@ -1,6 +1,7 @@
 import builtins
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, fields
+import gc
 import hashlib
 import importlib.util
 import json
@@ -10,7 +11,10 @@ import re
 import socket
 import stat
 import sys
+import threading
+import time
 from types import SimpleNamespace
+import weakref
 
 import pytest
 
@@ -195,23 +199,22 @@ def test_inventory_source_delegates_to_one_observation_context(tmp_path, monkeyp
     source = tmp_path / "source"
     source.mkdir()
     (source / "safe.pdf").write_bytes(b"%PDF-1.7\nsafe")
-    original_open_observation = inventory_module.open_inventory_observation
-    calls = 0
+    original_context = inventory_module._inventory_observation_context
+    calls = []
 
     @contextmanager
     def tracked_observation(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        with original_open_observation(*args, **kwargs) as observation:
+        calls.append(kwargs["require_content_binding"])
+        with original_context(*args, **kwargs) as observation:
             yield observation
 
     monkeypatch.setattr(
-        inventory_module, "open_inventory_observation", tracked_observation
+        inventory_module, "_inventory_observation_context", tracked_observation
     )
 
     result = inventory_source(source, limits=_small_limits())
 
-    assert calls == 1
+    assert calls == [False]
     assert result.inventory_status == "complete"
 
 
@@ -584,6 +587,341 @@ def test_observation_id_changes_for_every_authoritative_tree_mutation(
     assert after != before
     assert re.fullmatch(r"observation-[a-f0-9]{64}", before)
     assert re.fullmatch(r"observation-[a-f0-9]{64}", after)
+
+
+def test_observation_id_binds_changed_content_when_metadata_facts_are_identical(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "private.bin"
+    original_content = b"original"
+    changed_content = b"changed!"
+    private_file.write_bytes(original_content)
+    original_metadata = private_file.stat()
+
+    with open_inventory_observation(source, limits=_small_limits()) as first:
+        first_id = first.observation_id
+        first_hash = first.result.items[0].sha256
+
+    private_file.write_bytes(changed_content)
+    real_stat = os.stat
+    real_fstat = os.fstat
+
+    def stable_target_stat(path, *args, **kwargs):
+        metadata = real_stat(path, *args, **kwargs)
+        if path == private_file.name and kwargs.get("dir_fd") is not None:
+            return _stat_copy(
+                metadata,
+                st_mtime_ns=original_metadata.st_mtime_ns,
+                st_ctime_ns=original_metadata.st_ctime_ns,
+            )
+        return metadata
+
+    def stable_target_fstat(descriptor):
+        metadata = real_fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == (
+            original_metadata.st_dev,
+            original_metadata.st_ino,
+        ):
+            return _stat_copy(
+                metadata,
+                st_mtime_ns=original_metadata.st_mtime_ns,
+                st_ctime_ns=original_metadata.st_ctime_ns,
+            )
+        return metadata
+
+    monkeypatch.setattr(os, "stat", stable_target_stat)
+    monkeypatch.setattr(os, "fstat", stable_target_fstat)
+    monkeypatch.setattr(inventory_module, "_require_secure_open", lambda: None)
+
+    with open_inventory_observation(source, limits=_small_limits()) as second:
+        second_id = second.observation_id
+        second_hash = second.result.items[0].sha256
+
+    assert first_hash == hashlib.sha256(original_content).hexdigest()
+    assert second_hash == hashlib.sha256(changed_content).hexdigest()
+    assert second_hash != first_hash
+    assert second_id != first_id
+
+
+def test_observation_id_records_deterministic_unbound_hash_status(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"opaque unknown bytes"
+    (source / "private.bin").write_bytes(content)
+
+    with open_inventory_observation(
+        source,
+        limits=_small_limits(max_hash_file_bytes=len(content)),
+    ) as computed:
+        computed_id = computed.observation_id
+        assert computed.sources[0].hash_status == "computed"
+
+    skipped_limits = _small_limits(max_hash_file_bytes=len(content) - 1)
+    with open_inventory_observation(source, limits=skipped_limits) as skipped_one:
+        skipped_id = skipped_one.observation_id
+        assert skipped_one.sources[0].hash_status == "skipped-too-large"
+    with open_inventory_observation(source, limits=skipped_limits) as skipped_two:
+        assert skipped_two.observation_id == skipped_id
+
+    assert skipped_id != computed_id
+
+
+def test_observation_fails_if_supported_source_under_hash_cap_is_not_content_bound(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    first = b"%PDF-1.7\nA"
+    second = b"%PDF-1.7\nB"
+    (source / "a.pdf").write_bytes(first)
+    (source / "b.pdf").write_bytes(second)
+    limits = _small_limits(
+        max_hash_file_bytes=64,
+        max_hash_total_bytes=len(first),
+    )
+
+    legacy = inventory_source(source, limits=limits)
+    assert [item.hash_status for item in legacy.items] == [
+        "computed",
+        "budget-exhausted",
+    ]
+
+    def open_strict_observation():
+        with open_inventory_observation(source, limits=limits):
+            pass
+
+    _assert_inventory_error(
+        "inventory-tree-changed",
+        open_strict_observation,
+    )
+
+
+def test_context_exit_waits_for_started_snapshot_before_final_gate_and_close(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"%PDF-1.7\nbarrier-controlled-content"
+    private_file = source / "private.pdf"
+    private_file.write_bytes(content)
+    target = (private_file.stat().st_dev, private_file.stat().st_ino)
+    original_read = os.read
+    original_revalidate = inventory_module._revalidate_tree
+    snapshot_started = threading.Event()
+    release_snapshot = threading.Event()
+    exit_started = threading.Event()
+    exit_finished = threading.Event()
+    final_gate_started = threading.Event()
+    snapshot_results = []
+    snapshot_errors = []
+    exit_errors = []
+    blocked_once = False
+
+    manager = open_inventory_observation(source, limits=_small_limits())
+    observation = manager.__enter__()
+    state = inventory_module._OBSERVATION_STATES[id(observation)][1]
+    retained_root_descriptor = state.root_descriptor
+    assert retained_root_descriptor is not None
+
+    def blocked_read(descriptor, count):
+        nonlocal blocked_once
+        metadata = os.fstat(descriptor)
+        if (
+            (metadata.st_dev, metadata.st_ino) == target
+            and not blocked_once
+        ):
+            blocked_once = True
+            snapshot_started.set()
+            if not release_snapshot.wait(timeout=5):
+                raise AssertionError("snapshot barrier timed out")
+        return original_read(descriptor, count)
+
+    def tracked_revalidation(*args, **kwargs):
+        final_gate_started.set()
+        return original_revalidate(*args, **kwargs)
+
+    def take_snapshot():
+        try:
+            snapshot_results.append(
+                observation.snapshot("evidence-0001", max_bytes=1024)
+            )
+        except BaseException as error:
+            snapshot_errors.append(error)
+
+    def exit_context():
+        exit_started.set()
+        try:
+            manager.__exit__(None, None, None)
+        except BaseException as error:
+            exit_errors.append(error)
+        finally:
+            exit_finished.set()
+
+    monkeypatch.setattr(os, "read", blocked_read)
+    monkeypatch.setattr(inventory_module, "_revalidate_tree", tracked_revalidation)
+    snapshot_thread = threading.Thread(target=take_snapshot)
+    exit_thread = threading.Thread(target=exit_context)
+    snapshot_thread.start()
+    assert snapshot_started.wait(timeout=2)
+    exit_thread.start()
+    assert exit_started.wait(timeout=2)
+
+    try:
+        deadline = time.monotonic() + 2
+        while not getattr(state, "closing", False) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert getattr(state, "closing", False) is True
+        assert exit_finished.wait(timeout=0.1) is False
+        assert final_gate_started.is_set() is False
+        os.fstat(retained_root_descriptor)
+        probe = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            assert probe != retained_root_descriptor
+        finally:
+            os.close(probe)
+        _assert_safe_error(
+            RuntimeError,
+            "inventory observation is closed",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+        )
+    finally:
+        release_snapshot.set()
+        snapshot_thread.join(timeout=2)
+        exit_thread.join(timeout=2)
+
+    assert snapshot_thread.is_alive() is False
+    assert exit_thread.is_alive() is False
+    assert snapshot_errors == []
+    assert exit_errors == []
+    assert snapshot_results == [content]
+    assert final_gate_started.is_set() is True
+    with pytest.raises(OSError):
+        os.fstat(retained_root_descriptor)
+
+
+def test_context_exit_timeout_fails_safely_and_defers_close_until_snapshot_idle(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    content = b"%PDF-1.7\nbounded-close-wait"
+    private_file = source / "private.pdf"
+    private_file.write_bytes(content)
+    target = (private_file.stat().st_dev, private_file.stat().st_ino)
+    original_read = os.read
+    snapshot_started = threading.Event()
+    release_snapshot = threading.Event()
+    snapshot_results = []
+    snapshot_errors = []
+
+    manager = open_inventory_observation(source, limits=_small_limits())
+    observation = manager.__enter__()
+    key = id(observation)
+    state = inventory_module._OBSERVATION_STATES[key][1]
+    retained_root_descriptor = state.root_descriptor
+    assert retained_root_descriptor is not None
+
+    def blocked_read(descriptor, count):
+        metadata = os.fstat(descriptor)
+        if (
+            (metadata.st_dev, metadata.st_ino) == target
+            and not snapshot_started.is_set()
+        ):
+            snapshot_started.set()
+            if not release_snapshot.wait(timeout=5):
+                raise AssertionError("snapshot barrier timed out")
+        return original_read(descriptor, count)
+
+    def take_snapshot():
+        try:
+            snapshot_results.append(
+                observation.snapshot("evidence-0001", max_bytes=1024)
+            )
+        except BaseException as error:
+            snapshot_errors.append(error)
+
+    monkeypatch.setattr(os, "read", blocked_read)
+    monkeypatch.setattr(
+        inventory_module, "_OBSERVATION_CLOSE_WAIT_SECONDS", 0.01
+    )
+    snapshot_thread = threading.Thread(target=take_snapshot)
+    snapshot_thread.start()
+    assert snapshot_started.wait(timeout=2)
+
+    started = time.monotonic()
+    _assert_inventory_error(
+        "inventory-tree-changed",
+        lambda: manager.__exit__(None, None, None),
+    )
+    assert time.monotonic() - started < 1
+    os.fstat(retained_root_descriptor)
+    assert key in inventory_module._OBSERVATION_STATES
+
+    release_snapshot.set()
+    snapshot_thread.join(timeout=2)
+
+    assert snapshot_thread.is_alive() is False
+    assert snapshot_errors == []
+    assert snapshot_results == [content]
+    assert key not in inventory_module._OBSERVATION_STATES
+    with pytest.raises(OSError):
+        os.fstat(retained_root_descriptor)
+
+
+def test_observation_uses_one_initial_traversal_before_final_revalidation(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "safe.bin").write_bytes(b"safe")
+    original_enumerate = inventory_module._enumerate_tree
+    traversals = 0
+
+    def tracked_enumeration(*args, **kwargs):
+        nonlocal traversals
+        traversals += 1
+        return original_enumerate(*args, **kwargs)
+
+    monkeypatch.setattr(inventory_module, "_enumerate_tree", tracked_enumeration)
+
+    with open_inventory_observation(source, limits=_small_limits()):
+        assert traversals == 1
+
+    assert traversals == 3
+
+
+def test_forged_observation_has_no_registry_provenance():
+    forged = object.__new__(inventory_module.InventoryObservation)
+
+    _assert_safe_error(
+        RuntimeError,
+        "inventory observation is closed",
+        lambda: forged.snapshot("evidence-0001", max_bytes=1),
+    )
+
+
+def test_abandoned_internal_observation_releases_weak_registry_descriptor(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "safe.bin").write_bytes(b"safe")
+    observation = inventory_module._create_inventory_observation(
+        source, limits=_small_limits()
+    )
+    key = id(observation)
+    state = inventory_module._OBSERVATION_STATES[key][1]
+    descriptor = state.root_descriptor
+    reference = weakref.ref(observation)
+    assert descriptor is not None
+
+    del observation
+    gc.collect()
+
+    assert reference() is None
+    assert key not in inventory_module._OBSERVATION_STATES
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_observation_public_surface_and_errors_hide_private_authority(tmp_path):
