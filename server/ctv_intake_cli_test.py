@@ -72,6 +72,37 @@ def _copy_toolkit(tmp_path: Path) -> Path:
     return root
 
 
+def _inventory_result(*, with_issue: bool = False):
+    from ctv_inventory_model import InventoryItem, InventoryResult, InventoryTotals
+
+    items = ()
+    if with_issue:
+        items = (
+            InventoryItem(
+                evidence_id="evidence-0001",
+                depth=1,
+                extension="unknown",
+                detected_type="unknown",
+                size=None,
+                sha256=None,
+                hash_status="not-applicable",
+                duplicate_group_id=None,
+                issue_codes=("symlink",),
+            ),
+        )
+    return InventoryResult(
+        inventory_version="1.0",
+        inventory_status="complete-with-issues" if with_issue else "complete",
+        totals=InventoryTotals(
+            regular_files=0,
+            directories=0,
+            issues=1 if with_issue else 0,
+            total_bytes=0,
+        ),
+        items=items,
+    )
+
+
 def test_version_reports_the_reviewed_identity_from_an_unrelated_cwd(tmp_path):
     result = _run("version", "--json", cwd=tmp_path)
     payload = _envelope(result, "version", "succeeded")
@@ -97,6 +128,45 @@ def test_contract_verify_reports_the_approved_tree(tmp_path):
     assert result.stderr == b""
     assert payload["result"]["verified"] is True
     assert payload["result"]["actualTreeSha256"] == EXPECTED_TREE
+
+
+def test_inventory_returns_private_canonical_json_from_unrelated_cwd(tmp_path):
+    source = tmp_path / "Tên khách hàng tuyệt mật"
+    source.mkdir()
+    private_file = source / "CCCD-012345678901.PDF"
+    private_file.write_bytes(b"%PDF-1.7\nprivate")
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+
+    result = _run(
+        "inventory", "--source-root", str(source), "--json", cwd=unrelated
+    )
+
+    payload = _envelope(result, "inventory", "succeeded")
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert payload["result"]["inventoryStatus"] == "complete"
+    assert payload["result"]["totals"]["regularFiles"] == 1
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert str(source) not in serialized
+    assert source.name not in serialized
+    assert private_file.name not in serialized
+
+
+def test_inventory_is_byte_identical_for_an_unchanged_source(tmp_path):
+    source = tmp_path / "synthetic source"
+    source.mkdir()
+    (source / "a.pdf").write_bytes(b"%PDF-1.7\nsynthetic")
+    (source / "b.zip").write_bytes(b"PK\x03\x04synthetic")
+
+    first = _run("inventory", "--source-root", str(source), "--json")
+    second = _run("inventory", "--source-root", str(source), "--json")
+
+    _envelope(first, "inventory", "succeeded")
+    _envelope(second, "inventory", "succeeded")
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == b""
+    assert first.stdout == second.stdout
 
 
 def test_doctor_missing_dependency_is_safe_retryable_failure(
@@ -194,6 +264,127 @@ def test_unexpected_handler_exception_never_exposes_its_message(
 
 
 @pytest.mark.parametrize(
+    ("code", "private_fragment"),
+    [
+        ("source-root-missing", b"private-missing-source"),
+        ("inventory-tree-changed", b"private-changing-source"),
+    ],
+)
+def test_inventory_controlled_failure_is_safe_and_non_retryable(
+    code, private_fragment, monkeypatch, capsysbinary
+):
+    cli = _module()
+    from ctv_inventory import InventoryError
+
+    def fail(_source_root):
+        raise InventoryError(code)
+
+    monkeypatch.setattr(cli, "inventory_source", fail)
+
+    exit_code = cli.main(
+        ["inventory", "--source-root", private_fragment.decode(), "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inventory", "failed")
+    assert exit_code == 2
+    assert payload["retryable"] is False
+    assert payload["result"] == {}
+    assert payload["errors"] == [
+        {
+            "code": code,
+            "message": "The source folder could not be inventoried safely.",
+        }
+    ]
+    assert private_fragment not in json.dumps(payload).encode()
+
+
+def test_unexpected_inventory_error_never_exposes_private_details(
+    tmp_path, monkeypatch, capsysbinary
+):
+    cli = _module()
+    private_path = tmp_path / "private-client-file.pdf"
+
+    def fail(_source_root):
+        raise RuntimeError(f"could not read {private_path}")
+
+    monkeypatch.setattr(cli, "inventory_source", fail)
+
+    exit_code = cli.main(
+        ["inventory", "--source-root", str(tmp_path), "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inventory", "failed")
+    assert exit_code == 1
+    assert payload["result"] == {}
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert str(private_path).encode() not in json.dumps(payload).encode()
+
+
+def test_inventory_envelope_over_exact_limit_is_replaced_without_partial_stdout(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+
+    class OversizedResult:
+        def to_dict(self):
+            return {
+                "inventoryVersion": "1.0",
+                "inventoryStatus": "complete",
+                "totals": {
+                    "regularFiles": 0,
+                    "directories": 0,
+                    "issues": 0,
+                    "totalBytes": 0,
+                },
+                "items": [],
+                "oversized": "x" * cli.DEFAULT_LIMITS.max_json_bytes,
+            }
+
+    monkeypatch.setattr(cli, "inventory_source", lambda _root: OversizedResult())
+
+    exit_code = cli.main(
+        ["inventory", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inventory", "failed")
+    assert exit_code == 2
+    assert payload["retryable"] is False
+    assert payload["errors"] == [
+        {
+            "code": "inventory-output-too-large",
+            "message": "The source folder could not be inventoried safely.",
+        }
+    ]
+    assert b"oversized" not in json.dumps(payload).encode()
+
+
+def test_inventory_complete_with_issues_remains_successful(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    monkeypatch.setattr(
+        cli, "inventory_source", lambda _root: _inventory_result(with_issue=True)
+    )
+
+    exit_code = cli.main(
+        ["inventory", "--source-root", "synthetic-source", "--json"]
+    )
+
+    payload = _captured_envelope(capsysbinary, "inventory", "succeeded")
+    assert exit_code == 0
+    assert payload["result"]["inventoryStatus"] == "complete-with-issues"
+    assert payload["result"]["totals"]["issues"] == 1
+    assert payload["summary"] == (
+        "Inventory completed: 0 files, 1 items need attention"
+    )
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         [],
@@ -216,6 +407,69 @@ def test_invalid_invocation_emits_only_bounded_guidance(argv, capsysbinary):
     assert captured.err.count(b"version --json") == 1
     assert captured.err.count(b"doctor --json") == 1
     assert captured.err.count(b"contract verify --json") == 1
+    assert captured.err.count(b"inventory --source-root <path> --json") == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["inventory", "--source-root", "", "--json"],
+        ["inventory", "--source-root", "--json"],
+        ["inventory", "--source-r", "/private/tmp/Tên tuyệt mật", "--json"],
+        ["inventory", "--source-root", "/private/tmp/Tên tuyệt mật", "--j"],
+        [
+            "inventory",
+            "--source-root",
+            "/private/tmp/Tên tuyệt mật",
+            "--source-root",
+            "/private/tmp/Khác",
+            "--json",
+        ],
+        [
+            "inventory",
+            "--source-root",
+            "/private/tmp/Tên tuyệt mật",
+            "--json",
+            "--json",
+        ],
+        [
+            "inventory",
+            "--json",
+            "--source-root",
+            "/private/tmp/Tên tuyệt mật",
+        ],
+        [
+            "inventory",
+            "--source-root",
+            "/private/tmp/Tên tuyệt mật",
+            "--json",
+            "extra",
+        ],
+        ["inventory", "--source-root", "--private-source", "--json"],
+        [
+            "inventory",
+            "--source-root",
+            "/private/tmp/Tên tuyệt mật/",
+            "--json",
+        ],
+        [
+            "inventory",
+            "--source-root",
+            "/private/tmp//Tên tuyệt mật",
+            "--json",
+        ],
+        ["inventory", "--source-root", "////", "--json"],
+    ],
+)
+def test_invalid_inventory_surface_emits_only_fixed_private_guidance(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert 0 < len(result.stderr) <= 512
+    assert "Tên tuyệt mật".encode() not in result.stderr
+    assert b"--private-source" not in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -279,19 +533,25 @@ def test_foundation_commands_reject_document_path_arguments(
 
 
 @pytest.mark.parametrize(
-    ("argv", "operation"),
-    [
-        (("version", "--json"), "version"),
-        (("doctor", "--json"), "doctor"),
-        (("contract", "verify", "--json"), "contract.verify"),
-    ],
+    "operation", ["version", "doctor", "contract.verify", "inventory"]
 )
 def test_all_commands_launch_from_a_relocated_unicode_repository(
-    argv, operation, tmp_path
+    operation, tmp_path
 ):
     root = _copy_toolkit(tmp_path)
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
+    if operation == "version":
+        argv = ("version", "--json")
+    elif operation == "doctor":
+        argv = ("doctor", "--json")
+    elif operation == "contract.verify":
+        argv = ("contract", "verify", "--json")
+    else:
+        source = tmp_path / "Nguồn CTV tổng hợp"
+        source.mkdir()
+        (source / "hồ sơ thử.pdf").write_bytes(b"%PDF-1.7\nsynthetic")
+        argv = ("inventory", "--source-root", str(source), "--json")
 
     result = _run(*argv, cwd=unrelated, script=root / "server" / SCRIPT.name)
 
@@ -303,9 +563,15 @@ def test_all_commands_launch_from_a_relocated_unicode_repository(
         assert payload["result"]["contractTreeSha256"] == EXPECTED_TREE
     elif operation == "doctor":
         assert payload["result"]["ready"] is True
-    else:
+    elif operation == "contract.verify":
         assert payload["result"]["verified"] is True
         assert payload["result"]["actualTreeSha256"] == EXPECTED_TREE
+    else:
+        assert payload["result"]["inventoryStatus"] == "complete"
+        assert payload["result"]["totals"]["regularFiles"] == 1
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert str(source) not in serialized
+        assert source.name not in serialized
 
 
 def _import_roots(path: Path) -> set[str]:
@@ -319,8 +585,21 @@ def _import_roots(path: Path) -> set[str]:
     return roots
 
 
-def test_foundation_modules_have_no_network_or_client_imports():
-    forbidden = {
+def _attribute_calls(path: Path) -> set[str]:
+    calls = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            calls.add(f"{node.func.value.id}.{node.func.attr}")
+    return calls
+
+
+def test_inventory_modules_have_no_network_subprocess_parser_ocr_or_ai_imports():
+    network_forbidden = {
         "socket",
         "urllib",
         "http",
@@ -329,15 +608,80 @@ def test_foundation_modules_have_no_network_or_client_imports():
         "ftplib",
         "webbrowser",
     }
-    for name in ("ctv_intake_cli.py", "ctv_cli_doctor.py", "ctv_contract_pin.py"):
-        assert _import_roots(SCRIPT.with_name(name)).isdisjoint(forbidden)
+    for name in (
+        "ctv_intake_cli.py",
+        "ctv_cli_doctor.py",
+        "ctv_contract_pin.py",
+        "ctv_inventory.py",
+        "ctv_inventory_detection.py",
+    ):
+        assert _import_roots(SCRIPT.with_name(name)).isdisjoint(network_forbidden)
+
+    inventory_forbidden = network_forbidden | {
+        "subprocess",
+        "zipfile",
+        "tarfile",
+        "rarfile",
+        "py7zr",
+        "fitz",
+        "pypdf",
+        "PyPDF2",
+        "docx",
+        "openpyxl",
+        "PIL",
+        "pytesseract",
+        "cv2",
+        "torch",
+        "transformers",
+        "openai",
+        "anthropic",
+    }
+    for name in ("ctv_inventory.py", "ctv_inventory_detection.py"):
+        assert _import_roots(SCRIPT.with_name(name)).isdisjoint(
+            inventory_forbidden
+        )
     assert "subprocess" not in _import_roots(SCRIPT)
+    forbidden_shell_calls = {
+        "os.system",
+        "os.popen",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+    }
+    assert _attribute_calls(SCRIPT).isdisjoint(forbidden_shell_calls)
 
 
-def test_parser_exposes_only_the_foundation_json_surface():
+def _parser_destinations(parser) -> set[str]:
+    seen = set()
+    pending = [parser]
+    while pending:
+        current = pending.pop()
+        for action in current._actions:
+            seen.add(action.dest.replace("_", "-"))
+            seen.update(option.lstrip("-") for option in action.option_strings)
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                pending.extend(choices.values())
+    return seen
+
+
+def test_parser_exposes_source_root_only_on_inventory():
     cli = _module()
+    parser = cli._parser()
+    command_action = next(
+        action for action in parser._actions if isinstance(action.choices, dict)
+    )
+    commands = command_action.choices
+    assert "source-root" in _parser_destinations(commands["inventory"])
+    for command in ("version", "doctor", "contract"):
+        assert "source-root" not in _parser_destinations(commands[command])
+
     forbidden = {
-        "source-root",
         "workspace-root",
         "input-file",
         "output-file",
@@ -345,15 +689,42 @@ def test_parser_exposes_only_the_foundation_json_surface():
         "repair",
         "update",
     }
-    seen = set()
-    pending = [cli._parser()]
-    while pending:
-        parser = pending.pop()
-        for action in parser._actions:
-            seen.add(action.dest.replace("_", "-"))
-            seen.update(option.lstrip("-") for option in action.option_strings)
-            choices = getattr(action, "choices", None)
-            if isinstance(choices, dict):
-                pending.extend(choices.values())
+    assert _parser_destinations(parser).isdisjoint(forbidden)
 
-    assert seen.isdisjoint(forbidden)
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["version", "--json"],
+        ["doctor", "--json"],
+        ["contract", "verify", "--json"],
+        ["inventory", "--source-root", "synthetic-source", "--json"],
+    ],
+)
+def test_exact_argv_validation_accepts_only_documented_forms(
+    argv, monkeypatch, capsysbinary
+):
+    cli = _module()
+    monkeypatch.setattr(
+        cli,
+        "_version_envelope",
+        lambda: cli.succeeded("version", "synthetic", {}),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_doctor_result",
+        lambda: (cli.succeeded("doctor", "synthetic", {}), 0),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_contract_result",
+        lambda: (cli.succeeded("contract.verify", "synthetic", {}), 0),
+    )
+    monkeypatch.setattr(cli, "inventory_source", lambda _root: _inventory_result())
+
+    exit_code = cli.main(argv)
+
+    captured = capsysbinary.readouterr()
+    assert exit_code == 0
+    assert captured.out.endswith(b"\n")
+    assert captured.err == b""

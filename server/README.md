@@ -83,6 +83,48 @@ the toolkit path must be supplied explicitly. A successful preflight establishes
 only toolkit, runtime, and contract readiness. It does not validate or approve a
 payment package.
 
+### Inventorying a source folder
+
+Run the three preflight checks in order and stop if any check fails. Then select
+one source folder explicitly and run the exact inventory command:
+
+```bash
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py version --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py doctor --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py contract verify --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py inventory --source-root /explicit/local/source --json
+```
+
+The toolkit does not discover a source folder automatically. The caller chooses
+the `--source-root`; the inventory output uses opaque evidence and duplicate-group
+IDs and contains no source filenames or paths. Evidence IDs describe one
+deterministic observation and are not stable after the folder changes.
+
+Inventory identifies only broad file types from extensions and bounded signature
+bytes. Exact-byte SHA-256 matches form duplicate groups; matching names or similar
+content do not. Archives remain listed as files and are never opened. Files above
+the per-file hash limit, and files reached after the total hash budget is
+exhausted, remain listed without a digest and carry an item issue.
+
+Item issues produce `complete-with-issues` while the inventory operation still
+succeeds. A source that cannot be safely and completely observed produces an
+operation-level failure instead of a partial inventory. The fixed limits are:
+
+- maximum depth: 32;
+- maximum directories: 2,000;
+- maximum regular files: 10,000;
+- maximum total items: 10,000;
+- maximum total entries: 12,000;
+- signature sample per regular file: 16 KiB;
+- maximum hashed size per file: 256 MiB;
+- maximum total hashed bytes: 2 GiB; and
+- maximum canonical JSON output: 16 MiB, including the CLI envelope.
+
+Inventory is read-only, keeps no state, writes no files, and makes no network
+requests. A successful inventory establishes only a private-safe listing of the
+explicit source folder under these limits. It does not establish document
+completeness, case assignment, or payment approval.
+
 ## Validating a prepared intake package
 
 The CTV intake contract validator is a read-only mechanical gate for a prepared
