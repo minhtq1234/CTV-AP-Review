@@ -28,6 +28,7 @@ import ctv_inventory
 from ctv_inspection import (
     INSPECTION_ERROR_CODES,
     InspectionError,
+    inspect_observation,
     inspect_source,
 )
 from ctv_inspection_media import (
@@ -145,6 +146,21 @@ def _canonical_result(result) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+def test_inspect_observation_keeps_caller_owned_observation_open(tmp_path):
+    source = tmp_path / "private-source"
+    source.mkdir()
+    (source / "private.xlsx").write_bytes(_workbook())
+
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        result = inspect_observation(observation)
+
+        assert result.observation_id == observation.observation_id
+        assert observation.snapshot(
+            result.sources[0].evidence_id,
+            max_bytes=25 * 1024 * 1024,
+        )
 
 
 def _unavailable_ocr(monkeypatch) -> None:

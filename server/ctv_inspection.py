@@ -29,6 +29,7 @@ from ctv_inspection_workbook import (
 )
 from ctv_inventory import (
     InventoryError,
+    InventoryObservation,
     ObservedInventorySource,
     open_inventory_observation,
 )
@@ -391,6 +392,47 @@ def _raise_controlled_failure(code: str) -> None:
 
 def _raise_internal_failure() -> None:
     raise RuntimeError("inspection-internal-error")
+
+
+def inspect_observation(
+    observation: InventoryObservation,
+    *,
+    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+) -> InspectionResult:
+    """Inspect one caller-owned live observation without closing it."""
+    if type(observation) is not InventoryObservation:
+        raise TypeError("observation must be a live inventory observation")
+    limits = _bounded_limits(limits)
+    ocr_session = open_local_ocr()
+    result = _UNKNOWN_INVENTORY_FAILURE
+    failure_code = None
+    try:
+        result = _inspection_result(
+            observation,
+            limits=limits,
+            ocr_session=ocr_session,
+        )
+    except InventoryError as error:
+        failure_code = _mapped_inventory_error_code(error)
+    except PdfPageCountExceededError:
+        failure_code = "inspection-pdf-page-count-exceeded"
+    except PdfParserBoundaryExceededError:
+        failure_code = "inspection-parser-boundary-exceeded"
+    except WorkbookParserBoundaryExceededError:
+        failure_code = "inspection-parser-boundary-exceeded"
+    except WorkbookWorksheetCountExceededError:
+        failure_code = "inspection-worksheet-count-exceeded"
+    except InspectionUnitCountExceededError:
+        failure_code = "inspection-unit-count-exceeded"
+    finally:
+        ocr_session = None
+    if failure_code is not None:
+        _raise_controlled_failure(failure_code)
+    if type(result) is str:
+        _raise_controlled_failure(result)
+    if result is _UNKNOWN_INVENTORY_FAILURE:
+        _raise_internal_failure()
+    return result
 
 
 def inspect_source(
