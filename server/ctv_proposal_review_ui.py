@@ -337,6 +337,7 @@ function restoreActiveControls() {
     return;
   }
   const current = record.decision;
+  decisionControl.disabled = false;
   populateSelect(decisionControl, record.allowedDecisions, current.decision);
   const defaultRole = current.role || (record.suggestedRole !== "unknown" ? record.suggestedRole : record.allowedRoles[0]);
   populateSelect(roleControl, record.allowedRoles, defaultRole);
