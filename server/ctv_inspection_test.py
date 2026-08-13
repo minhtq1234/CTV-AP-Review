@@ -3,6 +3,7 @@ import builtins
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date
+import gc
 from io import BytesIO
 import json
 import os
@@ -15,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import traceback
+import weakref
 import zipfile
 
 import fitz
@@ -961,9 +963,17 @@ def test_unknown_inventory_error_becomes_fixed_internal_runtime_failure_without_
     _unavailable_ocr(monkeypatch)
     hostile_code = "private/path/079123456789/parser-diagnostic"
 
+    class PrivateMarker:
+        pass
+
+    marker_box = [PrivateMarker()]
+    marker_reference = weakref.ref(marker_box[0])
+
     @contextmanager
     def fail_inventory(*_args, **_kwargs):
-        raise InventoryError(hostile_code)
+        private_error = InventoryError(hostile_code)
+        private_error.private_marker = marker_box.pop()
+        raise private_error
         yield
 
     monkeypatch.setattr(inspection, "open_inventory_observation", fail_inventory)
@@ -983,10 +993,39 @@ def test_unknown_inventory_error_becomes_fixed_internal_runtime_failure_without_
     assert not isinstance(error, InspectionError)
     assert str(error) == "inspection-internal-error"
     assert error.__cause__ is None
-    assert error.__suppress_context__ is True
+    assert error.__context__ is None
+    assert error.__suppress_context__ is False
     assert hostile_code not in public
     assert "079123456789" not in public
     assert "parser-diagnostic" not in public
+
+    pending = [error]
+    exception_chain = []
+    while pending:
+        current = pending.pop()
+        if current in exception_chain:
+            continue
+        exception_chain.append(current)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    assert exception_chain == [error]
+
+    current_traceback = error.__traceback__
+    while current_traceback is not None:
+        frame = current_traceback.tb_frame
+        if frame.f_globals.get("__name__") == "ctv_inspection":
+            assert not any(
+                isinstance(value, InventoryError)
+                for value in frame.f_locals.values()
+            )
+            assert hostile_code not in repr(frame.f_locals)
+        current_traceback = current_traceback.tb_next
+
+    gc.collect()
+    assert marker_box == []
+    assert marker_reference() is None
 
 
 def test_inspection_error_surface_is_exact_allowlisted_and_private_safe():

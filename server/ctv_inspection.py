@@ -74,6 +74,7 @@ _RAR_SIGNATURES = (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")
 _UNSAFE_SOURCE_ISSUES = frozenset(
     {"type-detection-failed", "changed-during-read"}
 )
+_UNKNOWN_INVENTORY_FAILURE = object()
 
 
 class InspectionError(RuntimeError):
@@ -310,14 +311,12 @@ def _mapped_inventory_error(error: InventoryError) -> InspectionError | None:
     return None
 
 
-def inspect_source(
+def _inspect_fresh_observation(
     source_root: Path,
     *,
-    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
-) -> InspectionResult:
-    """Inspect one fresh descriptor-bound source observation without writing."""
-    limits = _bounded_limits(limits)
-    ocr_session = open_local_ocr()
+    limits: InspectionLimits,
+    ocr_session,
+):
     try:
         with open_inventory_observation(source_root) as observation:
             return _inspection_result(
@@ -328,7 +327,7 @@ def inspect_source(
     except InventoryError as error:
         mapped_error = _mapped_inventory_error(error)
         if mapped_error is None:
-            raise RuntimeError("inspection-internal-error") from None
+            return _UNKNOWN_INVENTORY_FAILURE
         raise mapped_error from None
     except PdfPageCountExceededError:
         raise InspectionError("inspection-pdf-page-count-exceeded") from None
@@ -336,3 +335,25 @@ def inspect_source(
         raise InspectionError("inspection-parser-boundary-exceeded") from None
     except WorkbookWorksheetCountExceededError:
         raise InspectionError("inspection-worksheet-count-exceeded") from None
+
+
+def _raise_internal_failure() -> None:
+    raise RuntimeError("inspection-internal-error")
+
+
+def inspect_source(
+    source_root: Path,
+    *,
+    limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+) -> InspectionResult:
+    """Inspect one fresh descriptor-bound source observation without writing."""
+    limits = _bounded_limits(limits)
+    ocr_session = open_local_ocr()
+    result = _inspect_fresh_observation(
+        source_root,
+        limits=limits,
+        ocr_session=ocr_session,
+    )
+    if result is _UNKNOWN_INVENTORY_FAILURE:
+        _raise_internal_failure()
+    return result
