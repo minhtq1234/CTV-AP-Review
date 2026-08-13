@@ -33,6 +33,7 @@ _ROLES = frozenset({
     "other-supporting-evidence",
 })
 _PROPOSAL_ISSUES = frozenset({"proposal-unresolved"})
+_MAX_PARTICIPANT_HANDLES = 10_000
 
 
 def _require_plain_mapping(value: object, keys: frozenset[str]) -> dict[str, object]:
@@ -51,6 +52,23 @@ def _immutable_sequence(values: object, expected: type, field_name: str) -> tupl
     if not all(type(value) is expected for value in copied):
         raise ValueError(f"{field_name} must contain {expected.__name__} values")
     return copied
+
+
+def _immutable_participant_handles(values: object) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError("participant_handles must be a sequence")
+    try:
+        iterator = iter(values)
+    except TypeError:
+        raise ValueError("participant_handles must be a sequence") from None
+    handles = []
+    for value in iterator:
+        if len(handles) >= _MAX_PARTICIPANT_HANDLES:
+            raise ValueError(f"participant_handles must not exceed {_MAX_PARTICIPANT_HANDLES}")
+        if type(value) is not str:
+            raise ValueError("participant_handles must contain str values")
+        handles.append(copy.deepcopy(value))
+    return tuple(handles)
 
 
 def _validate_opaque(value: object, pattern: re.Pattern[str], field_name: str) -> str:
@@ -89,7 +107,7 @@ class AssignmentTarget:
     def __post_init__(self) -> None:
         if type(self.scope) is not str or self.scope not in _TARGET_SCOPES:
             raise ValueError("scope must be a supported target scope")
-        handles = _immutable_sequence(self.participant_handles, str, "participant_handles")
+        handles = _immutable_participant_handles(self.participant_handles)
         if any(not PARTICIPANT_HANDLE.fullmatch(handle) for handle in handles):
             raise ValueError("participant_handles must be opaque participant handles")
         if self.scope == "individual" and len(handles) != 1:

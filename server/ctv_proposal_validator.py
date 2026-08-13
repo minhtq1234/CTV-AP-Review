@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import json
 import re
-import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -35,7 +34,7 @@ _ALLOWED_ROLES = {
 _OBSERVATION_ID = re.compile(r"^observation-[a-f0-9]{64}$")
 _UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
 _MAX_PROPOSAL_RECORDS = 10_000
-_VALIDATION_PROVENANCE: dict[int, tuple[weakref.ReferenceType, bytes]] = {}
+_MAX_TARGET_REFERENCES = 100_000
 
 
 def _records(values: object, expected: type, field_name: str) -> tuple:
@@ -51,7 +50,7 @@ def _records(values: object, expected: type, field_name: str) -> tuple:
             raise ValueError(f"{field_name} must not exceed {_MAX_PROPOSAL_RECORDS}")
         if type(value) is not expected:
             raise ValueError(f"{field_name} must contain {expected.__name__} values")
-        copied.append(copy.deepcopy(value))
+        copied.append(value)
     return tuple(copied)
 
 
@@ -97,29 +96,6 @@ def _canonical_bytes(validation: ProposalValidation) -> bytes:
     ).encode("utf-8")
 
 
-def _register_validation(validation: ProposalValidation) -> None:
-    identifier = id(validation)
-
-    def cleanup(reference: weakref.ReferenceType) -> None:
-        entry = _VALIDATION_PROVENANCE.get(identifier)
-        if entry is not None and entry[0] is reference:
-            _VALIDATION_PROVENANCE.pop(identifier, None)
-
-    _VALIDATION_PROVENANCE[identifier] = (weakref.ref(validation, cleanup), _canonical_bytes(validation))
-
-
-def _has_unchanged_provenance(validation: object) -> bool:
-    if type(validation) is not ProposalValidation:
-        return False
-    entry = _VALIDATION_PROVENANCE.get(id(validation))
-    if entry is None or entry[0]() is not validation:
-        return False
-    try:
-        return hmac.compare_digest(entry[1], _canonical_bytes(validation))
-    except (TypeError, ValueError):
-        return False
-
-
 def _unique_map(records: tuple, identifier: str) -> tuple[dict[str, object], bool]:
     mapped: dict[str, object] = {}
     invalid = False
@@ -130,6 +106,16 @@ def _unique_map(records: tuple, identifier: str) -> tuple[dict[str, object], boo
             continue
         mapped[record_id] = record
     return mapped, invalid
+
+
+def _require_target_reference_bound(unit_decisions: tuple[UnitDecision, ...]) -> None:
+    references = 0
+    for decision in unit_decisions:
+        if decision.target is None:
+            continue
+        references += len(decision.target.participant_handles)
+        if references > _MAX_TARGET_REFERENCES:
+            raise ValueError(f"target references must not exceed {_MAX_TARGET_REFERENCES}")
 
 
 def _valid_target(decision: UnitDecision, participant_positions: dict[str, int]) -> bool:
@@ -172,6 +158,7 @@ def validate_proposal(
     participants = _records(participants, Participant, "participants")
     source_dispositions = _records(source_dispositions, SourceDisposition, "source_dispositions")
     unit_decisions = _records(unit_decisions, UnitDecision, "unit_decisions")
+    _require_target_reference_bound(unit_decisions)
 
     participant_handles = [participant.participant_handle for participant in participants]
     participants_valid = bool(participants) and len(set(participant_handles)) == len(participant_handles)
@@ -257,13 +244,11 @@ def validate_proposal(
         reassigned=reassigned, excluded=excluded, unresolved=unresolved,
         issues=len(issue_codes),
     )
-    validation = ProposalValidation(
+    return ProposalValidation(
         inspection.observation_id, roster_unit_id, participants,
         tuple(canonical_sources), tuple(canonical_units), totals, issue_codes,
         not issue_codes,
     )
-    _register_validation(validation)
-    return validation
 
 
 def canonical_approval_payload(validation: ProposalValidation) -> dict[str, object]:
@@ -285,20 +270,28 @@ def proposal_digest(validation: ProposalValidation) -> str:
     return "proposal-" + hashlib.sha256(_canonical_bytes(validation)).hexdigest()
 
 
-def approve_proposal(validation: ProposalValidation, expected_digest: str) -> ApprovedProposal:
-    if not _has_unchanged_provenance(validation):
-        raise ValueError("proposal validation provenance is unavailable or changed")
-    if not validation.ready_to_prepare:
+def approve_proposal(
+    inspection: InspectionResult, validation: ProposalValidation, expected_digest: str
+) -> ApprovedProposal:
+    if type(inspection) is not InspectionResult or type(validation) is not ProposalValidation:
+        raise ValueError("proposal validation revalidation failed")
+    rebuilt = validate_proposal(
+        inspection, validation.participants, validation.roster_unit_id,
+        validation.source_dispositions, validation.unit_decisions,
+    )
+    if type(rebuilt) is not type(validation) or rebuilt != validation:
+        raise ValueError("proposal validation revalidation failed")
+    if not rebuilt.ready_to_prepare:
         raise ValueError("proposal validation is not ready for approval")
     if type(expected_digest) is not str or not PROPOSAL_DIGEST.fullmatch(expected_digest):
         raise ValueError("expected_digest must be a proposal digest")
-    digest = proposal_digest(validation)
+    digest = proposal_digest(rebuilt)
     if not hmac.compare_digest(digest, expected_digest):
         raise ValueError("proposal digest changed before approval")
-    if validation.roster_unit_id is None:
+    if rebuilt.roster_unit_id is None:
         raise ValueError("ready proposal requires a roster unit")
     return ApprovedProposal(
-        validation.observation_id, digest, validation.roster_unit_id,
-        validation.participants, validation.source_dispositions, validation.unit_decisions,
-        validation.totals, validation.issue_codes, "user-approved",
+        rebuilt.observation_id, digest, rebuilt.roster_unit_id,
+        rebuilt.participants, rebuilt.source_dispositions, rebuilt.unit_decisions,
+        rebuilt.totals, rebuilt.issue_codes, "user-approved",
     )

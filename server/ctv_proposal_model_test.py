@@ -53,6 +53,17 @@ def test_shared_target_uses_numeric_participant_suffix_order_at_five_digit_bound
         AssignmentTarget("shared", ("participant-10000", "participant-9999"))
 
 
+def test_assignment_target_bounds_handles_before_deep_copying():
+    class OversizedHandles:
+        def __iter__(self):
+            for index in range(10_001):
+                yield f"participant-{index + 1:04d}"
+            raise AssertionError("target consumed beyond its hard bound")
+
+    with pytest.raises(ValueError, match="participant_handles must not exceed"):
+        AssignmentTarget("shared", OversizedHandles())
+
+
 def test_unknown_role_cannot_be_resolved_or_approved():
     with pytest.raises(ValueError):
         UnitDecision(

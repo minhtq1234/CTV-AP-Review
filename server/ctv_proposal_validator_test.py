@@ -240,15 +240,14 @@ def test_validation_bounds_iterable_before_full_materialization():
         validate_proposal(_inspection(), OversizedParticipants(), "unit-0001", (), ())
 
 
-def test_approval_rejects_forged_copied_subclassed_or_mutated_validation():
+def test_approval_revalidates_exact_values_against_the_supplied_inspection():
     totals = ProposalTotals(1, 0, 1, 0, 0, 0, 0, 0, 0)
     forged = ProposalValidation(
         "observation-" + "a" * 64, "unit-9999", (Participant("participant-0001"),),
         (), (), totals, (), True,
     )
-    for candidate in (forged, copy.copy(forged)):
-        with pytest.raises(ValueError, match="provenance"):
-            approve_proposal(candidate, "proposal-" + "a" * 64)
+    with pytest.raises(ValueError, match="revalidation"):
+        approve_proposal(_inspection(), forged, "proposal-" + "a" * 64)
 
     class ValidationSubclass(ProposalValidation):
         pass
@@ -257,8 +256,8 @@ def test_approval_rejects_forged_copied_subclassed_or_mutated_validation():
         "observation-" + "a" * 64, "unit-9999", (Participant("participant-0001"),),
         (), (), totals, (), True,
     )
-    with pytest.raises(ValueError, match="provenance"):
-        approve_proposal(subclass, "proposal-" + "a" * 64)
+    with pytest.raises(ValueError, match="revalidation"):
+        approve_proposal(_inspection(), subclass, "proposal-" + "a" * 64)
 
     source_dispositions, decisions = _resolved()
     genuine = validate_proposal(_inspection(), _participants(), "unit-0001", source_dispositions, decisions)
@@ -268,11 +267,34 @@ def test_approval_rejects_forged_copied_subclassed_or_mutated_validation():
         genuine.issue_codes, genuine.ready_to_prepare,
     )
     assert equivalent == genuine
-    with pytest.raises(ValueError, match="provenance"):
-        approve_proposal(equivalent, proposal_digest(genuine))
+    approved = approve_proposal(_inspection(), equivalent, proposal_digest(genuine))
+    assert approved.to_dict()["outcome"] == "approved"
+    copied = copy.copy(genuine)
+    assert approve_proposal(_inspection(), copied, proposal_digest(genuine)).to_dict()["outcome"] == "approved"
     object.__setattr__(genuine, "roster_unit_id", "unit-9999")
-    with pytest.raises(ValueError, match="provenance"):
-        approve_proposal(genuine, proposal_digest(genuine))
+    with pytest.raises(ValueError, match="revalidation"):
+        approve_proposal(_inspection(), genuine, proposal_digest(genuine))
+
+
+def test_approval_rejects_validation_rebuilt_against_a_different_inspection():
+    source_dispositions, decisions = _resolved()
+    validation = validate_proposal(_inspection(), _participants(), "unit-0001", source_dispositions, decisions)
+    other_inspection = _inspection()
+    object.__setattr__(other_inspection, "observation_id", "observation-" + "b" * 64)
+    with pytest.raises(ValueError, match="revalidation"):
+        approve_proposal(other_inspection, validation, proposal_digest(validation))
+
+
+def test_validation_rejects_more_than_one_hundred_thousand_target_references_before_copying():
+    target = AssignmentTarget(
+        "shared", tuple(f"participant-{index:04d}" for index in range(1, 10_001))
+    )
+    decisions = tuple(
+        UnitDecision(f"unit-{index:04d}", "accepted", "service-contract", target, None)
+        for index in range(1, 12)
+    )
+    with pytest.raises(ValueError, match="target references must not exceed"):
+        validate_proposal(_inspection(), _participants(), "unit-0001", (), decisions)
 
 
 def test_digest_changes_for_each_mutable_approval_field_and_excludes_private_labels_or_notes():
@@ -300,10 +322,10 @@ def test_digest_changes_for_each_mutable_approval_field_and_excludes_private_lab
 def test_approval_requires_ready_validation_and_exact_digest():
     source_dispositions, decisions = _resolved()
     validation = validate_proposal(_inspection(), _participants(), "unit-0001", source_dispositions, decisions)
-    approved = approve_proposal(validation, proposal_digest(validation))
+    approved = approve_proposal(_inspection(), validation, proposal_digest(validation))
     assert approved.to_dict()["outcome"] == "approved"
     with pytest.raises(ValueError):
-        approve_proposal(validation, "proposal-" + "b" * 64)
+        approve_proposal(_inspection(), validation, "proposal-" + "b" * 64)
     unresolved = validate_proposal(_inspection(), _participants(), "unit-0001", (), ())
     with pytest.raises(ValueError):
-        approve_proposal(unresolved, proposal_digest(unresolved))
+        approve_proposal(_inspection(), unresolved, proposal_digest(unresolved))
