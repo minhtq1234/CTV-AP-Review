@@ -29,6 +29,16 @@ PRIVATE_CELL_VALUES = (
 )
 PRIVATE_MEMBER_NAME = "xl/media/private-identity-079123456789.png"
 PRIVATE_EXTERNAL_VALUE = "EXTERNAL-PRIVATE-079123456789"
+TRANSITIONAL_SPREADSHEET_NAMESPACE = (
+    b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+)
+STRICT_SPREADSHEET_NAMESPACE = b"http://purl.oclc.org/ooxml/spreadsheetml/main"
+TRANSITIONAL_OFFICE_RELATIONSHIPS = (
+    b"http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+STRICT_OFFICE_RELATIONSHIPS = (
+    b"http://purl.oclc.org/ooxml/officeDocument/relationships"
+)
 
 
 def _save(workbook):
@@ -114,6 +124,45 @@ def _rewrite_package(snapshot, *, replacements=None, additions=None, drop=()):
     return output.getvalue()
 
 
+def _strict_package(snapshot):
+    replacements = {}
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        for info in archive.infolist():
+            if (
+                info.filename in {
+                    "xl/workbook.xml",
+                    "xl/styles.xml",
+                    "xl/sharedStrings.xml",
+                }
+                or (
+                    info.filename.startswith("xl/worksheets/")
+                    and info.filename.endswith(".xml")
+                )
+            ):
+                content = archive.read(info)
+                content = content.replace(
+                    TRANSITIONAL_SPREADSHEET_NAMESPACE,
+                    STRICT_SPREADSHEET_NAMESPACE,
+                ).replace(
+                    TRANSITIONAL_OFFICE_RELATIONSHIPS,
+                    STRICT_OFFICE_RELATIONSHIPS,
+                )
+                if info.filename == "xl/workbook.xml":
+                    content = content.replace(
+                        b"<workbook ",
+                        b'<workbook conformance="strict" ',
+                        1,
+                    )
+                replacements[info.filename] = content
+            elif info.filename.endswith(".rels"):
+                content = archive.read(info).replace(
+                    TRANSITIONAL_OFFICE_RELATIONSHIPS,
+                    STRICT_OFFICE_RELATIONSHIPS,
+                )
+                replacements[info.filename] = content
+    return _rewrite_package(snapshot, replacements=replacements)
+
+
 def _patch_central_sizes(snapshot, patches):
     data = bytearray(snapshot)
     cursor = 0
@@ -135,6 +184,27 @@ def _patch_central_sizes(snapshot, patches):
         cursor = name_start + name_length + extra_length + comment_length
     assert seen == set(patches)
     return bytes(data)
+
+
+def _patch_declared_total(snapshot, member_names, declared_total):
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        ordinary_total = sum(
+            info.file_size
+            for info in archive.infolist()
+            if info.filename not in member_names
+        )
+    remaining = declared_total - ordinary_total
+    assert 0 <= remaining <= len(member_names) * 25 * 1024 * 1024
+    patches = {}
+    for member_name in member_names:
+        member_size = min(25 * 1024 * 1024, remaining)
+        patches[member_name] = (
+            max(1, (member_size + 99) // 100),
+            member_size,
+        )
+        remaining -= member_size
+    assert remaining == 0
+    return _patch_central_sizes(snapshot, patches)
 
 
 def _patch_encrypted_flag(snapshot, member_name):
@@ -430,6 +500,44 @@ def test_malformed_or_entity_declaring_ooxml_is_safely_unreadable(declaration):
     _assert_private_values_absent(result, "PRIVATE-PARSER-TOKEN-079123456789")
 
 
+@pytest.mark.parametrize(
+    ("encoding", "byte_order_mark"),
+    (
+        ("utf-16-le", b"\xff\xfe"),
+        ("utf-16-be", b"\xfe\xff"),
+        ("utf-32-le", b"\xff\xfe\x00\x00"),
+        ("utf-32-be", b"\x00\x00\xfe\xff"),
+    ),
+)
+def test_encoded_dtd_is_rejected_before_elementtree(
+    monkeypatch, encoding, byte_order_mark
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    declaration = (
+        '<?xml version="1.0"?><!DOCTYPE workbook '
+        '[<!ENTITY private "PRIVATE-ENTITY-079123456789">]>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/'
+        'spreadsheetml/2006/main">&private;</workbook>'
+    )
+    content = byte_order_mark + declaration.encode(encoding)
+    parser_calls = []
+
+    def forbidden_parser(*args, **kwargs):
+        parser_calls.append((args, kwargs))
+        raise AssertionError("declaration scan must run before ElementTree")
+
+    monkeypatch.setattr(
+        workbook_adapter.ElementTree,
+        "XMLPullParser",
+        forbidden_parser,
+    )
+
+    with pytest.raises(workbook_adapter._UnreadableWorkbookError):
+        list(workbook_adapter._safe_xml_events(content))
+    assert parser_calls == []
+
+
 def test_xml_pull_parser_is_fed_only_bounded_chunks(monkeypatch):
     import ctv_inspection_workbook as workbook_adapter
 
@@ -517,6 +625,113 @@ def test_underreported_worksheet_dimension_cannot_hide_private_cells():
     _assert_private_values_absent(result)
 
 
+def test_duplicate_cell_coordinates_make_the_sheet_unknown_before_iteration(
+    monkeypatch,
+):
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
+
+    workbook = Workbook()
+    workbook.active["A1"] = "DANH SACH CHI TRA"
+    snapshot = _save(workbook)
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+    cell_start = sheet_xml.index(b'<c r="A1"')
+    cell_end = sheet_xml.index(b"</c>", cell_start) + len(b"</c>")
+    cell_xml = sheet_xml[cell_start:cell_end]
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            "xl/worksheets/sheet1.xml": (
+                sheet_xml[:cell_start]
+                + cell_xml
+                + cell_xml
+                + sheet_xml[cell_end:]
+            ),
+        },
+    )
+    iteration_calls = []
+    original_iter_rows = ReadOnlyWorksheet.iter_rows
+
+    def recording_iter_rows(self, *args, **kwargs):
+        iteration_calls.append(True)
+        return original_iter_rows(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReadOnlyWorksheet, "iter_rows", recording_iter_rows)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.units[0].inspection_method == "none"
+    assert result.units[0].signal_codes == ()
+    assert result.units[0].issue_codes == ("unit-over-limit",)
+    assert iteration_calls == []
+    _assert_private_values_absent(result)
+
+
+def test_cell_element_budget_is_decided_before_lazy_iteration(monkeypatch):
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(("one", "two", "three"))
+    snapshot = _save(workbook)
+    iteration_calls = []
+    original_iter_rows = ReadOnlyWorksheet.iter_rows
+
+    def recording_iter_rows(self, *args, **kwargs):
+        iteration_calls.append(True)
+        return original_iter_rows(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReadOnlyWorksheet, "iter_rows", recording_iter_rows)
+
+    result = _inspect(
+        snapshot,
+        limits=InspectionLimits(max_cells_per_workbook=2),
+    )
+
+    assert result.inspection_status == "inspected"
+    assert result.units[0].inspection_method == "none"
+    assert result.units[0].issue_codes == ("unit-over-limit",)
+    assert iteration_calls == []
+
+
+def test_sparse_wide_sheet_is_not_materialized_when_its_dimension_is_over_limit(
+    monkeypatch,
+):
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet["A1"] = "private"
+    worksheet["XFD1"] = None
+    snapshot = _save(workbook)
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+    sheet_xml = sheet_xml.replace(b'<dimension ref="A1:A1"', b'<dimension ref="A1:XFD1"')
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={"xl/worksheets/sheet1.xml": sheet_xml},
+    )
+    iteration_calls = []
+    original_iter_rows = ReadOnlyWorksheet.iter_rows
+
+    def recording_iter_rows(self, *args, **kwargs):
+        iteration_calls.append(True)
+        return original_iter_rows(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReadOnlyWorksheet, "iter_rows", recording_iter_rows)
+
+    result = _inspect(
+        snapshot,
+        limits=InspectionLimits(max_cells_per_workbook=10),
+    )
+
+    assert result.inspection_status == "inspected"
+    assert result.units[0].inspection_method == "none"
+    assert result.units[0].issue_codes == ("unit-over-limit",)
+    assert iteration_calls == []
+
+
 def test_lazy_cell_parse_failure_retains_hidden_sheet_signal_without_diagnostics():
     workbook = _workbook_with_sheets(
         (
@@ -576,6 +791,189 @@ def test_spoofed_worksheet_relationship_type_is_rejected_before_openpyxl(monkeyp
     assert result.source_issue_codes == ("document-unreadable",)
     assert loader_calls == []
     _assert_private_values_absent(result, "private.invalid")
+
+
+@pytest.mark.parametrize(
+    ("part_name", "original_namespace", "attacker_namespace"),
+    (
+        (
+            "[Content_Types].xml",
+            b"http://schemas.openxmlformats.org/package/2006/content-types",
+            b"https://attacker.invalid/content-types",
+        ),
+        (
+            "xl/workbook.xml",
+            TRANSITIONAL_SPREADSHEET_NAMESPACE,
+            b"https://attacker.invalid/spreadsheet-main",
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            b"http://schemas.openxmlformats.org/package/2006/relationships",
+            b"https://attacker.invalid/package-relationships",
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            TRANSITIONAL_SPREADSHEET_NAMESPACE,
+            b"https://attacker.invalid/worksheet-main",
+        ),
+    ),
+)
+def test_attacker_qnames_are_rejected_before_openpyxl(
+    monkeypatch, part_name, original_namespace, attacker_namespace
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(_roster_workbook())
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content = archive.read(part_name)
+    assert original_namespace in content
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            part_name: content.replace(original_namespace, attacker_namespace),
+        },
+    )
+    loader_calls = []
+    real_loader = workbook_adapter.openpyxl.load_workbook
+
+    def recording_loader(*args, **kwargs):
+        loader_calls.append(True)
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", recording_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+    _assert_private_values_absent(result, "attacker.invalid")
+
+
+@pytest.mark.parametrize(
+    ("part_name", "with_image"),
+    (
+        ("xl/workbook.xml", False),
+        ("xl/worksheets/sheet3.xml", True),
+    ),
+)
+def test_attacker_relationship_id_qname_is_rejected_before_openpyxl(
+    monkeypatch, part_name, with_image
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(_roster_workbook(with_image=with_image))
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content = archive.read(part_name)
+    assert TRANSITIONAL_OFFICE_RELATIONSHIPS in content
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            part_name: content.replace(
+                TRANSITIONAL_OFFICE_RELATIONSHIPS,
+                b"https://attacker.invalid/office-relationships",
+            ),
+        },
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append(True)
+        raise AssertionError("attacker r:id QName must fail in preflight")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+
+
+def test_strict_namespace_workbook_is_inspected_with_its_cell_signals():
+    workbook = Workbook()
+    workbook.active["A1"] = "DANH SACH CHI TRA"
+    snapshot = _strict_package(_save(workbook))
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+    assert result.units[0].inspection_method == "worksheet-structure"
+    assert "roster-column-pattern" in result.units[0].signal_codes
+
+
+@pytest.mark.parametrize("target_kind", ["worksheet", "drawing"])
+def test_wrong_target_content_type_fails_safe_before_openpyxl(
+    monkeypatch, target_kind
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(_roster_workbook(with_image=target_kind == "drawing"))
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content_types = archive.read("[Content_Types].xml")
+    expected_type = {
+        "worksheet": (
+            b"application/vnd.openxmlformats-officedocument."
+            b"spreadsheetml.worksheet+xml"
+        ),
+        "drawing": b"application/vnd.openxmlformats-officedocument.drawing+xml",
+    }[target_kind]
+    assert expected_type in content_types
+    content_types = content_types.replace(
+        expected_type,
+        b"application/private-wrong-target+xml",
+        1,
+    )
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={"[Content_Types].xml": content_types},
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append(True)
+        raise AssertionError("wrong content type must fail in preflight")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+
+
+def test_worksheet_content_type_may_use_the_bounded_default_map():
+    workbook = Workbook()
+    workbook.active["A1"] = "DANH SACH CHI TRA"
+    snapshot = _save(workbook)
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        content_types = archive.read("[Content_Types].xml")
+    worksheet_override_start = content_types.index(
+        b'<Override PartName="/xl/worksheets/sheet1.xml"'
+    )
+    worksheet_override_end = content_types.index(
+        b"/>", worksheet_override_start
+    ) + 2
+    content_types = (
+        content_types[:worksheet_override_start]
+        + content_types[worksheet_override_end:]
+    ).replace(
+        b'<Default Extension="xml" ContentType="application/xml"/>',
+        b'<Default Extension="xml" ContentType="application/vnd.'
+        b'openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>',
+    )
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={"[Content_Types].xml": content_types},
+    )
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.units[0].inspection_method == "worksheet-structure"
+    assert "roster-column-pattern" in result.units[0].signal_codes
 
 
 def test_relationship_pull_parser_retains_only_requested_ids():
@@ -640,7 +1038,8 @@ def test_workbook_xml_sheet_limit_raises_while_relationship_ids_are_parsed():
     _assert_private_values_absent(raised.value, "private-one", "private-two")
 
 
-def test_macro_external_link_and_image_members_are_never_read(monkeypatch):
+@pytest.mark.parametrize("strict", [False, True])
+def test_macro_external_link_and_image_members_are_never_read(monkeypatch, strict):
     snapshot = _save(_roster_workbook(with_image=True))
     with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
         workbook_xml = archive.read("xl/workbook.xml")
@@ -689,6 +1088,8 @@ def test_macro_external_link_and_image_members_are_never_read(monkeypatch):
             ),
         },
     )
+    if strict:
+        snapshot = _strict_package(snapshot)
     prohibited = {
         *media_names,
         *drawing_names,
@@ -747,38 +1148,47 @@ def test_zip_entry_count_boundary_raises_before_zipfile_allocation(monkeypatch):
     _assert_private_values_absent(raised.value, "private-extra")
 
 
-def test_declared_member_ratio_and_aggregate_limits_are_inclusive():
+def test_operation_decompression_budget_includes_manual_and_openpyxl_passes():
     extra_names = tuple(f"private-boundary-{index}.bin" for index in range(4))
-    snapshot = _rewrite_package(
+    original = _rewrite_package(
         _save(_roster_workbook()),
         additions={name: b"X" for name in extra_names},
     )
-    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
-        ordinary_total = sum(
-            info.file_size
-            for info in archive.infolist()
-            if info.filename not in extra_names
+    with zipfile.ZipFile(BytesIO(original), "r") as archive:
+        manual_total = sum(
+            archive.getinfo(name).file_size
+            for name in (
+                "[Content_Types].xml",
+                "xl/workbook.xml",
+                "xl/_rels/workbook.xml.rels",
+                "xl/worksheets/sheet1.xml",
+                "xl/worksheets/sheet2.xml",
+                "xl/worksheets/sheet3.xml",
+            )
         )
-    remaining = 100 * 1024 * 1024 - ordinary_total
-    declared_sizes = []
-    for _ in extra_names:
-        size = min(25 * 1024 * 1024, remaining)
-        declared_sizes.append(size)
-        remaining -= size
-    assert remaining == 0
-    assert declared_sizes[0] == 25 * 1024 * 1024
-    patches = {
-        name: ((size + 99) // 100, size)
-        for name, size in zip(extra_names, declared_sizes)
-    }
-    assert patches[extra_names[0]] == (256 * 1024, 25 * 1024 * 1024)
-    snapshot = _patch_central_sizes(snapshot, patches)
+    operation_limit = 100 * 1024 * 1024
+    accepted_snapshot = _patch_declared_total(
+        original,
+        extra_names,
+        operation_limit - manual_total,
+    )
 
-    result = _inspect(snapshot)
+    result = _inspect(accepted_snapshot)
 
     assert result.inspection_status == "inspected"
     assert result.unit_count == 3
     _assert_private_values_absent(result, "private-boundary")
+
+    rejected_snapshot = _patch_declared_total(
+        original,
+        extra_names,
+        operation_limit - manual_total + 1,
+    )
+    from ctv_inspection_workbook import WorkbookParserBoundaryExceededError
+
+    with pytest.raises(WorkbookParserBoundaryExceededError) as raised:
+        _inspect(rejected_snapshot)
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
 
 
 @pytest.mark.parametrize("adversary", ["member", "aggregate", "ratio"])

@@ -27,15 +27,52 @@ _CONTENT_TYPES_PART = "[Content_Types].xml"
 _WORKBOOK_PART = "xl/workbook.xml"
 _WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
 _OLE_COMPOUND_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-_RELATIONSHIP_ID_ATTRIBUTE = (
-    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+_CONTENT_TYPES_NAMESPACE = (
+    "http://schemas.openxmlformats.org/package/2006/content-types"
 )
+_PACKAGE_RELATIONSHIPS_NAMESPACE = (
+    "http://schemas.openxmlformats.org/package/2006/relationships"
+)
+_TRANSITIONAL_SPREADSHEET_NAMESPACE = (
+    "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+)
+_STRICT_SPREADSHEET_NAMESPACE = (
+    "http://purl.oclc.org/ooxml/spreadsheetml/main"
+)
+_TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+_STRICT_OFFICE_RELATIONSHIPS_NAMESPACE = (
+    "http://purl.oclc.org/ooxml/officeDocument/relationships"
+)
+_SPREADSHEET_NAMESPACES = frozenset({
+    _TRANSITIONAL_SPREADSHEET_NAMESPACE,
+    _STRICT_SPREADSHEET_NAMESPACE,
+})
+_OFFICE_RELATIONSHIPS_BY_SPREADSHEET_NAMESPACE = {
+    _TRANSITIONAL_SPREADSHEET_NAMESPACE: (
+        _TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE
+    ),
+    _STRICT_SPREADSHEET_NAMESPACE: _STRICT_OFFICE_RELATIONSHIPS_NAMESPACE,
+}
 _WORKBOOK_CONTENT_TYPES = frozenset({
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
     "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml",
     "application/vnd.ms-excel.template.macroEnabled.main+xml",
 })
+_WORKSHEET_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
+)
+_DRAWING_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.drawing+xml"
+)
+_STYLES_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"
+)
+_SHARED_STRINGS_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"
+)
 _WORKSHEET_RELATIONSHIP_TYPES = frozenset({
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
     "http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet",
@@ -81,6 +118,23 @@ class _ActualByteBudget:
             raise WorkbookParserBoundaryExceededError()
         self.used += amount
 
+    def reserve(self, amount: int) -> None:
+        if amount < 0 or self.used + amount > _MAX_DECOMPRESSED_BYTES:
+            raise WorkbookParserBoundaryExceededError()
+        self.used += amount
+
+
+class _CellElementBudget:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    def consume(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
 
 def _source_problem(status: str, issue: str) -> InspectionAdapterResult:
     return InspectionAdapterResult(status, None, (issue,), ())
@@ -92,10 +146,57 @@ def _local_name(tag: object) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _safe_xml_events(content: bytes):
-    upper_content = content.upper()
-    if b"<!DOCTYPE" in upper_content or b"<!ENTITY" in upper_content:
+def _expanded_name(tag: object):
+    if not isinstance(tag, str) or not tag.startswith("{"):
+        return None
+    namespace, separator, local = tag[1:].partition("}")
+    if not separator or not namespace or not local:
+        return None
+    return namespace, local
+
+
+def _relationship_id(element, spreadsheet_namespace: str):
+    relationship_namespace = _OFFICE_RELATIONSHIPS_BY_SPREADSHEET_NAMESPACE[
+        spreadsheet_namespace
+    ]
+    expected_attribute = f"{{{relationship_namespace}}}id"
+    for attribute in element.attrib:
+        if _local_name(attribute) == "id" and attribute != expected_attribute:
+            raise _UnreadableWorkbookError()
+    relationship_id = element.attrib.get(expected_attribute)
+    if not relationship_id or len(relationship_id) > 1_024:
         raise _UnreadableWorkbookError()
+    return relationship_id
+
+
+def _xml_declaration_text(content: bytes) -> str:
+    if content.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")):
+        encoding = "utf-32"
+    elif content.startswith((b"\xfe\xff", b"\xff\xfe")):
+        encoding = "utf-16"
+    elif content.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    elif content.startswith(b"\x00\x00\x00<"):
+        encoding = "utf-32-be"
+    elif content.startswith(b"<\x00\x00\x00"):
+        encoding = "utf-32-le"
+    elif content.startswith(b"\x00<\x00"):
+        encoding = "utf-16-be"
+    elif content.startswith(b"<\x00?\x00"):
+        encoding = "utf-16-le"
+    else:
+        encoding = "utf-8"
+    try:
+        return content.decode(encoding, errors="strict")
+    except (LookupError, UnicodeError):
+        raise _UnreadableWorkbookError() from None
+
+
+def _safe_xml_events(content: bytes):
+    declaration_text = _xml_declaration_text(content).upper()
+    if "<!DOCTYPE" in declaration_text or "<!ENTITY" in declaration_text:
+        raise _UnreadableWorkbookError()
+    declaration_text = ""
     parser = ElementTree.XMLPullParser(events=("start", "end"))
     try:
         for offset in range(0, len(content), _READ_CHUNK_BYTES):
@@ -185,7 +286,7 @@ def _central_directory(archive: zipfile.ZipFile, expected_entries: int):
         members[member_name] = info
     if _CONTENT_TYPES_PART not in members or _WORKBOOK_PART not in members:
         raise _UnreadableWorkbookError()
-    return members
+    return members, declared_total
 
 
 def _read_member(
@@ -221,41 +322,131 @@ def _read_member(
     return content
 
 
-def _content_types_are_workbook(content: bytes) -> bool:
-    found = False
+def _content_type_map(content: bytes):
+    defaults = {}
+    overrides = {}
     root_seen = False
+    entry_count = 0
     for event, element in _safe_xml_events(content):
+        expanded = _expanded_name(element.tag)
         local = _local_name(element.tag)
         if event == "start" and not root_seen:
-            root_seen = local == "Types"
-            if not root_seen:
+            if expanded != (_CONTENT_TYPES_NAMESPACE, "Types"):
                 raise _UnreadableWorkbookError()
-        if event == "start" and local == "Override":
-            if (
-                element.attrib.get("PartName") == "/xl/workbook.xml"
-                and element.attrib.get("ContentType") in _WORKBOOK_CONTENT_TYPES
-            ):
-                found = True
+            root_seen = True
+        elif event == "start" and (
+            expanded is None
+            or expanded[0] != _CONTENT_TYPES_NAMESPACE
+            or local not in {"Default", "Override"}
+        ):
+            raise _UnreadableWorkbookError()
+        if event == "start" and local in {"Default", "Override"}:
+            if expanded != (_CONTENT_TYPES_NAMESPACE, local):
+                raise _UnreadableWorkbookError()
+            entry_count += 1
+            if entry_count > _MAX_ARCHIVE_ENTRIES:
+                raise WorkbookParserBoundaryExceededError()
+            content_type = element.attrib.get("ContentType")
+            if not isinstance(content_type, str) or not 1 <= len(content_type) <= 512:
+                raise _UnreadableWorkbookError()
+            if local == "Default":
+                extension = element.attrib.get("Extension")
+                if (
+                    not isinstance(extension, str)
+                    or not 1 <= len(extension) <= 32
+                    or not extension.isascii()
+                    or not extension.isalnum()
+                ):
+                    raise _UnreadableWorkbookError()
+                extension = extension.lower()
+                if extension in defaults:
+                    raise _UnreadableWorkbookError()
+                defaults[extension] = content_type
+            else:
+                part_name = element.attrib.get("PartName")
+                if (
+                    not isinstance(part_name, str)
+                    or not 2 <= len(part_name) <= 1_024
+                    or not part_name.startswith("/")
+                    or "\\" in part_name
+                    or any(
+                        segment in {"", ".", ".."}
+                        for segment in part_name[1:].split("/")
+                    )
+                    or part_name in overrides
+                ):
+                    raise _UnreadableWorkbookError()
+                overrides[part_name] = content_type
         if event == "end":
             element.clear()
-    return root_seen and found
+    if (
+        not root_seen
+        or overrides.get("/xl/workbook.xml") not in _WORKBOOK_CONTENT_TYPES
+    ):
+        raise _UnreadableWorkbookError()
+    return defaults, overrides
+
+
+def _part_content_type(part_name: str, content_types) -> str | None:
+    defaults, overrides = content_types
+    override = overrides.get(f"/{part_name}")
+    if override is not None:
+        return override
+    _, separator, extension = part_name.rpartition(".")
+    if not separator:
+        return None
+    return defaults.get(extension.lower())
+
+
+def _normalized_strict_xml(content: bytes) -> bytes:
+    return content.replace(
+        _STRICT_SPREADSHEET_NAMESPACE.encode("ascii"),
+        _TRANSITIONAL_SPREADSHEET_NAMESPACE.encode("ascii"),
+    ).replace(
+        _STRICT_OFFICE_RELATIONSHIPS_NAMESPACE.encode("ascii"),
+        _TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE.encode("ascii"),
+    )
+
+
+def _strict_loader_snapshot(parts) -> tuple[bytes, int]:
+    stream = BytesIO()
+    try:
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for part_name, content in parts.items():
+                archive.writestr(part_name, content)
+        return stream.getvalue(), sum(len(content) for content in parts.values())
+    except Exception:
+        raise _UnreadableWorkbookError() from None
 
 
 def _workbook_sheet_relationship_ids(
     content: bytes,
     max_worksheets: int,
-) -> tuple[str, ...]:
+):
     relationship_ids = []
     seen_ids = set()
     root_seen = False
+    spreadsheet_namespace = None
     for event, element in _safe_xml_events(content):
+        expanded = _expanded_name(element.tag)
         local = _local_name(element.tag)
         if event == "start" and not root_seen:
-            root_seen = local == "workbook"
-            if not root_seen:
+            if (
+                expanded is None
+                or expanded[0] not in _SPREADSHEET_NAMESPACES
+                or expanded[1] != "workbook"
+            ):
                 raise _UnreadableWorkbookError()
+            spreadsheet_namespace = expanded[0]
+            root_seen = True
+        elif event == "start" and (
+            expanded is None or expanded[0] != spreadsheet_namespace
+        ):
+            raise _UnreadableWorkbookError()
         if event == "start" and local == "sheet":
-            relationship_id = element.attrib.get(_RELATIONSHIP_ID_ATTRIBUTE)
+            if expanded != (spreadsheet_namespace, "sheet"):
+                raise _UnreadableWorkbookError()
+            relationship_id = _relationship_id(element, spreadsheet_namespace)
             if not relationship_id or relationship_id in seen_ids:
                 raise _UnreadableWorkbookError()
             relationship_ids.append(relationship_id)
@@ -266,7 +457,7 @@ def _workbook_sheet_relationship_ids(
             element.clear()
     if not root_seen:
         raise _UnreadableWorkbookError()
-    return tuple(relationship_ids)
+    return tuple(relationship_ids), spreadsheet_namespace
 
 
 def _relationships(content: bytes, wanted_ids):
@@ -274,12 +465,20 @@ def _relationships(content: bytes, wanted_ids):
     relationships = {}
     root_seen = False
     for event, element in _safe_xml_events(content):
+        expanded = _expanded_name(element.tag)
         local = _local_name(element.tag)
         if event == "start" and not root_seen:
-            root_seen = local == "Relationships"
-            if not root_seen:
+            if expanded != (_PACKAGE_RELATIONSHIPS_NAMESPACE, "Relationships"):
                 raise _UnreadableWorkbookError()
+            root_seen = True
+        elif event == "start" and expanded != (
+            _PACKAGE_RELATIONSHIPS_NAMESPACE,
+            "Relationship",
+        ):
+            raise _UnreadableWorkbookError()
         if event == "start" and local == "Relationship":
+            if expanded != (_PACKAGE_RELATIONSHIPS_NAMESPACE, "Relationship"):
+                raise _UnreadableWorkbookError()
             relationship_id = element.attrib.get("Id")
             if relationship_id not in wanted_ids:
                 continue
@@ -342,21 +541,44 @@ def _dimension_extent(reference: object):
     return last
 
 
-def _worksheet_metadata(content: bytes):
+def _worksheet_metadata(
+    content: bytes,
+    cell_budget: _CellElementBudget | None = None,
+    spreadsheet_namespace: str | None = None,
+):
+    if cell_budget is None:
+        cell_budget = _CellElementBudget(100_000)
     drawing_id = None
     root_seen = False
     dimension_seen = False
     dimension_extent = None
     cells_are_bounded = True
+    seen_cell_positions = set()
     actual_max_row = 0
     actual_max_column = 0
     for event, element in _safe_xml_events(content):
+        expanded = _expanded_name(element.tag)
         local = _local_name(element.tag)
         if event == "start" and not root_seen:
-            root_seen = local == "worksheet"
-            if not root_seen:
+            if (
+                expanded is None
+                or expanded[0] not in _SPREADSHEET_NAMESPACES
+                or expanded[1] != "worksheet"
+                or (
+                    spreadsheet_namespace is not None
+                    and expanded[0] != spreadsheet_namespace
+                )
+            ):
                 raise _UnreadableWorkbookError()
+            spreadsheet_namespace = expanded[0]
+            root_seen = True
+        elif event == "start" and (
+            expanded is None or expanded[0] != spreadsheet_namespace
+        ):
+            raise _UnreadableWorkbookError()
         if event == "start" and local == "dimension":
+            if expanded != (spreadsheet_namespace, "dimension"):
+                raise _UnreadableWorkbookError()
             if dimension_seen:
                 cells_are_bounded = False
             dimension_seen = True
@@ -364,17 +586,26 @@ def _worksheet_metadata(content: bytes):
             if dimension_extent is None:
                 cells_are_bounded = False
         if event == "start" and local == "c":
+            if expanded != (spreadsheet_namespace, "c"):
+                raise _UnreadableWorkbookError()
             position = _cell_position(element.attrib.get("r"))
-            if position is None:
+            within_budget = cell_budget.consume()
+            if (
+                position is None
+                or not within_budget
+                or position in seen_cell_positions
+            ):
                 cells_are_bounded = False
             else:
+                seen_cell_positions.add(position)
                 actual_max_row = max(actual_max_row, position[0])
                 actual_max_column = max(actual_max_column, position[1])
         if event == "start" and local == "drawing":
+            if expanded != (spreadsheet_namespace, "drawing"):
+                raise _UnreadableWorkbookError()
+            relationship_id = _relationship_id(element, spreadsheet_namespace)
             if drawing_id is None:
-                drawing_id = element.attrib.get(_RELATIONSHIP_ID_ATTRIBUTE)
-                if not drawing_id:
-                    raise _UnreadableWorkbookError()
+                drawing_id = relationship_id
         if event == "end":
             element.clear()
     if not root_seen:
@@ -415,22 +646,30 @@ def _worksheet_package_metadata(
     members,
     budget: _ActualByteBudget,
     max_worksheets: int,
+    max_cells: int,
 ) -> tuple[bool, ...]:
     content_types = _read_member(archive, members[_CONTENT_TYPES_PART], budget)
-    if not _content_types_are_workbook(content_types):
-        raise _UnreadableWorkbookError()
-    content_types = b""
+    content_type_map = _content_type_map(content_types)
 
     workbook_xml = _read_member(archive, members[_WORKBOOK_PART], budget)
-    relationship_ids = _workbook_sheet_relationship_ids(
+    relationship_ids, spreadsheet_namespace = _workbook_sheet_relationship_ids(
         workbook_xml,
         max_worksheets,
     )
+    strict_parts = None
+    if spreadsheet_namespace == _STRICT_SPREADSHEET_NAMESPACE:
+        strict_parts = {
+            _CONTENT_TYPES_PART: content_types,
+            _WORKBOOK_PART: _normalized_strict_xml(workbook_xml),
+        }
+    content_types = b""
     workbook_xml = b""
     if _WORKBOOK_RELS_PART not in members:
         raise _UnreadableWorkbookError()
     rels_xml = _read_member(archive, members[_WORKBOOK_RELS_PART], budget)
     workbook_relationships = _relationships(rels_xml, relationship_ids)
+    if strict_parts is not None:
+        strict_parts[_WORKBOOK_RELS_PART] = _normalized_strict_xml(rels_xml)
     rels_xml = b""
 
     worksheet_parts = []
@@ -447,15 +686,24 @@ def _worksheet_package_metadata(
             or not worksheet_part.endswith(".xml")
             or worksheet_part not in members
             or worksheet_part in worksheet_parts
+            or _part_content_type(worksheet_part, content_type_map)
+            != _WORKSHEET_CONTENT_TYPE
         ):
             raise _UnreadableWorkbookError()
         worksheet_parts.append(worksheet_part)
     workbook_relationships.clear()
 
     metadata = []
+    cell_budget = _CellElementBudget(max_cells)
     for worksheet_part in worksheet_parts:
         worksheet_xml = _read_member(archive, members[worksheet_part], budget)
-        drawing_ids, cell_bound = _worksheet_metadata(worksheet_xml)
+        drawing_ids, cell_bound = _worksheet_metadata(
+            worksheet_xml,
+            cell_budget,
+            spreadsheet_namespace,
+        )
+        if strict_parts is not None:
+            strict_parts[worksheet_part] = _normalized_strict_xml(worksheet_xml)
         worksheet_xml = b""
         if not drawing_ids:
             metadata.append((False, cell_bound))
@@ -474,26 +722,103 @@ def _worksheet_package_metadata(
             if external or relationship_type not in _DRAWING_RELATIONSHIP_TYPES:
                 raise _UnreadableWorkbookError()
             drawing_part = _resolve_part(worksheet_part, target, external)
-            if drawing_part not in members:
+            if (
+                drawing_part not in members
+                or _part_content_type(drawing_part, content_type_map)
+                != _DRAWING_CONTENT_TYPE
+            ):
                 raise _UnreadableWorkbookError()
             drawing_part = ""
         sheet_relationships.clear()
         metadata.append((True, cell_bound))
     worksheet_parts.clear()
-    return tuple(metadata)
+
+    strict_snapshot = None
+    strict_declared_total = None
+    if strict_parts is not None:
+        auxiliary_parts = []
+        for part_name in members:
+            content_type = _part_content_type(part_name, content_type_map)
+            if content_type in {_STYLES_CONTENT_TYPE, _SHARED_STRINGS_CONTENT_TYPE}:
+                auxiliary_parts.append(part_name)
+        if len(auxiliary_parts) > 2:
+            raise _UnreadableWorkbookError()
+        seen_auxiliary_types = set()
+        for part_name in auxiliary_parts:
+            content_type = _part_content_type(part_name, content_type_map)
+            if content_type in seen_auxiliary_types:
+                raise _UnreadableWorkbookError()
+            if (
+                content_type == _STYLES_CONTENT_TYPE
+                and part_name != "xl/styles.xml"
+            ):
+                raise _UnreadableWorkbookError()
+            seen_auxiliary_types.add(content_type)
+            auxiliary_xml = _read_member(archive, members[part_name], budget)
+            expected_root = (
+                "styleSheet"
+                if content_type == _STYLES_CONTENT_TYPE
+                else "sst"
+            )
+            root_seen = False
+            for event, element in _safe_xml_events(auxiliary_xml):
+                if event == "start" and not root_seen:
+                    if _expanded_name(element.tag) != (
+                        _STRICT_SPREADSHEET_NAMESPACE,
+                        expected_root,
+                    ):
+                        raise _UnreadableWorkbookError()
+                    root_seen = True
+                elif event == "start" and (
+                    _expanded_name(element.tag) is None
+                    or _expanded_name(element.tag)[0]
+                    != _STRICT_SPREADSHEET_NAMESPACE
+                ):
+                    raise _UnreadableWorkbookError()
+                if event == "end":
+                    element.clear()
+            if not root_seen:
+                raise _UnreadableWorkbookError()
+            strict_parts[part_name] = _normalized_strict_xml(auxiliary_xml)
+            auxiliary_xml = b""
+        auxiliary_parts.clear()
+        strict_snapshot, strict_declared_total = _strict_loader_snapshot(strict_parts)
+        strict_parts.clear()
+    content_type_map[0].clear()
+    content_type_map[1].clear()
+    return (
+        tuple(metadata),
+        spreadsheet_namespace,
+        strict_snapshot,
+        strict_declared_total,
+    )
 
 
 def _preflight(snapshot: bytes, limits: InspectionLimits):
     expected_entries = _validate_eocd(snapshot)
     try:
         with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
-            members = _central_directory(archive, expected_entries)
-            return _worksheet_package_metadata(
+            members, declared_total = _central_directory(archive, expected_entries)
+            budget = _ActualByteBudget()
+            (
+                metadata,
+                spreadsheet_namespace,
+                strict_snapshot,
+                strict_declared_total,
+            ) = _worksheet_package_metadata(
                 archive,
                 members,
-                _ActualByteBudget(),
+                budget,
                 limits.max_worksheets_per_workbook,
+                limits.max_cells_per_workbook,
             )
+            if strict_snapshot is None:
+                budget.reserve(declared_total)
+                loader_snapshot = snapshot
+            else:
+                budget.reserve(strict_declared_total)
+                loader_snapshot = strict_snapshot
+            return metadata, spreadsheet_namespace, loader_snapshot
     except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
         raise
     except (_UnreadableWorkbookError, _EncryptedWorkbookError):
@@ -591,13 +916,25 @@ def _inspect_worksheet(
         else None
     )
     forced_over_limit = cell_bound is None or cell_bound > remaining_cells
-    quota = (
-        remaining_cells
-        if cell_bound is not None and forced_over_limit
-        else cell_bound
-    )
-    if quota is None:
-        quota = 0
+    if forced_over_limit:
+        return (
+            InspectionUnitEvidence(
+                "worksheet",
+                unit_index,
+                "none",
+                _structural_signals(
+                    embedded_media=embedded_media,
+                    worksheet_hidden=worksheet_hidden,
+                ),
+                _unit_issues(
+                    over_limit=True,
+                    embedded_media=embedded_media,
+                    worksheet_hidden=worksheet_hidden,
+                ),
+            ),
+            0,
+        )
+    quota = cell_bound
     consumed = 0
     text_signals = set()
     roster_heading_seen = False
@@ -644,7 +981,7 @@ def _inspect_worksheet(
                 roster_heading_seen = True
             text_signals.update(row_signals)
 
-    over_limit = forced_over_limit or scalar_over_limit
+    over_limit = scalar_over_limit
     if over_limit:
         return (
             InspectionUnitEvidence(
@@ -707,7 +1044,11 @@ def inspect_workbook(
         return _source_problem("encrypted", "document-encrypted")
 
     try:
-        worksheet_metadata = _preflight(snapshot, limits)
+        (
+            worksheet_metadata,
+            spreadsheet_namespace,
+            loader_snapshot,
+        ) = _preflight(snapshot, limits)
     except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
         raise
     except _EncryptedWorkbookError:
@@ -718,7 +1059,7 @@ def inspect_workbook(
     workbook = None
     try:
         workbook = openpyxl.load_workbook(
-            BytesIO(snapshot),
+            BytesIO(loader_snapshot),
             read_only=True,
             data_only=False,
             keep_links=False,
