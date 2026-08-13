@@ -30,7 +30,10 @@ from ctv_inspection import (
     InspectionError,
     inspect_source,
 )
-from ctv_inspection_media import PdfPageCountExceededError
+from ctv_inspection_media import (
+    PdfPageCountExceededError,
+    PdfParserBoundaryExceededError,
+)
 from ctv_inspection_model import (
     InspectionAdapterResult,
     InspectionLimits,
@@ -121,6 +124,14 @@ def _zip_with_pdf_marker() -> bytes:
             "private-member-%PDF-1.7.txt",
             b"private archive payload %PDF-1.7",
         )
+    return output.getvalue()
+
+
+def _ordinary_zip_with_ooxml_marker_names() -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("[Content_Types].xml", b"ordinary archive marker only")
+        archive.writestr("xl/workbook.xml", b"ordinary archive marker only")
     return output.getvalue()
 
 
@@ -428,6 +439,48 @@ def test_leading_archive_signatures_override_broad_pdf_marker_without_dispatch(
     assert result.units == ()
 
 
+def test_ordinary_zip_with_ooxml_marker_names_stays_opaque_before_workbook_parser(
+    tmp_path,
+    monkeypatch,
+):
+    import ctv_inspection as inspection
+    import ctv_inspection_workbook as workbook_adapter
+
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "ordinary.zip").write_bytes(_ordinary_zip_with_ooxml_marker_names())
+
+    def forbidden_adapter(*_args, **_kwargs):
+        raise AssertionError("ordinary ZIP reached workbook inspection")
+
+    def forbidden_parser(*_args, **_kwargs):
+        raise AssertionError("ordinary ZIP reached ZIP/OOXML parsing")
+
+    monkeypatch.setattr(inspection, "inspect_workbook", forbidden_adapter)
+    monkeypatch.setattr(workbook_adapter, "inspect_workbook", forbidden_adapter)
+    monkeypatch.setattr(workbook_adapter, "_preflight", forbidden_parser)
+    monkeypatch.setattr(
+        ctv_inventory.InventoryObservation,
+        "snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ordinary ZIP was snapshotted for parser dispatch")
+        ),
+    )
+
+    result = inspect_source(source)
+
+    assert len(result.sources) == 1
+    assert result.sources[0].detected_type == "zip"
+    assert result.sources[0].inspection_status == "opaque"
+    assert result.sources[0].unit_count == 0
+    assert result.sources[0].issue_codes == (
+        "type-extension-mismatch",
+        "opaque-archive",
+    )
+    assert result.units == ()
+
+
 def test_one_ocr_session_precedes_observation_and_one_budget_is_sequential(
     tmp_path, monkeypatch
 ):
@@ -617,6 +670,43 @@ def test_unit_limit_is_enforced_before_append_even_with_forged_relaxed_limits(
     assert str(raised.value) == "inspection-unit-count-exceeded"
 
 
+def test_orchestrator_passes_remaining_unit_budget_before_second_source_acquisition(
+    tmp_path,
+    monkeypatch,
+):
+    import ctv_inspection as inspection
+    import ctv_inspection_model as inspection_model
+
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a-private.pdf").write_bytes(_pdf("ordinary"))
+    (source / "b-private.xlsx").write_bytes(_workbook())
+    observed_budgets = []
+
+    def one_pdf(*_args, remaining_units=None, **_kwargs):
+        observed_budgets.append(remaining_units)
+        return InspectionAdapterResult(
+            "inspected",
+            1,
+            (),
+            (InspectionUnitEvidence("pdf-page", 1, "none", (), ()),),
+        )
+
+    def reject_workbook(*_args, remaining_units=None, **_kwargs):
+        observed_budgets.append(remaining_units)
+        raise inspection_model.InspectionUnitCountExceededError()
+
+    monkeypatch.setattr(inspection, "inspect_pdf", one_pdf)
+    monkeypatch.setattr(inspection, "inspect_workbook", reject_workbook)
+
+    with pytest.raises(InspectionError) as raised:
+        inspect_source(source, limits=InspectionLimits(max_units=1))
+
+    assert raised.value.code == "inspection-unit-count-exceeded"
+    assert observed_budgets == [1, 0]
+
+
 def test_result_output_limit_fails_closed_without_returning_partial_result(
     tmp_path, monkeypatch
 ):
@@ -677,31 +767,19 @@ def test_hash_read_failure_remains_an_accounted_unreadable_source(
     assert result.units == ()
 
 
-@pytest.mark.parametrize(
-    "inventory_issue",
-    ["type-detection-failed", "changed-during-read"],
-)
-def test_unsafe_inventory_read_states_are_unreadable_without_snapshot_or_units(
+def test_type_detection_failure_is_unreadable_without_snapshot_or_units(
     tmp_path,
     monkeypatch,
-    inventory_issue,
 ):
     _unavailable_ocr(monkeypatch)
     source = tmp_path / "source"
     source.mkdir()
     (source / "private.pdf").write_bytes(b"%PDF-1.7\nprivate bounded content")
 
-    if inventory_issue == "type-detection-failed":
-        def fail_sample(*_args, **_kwargs):
-            raise ctv_inventory._SampleReadFailed()
+    def fail_sample(*_args, **_kwargs):
+        raise ctv_inventory._SampleReadFailed()
 
-        monkeypatch.setattr(ctv_inventory, "_read_sample", fail_sample)
-    else:
-        monkeypatch.setattr(
-            ctv_inventory,
-            "_read_observation_is_stable",
-            lambda *_args, **_kwargs: False,
-        )
+    monkeypatch.setattr(ctv_inventory, "_read_sample", fail_sample)
 
     def forbidden_snapshot(self, evidence_id, *, max_bytes):
         raise AssertionError("unsafe inventory source was snapshotted")
@@ -719,10 +797,61 @@ def test_unsafe_inventory_read_states_are_unreadable_without_snapshot_or_units(
     assert result.sources[0].inspection_status == "unreadable"
     assert result.sources[0].unit_count is None
     assert result.sources[0].issue_codes == (
-        inventory_issue,
+        "type-detection-failed",
         "document-unreadable",
     )
     assert result.units == ()
+
+
+def test_changed_during_inventory_read_invalidates_the_whole_observation(
+    tmp_path,
+    monkeypatch,
+):
+    import ctv_inspection as inspection
+
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a-accounted.pdf").write_bytes(
+        _pdf(
+            "HOP DONG DICH VU BEN A va BEN B NOI DUNG DICH VU CHU KY "
+            "noi dung bo sung du dai de phan loai tai lieu mot cach on dinh."
+        )
+    )
+    (source / "b-changing.pdf").write_bytes(
+        b"%PDF-1.7\nprivate bounded content"
+    )
+    real_stability_check = ctv_inventory._read_observation_is_stable
+
+    def change_only_second(root_descriptor, file_descriptor, fact, directory_facts):
+        if fact.components[-1] == "b-changing.pdf":
+            return False
+        return real_stability_check(
+            root_descriptor,
+            file_descriptor,
+            fact,
+            directory_facts,
+        )
+
+    monkeypatch.setattr(
+        ctv_inventory,
+        "_read_observation_is_stable",
+        change_only_second,
+    )
+    monkeypatch.setattr(
+        inspection,
+        "inspect_pdf",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("adapter acquired units from an invalid observation")
+        ),
+    )
+
+    with pytest.raises(InspectionError) as raised:
+        inspect_source(source)
+
+    assert raised.value.code == "inspection-tree-changed"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 def test_mutation_during_adapter_work_invalidates_the_whole_result(
@@ -1021,6 +1150,102 @@ def test_unknown_inventory_error_becomes_fixed_internal_runtime_failure_without_
                 for value in frame.f_locals.values()
             )
             assert hostile_code not in repr(frame.f_locals)
+        current_traceback = current_traceback.tb_next
+
+    gc.collect()
+    assert marker_box == []
+    assert marker_reference() is None
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected_code"),
+    [
+        ("inventory-retained", "inventory-depth-exceeded"),
+        ("inventory-tree", "inspection-tree-changed"),
+        ("pdf-pages", "inspection-pdf-page-count-exceeded"),
+        ("pdf-parser", "inspection-parser-boundary-exceeded"),
+        ("workbook-parser", "inspection-parser-boundary-exceeded"),
+        ("workbook-sheets", "inspection-worksheet-count-exceeded"),
+    ],
+)
+def test_every_controlled_boundary_translation_severs_private_exception_state(
+    tmp_path,
+    monkeypatch,
+    boundary,
+    expected_code,
+):
+    import ctv_inspection as inspection
+
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "private-source"
+    source.mkdir()
+    if boundary.startswith("pdf"):
+        (source / "private.pdf").write_bytes(_pdf("ordinary"))
+    elif boundary.startswith("workbook"):
+        (source / "private.xlsx").write_bytes(_workbook())
+
+    private_fragment = f"private-marker-{boundary}-079123456789"
+
+    class PrivateMarker:
+        def __repr__(self):
+            return private_fragment
+
+    marker_box = [PrivateMarker()]
+    marker_reference = weakref.ref(marker_box[0])
+
+    def boundary_error():
+        if boundary == "inventory-retained":
+            error = InventoryError("inventory-depth-exceeded")
+        elif boundary == "inventory-tree":
+            error = InventoryError("inventory-tree-changed")
+        elif boundary == "pdf-pages":
+            error = PdfPageCountExceededError()
+        elif boundary == "pdf-parser":
+            error = PdfParserBoundaryExceededError()
+        elif boundary == "workbook-parser":
+            error = WorkbookParserBoundaryExceededError()
+        else:
+            error = WorkbookWorksheetCountExceededError()
+        error.private_marker = marker_box.pop()
+        error.private_detail = private_fragment
+        return error
+
+    if boundary.startswith("inventory"):
+        @contextmanager
+        def fail_observation(*_args, **_kwargs):
+            raise boundary_error()
+            yield
+
+        monkeypatch.setattr(
+            inspection,
+            "open_inventory_observation",
+            fail_observation,
+        )
+    else:
+        adapter_name = "inspect_pdf" if boundary.startswith("pdf") else "inspect_workbook"
+
+        def fail_adapter(*_args, **_kwargs):
+            raise boundary_error()
+
+        monkeypatch.setattr(inspection, adapter_name, fail_adapter)
+
+    with pytest.raises(InspectionError) as raised:
+        inspect_source(source)
+
+    error = raised.value
+    assert error.code == expected_code
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert error.__suppress_context__ is False
+    current_traceback = error.__traceback__
+    while current_traceback is not None:
+        frame = current_traceback.tb_frame
+        if frame.f_globals.get("__name__") == "ctv_inspection":
+            assert private_fragment not in repr(frame.f_locals)
+            assert not any(
+                hasattr(value, "private_marker")
+                for value in frame.f_locals.values()
+            )
         current_traceback = current_traceback.tb_next
 
     gc.collect()

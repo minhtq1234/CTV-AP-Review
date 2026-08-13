@@ -14,6 +14,7 @@ DEPENDENCY_PROBES = (
     ("fitz", "fitz", ("open",)),
     ("openpyxl", "openpyxl", ("load_workbook",)),
     ("pydantic", "pydantic", ("BaseModel.model_validate",)),
+    ("Pillow", "PIL.Image", ("open",)),
     ("intake-package-validator", "intake_package_validator", ("VALIDATOR_VERSION",)),
 )
 

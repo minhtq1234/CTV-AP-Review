@@ -8,10 +8,15 @@ from xml.etree import ElementTree
 
 import openpyxl
 
-from ctv_inspection_classifier import TextSignalContext, signals_from_private_text
+from ctv_inspection_classifier import (
+    TextSignalContext,
+    roster_header_categories_from_private_text,
+    signals_from_private_text,
+)
 from ctv_inspection_model import (
     InspectionAdapterResult,
     InspectionLimits,
+    InspectionUnitCountExceededError,
     InspectionUnitEvidence,
     SIGNAL_ORDER,
 )
@@ -1246,7 +1251,10 @@ def _inspect_worksheet(
     quota = cell_bound
     consumed = 0
     text_signals = set()
-    roster_heading_seen = False
+    roster_column_pattern = False
+    roster_identity_or_name_columns: set[int] = set()
+    roster_payment_columns: set[int] = set()
+    qualifying_data_rows = 0
     row_pattern = False
     scalar_over_limit = False
 
@@ -1254,9 +1262,10 @@ def _inspect_worksheet(
         for row in worksheet.iter_rows():
             if consumed >= quota:
                 break
-            populated_cells = 0
+            populated_columns = set()
             row_signals = set()
-            for cell in row:
+            row_header_categories: dict[int, tuple[str, ...]] = {}
+            for column_index, cell in enumerate(row, start=1):
                 if consumed >= quota:
                     break
                 consumed += 1
@@ -1269,7 +1278,12 @@ def _inspect_worksheet(
                     private_text = ""
                     break
                 if private_text:
-                    populated_cells += 1
+                    populated_columns.add(column_index)
+                    header_categories = roster_header_categories_from_private_text(
+                        private_text
+                    )
+                    if header_categories:
+                        row_header_categories[column_index] = header_categories
                     cell_signals = signals_from_private_text(
                         private_text,
                         TextSignalContext(
@@ -1284,10 +1298,27 @@ def _inspect_worksheet(
                     row_signals.update(cell_signals)
             if scalar_over_limit:
                 break
-            if roster_heading_seen and populated_cells >= 2:
-                row_pattern = True
-            if "roster-column-pattern" in row_signals:
-                roster_heading_seen = True
+            payment_columns = {
+                column_index
+                for column_index, categories in row_header_categories.items()
+                if "payment" in categories
+            }
+            identity_or_name_columns = {
+                column_index
+                for column_index, categories in row_header_categories.items()
+                if "identity" in categories or "name" in categories
+            }
+            if payment_columns and identity_or_name_columns:
+                roster_column_pattern = True
+                roster_payment_columns = payment_columns
+                roster_identity_or_name_columns = identity_or_name_columns
+                qualifying_data_rows = 0
+            elif roster_column_pattern and (
+                populated_columns & roster_payment_columns
+                and populated_columns & roster_identity_or_name_columns
+            ):
+                qualifying_data_rows += 1
+                row_pattern = qualifying_data_rows >= 2
             text_signals.update(row_signals)
 
     over_limit = scalar_over_limit
@@ -1318,6 +1349,7 @@ def _inspect_worksheet(
             embedded_media=embedded_media,
             worksheet_hidden=worksheet_hidden,
             row_pattern=row_pattern,
+            roster_column_pattern=roster_column_pattern,
         ),
     )
     text_signals.update(structural_signals)
@@ -1341,12 +1373,21 @@ def inspect_workbook(
     snapshot: bytes,
     *,
     limits: InspectionLimits,
+    remaining_units: int | None = None,
 ) -> InspectionAdapterResult:
     """Inspect each actual worksheet from one immutable in-memory snapshot."""
     if type(snapshot) is not bytes:
         raise TypeError("inspection snapshot must be bytes")
     if type(limits) is not InspectionLimits:
         raise TypeError("inspection limits must be valid")
+    if remaining_units is None:
+        remaining_units = limits.max_units
+    if (
+        type(remaining_units) is not int
+        or remaining_units < 0
+        or remaining_units > limits.max_units
+    ):
+        raise ValueError("remaining_units must be within the inspection unit budget")
     if len(snapshot) > limits.max_workbook_source_bytes:
         return _source_problem("over-limit", "document-over-limit")
     if snapshot.startswith(_OLE_COMPOUND_HEADER):
@@ -1364,6 +1405,9 @@ def inspect_workbook(
         return _source_problem("encrypted", "document-encrypted")
     except Exception:
         return _source_problem("unreadable", "document-unreadable")
+
+    if len(worksheet_metadata) > remaining_units:
+        raise InspectionUnitCountExceededError()
 
     workbook = None
     try:
@@ -1424,7 +1468,11 @@ def inspect_workbook(
             (),
             tuple(units),
         )
-    except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
+    except (
+        InspectionUnitCountExceededError,
+        WorkbookParserBoundaryExceededError,
+        WorkbookWorksheetCountExceededError,
+    ):
         raise
     except Exception:
         return _source_problem("unreadable", "document-unreadable")

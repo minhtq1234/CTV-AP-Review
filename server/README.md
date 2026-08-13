@@ -154,13 +154,27 @@ or standalone image. A unit can suggest only `payment-roster`,
 fixed structural suggestions, not findings: conflicting, ambiguous, low/medium,
 or issue-bearing units set `needsUserReview` and require a person to decide.
 
-`doctor` reports the optional local OCR capability as
+`doctor` requires callable PyMuPDF, OpenPyXL, Pydantic, Pillow image decoding,
+and the intake validator. It reports the optional local OCR capability as
 `localOcr: {available, language}`. When available, its only reported language is
 `vie`; when unavailable, inspection still runs but image-based units may remain
 uncertain with fixed issue codes. No executable path, runtime version, installed
 language list, parser diagnostic, raw document/OCR/cell text, source path,
-filename, or worksheet name is returned. ZIP and RAR sources stay opaque: the
-toolkit does not list, parse, decompress, or extract archive members.
+filename, or worksheet name is returned. A leading ZIP can enter OOXML preflight
+only when bounded detection identifies an OOXML workbook and the name ends in
+`.xlsx`, `.xlsm`, `.xltx`, or `.xltm`. Every other leading ZIP or RAR stays
+opaque, including an ordinary `.zip` whose members happen to use OOXML marker
+names; the toolkit does not list or extract its archive members.
+
+PDF embedded text is requested only after a conservative page-content and
+resource proof bounds parser expansion. Pages whose content streams, fonts,
+images, color profiles, or other resources cannot be proved within those limits
+fail closed with `inspection-parser-boundary-exceeded`; a byte cap is never
+claimed after unbounded extraction. Bounded pages without sufficient embedded
+text use the 150-DPI render/OCR path. Workbook roster signals are row-level:
+`roster-column-pattern` requires payment/amount plus identity/name headers on one
+row, and `roster-row-pattern` requires at least two following rows populated in
+both categories. A lone employee-code-like cell is not a roster pattern.
 
 Inspection uses these fixed ceilings:
 
@@ -180,11 +194,14 @@ Inspection uses these fixed ceilings:
 - complete canonical CLI JSON envelope: 16 MiB.
 
 `inspectionStatus: complete` means the bounded observation produced no fixed
-inspection issues. `complete-with-issues` means it completed but has uncertainty
-or source/unit issues; both are successful CLI results with exit code `0`.
-Controlled operation failures return one fixed, nonretryable failed envelope and
-exit code `2`, with no partial result. Invalid invocation and unexpected internal
-failure use exit code `1`; invalid invocation leaves stdout empty.
+inspection issue code. `complete-with-issues` means at least one fixed source or
+unit `issueCode` was emitted; both are successful CLI results with exit code `0`.
+`needsUserReview` is a separate confidence/categorical-review signal: it can be
+nonzero while `inspectionStatus` is `complete`, for example for a low-confidence
+or `unknown` suggestion without an issue code. Controlled operation failures
+return one fixed, nonretryable failed envelope and exit code `2`, with no partial
+result. Invalid invocation and unexpected internal failure use exit code `1`;
+invalid invocation leaves stdout empty.
 
 Inspection is read-only and stateless. It creates no application files, temporary
 files, cache files, output folders, or source changes and makes no network
@@ -200,6 +217,17 @@ requests. Before any preparation handoff, WP must ask a reviewer:
 Inspection does not establish authenticity, ownership, completeness, package
 readiness, or payment approval. A preparation proposal and any output-root write
 boundary are separate, user-approved work and are not performed by this command.
+
+The standalone CLI threat model excludes hostile code already executing in the
+same Python interpreter and recursively inspecting private closures. Even if
+such reflection recovers the private OCR registry invocation, that innermost
+boundary still rechecks exact PNG bytes and enforces the 25-MiB input, 30-second
+timeout, and 4-MiB output ceilings before or around the local runner.
+
+The 2026-08-13 acceptance snapshot used Python 3.14.3, PyMuPDF 1.27.2.3,
+OpenPyXL 3.1.5, Pillow 12.1.1, and Pydantic 2.13.4. These are privacy-safe test
+environment identifiers, not minimum-version promises. Dependency versions are
+not added to the public v1 doctor JSON because that would widen its fixed schema.
 
 ## Validating a prepared intake package
 

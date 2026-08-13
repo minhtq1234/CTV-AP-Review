@@ -49,7 +49,15 @@ _ACCEPTANCE = re.compile(r"\bbien\s+ban\s+nghiem\s+thu\b")
 _ACCEPTANCE_PERIOD = re.compile(r"\b(?:thoi\s+gian|ky)\s+nghiem\s+thu\b")
 _PAYMENT_REQUEST = re.compile(r"\bde\s+nghi\s+thanh\s+toan\b")
 _TAX_FORM = re.compile(r"\b(?:chung\s+tu|to\s+khai)\s+thue\b")
-_ROSTER_COLUMNS = re.compile(r"\b(?:danh\s+sach\s+chi\s+tra|ma\s+so\s+nhan\s+vien|ho\s+ten\s+so\s+tien)\b")
+_ROSTER_HEADER_NAME = re.compile(
+    r"^(?:ho\s+ten|ten\s+(?:ctv|nhan\s+vien|nguoi\s+nhan))$"
+)
+_ROSTER_HEADER_IDENTITY = re.compile(
+    r"^(?:cccd|cmnd|so\s+(?:cccd|cmnd)|ma\s+(?:so\s+)?(?:ctv|nhan\s+vien))$"
+)
+_ROSTER_HEADER_PAYMENT = re.compile(
+    r"^(?:so\s+tien|thanh\s+tien|tien\s+(?:chi\s+tra|thanh\s+toan)|gross|net)$"
+)
 _IDENTITY_FRONT_HEADING = re.compile(r"\b(?:can\s+cuoc\s+cong\s+dan|chung\s+minh\s+nhan\s+dan)\b")
 _IDENTITY_FRONT_LAYOUT = re.compile(r"\bmat\s+truoc\b")
 _IDENTITY_BACK_LAYOUT = re.compile(r"\bmat\s+sau\b")
@@ -67,12 +75,17 @@ class TextSignalContext:
     embedded_media: bool
     worksheet_hidden: bool
     row_pattern: bool
+    roster_column_pattern: bool = False
 
     def __post_init__(self) -> None:
-        if self.unit_kind not in _UNIT_KINDS:
+        if type(self.unit_kind) is not str or self.unit_kind not in _UNIT_KINDS:
             raise ValueError("unit_kind must be supported")
-        if not all(isinstance(value, bool) for value in (
-            self.mostly_image, self.embedded_media, self.worksheet_hidden, self.row_pattern,
+        if not all(type(value) is bool for value in (
+            self.mostly_image,
+            self.embedded_media,
+            self.worksheet_hidden,
+            self.row_pattern,
+            self.roster_column_pattern,
         )):
             raise ValueError("text signal context flags must be Boolean")
 
@@ -86,21 +99,38 @@ class Classification:
     signal_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.suggested_role not in _ALLOWED_ROLES["pdf-page"] | {"unknown"}:
+        if (
+            type(self.suggested_role) is not str
+            or self.suggested_role not in _ALLOWED_ROLES["pdf-page"] | {"unknown"}
+        ):
             raise ValueError("suggested_role must be supported")
-        if self.confidence_band not in {"high", "medium", "low", "none"}:
+        if (
+            type(self.confidence_band) is not str
+            or self.confidence_band not in {"high", "medium", "low", "none"}
+        ):
             raise ValueError("confidence_band must be supported")
         if (
             (self.suggested_role == "unknown") != (self.confidence_band == "none")
-            or not isinstance(self.needs_user_review, bool)
+            or type(self.needs_user_review) is not bool
         ):
             raise ValueError("classification fields must agree")
-        object.__setattr__(self, "issue_codes", _canonical_codes(
+        issue_codes = _canonical_codes(
             self.issue_codes, _ISSUES, _ISSUE_POSITIONS, "issue_codes"
-        ))
-        object.__setattr__(self, "signal_codes", _canonical_codes(
+        )
+        signal_codes = _canonical_codes(
             self.signal_codes, _SIGNALS, _SIGNAL_POSITIONS, "signal_codes"
-        ))
+        )
+        expected_review = (
+            self.confidence_band != "high"
+            or self.suggested_role == "unknown"
+            or bool(issue_codes)
+            or "multiple-role-signals" in signal_codes
+            or "worksheet-hidden" in signal_codes
+        )
+        if self.needs_user_review != expected_review:
+            raise ValueError("needs_user_review must agree with the review contract")
+        object.__setattr__(self, "issue_codes", issue_codes)
+        object.__setattr__(self, "signal_codes", signal_codes)
 
 
 def _canonical_codes(values, allowed, positions, field_name):
@@ -110,13 +140,13 @@ def _canonical_codes(values, allowed, positions, field_name):
         copied = tuple(values)
     except Exception:
         raise ValueError(f"{field_name} must use approved codes") from None
-    if any(not isinstance(value, str) or value not in allowed for value in copied):
+    if any(type(value) is not str or value not in allowed for value in copied):
         raise ValueError(f"{field_name} must use approved codes")
     return tuple(sorted(set(copied), key=positions.__getitem__))
 
 
 def _normalized_private_text(text):
-    if not isinstance(text, str):
+    if type(text) is not str:
         raise ValueError("private text must be a string")
     normalized = unicodedata.normalize("NFD", text.casefold())
     normalized = normalized.replace("đ", "d")
@@ -124,9 +154,24 @@ def _normalized_private_text(text):
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def roster_header_categories_from_private_text(text: str) -> tuple[str, ...]:
+    """Reduce one bounded cell to fixed header categories, never a roster signal."""
+    normalized = _normalized_private_text(text)
+    categories = []
+    for category, pattern in (
+        ("name", _ROSTER_HEADER_NAME),
+        ("identity", _ROSTER_HEADER_IDENTITY),
+        ("payment", _ROSTER_HEADER_PAYMENT),
+    ):
+        if pattern.fullmatch(normalized):
+            categories.append(category)
+    normalized = ""
+    return tuple(categories)
+
+
 def signals_from_private_text(text: str, context: TextSignalContext) -> tuple[str, ...]:
     """Reduce bounded private text immediately to ordered fixed signal codes."""
-    if not isinstance(context, TextSignalContext):
+    if type(context) is not TextSignalContext:
         raise ValueError("text signal context must be valid")
     normalized = _normalized_private_text(text)
     signals = set()
@@ -139,7 +184,6 @@ def signals_from_private_text(text: str, context: TextSignalContext) -> tuple[st
         ("acceptance-period-present", _ACCEPTANCE_PERIOD),
         ("payment-request-heading", _PAYMENT_REQUEST),
         ("tax-form-heading", _TAX_FORM),
-        ("roster-column-pattern", _ROSTER_COLUMNS),
         ("identity-front-heading", _IDENTITY_FRONT_HEADING),
         ("identity-front-layout", _IDENTITY_FRONT_LAYOUT),
         ("identity-back-layout", _IDENTITY_BACK_LAYOUT),
@@ -152,6 +196,8 @@ def signals_from_private_text(text: str, context: TextSignalContext) -> tuple[st
     for code, pattern in patterns:
         if pattern.search(normalized):
             signals.add(code)
+    if context.roster_column_pattern:
+        signals.add("roster-column-pattern")
     if context.row_pattern:
         signals.add("roster-row-pattern")
     if context.embedded_media:

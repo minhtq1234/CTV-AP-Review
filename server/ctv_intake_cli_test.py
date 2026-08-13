@@ -429,6 +429,35 @@ def test_doctor_missing_dependency_is_safe_retryable_failure(
     }
 
 
+def test_doctor_missing_pillow_uses_existing_dependency_failure_semantics(
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    result = SimpleNamespace(
+        ready=False,
+        python_version="3.14.3",
+        validator_version="1.0.0",
+        checked=("fitz", "openpyxl", "pydantic", "Pillow"),
+        issues=(
+            SimpleNamespace(code="dependency-missing", dependency="Pillow"),
+        ),
+        local_ocr=SimpleNamespace(available=False, language=None),
+    )
+    monkeypatch.setattr(cli, "run_doctor", lambda: result)
+
+    exit_code = cli.main(["doctor", "--json"])
+
+    payload = _captured_envelope(capsysbinary, "doctor", "failed")
+    assert exit_code == 2
+    assert payload["retryable"] is True
+    assert payload["result"]["ready"] is False
+    assert payload["result"]["checked"][-1] == "Pillow"
+    assert [error["code"] for error in payload["errors"]] == [
+        "dependency-missing"
+    ]
+
+
 def test_contract_mismatch_is_safe_non_retryable_failure(monkeypatch, capsysbinary):
     cli = _module()
     verification = SimpleNamespace(
@@ -1845,9 +1874,10 @@ def test_inspection_cli_error_allowlist_matches_literal_engine_declaration():
     mapped_function = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_mapped_inventory_error"
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_mapped_inventory_error_code"
     )
-    guarded_dynamic_calls = set()
+    guarded_dynamic_returns = 0
     for node in ast.walk(mapped_function):
         if not (
             isinstance(node, ast.If)
@@ -1864,19 +1894,48 @@ def test_inspection_cli_error_allowlist_matches_literal_engine_declaration():
             continue
         guarded = node.body[0].value
         if (
-            isinstance(guarded, ast.Call)
-            and isinstance(guarded.func, ast.Name)
-            and guarded.func.id == "InspectionError"
-            and not guarded.keywords
-            and len(guarded.args) == 1
-            and isinstance(guarded.args[0], ast.Name)
-            and guarded.args[0].id == "code"
+            isinstance(guarded, ast.Name)
+            and guarded.id == "code"
         ):
-            guarded_dynamic_calls.add(id(guarded))
+            guarded_dynamic_returns += 1
 
+    assert guarded_dynamic_returns == 1
+
+    raise_function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_raise_controlled_failure"
+    )
+    guarded_dynamic_calls = {
+        id(node)
+        for node in ast.walk(raise_function)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "InspectionError"
+            and not node.keywords
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "code"
+        )
+    }
     assert len(guarded_dynamic_calls) == 1
 
     emitted_codes = set(retained_codes)
+    emitted_codes.update(
+        node.value.value
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "failure_code"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+            and type(node.value.value) is str
+        )
+    )
     unsupported_calls = []
     for node in ast.walk(tree):
         if not (

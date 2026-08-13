@@ -371,6 +371,44 @@ def test_module_registry_and_lookup_cannot_return_authority_for_custom_caps():
     assert len(runner.calls) == calls_before
 
 
+def test_recursively_recovered_registry_invocation_still_enforces_hard_caps():
+    session, runner = _open_available_session()
+    dispatch = next(
+        cell.cell_contents
+        for name, cell in zip(
+            run_local_ocr.__code__.co_freevars,
+            run_local_ocr.__closure__ or (),
+        )
+        if name == "dispatch_private_request"
+    )
+    registry = next(
+        cell.cell_contents
+        for name, cell in zip(
+            dispatch.__code__.co_freevars,
+            dispatch.__closure__ or (),
+        )
+        if name == "registry"
+    )
+    state = registry[id(session)]
+    calls_before = len(runner.calls)
+
+    rejected = state.invoke(
+        b"\x89PNG\r\n\x1a\n" + b"x" * (MAX_IMAGE_BYTES - 7),
+        9999,
+        MAX_TSV_BYTES * 2,
+    )
+    accepted = state.invoke(SYNTHETIC_PNG, 9999, MAX_TSV_BYTES * 2)
+
+    assert rejected.status == "over-limit"
+    assert rejected._stdout == b""
+    assert len(runner.calls) == calls_before + 1
+    assert runner.calls[-1][1:] == (
+        SYNTHETIC_PNG,
+        30.0,
+        MAX_TSV_BYTES,
+    )
+
+
 def test_module_exports_no_registry_state_or_authority_container():
     session, _ = _open_available_session()
     forbidden_names = {

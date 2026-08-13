@@ -160,6 +160,13 @@ class InspectionLimits:
 DEFAULT_INSPECTION_LIMITS = InspectionLimits()
 
 
+class InspectionUnitCountExceededError(RuntimeError):
+    """Internal safe boundary raised before prohibited unit acquisition."""
+
+    def __init__(self) -> None:
+        super().__init__("inspection-unit-count-exceeded")
+
+
 def _immutable_codes(
     values: Sequence[str], *, positions: dict[str, int], field_name: str
 ) -> tuple[str, ...]:
@@ -442,12 +449,9 @@ class InspectionResult:
             raise ValueError("sources must have unique evidence_id values")
         if any(unit.evidence_id not in source_ids for unit in units):
             raise ValueError("units must reference a source evidence_id")
-        units_by_source = {
-            source.evidence_id: sum(
-                unit.evidence_id == source.evidence_id for unit in units
-            )
-            for source in sources
-        }
+        units_by_source = {source.evidence_id: 0 for source in sources}
+        for unit in units:
+            units_by_source[unit.evidence_id] += 1
         for source in sources:
             if source.inspection_status != "inspected" and units_by_source[source.evidence_id]:
                 raise ValueError("source-only inspection_status cannot own units")

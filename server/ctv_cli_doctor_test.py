@@ -19,18 +19,20 @@ def _healthy_modules():
     pdf_open = _CallableDependency()
     load_workbook = _CallableDependency()
     model_validate = _CallableDependency()
+    image_open = _CallableDependency()
     validate_package = _CallableDependency()
     base_model = type("BaseModel", (), {"model_validate": classmethod(model_validate)})
     return {
         "fitz": SimpleNamespace(open=pdf_open),
         "openpyxl": SimpleNamespace(load_workbook=load_workbook),
         "pydantic": SimpleNamespace(BaseModel=base_model),
+        "PIL.Image": SimpleNamespace(open=image_open),
         "intake_package_validator": SimpleNamespace(
             VALIDATOR_VERSION="1.0.0",
             _SUPPORTS_SECURE_RELATIVE_OPEN=True,
             validate_package=validate_package,
         ),
-    }, (pdf_open, load_workbook, model_validate, validate_package)
+    }, (pdf_open, load_workbook, model_validate, image_open, validate_package)
 
 
 def _importer(modules):
@@ -62,11 +64,12 @@ def test_doctor_reports_ready_only_when_every_probe_passes_without_calling_parse
         "fitz",
         "openpyxl",
         "pydantic",
+        "Pillow",
         "intake-package-validator",
         "local-ocr",
     )
     assert result.local_ocr == OcrCapability(available=True, language="vie")
-    assert [callable_.calls for callable_ in callables] == [0, 0, 0, 0]
+    assert [callable_.calls for callable_ in callables] == [0, 0, 0, 0, 0]
 
 
 def test_missing_dependency_is_bounded_and_retryable_by_the_cli():
@@ -87,6 +90,7 @@ def test_missing_dependency_is_bounded_and_retryable_by_the_cli():
         ("fitz", "open"),
         ("openpyxl", "load_workbook"),
         ("pydantic", "BaseModel"),
+        ("PIL.Image", "open"),
         ("intake_package_validator", "VALIDATOR_VERSION"),
     ],
 )
@@ -100,6 +104,7 @@ def test_missing_required_capability_is_incompatible(module_name, attribute):
         "fitz": "fitz",
         "openpyxl": "openpyxl",
         "pydantic": "pydantic",
+        "PIL.Image": "Pillow",
         "intake_package_validator": "intake-package-validator",
     }[module_name]
     assert [(issue.code, issue.dependency) for issue in result.issues] == [
@@ -115,6 +120,18 @@ def test_missing_pydantic_model_validation_is_incompatible():
 
     assert [(issue.code, issue.dependency) for issue in result.issues] == [
         ("dependency-incompatible", "pydantic")
+    ]
+
+
+def test_missing_pillow_is_a_required_dependency_failure():
+    modules, _ = _healthy_modules()
+    del modules["PIL.Image"]
+
+    result = _run_doctor(modules)
+
+    assert result.ready is False
+    assert [(issue.code, issue.dependency) for issue in result.issues] == [
+        ("dependency-missing", "Pillow")
     ]
 
 

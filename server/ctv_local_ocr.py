@@ -481,6 +481,25 @@ def _build_local_ocr_operations():
         capability = _capability_for_executable(executable, bounded_runner)
 
         def invoke(input_bytes, timeout_seconds, output_limit):
+            if type(input_bytes) is not bytes or not input_bytes.startswith(
+                _PNG_SIGNATURE
+            ):
+                return _BoundedProcessResult("failed", None, b"")
+            if len(input_bytes) > MAX_IMAGE_BYTES:
+                return _BoundedProcessResult("over-limit", None, b"")
+            if (
+                type(timeout_seconds) not in {int, float}
+                or not math.isfinite(float(timeout_seconds))
+                or timeout_seconds <= 0
+                or type(output_limit) is not int
+                or output_limit <= 0
+            ):
+                return _BoundedProcessResult("failed", None, b"")
+            bounded_timeout = min(
+                float(timeout_seconds),
+                float(DEFAULT_OCR_TIMEOUT_SECONDS),
+            )
+            bounded_output_limit = min(output_limit, MAX_TSV_BYTES)
             return bounded_runner(
                 [
                     executable,
@@ -493,8 +512,8 @@ def _build_local_ocr_operations():
                     "tsv",
                 ],
                 input_bytes,
-                timeout_seconds,
-                output_limit,
+                bounded_timeout,
+                bounded_output_limit,
             )
 
         return register_session(capability, invoke)

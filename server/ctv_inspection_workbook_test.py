@@ -14,6 +14,7 @@ from openpyxl.drawing.image import Image as WorkbookImage
 from PIL import Image
 import pytest
 
+from ctv_inspection_classifier import classify
 from ctv_inspection_model import InspectionLimits
 
 
@@ -284,7 +285,6 @@ def test_workbook_emits_one_ordered_unit_for_every_sheet_with_fixed_signals_only
     )
     assert result.units[0].issue_codes == ()
     assert result.units[1].signal_codes == (
-        "roster-column-pattern",
         "worksheet-hidden",
         "mostly-text-page",
     )
@@ -300,6 +300,80 @@ def test_workbook_emits_one_ordered_unit_for_every_sheet_with_fixed_signals_only
         "worksheet-hidden",
     )
     _assert_private_values_absent(result)
+
+
+def test_roster_signals_require_row_level_payment_and_identity_or_name_headers():
+    workbook = _workbook_with_sheets(
+        (
+            (
+                "ordinary-roster",
+                "visible",
+                (
+                    ("HO TEN", "CCCD", "SO TIEN"),
+                    ("SYNTHETIC ONE", "000000000001", 1000),
+                    ("SYNTHETIC TWO", "000000000002", 2000),
+                ),
+            ),
+            (
+                "employee-code-decoy",
+                "visible",
+                (
+                    ("MA SO NHAN VIEN", "ARBITRARY", "CELLS"),
+                    ("VALUE ONE", "VALUE TWO", "VALUE THREE"),
+                    ("VALUE FOUR", "VALUE FIVE", "VALUE SIX"),
+                ),
+            ),
+            (
+                "one-row-only",
+                "visible",
+                (
+                    ("HO TEN", "CCCD", "SO TIEN"),
+                    ("SYNTHETIC ONLY", "000000000003", 3000),
+                ),
+            ),
+        )
+    )
+
+    result = _inspect(_save(workbook))
+    ordinary, decoy, insufficient = result.units
+
+    assert "roster-column-pattern" in ordinary.signal_codes
+    assert "roster-row-pattern" in ordinary.signal_codes
+    assert "roster-column-pattern" not in decoy.signal_codes
+    assert "roster-row-pattern" not in decoy.signal_codes
+    assert "roster-column-pattern" in insufficient.signal_codes
+    assert "roster-row-pattern" not in insufficient.signal_codes
+
+    ordinary_role = classify(
+        "worksheet",
+        ordinary.inspection_method,
+        ordinary.signal_codes,
+        ordinary.issue_codes,
+    )
+    decoy_role = classify(
+        "worksheet",
+        decoy.inspection_method,
+        decoy.signal_codes,
+        decoy.issue_codes,
+    )
+    insufficient_role = classify(
+        "worksheet",
+        insufficient.inspection_method,
+        insufficient.signal_codes,
+        insufficient.issue_codes,
+    )
+    assert (ordinary_role.suggested_role, ordinary_role.confidence_band) == (
+        "payment-roster",
+        "high",
+    )
+    assert (decoy_role.suggested_role, decoy_role.confidence_band) == (
+        "unknown",
+        "none",
+    )
+    assert (insufficient_role.suggested_role, insufficient_role.confidence_band) == (
+        "payment-roster",
+        "medium",
+    )
 
 
 def test_workbook_passes_only_bytesio_and_exact_safe_openpyxl_options(monkeypatch):
@@ -335,6 +409,38 @@ def test_workbook_passes_only_bytesio_and_exact_safe_openpyxl_options(monkeypatc
         "data_only": False,
         "keep_links": False,
     }
+
+
+def test_workbook_remaining_public_unit_budget_fails_before_openpyxl_acquisition(
+    monkeypatch,
+):
+    import ctv_inspection_model as inspection_model
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _save(
+        _workbook_with_sheets(
+            (
+                ("one", "visible", (("TAI LIEU KEM THEO",),)),
+                ("two", "visible", (("TAI LIEU KEM THEO",),)),
+            )
+        )
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append((args, kwargs))
+        raise AssertionError("unit budget must precede OpenPyXL acquisition")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    with pytest.raises(inspection_model.InspectionUnitCountExceededError):
+        workbook_adapter.inspect_workbook(
+            snapshot,
+            limits=InspectionLimits(),
+            remaining_units=1,
+        )
+
+    assert loader_calls == []
 
 
 @pytest.mark.parametrize("sheet_count", [100, 101])
@@ -383,7 +489,7 @@ def test_global_100000_cell_budget_keeps_later_sheets_as_known_unknown_units():
 
 @pytest.mark.parametrize("character_count", [256, 257])
 def test_per_cell_text_boundary_is_exact_and_never_returns_a_prefix(character_count):
-    marker = "DANH SACH CHI TRA"
+    marker = "TAI LIEU KEM THEO"
     private_value = marker + " " + "Z" * (character_count - len(marker) - 1)
     workbook = Workbook()
     workbook.active["A1"] = private_value
@@ -394,7 +500,7 @@ def test_per_cell_text_boundary_is_exact_and_never_returns_a_prefix(character_co
     unit = result.units[0]
     if character_count == 256:
         assert unit.inspection_method == "worksheet-structure"
-        assert "roster-column-pattern" in unit.signal_codes
+        assert "supporting-document-heading" in unit.signal_codes
         assert unit.issue_codes == ()
     else:
         assert unit.inspection_method == "none"
@@ -962,7 +1068,7 @@ def test_attacker_relationship_id_qname_is_rejected_before_openpyxl(
 
 def test_strict_namespace_workbook_is_inspected_with_its_cell_signals():
     workbook = Workbook()
-    workbook.active["A1"] = "DANH SACH CHI TRA"
+    workbook.active["A1"] = "TAI LIEU KEM THEO"
     snapshot = _strict_package(_save(workbook))
 
     result = _inspect(snapshot)
@@ -970,7 +1076,7 @@ def test_strict_namespace_workbook_is_inspected_with_its_cell_signals():
     assert result.inspection_status == "inspected"
     assert result.unit_count == 1
     assert result.units[0].inspection_method == "worksheet-structure"
-    assert "roster-column-pattern" in result.units[0].signal_codes
+    assert "supporting-document-heading" in result.units[0].signal_codes
 
 
 def test_strict_qname_conversion_preserves_cell_text_and_formula(monkeypatch):
@@ -1007,7 +1113,7 @@ def test_strict_qname_conversion_preserves_cell_text_and_formula(monkeypatch):
 @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
 def test_utf16_strict_workbook_is_structurally_converted_and_inspected(encoding):
     workbook = Workbook()
-    workbook.active["A1"] = "DANH SACH CHI TRA"
+    workbook.active["A1"] = "TAI LIEU KEM THEO"
     snapshot = _strict_package(_save(workbook))
     with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
         workbook_xml = _encoded_xml(archive.read("xl/workbook.xml"), encoding)
@@ -1028,7 +1134,7 @@ def test_utf16_strict_workbook_is_structurally_converted_and_inspected(encoding)
     assert result.inspection_status == "inspected"
     assert result.unit_count == 1
     assert result.units[0].inspection_method == "worksheet-structure"
-    assert "roster-column-pattern" in result.units[0].signal_codes
+    assert "supporting-document-heading" in result.units[0].signal_codes
 
 
 @pytest.mark.parametrize(
@@ -1331,7 +1437,7 @@ def test_wrong_target_content_type_fails_safe_before_openpyxl(
 
 def test_worksheet_content_type_may_use_the_bounded_default_map():
     workbook = Workbook()
-    workbook.active["A1"] = "DANH SACH CHI TRA"
+    workbook.active["A1"] = "TAI LIEU KEM THEO"
     snapshot = _save(workbook)
     with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
         content_types = archive.read("[Content_Types].xml")
@@ -1358,7 +1464,7 @@ def test_worksheet_content_type_may_use_the_bounded_default_map():
 
     assert result.inspection_status == "inspected"
     assert result.units[0].inspection_method == "worksheet-structure"
-    assert "roster-column-pattern" in result.units[0].signal_codes
+    assert "supporting-document-heading" in result.units[0].signal_codes
 
 
 def test_relationship_pull_parser_retains_only_requested_ids():

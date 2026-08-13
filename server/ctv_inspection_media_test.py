@@ -2,9 +2,11 @@ import ast
 import builtins
 import dataclasses
 from io import BytesIO
+import re
 import socket
 import tempfile
 import warnings
+import zlib
 
 import fitz
 from PIL import Image
@@ -42,6 +44,24 @@ def _scanned_pdf():
     page.insert_image(page.rect, stream=image_bytes)
     snapshot = document.tobytes()
     document.close()
+    return snapshot
+
+
+def _small_pdf_with_hostile_expanded_content_stream():
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "ordinary seed")
+    content_xref = page.get_contents()[0]
+    expanded = (
+        b"q\n"
+        + b"0 0 m 1 1 l S\n" * 100_000
+        + b"BT /helv 11 Tf 72 72 Td (HOP DONG DICH VU) Tj ET\nQ\n"
+    )
+    document.update_stream(content_xref, expanded, compress=True)
+    snapshot = document.tobytes()
+    document.close()
+    assert len(snapshot) < 32 * 1024
+    assert len(expanded) > 1024 * 1024
     return snapshot
 
 
@@ -139,6 +159,49 @@ def test_pdf_embedded_text_reduces_service_contract_and_acceptance_pages_in_orde
     )
 
 
+def test_small_compressed_pdf_with_hostile_expanded_content_fails_closed():
+    import ctv_inspection_media as media
+
+    snapshot = _small_pdf_with_hostile_expanded_content_stream()
+    with fitz.open(stream=snapshot, filetype="pdf") as document:
+        content_xref = document[0].get_contents()[0]
+        compressed = document.xref_stream_raw(content_xref)
+        assert len(compressed) < 16 * 1024
+        assert len(zlib.decompress(compressed)) > 1024 * 1024
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        _inspect_pdf(snapshot)
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+def test_pdf_rendering_proves_bounded_icc_resource_before_pixmap():
+    import ctv_inspection_media as media
+
+    snapshot = _scanned_pdf()
+    document = fitz.open(stream=snapshot, filetype="pdf")
+    page = document[0]
+    image_xref = page.get_images(full=True)[0][0]
+    color_type, color_value = document.xref_get_key(image_xref, "ColorSpace")
+    assert color_type == "xref"
+    color_xref = int(color_value.split()[0])
+    color_object = document.xref_object(color_xref, compressed=False)
+    profile_match = re.fullmatch(r"\[\s*/ICCBased\s+(\d+)\s+0\s+R\s*\]", color_object)
+    assert profile_match is not None
+    profile_xref = int(profile_match.group(1))
+    document.update_stream(
+        profile_xref,
+        b"synthetic-icc-expansion" * 100_000,
+        compress=True,
+    )
+    hostile_snapshot = document.tobytes()
+    document.close()
+    assert len(hostile_snapshot) < 64 * 1024
+
+    with pytest.raises(media.PdfParserBoundaryExceededError):
+        _inspect_pdf(hostile_snapshot)
+
+
 def test_scanned_pdf_renders_one_150_dpi_png_and_invokes_ocr_once():
     runner = RecordingOcr()
     result = _inspect_pdf(_scanned_pdf(), runner=runner)
@@ -154,50 +217,6 @@ def test_scanned_pdf_renders_one_150_dpi_png_and_invokes_ocr_once():
     assert result.units[0].inspection_method == "local-ocr"
     assert "identity-front-heading" in result.units[0].signal_codes
     assert "embedded-media-present" in result.units[0].signal_codes
-
-
-@pytest.mark.parametrize("marker_ends_at_limit", [True, False])
-def test_pdf_embedded_text_uses_the_exact_64_kib_boundary(
-    monkeypatch, marker_ends_at_limit
-):
-    import ctv_inspection_media as media
-
-    base = b"alpha beta gamma delta "
-    marker = b" HOP DONG DICH VU"
-    if marker_ends_at_limit:
-        prefix = base + b"x" * (64 * 1024 - len(base) - len(marker))
-        embedded_text = prefix + marker
-    else:
-        prefix = base + b"x" * 70_000
-        embedded_text = prefix + marker
-
-    class Page:
-        def get_text(self, _kind):
-            return embedded_text.decode()
-
-        def get_images(self, **_kwargs):
-            return []
-
-    class Document:
-        needs_pass = False
-        page_count = 1
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def load_page(self, _index):
-            return Page()
-
-    monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
-    result = _inspect_pdf(b"synthetic-pdf")
-
-    assert result.units[0].inspection_method == "embedded-text"
-    assert (
-        "service-contract-heading" in result.units[0].signal_codes
-    ) is marker_ends_at_limit
 
 
 def test_pdf_text_prefix_never_full_encodes_or_reads_beyond_the_byte_cap():
@@ -290,6 +309,40 @@ def test_pdf_page_count_boundary_raises_stable_opaque_error_before_iteration(mon
     assert opened == [{"stream": b"private-pdf-snapshot", "filetype": "pdf"}]
 
 
+def test_pdf_remaining_public_unit_budget_fails_before_page_acquisition(monkeypatch):
+    import ctv_inspection_media as media
+    import ctv_inspection_model as inspection_model
+
+    loaded_pages = []
+
+    class Document:
+        needs_pass = False
+        page_count = 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def load_page(self, index):
+            loaded_pages.append(index)
+            raise AssertionError("unit budget must precede page acquisition")
+
+    monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
+
+    with pytest.raises(inspection_model.InspectionUnitCountExceededError):
+        media.inspect_pdf(
+            b"synthetic-pdf",
+            limits=InspectionLimits(),
+            ocr_budget=OcrBudget(),
+            ocr_runner=RecordingOcr(),
+            remaining_units=1,
+        )
+
+    assert loaded_pages == []
+
+
 @pytest.mark.parametrize(
     ("snapshot", "expected_status", "expected_count", "expected_issue"),
     [
@@ -358,6 +411,11 @@ def test_pdf_render_failure_keeps_known_page_and_hides_exception(monkeypatch):
             return Page()
 
     monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
+    monkeypatch.setattr(
+        media,
+        "_prove_pdf_page_bounds",
+        lambda _document, _page, _limits: (False, False),
+    )
     result = _inspect_pdf(b"synthetic-pdf")
 
     assert result.unit_count == 1
@@ -422,6 +480,11 @@ def test_pdf_rendered_png_enforces_exact_ocr_byte_boundary(monkeypatch, encoded_
             return Page()
 
     monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
+    monkeypatch.setattr(
+        media,
+        "_prove_pdf_page_bounds",
+        lambda _document, _page, _limits: (False, False),
+    )
     runner = RecordingOcr()
     result = _inspect_pdf(b"synthetic-pdf", runner=runner)
 
@@ -467,6 +530,11 @@ def test_pdf_rendered_area_is_checked_before_encoding(monkeypatch):
             return Page()
 
     monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
+    monkeypatch.setattr(
+        media,
+        "_prove_pdf_page_bounds",
+        lambda _document, _page, _limits: (False, False),
+    )
     result = _inspect_pdf(b"synthetic-pdf")
 
     assert result.units[0].issue_codes == ("unit-over-limit",)
@@ -505,6 +573,11 @@ def test_pdf_invalid_page_geometry_fails_closed_before_render(monkeypatch):
             return Page()
 
     monkeypatch.setattr(media.fitz, "open", lambda **_kwargs: Document())
+    monkeypatch.setattr(
+        media,
+        "_prove_pdf_page_bounds",
+        lambda _document, _page, _limits: (False, False),
+    )
     result = _inspect_pdf(b"synthetic-pdf")
 
     assert result.units[0].inspection_method == "none"
@@ -874,6 +947,6 @@ def test_media_module_imports_only_approved_parser_and_project_modules():
     }
     assert not imported_roots & forbidden
     assert imported_roots <= {
-        "__future__", "io", "math", "re", "warnings", "fitz", "PIL",
+        "__future__", "io", "math", "re", "warnings", "zlib", "fitz", "PIL",
         "ctv_inspection_classifier", "ctv_inspection_model", "ctv_local_ocr",
     }

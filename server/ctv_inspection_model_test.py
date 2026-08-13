@@ -264,6 +264,62 @@ def test_result_requires_inspected_source_count_to_match_bound_units():
         _result(source=_source(unit_count=2))
 
 
+def test_result_validates_source_unit_counts_in_one_pass():
+    class CountingEvidenceId(str):
+        comparisons = 0
+
+        def __eq__(self, other):
+            type(self).comparisons += 1
+            return super().__eq__(other)
+
+        __hash__ = str.__hash__
+
+    record_count = 200
+    sources = tuple(
+        InspectionSource(
+            evidence_id=f"evidence-{index:04d}",
+            detected_type="pdf",
+            inspection_status="inspected",
+            unit_count=1,
+            issue_codes=(),
+        )
+        for index in range(1, record_count + 1)
+    )
+    units = []
+    for index in range(1, record_count + 1):
+        unit = InspectionUnit(
+            unit_id=f"unit-{index:04d}",
+            evidence_id=f"evidence-{index:04d}",
+            unit_kind="pdf-page",
+            unit_index=1,
+            suggested_role="service-contract",
+            confidence_band="high",
+            needs_user_review=False,
+            inspection_method="embedded-text",
+            signal_codes=("service-contract-heading",),
+            issue_codes=(),
+        )
+        object.__setattr__(
+            unit,
+            "evidence_id",
+            CountingEvidenceId(unit.evidence_id),
+        )
+        units.append(unit)
+    CountingEvidenceId.comparisons = 0
+
+    result = InspectionResult(
+        "1.0",
+        "complete",
+        "observation-" + "a" * 64,
+        InspectionTotals(record_count, record_count, record_count, 0, 0, 0),
+        sources,
+        tuple(units),
+    )
+
+    assert result.totals.units == record_count
+    assert CountingEvidenceId.comparisons < record_count * 10
+
+
 def test_result_requires_status_to_match_source_or_unit_issues():
     issue_source = _source(issue_codes=("document-unreadable",))
     with pytest.raises(ValueError, match="inspection_status"):

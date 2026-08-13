@@ -261,12 +261,77 @@ def test_structural_context_signals_are_safe_and_canonically_ordered():
     signals = signals_from_private_text(
         "DANH SÁCH CHI TRẢ",
         TextSignalContext("worksheet", mostly_image=True, embedded_media=True,
-                          worksheet_hidden=True, row_pattern=True),
+                          worksheet_hidden=True, row_pattern=True,
+                          roster_column_pattern=True),
     )
     assert signals == (
         "roster-column-pattern", "roster-row-pattern", "embedded-media-present",
         "worksheet-hidden", "mostly-image-page",
     )
+
+
+def test_single_roster_like_cell_cannot_emit_a_row_level_column_pattern():
+    signals = signals_from_private_text(
+        "MA SO NHAN VIEN",
+        TextSignalContext(
+            "worksheet",
+            mostly_image=False,
+            embedded_media=False,
+            worksheet_hidden=False,
+            row_pattern=False,
+        ),
+    )
+
+    assert "roster-column-pattern" not in signals
+
+
+def test_text_signal_context_rejects_string_subclasses_before_membership():
+    class StringSubclass(str):
+        pass
+
+    with pytest.raises(ValueError, match="unit_kind"):
+        TextSignalContext(
+            StringSubclass("worksheet"),
+            mostly_image=False,
+            embedded_media=False,
+            worksheet_hidden=False,
+            row_pattern=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"confidence_band": "medium", "needs_user_review": False},
+        {"issue_codes": ("ocr-low-confidence",), "needs_user_review": False},
+        {"signal_codes": ("worksheet-hidden",), "needs_user_review": False},
+    ],
+)
+def test_classification_constructor_enforces_the_complete_review_invariant(overrides):
+    values = {
+        "suggested_role": "service-contract",
+        "confidence_band": "high",
+        "needs_user_review": False,
+        "issue_codes": (),
+        "signal_codes": (),
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match="review"):
+        Classification(**values)
+
+
+def test_classification_rejects_string_subclasses_as_non_exact_primitives():
+    class StringSubclass(str):
+        pass
+
+    with pytest.raises(ValueError, match="suggested_role"):
+        Classification(
+            StringSubclass("service-contract"),
+            "high",
+            False,
+            (),
+        )
 
 
 def test_classifier_is_frozen_and_returns_only_fixed_issue_codes():

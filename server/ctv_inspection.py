@@ -6,6 +6,7 @@ from pathlib import Path
 from ctv_inspection_classifier import classify
 from ctv_inspection_media import (
     PdfPageCountExceededError,
+    PdfParserBoundaryExceededError,
     inspect_image,
     inspect_pdf,
 )
@@ -18,6 +19,7 @@ from ctv_inspection_model import (
     InspectionSource,
     InspectionTotals,
     InspectionUnit,
+    InspectionUnitCountExceededError,
     InspectionUnitEvidence,
 )
 from ctv_inspection_workbook import (
@@ -71,9 +73,8 @@ _RETAINED_INVENTORY_ERROR_CODES = frozenset(
 )
 _ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _RAR_SIGNATURES = (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")
-_UNSAFE_SOURCE_ISSUES = frozenset(
-    {"type-detection-failed", "changed-during-read"}
-)
+_UNSAFE_SOURCE_ISSUES = frozenset({"type-detection-failed"})
+_WORKBOOK_EXTENSIONS = frozenset({".xlsx", ".xlsm", ".xltx", ".xltm"})
 _UNKNOWN_INVENTORY_FAILURE = object()
 
 
@@ -138,6 +139,7 @@ def _inspect_observed_source(
     limits: InspectionLimits,
     ocr_budget: OcrBudget,
     ocr_runner,
+    remaining_units: int,
 ) -> tuple[InspectionSource, tuple[InspectionUnitEvidence, ...]]:
     inventory_issues = source.issue_codes
     if "symlink" in inventory_issues or "special-file" in inventory_issues:
@@ -148,6 +150,17 @@ def _inspect_observed_source(
         return _source_only(source, "unreadable", None, "document-unreadable")
     if source.detected_type in {"zip", "rar"}:
         return _source_only(source, "opaque", 0, "opaque-archive")
+    if (
+        source.detected_type == "xlsx"
+        and source.extension not in _WORKBOOK_EXTENSIONS
+    ):
+        return _source_only(
+            source,
+            "opaque",
+            0,
+            "opaque-archive",
+            detected_type="zip",
+        )
     if source.detected_type == "unknown":
         return _source_only(source, "unsupported", 0, "unsupported-document-type")
     if type(source.size) is not int or source.size < 0:
@@ -160,6 +173,8 @@ def _inspect_observed_source(
     }[source.detected_type]
     if source.size > source_cap:
         if source.detected_type == "image":
+            if remaining_units < 1:
+                raise InspectionUnitCountExceededError()
             adapter_result = InspectionAdapterResult(
                 "inspected",
                 1,
@@ -175,7 +190,12 @@ def _inspect_observed_source(
     else:
         snapshot = observation.snapshot(source.evidence_id, max_bytes=source_cap)
         archive_type = _leading_archive_type(snapshot)
-        if archive_type is not None and source.detected_type != "xlsx":
+        workbook_candidate = (
+            archive_type == "zip"
+            and source.detected_type == "xlsx"
+            and source.extension in _WORKBOOK_EXTENSIONS
+        )
+        if archive_type is not None and not workbook_candidate:
             snapshot = b""
             return _source_only(
                 source,
@@ -190,10 +210,17 @@ def _inspect_observed_source(
                 limits=limits,
                 ocr_budget=ocr_budget,
                 ocr_runner=ocr_runner,
+                remaining_units=remaining_units,
             )
         elif source.detected_type == "xlsx":
-            adapter_result = inspect_workbook(snapshot, limits=limits)
+            adapter_result = inspect_workbook(
+                snapshot,
+                limits=limits,
+                remaining_units=remaining_units,
+            )
         else:
+            if remaining_units < 1:
+                raise InspectionUnitCountExceededError()
             adapter_result = inspect_image(
                 snapshot,
                 limits=limits,
@@ -201,6 +228,13 @@ def _inspect_observed_source(
                 ocr_runner=ocr_runner,
             )
         snapshot = b""
+
+    if (
+        adapter_result.inspection_status == "inspected"
+        and adapter_result.unit_count is not None
+        and adapter_result.unit_count > remaining_units
+    ):
+        raise InspectionUnitCountExceededError()
 
     source_record = InspectionSource(
         source.evidence_id,
@@ -229,7 +263,14 @@ def _inspection_result(
     *,
     limits: InspectionLimits,
     ocr_session,
-) -> InspectionResult:
+) -> InspectionResult | str:
+    if any(
+        "changed-during-read" in observed_source.issue_codes
+        for observed_source in observation.sources
+    ):
+        failure_code = "inspection-tree-changed"
+        return failure_code
+
     ocr_budget = OcrBudget(
         max_units=limits.max_ocr_units,
         max_total_seconds=limits.max_ocr_total_seconds,
@@ -252,10 +293,11 @@ def _inspection_result(
             limits=limits,
             ocr_budget=ocr_budget,
             ocr_runner=bound_ocr,
+            remaining_units=limits.max_units - len(units),
         )
         for evidence in unit_evidence:
             if len(units) >= limits.max_units:
-                raise InspectionError("inspection-unit-count-exceeded")
+                raise InspectionUnitCountExceededError()
             classification = classify(
                 evidence.unit_kind,
                 evidence.inspection_method,
@@ -300,14 +342,14 @@ def _inspection_result(
     return result
 
 
-def _mapped_inventory_error(error: InventoryError) -> InspectionError | None:
+def _mapped_inventory_error_code(error: InventoryError) -> str | None:
     code = getattr(error, "code", None)
     if type(code) is not str:
         return None
     if code == "inventory-tree-changed":
-        return InspectionError("inspection-tree-changed")
+        return "inspection-tree-changed"
     if code in _RETAINED_INVENTORY_ERROR_CODES:
-        return InspectionError(code)
+        return code
     return None
 
 
@@ -317,24 +359,34 @@ def _inspect_fresh_observation(
     limits: InspectionLimits,
     ocr_session,
 ):
+    outcome = _UNKNOWN_INVENTORY_FAILURE
+    failure_code = None
     try:
         with open_inventory_observation(source_root) as observation:
-            return _inspection_result(
+            outcome = _inspection_result(
                 observation,
                 limits=limits,
                 ocr_session=ocr_session,
             )
     except InventoryError as error:
-        mapped_error = _mapped_inventory_error(error)
-        if mapped_error is None:
-            return _UNKNOWN_INVENTORY_FAILURE
-        raise mapped_error from None
+        failure_code = _mapped_inventory_error_code(error)
     except PdfPageCountExceededError:
-        raise InspectionError("inspection-pdf-page-count-exceeded") from None
+        failure_code = "inspection-pdf-page-count-exceeded"
+    except PdfParserBoundaryExceededError:
+        failure_code = "inspection-parser-boundary-exceeded"
     except WorkbookParserBoundaryExceededError:
-        raise InspectionError("inspection-parser-boundary-exceeded") from None
+        failure_code = "inspection-parser-boundary-exceeded"
     except WorkbookWorksheetCountExceededError:
-        raise InspectionError("inspection-worksheet-count-exceeded") from None
+        failure_code = "inspection-worksheet-count-exceeded"
+    except InspectionUnitCountExceededError:
+        failure_code = "inspection-unit-count-exceeded"
+    if failure_code is not None:
+        return failure_code
+    return outcome
+
+
+def _raise_controlled_failure(code: str) -> None:
+    raise InspectionError(code)
 
 
 def _raise_internal_failure() -> None:
@@ -354,6 +406,12 @@ def inspect_source(
         limits=limits,
         ocr_session=ocr_session,
     )
+    source_root = None
+    ocr_session = None
+    if type(result) is str:
+        failure_code = result
+        result = None
+        _raise_controlled_failure(failure_code)
     if result is _UNKNOWN_INVENTORY_FAILURE:
         _raise_internal_failure()
     return result
