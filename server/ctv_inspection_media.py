@@ -28,6 +28,14 @@ _OCR_ISSUES = {
     "low-confidence": "ocr-low-confidence",
     "over-limit": "unit-over-limit",
 }
+_OCR_STATUSES = (
+    "succeeded",
+    "unavailable",
+    "timeout",
+    "failed",
+    "low-confidence",
+    "over-limit",
+)
 
 
 class PdfPageCountExceededError(RuntimeError):
@@ -47,11 +55,36 @@ def _known_over_limit_image() -> InspectionAdapterResult:
 
 
 def _bounded_text(text: object, byte_limit: int) -> str:
-    if not isinstance(text, str):
+    if not isinstance(text, str) or byte_limit <= 0:
         return ""
-    return text.encode("utf-8", errors="ignore")[:byte_limit].decode(
-        "utf-8", errors="ignore"
-    )
+    pieces = []
+    used_bytes = 0
+    character_index = 0
+    text_length = min(len(text), byte_limit)
+    while character_index < text_length and used_bytes < byte_limit:
+        remaining_bytes = byte_limit - used_bytes
+        chunk_end = min(
+            text_length,
+            character_index + min(1024, remaining_bytes),
+        )
+        chunk = text[character_index:chunk_end]
+        if not chunk:
+            break
+        encoded_chunk = chunk.encode("utf-8", errors="ignore")
+        if len(encoded_chunk) <= remaining_bytes:
+            pieces.append(encoded_chunk.decode("utf-8"))
+            used_bytes += len(encoded_chunk)
+            character_index = chunk_end
+            continue
+        for character in chunk:
+            encoded_character = character.encode("utf-8", errors="ignore")
+            if len(encoded_character) > byte_limit - used_bytes:
+                return "".join(pieces)
+            if encoded_character:
+                pieces.append(encoded_character.decode("utf-8"))
+                used_bytes += len(encoded_character)
+            character_index += 1
+    return "".join(pieces)
 
 
 def _text_is_sufficient(text: str) -> bool:
@@ -101,13 +134,27 @@ def _ocr_evidence(
             timeout_seconds=limits.max_ocr_seconds_per_unit,
         )
     except Exception:
-        outcome = OcrOutcome("failed", "")
+        outcome = None
     image_bytes = b""
 
-    if not isinstance(outcome, OcrOutcome):
-        outcome = OcrOutcome("failed", "")
-    status = outcome.status
-    private_text = outcome.private_text
+    if type(outcome) is OcrOutcome:
+        try:
+            status = object.__getattribute__(outcome, "status")
+            private_text = object.__getattribute__(outcome, "private_text")
+        except Exception:
+            status = None
+            private_text = None
+    else:
+        status = None
+        private_text = None
+    valid_status = type(status) is str and status in _OCR_STATUSES
+    valid_text = type(private_text) is str
+    valid_pair = valid_status and valid_text and (
+        (status in {"succeeded", "low-confidence"}) == bool(private_text)
+    )
+    if not valid_pair:
+        status = "failed"
+        private_text = ""
     signal_codes = _signals(
         private_text if status in {"succeeded", "low-confidence"} else "",
         unit_kind=unit_kind,
@@ -315,15 +362,15 @@ def _normalize_image(snapshot: bytes, limits: InspectionLimits):
                 raise ValueError("invalid image header")
             if width * height > limits.max_decoded_image_pixels:
                 return None, False, True
-            frame_count = getattr(image, "n_frames", 1)
-            if (
-                not isinstance(frame_count, int)
-                or isinstance(frame_count, bool)
-                or frame_count <= 0
-            ):
-                raise ValueError("invalid image frame count")
-            multi_frame = frame_count > 1
             image.seek(0)
+            try:
+                image.seek(1)
+            except EOFError:
+                multi_frame = False
+            else:
+                multi_frame = True
+            finally:
+                image.seek(0)
             image.load()
             normalized = image.convert("RGB")
             try:

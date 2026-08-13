@@ -200,12 +200,63 @@ def test_pdf_embedded_text_uses_the_exact_64_kib_boundary(
     ) is marker_ends_at_limit
 
 
+def test_pdf_text_prefix_never_full_encodes_or_reads_beyond_the_byte_cap():
+    import ctv_inspection_media as media
+
+    class BoundedText(str):
+        maximum_slice_stop = 0
+
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("full private text encode is forbidden")
+
+        def __getitem__(self, key):
+            if isinstance(key, slice) and key.stop is not None:
+                type(self).maximum_slice_stop = max(
+                    type(self).maximum_slice_stop, key.stop
+                )
+                if key.stop > 64 * 1024:
+                    raise AssertionError("private text read beyond byte cap")
+            return super().__getitem__(key)
+
+    private_text = BoundedText("alpha beta gamma delta " + "x" * 1_000_000)
+
+    bounded = media._bounded_text(private_text, 64 * 1024)
+
+    assert len(bounded.encode("utf-8")) == 64 * 1024
+    assert BoundedText.maximum_slice_stop <= 64 * 1024
+    assert media._bounded_text("é" * 32_768 + "Z", 64 * 1024) == "é" * 32_768
+    assert media._bounded_text(BoundedText("\ud800" * 1_000_000), 64 * 1024) == ""
+    assert BoundedText.maximum_slice_stop <= 64 * 1024
+
+
 def test_pdf_text_below_sufficiency_threshold_falls_back_to_ocr():
     runner = RecordingOcr()
     result = _inspect_pdf(_pdf("mot hai ba"), runner=runner)
 
     assert len(runner.calls) == 1
     assert result.units[0].inspection_method == "local-ocr"
+
+
+def test_pdf_source_byte_limit_is_inclusive_and_over_limit_is_source_only():
+    snapshot = _pdf(
+        "HOP DONG DICH VU BEN A BEN B CHU KY noi dung du bo muoi ky tu"
+    )
+
+    accepted = _inspect_pdf(
+        snapshot,
+        limits=InspectionLimits(max_pdf_source_bytes=len(snapshot)),
+    )
+    rejected = _inspect_pdf(
+        snapshot,
+        limits=InspectionLimits(max_pdf_source_bytes=len(snapshot) - 1),
+    )
+
+    assert accepted.inspection_status == "inspected"
+    assert accepted.unit_count == 1
+    assert rejected.inspection_status == "over-limit"
+    assert rejected.unit_count is None
+    assert rejected.source_issue_codes == ("document-over-limit",)
+    assert rejected.units == ()
 
 
 def test_pdf_page_count_boundary_raises_stable_opaque_error_before_iteration(monkeypatch):
@@ -515,6 +566,53 @@ def test_multiframe_image_uses_only_first_frame_and_adds_safe_issue():
         assert normalized.getpixel((0, 0)) == (255, 0, 0)
 
 
+def test_image_probes_only_frame_one_and_ignores_later_corrupt_frames(monkeypatch):
+    import ctv_inspection_media as media
+
+    seeks = []
+
+    class FakeImage:
+        size = (3, 2)
+
+        @property
+        def n_frames(self):
+            raise AssertionError("frame enumeration is forbidden")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def seek(self, frame):
+            seeks.append(frame)
+            if frame > 1:
+                raise RuntimeError("private corrupt late frame")
+
+        def load(self):
+            return None
+
+        def convert(self, mode):
+            assert mode == "RGB"
+            return self
+
+        def save(self, stream, *, format):
+            assert format == "PNG"
+            stream.write(_image_bytes())
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(media.Image, "open", lambda _stream: FakeImage())
+    result = _inspect_image(b"synthetic-image")
+
+    assert seeks == [0, 1, 0]
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+    assert result.units[0].issue_codes == ("multi-frame-image",)
+    assert "corrupt late frame" not in repr(result)
+
+
 def test_image_source_byte_boundary_is_exact_and_oversize_remains_one_known_unit():
     raw = _image_bytes()
     at_limit = raw + b"x" * (25 * 1024 * 1024 - len(raw))
@@ -532,6 +630,49 @@ def test_image_source_byte_boundary_is_exact_and_oversize_remains_one_known_unit
     assert rejected.unit_count == 1
     assert rejected.units[0].inspection_method == "none"
     assert rejected.units[0].issue_codes == ("unit-over-limit",)
+
+
+@pytest.mark.parametrize("encoded_size", [25 * 1024 * 1024, 25 * 1024 * 1024 + 1])
+def test_image_normalized_png_enforces_exact_ocr_byte_boundary(
+    monkeypatch, encoded_size
+):
+    import ctv_inspection_media as media
+
+    class FakeImage:
+        size = (1, 1)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def seek(self, frame):
+            if frame == 1:
+                raise EOFError
+
+        def load(self):
+            return None
+
+        def convert(self, mode):
+            assert mode == "RGB"
+            return self
+
+        def save(self, stream, *, format):
+            assert format == "PNG"
+            stream.write(b"\x89PNG\r\n\x1a\n" + b"x" * (encoded_size - 8))
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(media.Image, "open", lambda _stream: FakeImage())
+    runner = RecordingOcr()
+    result = _inspect_image(b"synthetic-image", runner=runner)
+
+    assert len(runner.calls) == (1 if encoded_size == 25 * 1024 * 1024 else 0)
+    assert result.units[0].issue_codes == (
+        () if encoded_size == 25 * 1024 * 1024 else ("unit-over-limit",)
+    )
 
 
 @pytest.mark.parametrize(
@@ -560,6 +701,8 @@ def test_image_dimension_boundary_is_checked_from_header_before_pixel_load(
 
         def seek(self, frame):
             events.append(("seek", frame))
+            if frame == 1:
+                raise EOFError
 
         def load(self):
             events.append(("load", None))
@@ -627,6 +770,54 @@ def test_image_maps_ocr_statuses_and_uses_shared_budget_sequentially():
     assert second.units[0].issue_codes == ("ocr-failed",)
     assert [call[1] for call in runner.calls] == [budget, budget]
     assert budget.used_units == 2
+
+
+@pytest.mark.parametrize(
+    "malformed_field",
+    ["missing_fields", "unknown_status", "hostile_status", "private_text"],
+)
+def test_image_malformed_ocr_outcome_maps_to_fixed_failure_without_hostile_calls(
+    malformed_field
+):
+    class HostileValue:
+        def __hash__(self):
+            raise RuntimeError("private hash diagnostic 079123456789")
+
+        def __eq__(self, _other):
+            raise RuntimeError("private equality diagnostic 079123456789")
+
+        def __str__(self):
+            raise RuntimeError("private string diagnostic 079123456789")
+
+        def __repr__(self):
+            return "private repr diagnostic 079123456789"
+
+    malformed = object.__new__(OcrOutcome)
+    if malformed_field != "missing_fields":
+        object.__setattr__(
+            malformed,
+            "status",
+            (
+                "private-new-status"
+                if malformed_field == "unknown_status"
+                else HostileValue()
+                if malformed_field == "hostile_status"
+                else "succeeded"
+            ),
+        )
+        object.__setattr__(
+            malformed,
+            "private_text",
+            HostileValue() if malformed_field == "private_text" else PRIVATE_TEXT,
+        )
+
+    result = _inspect_image(_image_bytes(), runner=RecordingOcr(malformed))
+    unit = result.units[0]
+
+    assert unit.inspection_method == "local-ocr"
+    assert unit.signal_codes == ("mostly-image-page",)
+    assert unit.issue_codes == ("ocr-failed",)
+    assert "079123456789" not in repr(result)
 
 
 def test_media_results_never_retain_private_content_or_diagnostics(monkeypatch):
