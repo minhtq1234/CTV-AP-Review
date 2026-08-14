@@ -970,12 +970,17 @@ def _artifact_limit(kind: str) -> int:
 def iter_rendered_artifacts(
     plan: PackageBuildPlan,
     observation: InventoryObservation,
+    *,
+    _snapshot_source=None,
 ):
     """Yield one bounded artifact at a time from the retained observation."""
     if type(plan) is not PackageBuildPlan or type(observation) is not InventoryObservation:
         raise TypeError("rendering requires a build plan and retained observation")
     if observation.observation_id != plan.observation_id:
         raise ValueError("rendering observation must match its build plan")
+    if _snapshot_source is not None and not callable(_snapshot_source):
+        raise TypeError("snapshot source must be callable")
+    snapshot_source = observation.snapshot if _snapshot_source is None else _snapshot_source
     observed_by_id = {source.evidence_id: source for source in observation.sources}
     source_work = 0
     output_work = 0
@@ -988,7 +993,7 @@ def iter_rendered_artifacts(
         if source_work + source.size > _MAX_SOURCE_WORK_BYTES:
             raise PackageBuildError("package-aggregate-over-limit")
         source_work += source.size
-        return observation.snapshot(evidence_id, max_bytes=maximum)
+        return snapshot_source(evidence_id, max_bytes=maximum)
 
     for recipe in plan.recipes:
         per_file_limit = _artifact_limit(recipe.kind)

@@ -6,7 +6,7 @@ import pytest
 
 from ctv_proposal import ProposalState
 from ctv_inspection import inspect_observation
-from ctv_inventory import InventoryError, open_inventory_observation
+from ctv_inventory import InventoryError, InventoryObservation, open_inventory_observation
 
 
 def _roster_bytes(rows=(("Alice", "CTV-001"), ("Bao", "CTV-002"))):
@@ -80,6 +80,40 @@ def test_selected_roster_maps_usable_rows_to_opaque_handles_in_row_order(tmp_pat
         assert "Alice" not in repr(state.approval_summary())
     finally:
         context.__exit__(None, None, None)
+
+
+def test_roster_selection_uses_explicit_owned_snapshot_capability(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path)
+    with open_inventory_observation(source) as observation:
+        inspection = inspect_observation(observation)
+        owned_snapshot = observation.snapshot
+        calls = []
+
+        def snapshot_source(evidence_id, *, max_bytes):
+            calls.append(evidence_id)
+            return owned_snapshot(evidence_id, max_bytes=max_bytes)
+
+        state = ProposalState.from_inspection(
+            observation, inspection, _snapshot_source=snapshot_source
+        )
+        monkeypatch.setattr(
+            InventoryObservation,
+            "snapshot",
+            lambda *_args, **_kwargs: pytest.fail(
+                "default observation acquisition bypassed injected capability"
+            ),
+        )
+        roster = next(
+            unit for unit in state.units if unit["suggestedRole"] == "payment-roster"
+        )
+        state.select_roster({"rosterUnitId": roster["unitId"]})
+
+        assert state.approval_summary()["participantHandles"] == [
+            "participant-0001", "participant-0002"
+        ]
+        assert calls == [roster["evidenceId"]]
 
 
 def test_local_participant_display_keeps_name_and_masked_identity_out_of_public_results(tmp_path):

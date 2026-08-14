@@ -145,9 +145,12 @@ def _private_cell_text(value):
 class ProposalState:
     """Trusted proposal records constructed after strict local API conversion."""
 
-    def __init__(self, observation, inspection):
+    def __init__(self, observation, inspection, snapshot_source=None):
         self._observation = observation
         self._inspection = inspection
+        self._snapshot_source = (
+            observation.snapshot if snapshot_source is None else snapshot_source
+        )
         self._units_by_id = {unit.unit_id: unit for unit in inspection.units}
         self._sources_by_id = {source.evidence_id: source for source in inspection.sources}
         self._unit_decisions = {}
@@ -178,14 +181,16 @@ class ProposalState:
         )
 
     @classmethod
-    def from_inspection(cls, observation, inspection):
+    def from_inspection(cls, observation, inspection, *, _snapshot_source=None):
         if type(observation) is not InventoryObservation:
             raise TypeError("observation must be a live inventory observation")
         if type(inspection) is not InspectionResult:
             raise TypeError("inspection must be an inspection result")
         if inspection.observation_id != observation.observation_id:
             raise ValueError("inspection must belong to its observation")
-        return cls(observation, inspection)
+        if _snapshot_source is not None and not callable(_snapshot_source):
+            raise TypeError("snapshot source must be callable")
+        return cls(observation, inspection, _snapshot_source)
 
     def _invalidate_approved_package(self):
         self._approved_package_digest = None
@@ -195,7 +200,9 @@ class ProposalState:
         if source.detected_type != "xlsx" or source.inspection_status != "inspected":
             return (), ("roster-unreadable",), (), ()
         try:
-            snapshot = self._observation.snapshot(unit.evidence_id, max_bytes=_MAX_WORKBOOK_BYTES)
+            snapshot = self._snapshot_source(
+                unit.evidence_id, max_bytes=_MAX_WORKBOOK_BYTES
+            )
             workbook = load_workbook(
                 BytesIO(snapshot), read_only=True, data_only=True, keep_links=False
             )

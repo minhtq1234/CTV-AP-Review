@@ -251,6 +251,8 @@ def _make_package_reader_type():
             *,
             expected_size: int | None = None,
             max_bytes: int,
+            _expected_identity: tuple[int, int, int, int, int] | None = None,
+            _aggregate_allowance: int | None = None,
         ) -> tuple[bytes | None, str | None]:
             if not self.has_secure_open_provenance():
                 return None, "secure-open-unavailable"
@@ -263,15 +265,30 @@ def _make_package_reader_type():
             identity_before, identity_failure = _regular_identity_relative_to_fd(
                 state["descriptor"], parts
             )
-            if identity_before is not None:
-                state["charged_bytes"] += identity_before[2]
+            identity_expected = (
+                identity_before
+                if _expected_identity is None
+                else _expected_identity
+            )
+            attempt_charged = False
+
+            def reserve_attempt(size: int) -> None:
+                nonlocal attempt_charged
+                if not attempt_charged:
+                    state["charged_bytes"] += size
+                    attempt_charged = True
+
             content, failure, opened_identity = _read_relative_to_fd(
                 state["descriptor"],
                 parts,
                 expected_size=expected_size,
                 max_bytes=max_bytes,
-                expected_identity=identity_before,
+                expected_identity=identity_expected,
+                aggregate_allowance=_aggregate_allowance,
+                reserve_attempt=reserve_attempt,
             )
+            if not attempt_charged and identity_before is not None:
+                reserve_attempt(identity_before[2])
             identity_after, after_failure = _regular_identity_relative_to_fd(
                 state["descriptor"], parts
             )
@@ -287,7 +304,7 @@ def _make_package_reader_type():
                 content, failure = None, "changed"
             elif failure is None and (identity_failure or after_failure):
                 content, failure = None, "changed"
-            state["read_identities"][declared_path] = identity_before
+            state["read_identities"][declared_path] = identity_expected
             return content, failure
 
         def read_manifest(self) -> tuple[bytes | None, str | None]:
@@ -307,6 +324,8 @@ def _make_package_reader_type():
             declared_path: str,
             *,
             max_bytes: int,
+            _expected_identity: tuple[int, int, int, int, int] | None = None,
+            _aggregate_allowance: int | None = None,
         ) -> tuple[bytes | None, str | None]:
             """Read one relative path at most once for this opened root."""
             state = lookup(self)
@@ -319,6 +338,8 @@ def _make_package_reader_type():
                     declared_path,
                     expected_size=None,
                     max_bytes=max_bytes,
+                    _expected_identity=_expected_identity,
+                    _aggregate_allowance=_aggregate_allowance,
                 )
                 cache[declared_path] = cached
             return cached
@@ -392,14 +413,18 @@ def _make_package_reader_type():
             digests: list[tuple[str, str]] = []
             for path in sorted(actual_paths, key=lambda value: value.encode("utf-8")):
                 size = before_by_path[path][2]
-                total += size
-                if total > max_total_bytes:
+                remaining = max_total_bytes - total
+                if size > remaining:
                     if path not in state["read_cache"]:
                         state["charged_bytes"] += size
                         state["read_identities"][path] = before_by_path[path]
                     return None, "too-large"
+                total += size
                 content, read_failure = self.read_cached(
-                    path, max_bytes=max_bytes_by_path[path]
+                    path,
+                    max_bytes=max_bytes_by_path[path],
+                    _expected_identity=before_by_path[path],
+                    _aggregate_allowance=remaining,
                 )
                 if read_failure is not None or content is None:
                     return None, read_failure or "missing"
@@ -567,6 +592,8 @@ def _read_relative_to_fd(
     expected_size: int | None,
     max_bytes: int,
     expected_identity: tuple[int, int, int, int, int] | None = None,
+    aggregate_allowance: int | None = None,
+    reserve_attempt=None,
 ) -> tuple[
     bytes | None,
     str | None,
@@ -605,6 +632,8 @@ def _read_relative_to_fd(
         try:
             metadata = os.fstat(file_fd)
             opened_identity = _identity(metadata)
+            if reserve_attempt is not None:
+                reserve_attempt(metadata.st_size)
             if not stat.S_ISREG(metadata.st_mode):
                 return None, "not-regular", opened_identity
             if (
@@ -612,6 +641,11 @@ def _read_relative_to_fd(
                 and opened_identity != expected_identity
             ):
                 return None, "changed", opened_identity
+            if (
+                aggregate_allowance is not None
+                and metadata.st_size > aggregate_allowance
+            ):
+                return None, "too-large", opened_identity
             if metadata.st_size > max_bytes:
                 return None, "too-large", opened_identity
             if expected_size is not None and metadata.st_size != expected_size:

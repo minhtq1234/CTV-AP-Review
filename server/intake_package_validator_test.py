@@ -1067,8 +1067,8 @@ def test_package_reader_tree_snapshot_rejects_non_allowlisted_or_changed_members
         if kind == "changed":
             real_read = reader.read_cached
 
-            def mutate_after_read(self, path, *, max_bytes):
-                result = real_read(path, max_bytes=max_bytes)
+            def mutate_after_read(self, path, *, max_bytes, **kwargs):
+                result = real_read(path, max_bytes=max_bytes, **kwargs)
                 (package / path).write_bytes(b'{"changed":true}\n')
                 return result
 
@@ -1167,6 +1167,51 @@ def test_package_reader_reserves_aggregate_budget_before_crossing_artifact_io(
         content, read_failure = reader.read_cached("b.bin", max_bytes=8)
         assert content == b"bbbbb" and read_failure is None
         assert reads == [("a.bin",), ("b.bin",)]
+    finally:
+        reader.close()
+
+
+def test_package_reader_rejects_growth_after_scan_before_file_io_and_charges(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package = tmp_path / "package"
+    package.mkdir()
+    target = package / "artifact.bin"
+    target.write_bytes(b"four")
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    real_read_cached = reader.read_cached
+    real_fdopen = validator.os.fdopen
+    fdopen_calls = 0
+    grown = False
+
+    def grow_before_descriptor_read(self, path, **kwargs):
+        nonlocal grown
+        if not grown:
+            grown = True
+            target.write_bytes(b"nine-byte")
+        return real_read_cached(path, **kwargs)
+
+    def counted_fdopen(*args, **kwargs):
+        nonlocal fdopen_calls
+        fdopen_calls += 1
+        return real_fdopen(*args, **kwargs)
+
+    monkeypatch.setattr(type(reader), "read_cached", grow_before_descriptor_read)
+    monkeypatch.setattr(validator.os, "fdopen", counted_fdopen)
+    try:
+        snapshot, tree_failure = reader.snapshot_tree(
+            {"artifact.bin"},
+            max_bytes_by_path={"artifact.bin": 16},
+            max_total_bytes=8,
+        )
+
+        assert snapshot is None
+        assert tree_failure == "changed"
+        assert fdopen_calls == 0
+        assert reader.charged_bytes == 9
     finally:
         reader.close()
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from io import BytesIO
 import json
 from pathlib import PurePosixPath
 import re
+import threading
 
 import fitz
 import openpyxl
@@ -413,6 +415,78 @@ def test_content_rejects_nonproduction_complete_projection(tmp_path, case):
 
     assert content.report.outcome == "invalid", case
     assert "production-projection-mismatch" in content.report.errors
+
+
+def test_content_rejects_coherent_changed_decision_that_retains_expected_digest(
+    tmp_path,
+):
+    fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
+    manifest = _read_document(fixture.package_dir / "case-manifest.json")
+    assignments = _read_document(fixture.package_dir / "assignments.json")
+    unit = next(
+        item
+        for item in assignments["units"]
+        if item["unitKind"] == "pdf-page" and item["decision"] == "accepted"
+    )
+    unit["decision"] = "reassigned"
+    unit["role"] = (
+        "acceptance-record"
+        if unit["role"] != "acceptance-record"
+        else "payment-tax-form"
+    )
+    decision = next(
+        item
+        for item in manifest["decisions"]
+        if item["decisionId"] == unit["decisionId"]
+    )
+    decision["type"] = "reassign-unit"
+    assignment_bytes = _canonical(assignments)
+    (fixture.package_dir / "assignments.json").write_bytes(assignment_bytes)
+    artifact = next(
+        item for item in manifest["artifacts"] if item["kind"] == "assignments"
+    )
+    artifact["size"] = len(assignment_bytes)
+    artifact["sha256"] = sha256(assignment_bytes).hexdigest()
+    _write_manifest(fixture, manifest)
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "invalid"
+    assert "proposal-coherence-mismatch" in content.report.errors
+
+
+def test_two_validations_share_no_snapshot_cache_or_global_serialization(
+    tmp_path, monkeypatch
+):
+    first = materialize_v2_fixture("complete", tmp_path / "first")
+    second = materialize_v2_fixture("complete", tmp_path / "second")
+    original = InventoryObservation.snapshot
+    installed = None
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    calls = Counter()
+
+    def counted(self, evidence_id, *, max_bytes):
+        with lock:
+            key = (id(self), evidence_id)
+            calls[key] += 1
+            first_for_observation = sum(
+                value for (owner, _source), value in calls.items() if owner == id(self)
+            ) == 1
+        assert InventoryObservation.snapshot is installed
+        if first_for_observation:
+            barrier.wait(timeout=5)
+        return original(self, evidence_id, max_bytes=max_bytes)
+
+    installed = counted
+    monkeypatch.setattr(InventoryObservation, "snapshot", installed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(_validate_content, (first, second)))
+
+    assert InventoryObservation.snapshot is installed
+    assert all(item.report.outcome == "valid" for item in results)
+    assert len(calls) == 8
+    assert set(calls.values()) == {1}
 
 
 def test_publication_matches_content_and_adds_only_receipt_consistency(tmp_path):

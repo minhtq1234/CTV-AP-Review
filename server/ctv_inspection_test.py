@@ -163,6 +163,34 @@ def test_inspect_observation_keeps_caller_owned_observation_open(tmp_path):
         )
 
 
+def test_inspect_observation_uses_explicit_snapshot_capability(tmp_path, monkeypatch):
+    source = tmp_path / "private-source"
+    source.mkdir()
+    (source / "private.xlsx").write_bytes(_workbook())
+
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        owned_snapshot = observation.snapshot
+        calls = []
+
+        def snapshot_source(evidence_id, *, max_bytes):
+            calls.append(evidence_id)
+            return owned_snapshot(evidence_id, max_bytes=max_bytes)
+
+        monkeypatch.setattr(
+            ctv_inventory.InventoryObservation,
+            "snapshot",
+            lambda *_args, **_kwargs: pytest.fail(
+                "default observation acquisition bypassed injected capability"
+            ),
+        )
+        result = inspect_observation(
+            observation, _snapshot_source=snapshot_source
+        )
+
+        assert result.observation_id == observation.observation_id
+        assert calls == [result.sources[0].evidence_id]
+
+
 def _unavailable_ocr(monkeypatch) -> None:
     import ctv_inspection as inspection
     from ctv_local_ocr import open_local_ocr

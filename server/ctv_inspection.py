@@ -137,6 +137,7 @@ def _inspect_observed_source(
     observation,
     source: ObservedInventorySource,
     *,
+    snapshot_source,
     limits: InspectionLimits,
     ocr_budget: OcrBudget,
     ocr_runner,
@@ -189,7 +190,7 @@ def _inspect_observed_source(
         else:
             return _source_only(source, "over-limit", None, "document-over-limit")
     else:
-        snapshot = observation.snapshot(source.evidence_id, max_bytes=source_cap)
+        snapshot = snapshot_source(source.evidence_id, max_bytes=source_cap)
         archive_type = _leading_archive_type(snapshot)
         workbook_candidate = (
             archive_type == "zip"
@@ -264,7 +265,10 @@ def _inspection_result(
     *,
     limits: InspectionLimits,
     ocr_session,
+    snapshot_source=None,
 ) -> InspectionResult | str:
+    if snapshot_source is None:
+        snapshot_source = observation.snapshot
     if any(
         "changed-during-read" in observed_source.issue_codes
         for observed_source in observation.sources
@@ -291,6 +295,7 @@ def _inspection_result(
         source_record, unit_evidence = _inspect_observed_source(
             observation,
             observed_source,
+            snapshot_source=snapshot_source,
             limits=limits,
             ocr_budget=ocr_budget,
             ocr_runner=bound_ocr,
@@ -398,10 +403,13 @@ def inspect_observation(
     observation: InventoryObservation,
     *,
     limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
+    _snapshot_source=None,
 ) -> InspectionResult:
     """Inspect one caller-owned live observation without closing it."""
     if type(observation) is not InventoryObservation:
         raise TypeError("observation must be a live inventory observation")
+    if _snapshot_source is not None and not callable(_snapshot_source):
+        raise TypeError("snapshot source must be callable")
     limits = _bounded_limits(limits)
     ocr_session = open_local_ocr()
     result = _UNKNOWN_INVENTORY_FAILURE
@@ -411,6 +419,7 @@ def inspect_observation(
             observation,
             limits=limits,
             ocr_session=ocr_session,
+            snapshot_source=_snapshot_source,
         )
     except InventoryError as error:
         failure_code = _mapped_inventory_error_code(error)

@@ -377,6 +377,43 @@ def test_build_plan_fixes_pdf_order_evidence_grouping_and_all_locators_before_re
         context.__exit__(None, None, None)
 
 
+def test_rendering_uses_explicit_owned_snapshot_capability(tmp_path, monkeypatch):
+    context, observation, inspection, approved = _approved_inputs(tmp_path)
+    try:
+        plan = create_build_plan(observation, inspection, approved)
+        owned_snapshot = observation.snapshot
+        calls = []
+
+        def snapshot_source(evidence_id, *, max_bytes):
+            calls.append(evidence_id)
+            return owned_snapshot(evidence_id, max_bytes=max_bytes)
+
+        monkeypatch.setattr(
+            InventoryObservation,
+            "snapshot",
+            lambda *_args, **_kwargs: pytest.fail(
+                "default observation acquisition bypassed injected capability"
+            ),
+        )
+        rendered = tuple(
+            iter_rendered_artifacts(
+                plan, observation, _snapshot_source=snapshot_source
+            )
+        )
+
+        assert [item.path for item in rendered] == [
+            recipe.path for recipe in plan.recipes
+        ]
+        assert calls == [
+            "evidence-0001",
+            "evidence-0005",
+            "evidence-0002",
+            "evidence-0003",
+        ]
+    finally:
+        context.__exit__(None, None, None)
+
+
 @pytest.mark.parametrize(
     ("image_format", "image_suffix", "expected_image_format"),
     (("JPEG", ".jpg", "JPEG"), ("TIFF", ".tiff", "TIFF")),
