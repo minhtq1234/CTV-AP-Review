@@ -265,11 +265,12 @@ def _make_package_reader_type():
             )
             if identity_before is not None:
                 state["charged_bytes"] += identity_before[2]
-            content, failure = _read_relative_to_fd(
+            content, failure, opened_identity = _read_relative_to_fd(
                 state["descriptor"],
                 parts,
                 expected_size=expected_size,
                 max_bytes=max_bytes,
+                expected_identity=identity_before,
             )
             identity_after, after_failure = _regular_identity_relative_to_fd(
                 state["descriptor"], parts
@@ -277,8 +278,11 @@ def _make_package_reader_type():
             if (
                 failure is None
                 and identity_before is not None
+                and opened_identity is not None
                 and identity_after is not None
-                and identity_before != identity_after
+                and not (
+                    identity_before == opened_identity == identity_after
+                )
             ):
                 content, failure = None, "changed"
             elif failure is None and (identity_failure or after_failure):
@@ -389,13 +393,16 @@ def _make_package_reader_type():
             for path in sorted(actual_paths, key=lambda value: value.encode("utf-8")):
                 size = before_by_path[path][2]
                 total += size
+                if total > max_total_bytes:
+                    if path not in state["read_cache"]:
+                        state["charged_bytes"] += size
+                        state["read_identities"][path] = before_by_path[path]
+                    return None, "too-large"
                 content, read_failure = self.read_cached(
                     path, max_bytes=max_bytes_by_path[path]
                 )
                 if read_failure is not None or content is None:
                     return None, read_failure or "missing"
-                if total > max_total_bytes:
-                    return None, "too-large"
                 if path not in excluded:
                     digests.append((path, hashlib.sha256(content).hexdigest()))
 
@@ -559,7 +566,12 @@ def _read_relative_to_fd(
     *,
     expected_size: int | None,
     max_bytes: int,
-) -> tuple[bytes | None, str | None]:
+    expected_identity: tuple[int, int, int, int, int] | None = None,
+) -> tuple[
+    bytes | None,
+    str | None,
+    tuple[int, int, int, int, int] | None,
+]:
     parent_fd = os.dup(root_fd)
     try:
         for part in parts[:-1]:
@@ -570,7 +582,11 @@ def _read_relative_to_fd(
                     dir_fd=parent_fd,
                 )
             except OSError:
-                return None, "symlink" if _is_symlink_at(parent_fd, part) else "missing"
+                return (
+                    None,
+                    "symlink" if _is_symlink_at(parent_fd, part) else "missing",
+                    None,
+                )
             os.close(parent_fd)
             parent_fd = child_fd
 
@@ -581,24 +597,34 @@ def _read_relative_to_fd(
                 dir_fd=parent_fd,
             )
         except OSError:
-            return None, "symlink" if _is_symlink_at(parent_fd, parts[-1]) else "missing"
+            return (
+                None,
+                "symlink" if _is_symlink_at(parent_fd, parts[-1]) else "missing",
+                None,
+            )
         try:
             metadata = os.fstat(file_fd)
+            opened_identity = _identity(metadata)
             if not stat.S_ISREG(metadata.st_mode):
-                return None, "not-regular"
+                return None, "not-regular", opened_identity
+            if (
+                expected_identity is not None
+                and opened_identity != expected_identity
+            ):
+                return None, "changed", opened_identity
             if metadata.st_size > max_bytes:
-                return None, "too-large"
+                return None, "too-large", opened_identity
             if expected_size is not None and metadata.st_size != expected_size:
-                return None, "size-mismatch"
+                return None, "size-mismatch", opened_identity
             with os.fdopen(file_fd, "rb", closefd=False) as stream:
                 content = stream.read(max_bytes + 1)
             if len(content) > max_bytes:
-                return None, "too-large"
+                return None, "too-large", opened_identity
             if expected_size is not None and len(content) != expected_size:
-                return None, "size-mismatch"
-            return content, None
+                return None, "size-mismatch", opened_identity
+            return content, None, opened_identity
         except OSError:
-            return None, "missing"
+            return None, "missing", None
         finally:
             os.close(file_fd)
     finally:

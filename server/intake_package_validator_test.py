@@ -1084,6 +1084,93 @@ def test_package_reader_tree_snapshot_rejects_non_allowlisted_or_changed_members
         reader.close()
 
 
+def test_package_reader_binds_snapshot_bytes_to_opened_descriptor_identity(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package = tmp_path / "package"
+    package.mkdir()
+    target = package / "artifact.bin"
+    target.write_bytes(b"original")
+    saved = tmp_path / "saved.bin"
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"replaced")
+    real_read = validator._read_relative_to_fd
+    metadata = target.stat()
+    original_identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+    def swap_read_swap_back(root_fd, parts, **kwargs):
+        target.rename(saved)
+        replacement.rename(target)
+        try:
+            return real_read(root_fd, parts, **kwargs)
+        finally:
+            target.rename(replacement)
+            saved.rename(target)
+
+    def stable_path_identity(_root_fd, _parts):
+        return original_identity, None
+
+    monkeypatch.setattr(validator, "_read_relative_to_fd", swap_read_swap_back)
+    monkeypatch.setattr(
+        validator, "_regular_identity_relative_to_fd", stable_path_identity
+    )
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    try:
+        content, read_failure = reader.read_cached("artifact.bin", max_bytes=16)
+
+        assert content is None
+        assert read_failure == "changed"
+    finally:
+        reader.close()
+
+
+def test_package_reader_reserves_aggregate_budget_before_crossing_artifact_io(
+    tmp_path, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "a.bin").write_bytes(b"aaaa")
+    (package / "b.bin").write_bytes(b"bbbbb")
+    real_read = validator._read_relative_to_fd
+    reads = []
+
+    def counted(root_fd, parts, **kwargs):
+        reads.append(parts)
+        return real_read(root_fd, parts, **kwargs)
+
+    monkeypatch.setattr(validator, "_read_relative_to_fd", counted)
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    try:
+        snapshot, tree_failure = reader.snapshot_tree(
+            {"a.bin", "b.bin"},
+            max_bytes_by_path={"a.bin": 8, "b.bin": 8},
+            max_total_bytes=8,
+        )
+
+        assert snapshot is None
+        assert tree_failure == "too-large"
+        assert reads == [("a.bin",)]
+        assert reader.charged_bytes == 9
+
+        content, read_failure = reader.read_cached("b.bin", max_bytes=8)
+        assert content == b"bbbbb" and read_failure is None
+        assert reads == [("a.bin",), ("b.bin",)]
+    finally:
+        reader.close()
+
+
 def test_package_reader_charges_attempted_bytes_even_when_read_fails(tmp_path):
     import intake_package_validator as validator
 

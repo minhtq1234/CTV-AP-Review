@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import Counter
 from hashlib import sha256
+from io import BytesIO
 import json
+from pathlib import PurePosixPath
 import re
 
 import fitz
+import openpyxl
 import pytest
+from PIL import Image
 
-from ctv_inventory import open_inventory_observation
+from ctv_inventory import InventoryObservation, open_inventory_observation
 from intake_fixture_factory_v2 import materialize_v2_fixture
 from intake_package_validator import _PackageReader
 from intake_package_validator_v2 import (
@@ -76,6 +81,17 @@ def _rewrite_artifact(fixture, relative_path, document, *, bind_digest=True):
         _write_manifest(fixture, manifest)
 
 
+def _bind_artifact_bytes(fixture, relative_path, content):
+    (fixture.package_dir / relative_path).write_bytes(content)
+    manifest = _read_document(fixture.package_dir / "case-manifest.json")
+    artifact = next(
+        item for item in manifest["artifacts"] if item["path"] == relative_path
+    )
+    artifact["size"] = len(content)
+    artifact["sha256"] = sha256(content).hexdigest()
+    _write_manifest(fixture, manifest)
+
+
 def test_complete_content_is_valid_and_binds_manifest_artifacts_and_checks(tmp_path):
     fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
     content = _validate_content(fixture)
@@ -88,6 +104,29 @@ def test_complete_content_is_valid_and_binds_manifest_artifacts_and_checks(tmp_p
     assert content.report.checks
     assert all(check.passed for check in content.report.checks)
     assert canonical_v2_receipt_bytes(content).endswith(b"\n")
+
+
+def test_content_acquires_each_verified_source_once_and_skips_unacquired(
+    tmp_path, monkeypatch
+):
+    fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
+    calls = []
+    original = InventoryObservation.snapshot
+
+    def counted(self, evidence_id, *, max_bytes):
+        calls.append(evidence_id)
+        return original(self, evidence_id, max_bytes=max_bytes)
+
+    monkeypatch.setattr(InventoryObservation, "snapshot", counted)
+    content = _validate_content(fixture)
+
+    expected = {
+        PurePosixPath(item.path).stem
+        for item in fixture.manifest.sources
+        if item.binding_status == "verified-content"
+    }
+    assert content.report.outcome == "valid"
+    assert Counter(calls) == Counter({evidence_id: 1 for evidence_id in expected})
 
 
 def _corrupt(fixture, case):
@@ -232,6 +271,150 @@ def test_invalid_assignment_fixture_fails_semantics_not_digest_binding(tmp_path)
     assert "artifact-digest-mismatch" not in content.report.errors
 
 
+def _replace_source_derived_artifact(fixture, case):
+    if case == "same-page-count-unrelated-pdf":
+        document = fitz.open()
+        output = BytesIO()
+        try:
+            for page_number in range(1, 5):
+                page = document.new_page()
+                page.insert_text((72, 72), f"UNRELATED SYNTHETIC {page_number}")
+            document.save(output)
+        finally:
+            document.close()
+        _bind_artifact_bytes(fixture, "input.pdf", output.getvalue())
+        return
+    if case == "changed-roster-values":
+        path = fixture.package_dir / "roster.xlsx"
+    elif case == "changed-evidence-workbook":
+        path = next((fixture.package_dir / "evidence").glob("*.xlsx"))
+    elif case == "changed-normalized-png":
+        path = next((fixture.package_dir / "evidence").glob("*.png"))
+        output = BytesIO()
+        with Image.open(path) as image:
+            changed = image.convert("RGB")
+            changed.putpixel((0, 0), (250, 1, 2))
+            changed.save(output, format="PNG", compress_level=9, optimize=False)
+        _bind_artifact_bytes(
+            fixture, path.relative_to(fixture.package_dir).as_posix(), output.getvalue()
+        )
+        return
+    else:
+        raise AssertionError(case)
+    workbook = openpyxl.load_workbook(path)
+    try:
+        worksheet = workbook.worksheets[0]
+        if case == "changed-roster-values":
+            worksheet.cell(2, 2).value = "Changed Synthetic Person"
+        else:
+            worksheet.cell(1, 1).value = "CHANGED SYNTHETIC EVIDENCE"
+        output = BytesIO()
+        workbook.save(output)
+    finally:
+        workbook.close()
+    _bind_artifact_bytes(
+        fixture, path.relative_to(fixture.package_dir).as_posix(), output.getvalue()
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "same-page-count-unrelated-pdf",
+        "changed-roster-values",
+        "changed-normalized-png",
+        "changed-evidence-workbook",
+    ],
+)
+def test_content_rejects_digest_rebound_nonproduction_artifact_bytes(tmp_path, case):
+    fixture = materialize_v2_fixture("complete", tmp_path / case)
+    _replace_source_derived_artifact(fixture, case)
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "invalid", case
+    assert "production-projection-mismatch" in content.report.errors
+
+
+def _corrupt_production_projection(fixture, case):
+    manifest = _read_document(fixture.package_dir / "case-manifest.json")
+    assignments = _read_document(fixture.package_dir / "assignments.json")
+    if case == "roster-sheet":
+        manifest["rosterMapping"]["sheetName"] = "Wrong synthetic sheet"
+    elif case == "roster-columns":
+        manifest["rosterMapping"]["canonicalToSourceColumns"]["product"] = (
+            "Wrong synthetic product column"
+        )
+    elif case == "source-coverage":
+        source = next(
+            item
+            for item in manifest["sources"]
+            if item["bindingStatus"] == "verified-content"
+            and item["coverageState"] == "assigned"
+        )
+        source["coverageState"] = "shared"
+    elif case == "source-decision":
+        source = next(
+            item
+            for item in manifest["sources"]
+            if item["bindingStatus"] == "verified-content"
+        )
+        source["decisionId"] = manifest["decisions"][0]["decisionId"]
+    elif case == "participant-row-ids":
+        assignments["participants"][0]["rosterRowId"] = "roster-row-" + "f" * 32
+        roster_path = fixture.package_dir / "roster.xlsx"
+        workbook = openpyxl.load_workbook(roster_path)
+        try:
+            workbook.active.cell(2, 1).value = assignments["participants"][0][
+                "rosterRowId"
+            ]
+            output = BytesIO()
+            workbook.save(output)
+        finally:
+            workbook.close()
+        _bind_artifact_bytes(fixture, "roster.xlsx", output.getvalue())
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+        return
+    elif case == "pdf-decision-id":
+        manifest["pdfPages"][0]["decisionId"] = "decision-" + "f" * 32
+    elif case == "decision-evidence":
+        unit = assignments["units"][0]
+        decision = next(
+            item
+            for item in manifest["decisions"]
+            if item["decisionId"] == unit["decisionId"]
+        )
+        assignments_artifact = next(
+            item for item in manifest["artifacts"] if item["kind"] == "assignments"
+        )
+        decision["evidenceRefs"].append(assignments_artifact["artifactId"])
+    else:
+        raise AssertionError(case)
+    _write_manifest(fixture, manifest)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "roster-sheet",
+        "roster-columns",
+        "source-coverage",
+        "source-decision",
+        "participant-row-ids",
+        "pdf-decision-id",
+        "decision-evidence",
+    ],
+)
+def test_content_rejects_nonproduction_complete_projection(tmp_path, case):
+    fixture = materialize_v2_fixture("complete", tmp_path / case)
+    _corrupt_production_projection(fixture, case)
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "invalid", case
+    assert "production-projection-mismatch" in content.report.errors
+
+
 def test_publication_matches_content_and_adds_only_receipt_consistency(tmp_path):
     fixture = materialize_v2_fixture(
         "complete", tmp_path / "fixture", include_receipt=True
@@ -340,3 +523,34 @@ def test_publication_rejects_missing_malformed_stale_or_mismatched_receipt(
     serialized = canonical_v2_receipt_bytes(publication)
     assert b"PRIVATE-079123456789" not in serialized
     assert b"/private/source/path" not in serialized
+
+
+@pytest.mark.parametrize(
+    "variant", ["indented", "reordered", "missing-final-lf", "extra-final-lf"]
+)
+def test_publication_requires_exact_canonical_receipt_bytes(tmp_path, variant):
+    fixture = materialize_v2_fixture(
+        "complete", tmp_path / variant, include_receipt=True
+    )
+    path = fixture.package_dir / "validation-report.json"
+    receipt = _read_document(path)
+    if variant == "indented":
+        changed = json.dumps(
+            receipt, ensure_ascii=False, sort_keys=True, indent=2
+        ).encode() + b"\n"
+    elif variant == "reordered":
+        changed = json.dumps(
+            dict(reversed(list(receipt.items()))),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode() + b"\n"
+    elif variant == "missing-final-lf":
+        changed = path.read_bytes()[:-1]
+    else:
+        changed = path.read_bytes() + b"\n"
+    path.write_bytes(changed)
+
+    publication = _validate_publication(fixture)
+
+    assert publication.report.outcome == "invalid"
+    assert publication.report.errors[-1] == "validation-report-consistent"

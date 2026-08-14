@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
 import json
+import threading
 
 import fitz
 import openpyxl
@@ -17,7 +19,20 @@ from pydantic import ValidationError
 from ctv_inspection import inspect_observation
 from ctv_inventory import InventoryObservation
 from ctv_package_assignment import _source_id
-from ctv_package_builder import PackageIdentity
+from ctv_package_builder import (
+    ArtifactReceipt,
+    PackageIdentity,
+    build_manifest_bytes,
+    create_build_plan,
+    iter_rendered_artifacts,
+)
+from ctv_proposal import (
+    ApprovedProposalSnapshot,
+    ProposalState,
+    RosterRowSnapshot,
+    SourceDispositionSnapshot,
+    UnitDecisionSnapshot,
+)
 from intake_contract_v2 import (
     AssignmentsDocumentV2,
     CanonicalRosterDocumentV2,
@@ -86,6 +101,51 @@ class ContentValidationV2:
     declared_artifact_set_sha256: str
     tree_sha256: str
     artifact_sha256: tuple[tuple[str, str], ...]
+
+
+_SOURCE_SNAPSHOT_PATCH_LOCK = threading.RLock()
+
+
+class _SourceSnapshotCache:
+    """Reuse one bounded acquisition through strict production consumers."""
+
+    def __init__(self, observation: InventoryObservation) -> None:
+        self._observation = observation
+        self._sources = {
+            item.evidence_id: item for item in observation.sources
+        }
+        self._content: dict[str, bytes] = {}
+        self._reserved_bytes = 0
+
+    @contextmanager
+    def activated(self):
+        with _SOURCE_SNAPSHOT_PATCH_LOCK:
+            original = InventoryObservation.snapshot
+
+            def cached_snapshot(current, evidence_id, *, max_bytes):
+                if current is not self._observation:
+                    return original(current, evidence_id, max_bytes=max_bytes)
+                cached = self._content.get(evidence_id)
+                if cached is not None:
+                    if len(cached) > max_bytes:
+                        raise ValueError("source exceeds max_bytes")
+                    return cached
+                source = self._sources.get(evidence_id)
+                if source is None or type(source.size) is not int:
+                    raise ValueError("source is not bound to observation")
+                next_total = self._reserved_bytes + source.size
+                if next_total > MAX_PACKAGE_BYTES:
+                    raise ValueError("source aggregate exceeds validator bound")
+                self._reserved_bytes = next_total
+                content = original(current, evidence_id, max_bytes=max_bytes)
+                self._content[evidence_id] = content
+                return content
+
+            InventoryObservation.snapshot = cached_snapshot
+            try:
+                yield
+            finally:
+                InventoryObservation.snapshot = original
 
 
 class _DuplicateKey(ValueError):
@@ -384,6 +444,169 @@ def _assignment_semantics_are_consistent(
     return True
 
 
+def _approved_projection(
+    manifest: PackageManifestV2,
+    assignments: AssignmentsDocumentV2,
+    observation: InventoryObservation,
+    inspection,
+) -> ApprovedProposalSnapshot:
+    """Rebuild deterministic preparation inputs, not a browser approval proof."""
+    inspected_units = {item.unit_id: item for item in inspection.units}
+    roster_units = [
+        item
+        for item in assignments.units
+        if item.role == "payment-roster" and item.output_locator.kind == "roster"
+    ]
+    if len(roster_units) != 1:
+        raise ValueError("roster projection mismatch")
+    assigned_roster = roster_units[0]
+    inspected_roster = inspected_units.get(assigned_roster.unit_id)
+    if (
+        inspected_roster is None
+        or inspected_roster.unit_kind != "worksheet"
+        or inspected_roster.suggested_role != "payment-roster"
+    ):
+        raise ValueError("roster projection mismatch")
+
+    proposal = ProposalState.from_inspection(observation, inspection)
+    rows, row_issues, package_issues, columns = proposal._roster_rows(
+        inspected_roster
+    )
+    if not rows or row_issues or package_issues:
+        raise ValueError("roster projection mismatch")
+    roster_rows = tuple(
+        RosterRowSnapshot(
+            participant_handle=f"participant-{index:04d}",
+            row_index=row_index,
+            name=row["name"],
+            identity=row["identity"],
+            fa_code=row.get("faCode", ""),
+            tax_id=row.get("taxId", ""),
+            birth_date=row.get("birthDate", ""),
+            bank_account=row.get("bankAccount", ""),
+            service_fee=row.get("serviceFee", ""),
+            product=row.get("product", ""),
+        )
+        for index, (row, row_index) in enumerate(rows, start=1)
+    )
+
+    included = {item.unit_id: item for item in assignments.units}
+    excluded = {
+        item.record_id: item
+        for item in assignments.exclusions
+        if item.record_type == "unit"
+    }
+    if set(included) & set(excluded) or set(included) | set(excluded) != set(
+        inspected_units
+    ):
+        raise ValueError("unit projection mismatch")
+    pdf_pages = {
+        (item.source_id, item.source_page): item for item in manifest.pdf_pages
+    }
+    unit_decisions = []
+    for unit in sorted(
+        inspection.units, key=lambda item: int(item.unit_id.rsplit("-", 1)[1])
+    ):
+        assigned = included.get(unit.unit_id)
+        if assigned is not None:
+            unit_decisions.append(
+                UnitDecisionSnapshot(
+                    unit_id=unit.unit_id,
+                    evidence_id=unit.evidence_id,
+                    unit_kind=unit.unit_kind,
+                    unit_index=unit.unit_index,
+                    decision=assigned.decision,
+                    role=assigned.role,
+                    scope=assigned.target.scope,
+                    participant_handles=tuple(
+                        assigned.target.participant_handles
+                    ),
+                )
+            )
+            continue
+        reason = "intentionally-omitted"
+        if unit.unit_kind == "pdf-page":
+            page = pdf_pages.get(
+                (
+                    _source_id(manifest.proposal_digest, unit.evidence_id),
+                    unit.unit_index,
+                )
+            )
+            if page is None:
+                raise ValueError("PDF projection mismatch")
+            if page.coverage_state == "duplicate":
+                reason = "duplicate"
+        unit_decisions.append(
+            UnitDecisionSnapshot(
+                unit_id=unit.unit_id,
+                evidence_id=unit.evidence_id,
+                unit_kind=unit.unit_kind,
+                unit_index=unit.unit_index,
+                decision="excluded",
+                reason=reason,
+            )
+        )
+
+    source_models = {item.source_id: item for item in manifest.sources}
+    unit_evidence_ids = {item.evidence_id for item in inspection.units}
+    source_dispositions = []
+    for source in inspection.sources:
+        if source.evidence_id in unit_evidence_ids:
+            continue
+        source_model = source_models.get(
+            _source_id(manifest.proposal_digest, source.evidence_id)
+        )
+        if not isinstance(source_model, UnacquiredSourceV2):
+            raise ValueError("source projection mismatch")
+        source_dispositions.append(
+            SourceDispositionSnapshot(
+                evidence_id=source.evidence_id,
+                decision="excluded",
+                reason=(
+                    "duplicate"
+                    if source_model.coverage_state == "duplicate"
+                    else "irrelevant"
+                ),
+                acquisition_status=source_model.acquisition_status,
+                coverage_state=source_model.coverage_state,
+                issue_codes=tuple(source_model.issue_codes),
+            )
+        )
+    return ApprovedProposalSnapshot(
+        observation_id=observation.observation_id,
+        proposal_digest=manifest.proposal_digest,
+        roster_unit_id=inspected_roster.unit_id,
+        roster_evidence_id=inspected_roster.evidence_id,
+        roster_worksheet_index=inspected_roster.unit_index,
+        roster_rows=roster_rows,
+        unit_decisions=tuple(unit_decisions),
+        source_dispositions=tuple(source_dispositions),
+        fa_code=roster_rows[0].fa_code,
+        canonical_to_source_columns=columns,
+    )
+
+
+def _production_projection_is_consistent(
+    manifest_content: bytes,
+    manifest: PackageManifestV2,
+    assignments: AssignmentsDocumentV2,
+    observation: InventoryObservation,
+    inspection,
+    artifacts: dict[str, bytes],
+) -> bool:
+    approved = _approved_projection(
+        manifest, assignments, observation, inspection
+    )
+    plan = create_build_plan(observation, inspection, approved)
+    rendered = tuple(iter_rendered_artifacts(plan, observation))
+    if {item.artifact_id for item in rendered} != set(artifacts):
+        return False
+    if any(artifacts[item.artifact_id] != item.content for item in rendered):
+        return False
+    receipts = tuple(ArtifactReceipt.from_rendered(item) for item in rendered)
+    return manifest_content == build_manifest_bytes(plan, receipts)
+
+
 def _validate_content(
     reader: _PackageReader,
     observation: InventoryObservation,
@@ -503,14 +726,16 @@ def _validate_content(
         "package-identity",
     )
 
-    try:
-        inspection = inspect_observation(observation)
-        sources_valid = _source_facts_are_consistent(
-            manifest, observation, inspection
-        )
-    except Exception:
-        inspection = None
-        sources_valid = False
+    source_cache = _SourceSnapshotCache(observation)
+    with source_cache.activated():
+        try:
+            inspection = inspect_observation(observation)
+            sources_valid = _source_facts_are_consistent(
+                manifest, observation, inspection
+            )
+        except Exception:
+            inspection = None
+            sources_valid = False
     checks.add(
         "sources-valid" if sources_valid else "source-verification-mismatch",
         sources_valid,
@@ -608,6 +833,33 @@ def _validate_content(
         assignments_valid,
         "artifact-assignments",
     )
+    projection_valid = False
+    if (
+        assignments is not None
+        and inspection is not None
+        and artifacts_valid
+    ):
+        with source_cache.activated():
+            try:
+                projection_valid = _production_projection_is_consistent(
+                    manifest_content,
+                    manifest,
+                    assignments,
+                    observation,
+                    inspection,
+                    artifacts,
+                )
+            except Exception:
+                projection_valid = False
+    checks.add(
+        (
+            "production-projection-valid"
+            if projection_valid
+            else "production-projection-mismatch"
+        ),
+        projection_valid,
+        "package-projection",
+    )
 
     report = _report(
         checks,
@@ -669,6 +921,10 @@ def validate_v2_publication_reader(
             receipt = ValidationReportV2.model_validate(
                 _strict_json(receipt_content)
             )
+            if receipt_content != _canonical_json(
+                receipt.model_dump(by_alias=True, mode="json")
+            ):
+                consistent = False
         except (UnicodeError, ValueError, ValidationError):
             consistent = False
     if receipt is not None:
