@@ -1364,3 +1364,26 @@ def test_package_image_normalization_enforces_source_pixel_and_output_caps():
         )
     with pytest.raises(PackageImageError, match="package-image-unavailable"):
         normalize_package_image(b"not-an-image", limits=InspectionLimits())
+
+
+def test_package_png_aborts_on_the_write_that_crosses_its_output_cap(monkeypatch):
+    import ctv_inspection_media as media
+
+    source = _image_bytes("JPEG", size=(12, 8), color=(1, 2, 3))
+    crossings = []
+    original_write = media._CappedBytesIO.write
+
+    def recording_write(self, value):
+        if self.tell() + len(value) > self.limit:
+            crossings.append((self.tell(), len(value), self.limit))
+        return original_write(self, value)
+
+    monkeypatch.setattr(media._CappedBytesIO, "write", recording_write)
+    with pytest.raises(media.PackageImageError, match="package-image-over-limit"):
+        media._normalize_package_image(
+            source,
+            limits=InspectionLimits(),
+            max_output_bytes=32,
+        )
+    assert crossings and len(crossings) == 1
+    assert crossings[0][0] <= crossings[0][2]

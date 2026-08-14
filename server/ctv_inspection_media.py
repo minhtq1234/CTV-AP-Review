@@ -43,6 +43,26 @@ _MAX_CONTENT_STREAMS_PER_PAGE = 256
 _MAX_RESOURCE_RECORDS_PER_PAGE = 256
 _MAX_RAW_RESOURCE_BYTES_PER_PAGE = 25 * 1024 * 1024
 _MAX_PAGE_TREE_PARENT_DEPTH = 32
+
+
+class _OutputLimitExceeded(RuntimeError):
+    pass
+
+
+class _CappedBytesIO(BytesIO):
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+        self.crossed = False
+
+    def write(self, value: bytes) -> int:
+        if self.crossed:
+            return len(value)
+        end = self.tell() + len(value)
+        if end > self.limit:
+            self.crossed = True
+            raise _OutputLimitExceeded()
+        return super().write(value)
 _MAX_XREF_DIGITS = 10
 _MAX_XREF_REFERENCE_CHARS = 32
 _STANDARD_TYPE1_FONTS = frozenset(
@@ -997,10 +1017,11 @@ def render_image_preview(
     return normalized
 
 
-def normalize_package_image(
+def _normalize_package_image(
     snapshot: bytes,
     *,
     limits: InspectionLimits,
+    max_output_bytes: int,
 ) -> bytes:
     """Return fixed first-frame RGBA PNG bytes or a fixed bounded media error."""
     if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
@@ -1025,7 +1046,7 @@ def normalize_package_image(
                 oriented = ImageOps.exif_transpose(image)
                 normalized = oriented.convert("RGBA")
                 try:
-                    output = BytesIO()
+                    output = _CappedBytesIO(max_output_bytes)
                     normalized.save(
                         output,
                         format="PNG",
@@ -1040,6 +1061,8 @@ def normalize_package_image(
                         oriented.close()
     except PackageImageError:
         raise
+    except _OutputLimitExceeded:
+        raise PackageImageError("package-image-over-limit") from None
     except (Image.DecompressionBombWarning, Image.DecompressionBombError):
         raise PackageImageError("package-image-over-limit") from None
     except Exception:
@@ -1047,3 +1070,16 @@ def normalize_package_image(
     if len(rendered) > _OCR_IMAGE_BYTES:
         raise PackageImageError("package-image-over-limit")
     return rendered
+
+
+def normalize_package_image(
+    snapshot: bytes,
+    *,
+    limits: InspectionLimits,
+) -> bytes:
+    """Return fixed first-frame RGBA PNG bytes or a fixed bounded media error."""
+    return _normalize_package_image(
+        snapshot,
+        limits=limits,
+        max_output_bytes=_OCR_IMAGE_BYTES,
+    )

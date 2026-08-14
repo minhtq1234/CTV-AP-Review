@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from io import BytesIO
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import platform
 from types import MappingProxyType
 from typing import Mapping
@@ -14,15 +15,19 @@ import zlib
 import fitz
 import openpyxl
 from PIL import __version__ as pillow_version
+from PIL import features as pillow_features
+from pydantic import ValidationError
 
 from ctv_inspection_model import InspectionResult
 from ctv_inspection_model import InspectionLimits
 from ctv_inspection_media import (
+    PackageImageError,
     PdfParserBoundaryExceededError,
+    _normalize_package_image,
     _prove_pdf_page_bounds,
-    normalize_package_image,
 )
 from ctv_inspection_workbook import (
+    PackageWorkbookError,
     _canonical_package_workbook_bytes,
     selected_worksheet_values,
 )
@@ -80,6 +85,25 @@ _ROSTER_FIELDS = (
     "service_fee",
     "product",
 )
+class _OutputLimitExceeded(RuntimeError):
+    def __init__(self, code: str = "package-artifact-over-limit") -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class _CappedBytesIO(BytesIO):
+    def __init__(self, limit: int, code: str = "package-artifact-over-limit") -> None:
+        super().__init__()
+        self.limit = limit
+        self.code = code
+        self.crossed = False
+
+    def write(self, value: bytes) -> int:
+        end = self.tell() + len(value)
+        if end > self.limit:
+            self.crossed = True
+            raise _OutputLimitExceeded(self.code)
+        return super().write(value)
 
 
 def _identity_digest(domain: str, payload: bytes) -> str:
@@ -127,16 +151,64 @@ class PackageIdentity:
         )
 
 
+def _mupdf_fingerprint() -> object:
+    return {
+        "binding": fitz.VersionBind,
+        "native": getattr(fitz, "VersionFitz", "unknown"),
+    }
+
+
+def _lxml_fingerprint() -> object:
+    try:
+        import lxml.etree as etree
+    except ImportError:
+        return {"enabled": False, "version": "absent"}
+    return {
+        "enabled": bool(getattr(__import__("openpyxl.xml.functions", fromlist=["LXML"]), "LXML")),
+        "lxml": tuple(etree.LXML_VERSION),
+        "libxml-runtime": tuple(etree.LIBXML_VERSION),
+        "libxml-compiled": tuple(etree.LIBXML_COMPILED_VERSION),
+        "libxslt-runtime": tuple(etree.LIBXSLT_VERSION),
+    }
+
+
+def _zlib_fingerprint() -> object:
+    return {
+        "compiled": zlib.ZLIB_VERSION,
+        "runtime": getattr(zlib, "ZLIB_RUNTIME_VERSION", "unknown"),
+    }
+
+
+def _pillow_fingerprint() -> object:
+    libraries = {}
+    for name in ("jpg", "jpg_2000", "zlib", "libtiff", "webp", "libjpeg_turbo"):
+        libraries[name] = {
+            "enabled": bool(pillow_features.check(name)),
+            "version": pillow_features.version(name) or "absent",
+        }
+    return {"pillow": pillow_version, "libraries": libraries}
+
+
 def writer_version_string() -> str:
-    """Return the deterministic serializer/dependency version identity."""
-    return (
-        "ctv-package-writer/2.0"
-        f";pymupdf={fitz.VersionBind}"
-        f";openpyxl={openpyxl.__version__}"
-        f";pillow={pillow_version}"
-        f";python={platform.python_version()}"
-        f";zlib={zlib.ZLIB_VERSION}"
-    )
+    """Return a path-free digest of every effective serializer dependency."""
+    dependency_payload = {
+        "lxml": _lxml_fingerprint(),
+        "mupdf": _mupdf_fingerprint(),
+        "openpyxl": openpyxl.__version__,
+        "pillow": _pillow_fingerprint(),
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+        },
+        "zlib": _zlib_fingerprint(),
+    }
+    fingerprint = hashlib.sha256(json.dumps(
+        dependency_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")).hexdigest()
+    return f"ctv-package-writer/2.0;deps={fingerprint}"
 
 
 def _opaque_id(prefix: str, digest: str, value: str) -> str:
@@ -178,7 +250,7 @@ class RenderedArtifact:
     kind: str
     path: str
     source_ids: tuple[str, ...]
-    content: bytes
+    content: bytes = field(repr=False)
 
     @property
     def size(self) -> int:
@@ -220,6 +292,7 @@ class PackageBuildError(RuntimeError):
             "package-roster-unavailable",
             "package-evidence-unavailable",
             "package-receipt-invalid",
+            "package-plan-invalid",
         }:
             raise ValueError("package build error code must be fixed")
         super().__init__(code)
@@ -286,6 +359,50 @@ def _source_coverage(items) -> str:
     return "duplicate" if items and all(item.reason == "duplicate" for item in items) else "excluded-by-user"
 
 
+def _original_media_type(source, _observed) -> str:
+    if source.detected_type == "pdf":
+        return "application/pdf"
+    # The reviewed inventory/inspection interface retains only a broad family,
+    # not the exact image codec or OOXML content type. Do not promote an
+    # extension guess to verified MIME provenance.
+    return "application/octet-stream"
+
+
+def _approved_shapes_are_bounded(approved: ApprovedProposalSnapshot) -> bool:
+    if (
+        type(approved.fa_code) is not str
+        or not 1 <= len(approved.fa_code) <= 128
+        or not any(not character.isspace() for character in approved.fa_code)
+    ):
+        return False
+    limits = {
+        "name": 256,
+        "identity": 256,
+        "fa_code": 128,
+        "tax_id": 128,
+        "birth_date": 128,
+        "bank_account": 128,
+        "service_fee": 128,
+        "product": 256,
+    }
+    required = {"name", "identity", "fa_code"}
+    for row in approved.roster_rows:
+        for attribute, maximum in limits.items():
+            value = getattr(row, attribute)
+            if type(value) is not str or len(value) > maximum:
+                return False
+            if attribute in required and not value:
+                return False
+    for field_name, source_column in approved.canonical_to_source_columns:
+        if (
+            type(field_name) is not str
+            or type(source_column) is not str
+            or not 1 <= len(source_column) <= 128
+        ):
+            return False
+    return True
+
+
 def _pdf_trailer_id(identity: PackageIdentity, pages: tuple[PlannedPdfPage, ...]) -> str:
     payload = _canonical_json_bytes([
         {
@@ -308,7 +425,7 @@ def _decision_by_subject(assignments: AssignmentBuildResult) -> dict[str, object
     return result
 
 
-def create_build_plan(
+def _create_build_plan(
     observation: InventoryObservation,
     inspection: InspectionResult,
     approved: ApprovedProposalSnapshot,
@@ -320,6 +437,8 @@ def create_build_plan(
         raise TypeError("build planning requires reviewed inspection and approval values")
     if observation.observation_id != inspection.observation_id or approved.observation_id != inspection.observation_id:
         raise ValueError("build inputs must share one observation identity")
+    if not _approved_shapes_are_bounded(approved):
+        raise PackageBuildError("package-plan-invalid")
 
     writer_version = writer_version_string()
     identity = PackageIdentity.derive(
@@ -491,11 +610,7 @@ def create_build_plan(
             or inventory.hash_status != "computed"
         ):
             raise ValueError("materialized sources require verified inventory content")
-        media_type = {
-            "pdf": "application/pdf",
-            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "image": "image/png",
-        }[source.detected_type]
+        media_type = _original_media_type(source, observed)
         source_models.append(VerifiedSourceV2(
             bindingStatus="verified-content",
             sourceId=source_id,
@@ -557,13 +672,64 @@ def create_build_plan(
     )
 
 
-def _canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
+_CONTRACT_FAILURE = object()
+
+
+def _contract_result(operation):
+    try:
+        return operation()
+    except ValidationError:
+        return _CONTRACT_FAILURE
+
+
+def _render_result(operation):
+    try:
+        return "ok", operation()
+    except _OutputLimitExceeded as error:
+        return "limit", error.code
+    except (PackageImageError, PackageWorkbookError) as error:
+        return "helper-error", str(error)
+    except ValidationError:
+        return "helper-error", None
+
+
+def _manifest_result(operation):
+    try:
+        return "ok", operation()
+    except (ValidationError, ValueError):
+        return "contract-error", None
+    except _OutputLimitExceeded as error:
+        return "limit", error.code
+
+
+def create_build_plan(
+    observation: InventoryObservation,
+    inspection: InspectionResult,
+    approved: ApprovedProposalSnapshot,
+) -> PackageBuildPlan:
+    """Fix identities and recipes while suppressing contract diagnostics."""
+    result = _contract_result(lambda: _create_build_plan(observation, inspection, approved))
+    if result is _CONTRACT_FAILURE:
+        raise PackageBuildError("package-plan-invalid")
+    return result
+
+
+def _canonical_json_bytes(
+    value: object,
+    *,
+    max_bytes: int = MAX_JSON_BYTES,
+    limit_code: str = "package-artifact-over-limit",
+) -> bytes:
+    output = _CappedBytesIO(max_bytes, limit_code)
+    encoder = json.JSONEncoder(
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
+    )
+    for chunk in encoder.iterencode(value):
+        output.write(chunk.encode("utf-8"))
+    output.write(b"\n")
+    return output.getvalue()
 
 
 def _clean_workbook() -> openpyxl.Workbook:
@@ -648,7 +814,11 @@ def _roster_snapshot_values(
     return tuple(normalized_rows)
 
 
-def _render_roster(plan: PackageBuildPlan, snapshot: bytes) -> bytes:
+def _render_roster_unchecked(
+    plan: PackageBuildPlan,
+    snapshot: bytes,
+    max_output_bytes: int,
+) -> bytes:
     normalized_rows = _roster_snapshot_values(plan, snapshot)
     workbook = _clean_workbook()
     worksheet = workbook.create_sheet("Roster")
@@ -692,10 +862,27 @@ def _render_roster(plan: PackageBuildPlan, snapshot: bytes) -> bytes:
         )
         for column, value in enumerate(values, start=1):
             _set_value(worksheet.cell(output_row, column), value)
-    return _canonical_package_workbook_bytes(workbook)
+    return _canonical_package_workbook_bytes(workbook, max_bytes=max_output_bytes)
 
 
-def _render_evidence_workbook(snapshot: bytes, indexes: tuple[int, ...]) -> bytes:
+def _render_roster(
+    plan: PackageBuildPlan,
+    snapshot: bytes,
+    max_output_bytes: int,
+) -> bytes:
+    result = _contract_result(
+        lambda: _render_roster_unchecked(plan, snapshot, max_output_bytes)
+    )
+    if result is _CONTRACT_FAILURE:
+        raise PackageBuildError("package-roster-unavailable")
+    return result
+
+
+def _render_evidence_workbook(
+    snapshot: bytes,
+    indexes: tuple[int, ...],
+    max_output_bytes: int,
+) -> bytes:
     selected = selected_worksheet_values(snapshot, indexes, limits=InspectionLimits())
     workbook = _clean_workbook()
     for output_index, worksheet_values in enumerate(selected, start=1):
@@ -703,14 +890,21 @@ def _render_evidence_workbook(snapshot: bytes, indexes: tuple[int, ...]) -> byte
         for row_index, row in enumerate(worksheet_values.rows, start=1):
             for column_index, value in enumerate(row, start=1):
                 _set_value(worksheet.cell(row_index, column_index), value)
-    return _canonical_package_workbook_bytes(workbook)
+    return _canonical_package_workbook_bytes(workbook, max_bytes=max_output_bytes)
 
 
-def _render_pdf(plan: PackageBuildPlan, observation: InventoryObservation, source_charge) -> bytes:
+def _render_pdf(
+    plan: PackageBuildPlan,
+    observation: InventoryObservation,
+    source_charge,
+    max_output_bytes: int,
+    limit_code: str,
+) -> bytes:
     limits = InspectionLimits()
     snapshots = {}
     documents = {}
     output = fitz.open()
+    rendered = None
     try:
         for source in plan.inspection.sources:
             if not any(page.evidence_id == source.evidence_id for page in plan.pdf_pages):
@@ -739,17 +933,24 @@ def _render_pdf(plan: PackageBuildPlan, observation: InventoryObservation, sourc
             "ID",
             f"[<{plan.pdf_trailer_id}><{plan.pdf_trailer_id}>]",
         )
-        return output.tobytes(
+        rendered = _CappedBytesIO(max_output_bytes, limit_code)
+        output.save(
+            rendered,
             garbage=4,
             clean=1,
             deflate=1,
             no_new_id=1,
         )
+        return rendered.getvalue()
     except PackageBuildError:
         raise
     except PdfParserBoundaryExceededError:
         raise PackageBuildError("package-pdf-unavailable") from None
+    except _OutputLimitExceeded:
+        raise
     except Exception:
+        if rendered is not None and rendered.crossed:
+            raise _OutputLimitExceeded(limit_code) from None
         raise PackageBuildError("package-pdf-unavailable") from None
     finally:
         output.close()
@@ -790,40 +991,66 @@ def iter_rendered_artifacts(
         return observation.snapshot(evidence_id, max_bytes=maximum)
 
     for recipe in plan.recipes:
+        per_file_limit = _artifact_limit(recipe.kind)
+        remaining_package_bytes = MAX_PACKAGE_BYTES - output_work
+        if remaining_package_bytes <= 0:
+            raise PackageBuildError("package-aggregate-over-limit")
+        max_output_bytes = min(per_file_limit, remaining_package_bytes)
+        limit_code = (
+            "package-aggregate-over-limit"
+            if remaining_package_bytes < per_file_limit
+            else "package-artifact-over-limit"
+        )
         if recipe.kind == "input-pdf":
-            content = _render_pdf(plan, observation, source_snapshot)
+            rendered_result = _render_result(lambda: _render_pdf(
+                plan, observation, source_snapshot, max_output_bytes, limit_code
+            ))
         elif recipe.kind == "roster":
             assert recipe.evidence_id is not None
-            content = _render_roster(
+            rendered_result = _render_result(lambda: _render_roster(
                 plan,
                 source_snapshot(recipe.evidence_id, InspectionLimits().max_workbook_source_bytes),
-            )
+                max_output_bytes,
+            ))
         elif recipe.kind == "evidence" and recipe.path.endswith(".png"):
             assert recipe.evidence_id is not None
-            content = normalize_package_image(
+            rendered_result = _render_result(lambda: _normalize_package_image(
                 source_snapshot(recipe.evidence_id, InspectionLimits().max_image_source_bytes),
                 limits=InspectionLimits(),
-            )
+                max_output_bytes=max_output_bytes,
+            ))
         elif recipe.kind == "evidence" and recipe.path.endswith(".xlsx"):
             assert recipe.evidence_id is not None
-            content = _render_evidence_workbook(
+            rendered_result = _render_result(lambda: _render_evidence_workbook(
                 source_snapshot(recipe.evidence_id, InspectionLimits().max_workbook_source_bytes),
                 recipe.source_unit_indexes,
-            )
+                max_output_bytes,
+            ))
         elif recipe.kind == "assignments":
-            content = _canonical_json_bytes(
-                plan.assignments.document.model_dump(by_alias=True)
-            )
+            rendered_result = _render_result(lambda: _canonical_json_bytes(
+                plan.assignments.document.model_dump(by_alias=True),
+                max_bytes=max_output_bytes,
+                limit_code=limit_code,
+            ))
         elif recipe.kind == "exceptions":
-            content = _canonical_json_bytes(
-                ExceptionsDocumentV2(schemaVersion="2.0", items=[]).model_dump(by_alias=True)
-            )
+            rendered_result = _render_result(lambda: _canonical_json_bytes(
+                ExceptionsDocumentV2(schemaVersion="2.0", items=[]).model_dump(by_alias=True),
+                max_bytes=max_output_bytes,
+                limit_code=limit_code,
+            ))
         else:
             raise PackageBuildError("package-evidence-unavailable")
-        if len(content) > _artifact_limit(recipe.kind):
-            raise PackageBuildError("package-artifact-over-limit")
-        if output_work + len(content) > MAX_PACKAGE_BYTES:
-            raise PackageBuildError("package-aggregate-over-limit")
+        if rendered_result[0] == "limit":
+            raise PackageBuildError(rendered_result[1])
+        if rendered_result[0] == "helper-error":
+            if rendered_result[1] is not None and rendered_result[1].endswith("over-limit"):
+                raise PackageBuildError(limit_code)
+            raise PackageBuildError(
+                "package-roster-unavailable"
+                if recipe.kind == "roster"
+                else "package-evidence-unavailable"
+            )
+        content = rendered_result[1]
         output_work += len(content)
         rendered = RenderedArtifact(
             artifact_id=recipe.artifact_id,
@@ -837,7 +1064,7 @@ def iter_rendered_artifacts(
         content = b""
 
 
-def build_manifest_bytes(
+def _build_manifest_bytes(
     plan: PackageBuildPlan,
     receipts: tuple[ArtifactReceipt, ...],
 ) -> bytes:
@@ -908,4 +1135,28 @@ def build_manifest_bytes(
         exceptionIds=[],
     )
     plan.assignments.document.validate_against_manifest(manifest)
-    return _canonical_json_bytes(manifest.model_dump(by_alias=True))
+    remaining_package_bytes = MAX_PACKAGE_BYTES - total_size
+    if remaining_package_bytes <= 0:
+        raise PackageBuildError("package-aggregate-over-limit")
+    return _canonical_json_bytes(
+        manifest.model_dump(by_alias=True),
+        max_bytes=min(MAX_JSON_BYTES, remaining_package_bytes),
+        limit_code=(
+            "package-aggregate-over-limit"
+            if remaining_package_bytes < MAX_JSON_BYTES
+            else "package-artifact-over-limit"
+        ),
+    )
+
+
+def build_manifest_bytes(
+    plan: PackageBuildPlan,
+    receipts: tuple[ArtifactReceipt, ...],
+) -> bytes:
+    """Bind receipts while suppressing all contract diagnostics and input echoes."""
+    status, result = _manifest_result(lambda: _build_manifest_bytes(plan, receipts))
+    if status == "contract-error":
+        raise PackageBuildError("package-receipt-invalid")
+    if status == "limit":
+        raise PackageBuildError(result)
+    return result

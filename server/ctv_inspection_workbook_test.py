@@ -1965,3 +1965,26 @@ def test_selected_worksheet_values_rejects_uncached_formulas_and_invalid_selecti
             (1,),
             limits=InspectionLimits(max_workbook_source_bytes=len(snapshot) - 1),
         )
+
+
+def test_package_xlsx_aborts_on_the_write_that_crosses_its_output_cap(monkeypatch):
+    import ctv_inspection_workbook as workbook_adapter
+
+    workbook = Workbook()
+    workbook.active.append(("Synthetic", "Value"))
+    crossings = []
+    original_write = workbook_adapter._CappedBytesIO.write
+
+    def recording_write(self, value):
+        if self.tell() + len(value) > self.limit:
+            crossings.append((self.tell(), len(value), self.limit))
+        return original_write(self, value)
+
+    monkeypatch.setattr(workbook_adapter._CappedBytesIO, "write", recording_write)
+    with pytest.raises(
+        workbook_adapter.PackageWorkbookError,
+        match="package-workbook-over-limit",
+    ):
+        workbook_adapter._canonical_package_workbook_bytes(workbook, max_bytes=64)
+    assert crossings and len(crossings) == 1
+    assert crossings[0][0] <= crossings[0][2]

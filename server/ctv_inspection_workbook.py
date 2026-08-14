@@ -1,7 +1,7 @@
 """Bounded, byte-only OOXML workbook inspection."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
 import math
@@ -37,6 +37,26 @@ _CONTENT_TYPES_PART = "[Content_Types].xml"
 _WORKBOOK_PART = "xl/workbook.xml"
 _WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
 _OLE_COMPOUND_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+class _OutputLimitExceeded(RuntimeError):
+    pass
+
+
+class _CappedBytesIO(BytesIO):
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+        self.crossed = False
+
+    def write(self, value: bytes) -> int:
+        if self.crossed:
+            return len(value)
+        end = self.tell() + len(value)
+        if end > self.limit:
+            self.crossed = True
+            raise _OutputLimitExceeded()
+        return super().write(value)
 _CONTENT_TYPES_NAMESPACE = (
     "http://schemas.openxmlformats.org/package/2006/content-types"
 )
@@ -141,7 +161,7 @@ class PackageWorkbookError(RuntimeError):
 @dataclass(frozen=True)
 class WorksheetValues:
     worksheet_index: int
-    rows: tuple[tuple[object, ...], ...]
+    rows: tuple[tuple[object, ...], ...] = field(repr=False)
 
 
 class _UnreadableWorkbookError(ValueError):
@@ -1725,11 +1745,17 @@ def selected_worksheet_values(
                     pass
 
 
-def _canonical_package_workbook_bytes(workbook: openpyxl.Workbook) -> bytes:
+def _canonical_package_workbook_bytes(
+    workbook: openpyxl.Workbook,
+    *,
+    max_bytes: int,
+) -> bytes:
     """Privately repack one generated workbook with fixed archive metadata."""
-    raw = BytesIO()
+    raw = _CappedBytesIO(max_bytes)
     try:
         workbook.save(raw)
+    except _OutputLimitExceeded:
+        raise PackageWorkbookError("package-workbook-over-limit") from None
     except Exception:
         raise PackageWorkbookError("package-workbook-unavailable") from None
     finally:
@@ -1737,9 +1763,10 @@ def _canonical_package_workbook_bytes(workbook: openpyxl.Workbook) -> bytes:
             workbook.close()
         except Exception:
             pass
-    output = BytesIO()
+    output = _CappedBytesIO(max_bytes)
     try:
-        with zipfile.ZipFile(BytesIO(raw.getvalue()), "r") as source:
+        raw.seek(0)
+        with zipfile.ZipFile(raw, "r") as source:
             names = sorted(source.namelist())
             if len(names) != len(set(names)):
                 raise PackageWorkbookError("package-workbook-unavailable")
@@ -1751,8 +1778,8 @@ def _canonical_package_workbook_bytes(workbook: openpyxl.Workbook) -> bytes:
                 strict_timestamps=True,
             ) as target:
                 for name in names:
-                    content = source.read(name)
                     if name == "docProps/core.xml":
+                        content = source.read(name)
                         opening = b"<dcterms:modified"
                         closing = b"</dcterms:modified>"
                         start = content.find(opening)
@@ -1774,13 +1801,24 @@ def _canonical_package_workbook_bytes(workbook: openpyxl.Workbook) -> bytes:
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.create_system = 3
                     info.external_attr = 0o100644 << 16
-                    target.writestr(
-                        info,
-                        content,
-                        compress_type=zipfile.ZIP_DEFLATED,
-                        compresslevel=9,
-                    )
+                    if name == "docProps/core.xml":
+                        target.writestr(
+                            info,
+                            content,
+                            compress_type=zipfile.ZIP_DEFLATED,
+                            compresslevel=9,
+                        )
+                    else:
+                        with source.open(name, "r") as reader:
+                            with target.open(info, "w", force_zip64=False) as writer:
+                                while True:
+                                    chunk = reader.read(_READ_CHUNK_BYTES)
+                                    if not chunk:
+                                        break
+                                    writer.write(chunk)
         return output.getvalue()
+    except _OutputLimitExceeded:
+        raise PackageWorkbookError("package-workbook-over-limit") from None
     except PackageWorkbookError:
         raise
     except Exception:

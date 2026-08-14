@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import date
+import hashlib
 from io import BytesIO
 import json
 import zipfile
@@ -11,6 +12,7 @@ import zipfile
 import fitz
 from openpyxl import Workbook, load_workbook
 from PIL import Image
+from pydantic import BaseModel, Field
 import pytest
 
 from ctv_inspection import inspect_observation
@@ -19,6 +21,7 @@ from ctv_package_builder import (
     ArtifactReceipt,
     PackageIdentity,
     PackageBuildError,
+    RenderedArtifact,
     build_manifest_bytes,
     create_build_plan,
     iter_rendered_artifacts,
@@ -38,7 +41,30 @@ def _save_workbook(path, sheets):
     workbook.close()
 
 
-def _approved_inputs(tmp_path):
+def _mark_as_xlsm(path):
+    source = BytesIO(path.read_bytes())
+    target = BytesIO()
+    with zipfile.ZipFile(source, "r") as source_zip:
+        with zipfile.ZipFile(target, "w") as target_zip:
+            for info in source_zip.infolist():
+                content = source_zip.read(info.filename)
+                if info.filename == "[Content_Types].xml":
+                    content = content.replace(
+                        b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                        b"application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+                    )
+                target_zip.writestr(info, content)
+    path.write_bytes(target.getvalue())
+
+
+def _approved_inputs(
+    tmp_path,
+    *,
+    fa_code="FA-SYNTHETIC-001",
+    image_format="PNG",
+    image_suffix=".png",
+    workbook_suffix=".xlsx",
+):
     source = tmp_path / "synthetic-source"
     source.mkdir()
     document = fitz.open()
@@ -50,24 +76,27 @@ def _approved_inputs(tmp_path):
 
     image_bytes = BytesIO()
     with Image.new("RGB", (3, 2), (10, 20, 30)) as image:
-        image.save(image_bytes, format="PNG")
-    (source / "b-image.png").write_bytes(image_bytes.getvalue())
+        image.save(image_bytes, format=image_format)
+    (source / f"b-image{image_suffix}").write_bytes(image_bytes.getvalue())
 
+    evidence_path = source / f"c-evidence{workbook_suffix}"
     _save_workbook(
-        source / "c-evidence.xlsx",
+        evidence_path,
         (
             ("Synthetic support one", (("Reference", "Amount"), ("SYN-1", 10))),
             ("Synthetic support two", (("Reference", "Amount"), ("SYN-2", 20))),
         ),
     )
-    evidence_book = load_workbook(source / "c-evidence.xlsx")
+    evidence_book = load_workbook(evidence_path)
     evidence_book.worksheets[0]["A2"].comment = __import__("openpyxl").comments.Comment(
         "PRIVATE EVIDENCE COMMENT", "Synthetic"
     )
     evidence_book.worksheets[0]["B2"].hyperlink = "https://private.invalid/evidence"
     evidence_book.worksheets[1].sheet_state = "hidden"
-    evidence_book.save(source / "c-evidence.xlsx")
+    evidence_book.save(evidence_path)
     evidence_book.close()
+    if workbook_suffix == ".xlsm":
+        _mark_as_xlsm(evidence_path)
     (source / "d-excluded.bin").write_bytes(b"PRIVATE-EXCLUDED-BYTES-079123456789")
     _save_workbook(
         source / "z-roster.xlsx",
@@ -75,8 +104,8 @@ def _approved_inputs(tmp_path):
             "Payment roster",
             (
                 ("name", "identity", "faCode", "taxId", "birthDate", "bankAccount", "serviceFee", "product", "So tien"),
-                ("Synthetic Person 1", "079123456781", "FA-SYNTHETIC-001", "TAX-1", date(1990, 1, 1), "BANK-1", "100", "Product 1", "100"),
-                ("Synthetic Person 2", "079123456782", "FA-SYNTHETIC-001", "TAX-2", "1990-01-02", "BANK-2", "200", "Product 2", "200"),
+                ("Synthetic Person 1", "079123456781", fa_code, "TAX-1", date(1990, 1, 1), "BANK-1", "100", "Product 1", "100"),
+                ("Synthetic Person 2", "079123456782", fa_code, "TAX-2", "1990-01-02", "BANK-2", "200", "Product 2", "200"),
             ),
         ),),
     )
@@ -123,6 +152,110 @@ def _approved_inputs(tmp_path):
     return context, observation, inspection, approved
 
 
+def _assert_private_free_boundary(error, private_marker, expected_code):
+    assert str(error) == expected_code
+    assert private_marker not in str(error)
+    assert private_marker not in repr(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_private_rows_and_rendered_bytes_are_excluded_from_repr():
+    from ctv_inspection_workbook import WorksheetValues
+
+    private_marker = "PRIVATE-REPR-079123456789"
+    worksheet = WorksheetValues(1, ((private_marker,),))
+    artifact = RenderedArtifact(
+        artifact_id="artifact-test",
+        kind="evidence",
+        path="evidence/test.png",
+        source_ids=("source-test",),
+        content=private_marker.encode(),
+    )
+
+    assert private_marker not in repr(worksheet)
+    assert private_marker not in repr(artifact)
+
+
+def test_public_builder_boundaries_translate_contract_diagnostics_without_context(
+    tmp_path, monkeypatch
+):
+    import ctv_package_builder as builder
+
+    private_marker = "PRIVATE-PYDANTIC-079123456789"
+
+    class PrivateFailure(BaseModel):
+        value: str = Field(max_length=1)
+
+    class RejectingColumns:
+        def __new__(cls, *_args, **_kwargs):
+            PrivateFailure(value=private_marker)
+
+        @classmethod
+        def model_validate(cls, _value):
+            PrivateFailure(value=private_marker)
+
+    context, observation, inspection, approved = _approved_inputs(tmp_path)
+    try:
+        monkeypatch.setattr(builder, "CanonicalSourceColumnsV2", RejectingColumns)
+        with pytest.raises(PackageBuildError) as raised:
+            create_build_plan(observation, inspection, approved)
+        _assert_private_free_boundary(
+            raised.value, private_marker, "package-plan-invalid"
+        )
+    finally:
+        context.__exit__(None, None, None)
+    monkeypatch.undo()
+
+    (tmp_path / "render-errors").mkdir()
+    context, observation, inspection, approved = _approved_inputs(
+        tmp_path / "render-errors"
+    )
+    try:
+        plan = create_build_plan(observation, inspection, approved)
+        monkeypatch.setattr(builder, "CanonicalRosterRowV2", RejectingColumns)
+        iterator = iter_rendered_artifacts(plan, observation)
+        assert next(iterator).path == "input.pdf"
+        with pytest.raises(PackageBuildError) as raised:
+            next(iterator)
+        _assert_private_free_boundary(
+            raised.value, private_marker, "package-roster-unavailable"
+        )
+
+        monkeypatch.setattr(builder, "PackageManifestV2", RejectingColumns)
+        receipts = tuple(
+            ArtifactReceipt(
+                artifact_id=recipe.artifact_id,
+                kind=recipe.kind,
+                path=recipe.path,
+                source_ids=recipe.source_ids,
+                size=0,
+                sha256="0" * 64,
+            )
+            for recipe in plan.recipes
+        )
+        with pytest.raises(PackageBuildError) as raised:
+            build_manifest_bytes(plan, receipts)
+        _assert_private_free_boundary(
+            raised.value, private_marker, "package-receipt-invalid"
+        )
+    finally:
+        context.__exit__(None, None, None)
+
+    (tmp_path / "long-fa").mkdir()
+    context, observation, inspection, approved = _approved_inputs(
+        tmp_path / "long-fa", fa_code="FA-" + private_marker * 5
+    )
+    try:
+        with pytest.raises(PackageBuildError) as raised:
+            create_build_plan(observation, inspection, approved)
+        _assert_private_free_boundary(
+            raised.value, private_marker, "package-plan-invalid"
+        )
+    finally:
+        context.__exit__(None, None, None)
+
+
 def test_package_identity_is_domain_separated_full_length_and_path_independent():
     identity = PackageIdentity.derive(
         observation_id="observation-" + "b" * 64,
@@ -158,6 +291,42 @@ def test_package_identity_is_domain_separated_full_length_and_path_independent()
             compatibility_target="ctv-intake-v2",
             source_path="private/source.pdf",
         )
+
+
+def test_effective_serializer_fingerprints_each_change_writer_and_package_identity(
+    monkeypatch
+):
+    import ctv_package_builder as builder
+
+    private_marker = "PRIVATE-DEPENDENCY-/tmp/079123456789"
+    baseline_writer = writer_version_string()
+    baseline_identity = PackageIdentity.derive(
+        observation_id="observation-" + "b" * 64,
+        proposal_digest="a" * 64,
+        writer_version=baseline_writer,
+        schema_version="2.0",
+        compatibility_target="ctv-intake-v2",
+    )
+    for probe_name in (
+        "_mupdf_fingerprint",
+        "_lxml_fingerprint",
+        "_zlib_fingerprint",
+        "_pillow_fingerprint",
+    ):
+        with monkeypatch.context() as local_patch:
+            local_patch.setattr(builder, probe_name, lambda: private_marker)
+            changed_writer = writer_version_string()
+            changed_identity = PackageIdentity.derive(
+                observation_id="observation-" + "b" * 64,
+                proposal_digest="a" * 64,
+                writer_version=changed_writer,
+                schema_version="2.0",
+                compatibility_target="ctv-intake-v2",
+            )
+        assert changed_writer != baseline_writer
+        assert changed_identity != baseline_identity
+        assert private_marker not in changed_writer
+        assert "/tmp/" not in changed_writer
 
 
 def test_build_plan_fixes_pdf_order_evidence_grouping_and_all_locators_before_render(
@@ -204,6 +373,68 @@ def test_build_plan_fixes_pdf_order_evidence_grouping_and_all_locators_before_re
             item.unit_id for item in approved.unit_decisions
             if item.decision in {"accepted", "reassigned"}
         }
+    finally:
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("image_format", "image_suffix", "expected_image_format"),
+    (("JPEG", ".jpg", "JPEG"), ("TIFF", ".tiff", "TIFF")),
+)
+def test_original_jpeg_and_tiff_sources_keep_conservative_mime_size_hash_and_path(
+    tmp_path, image_format, image_suffix, expected_image_format
+):
+    context, observation, inspection, approved = _approved_inputs(
+        tmp_path,
+        image_format=image_format,
+        image_suffix=image_suffix,
+    )
+    try:
+        plan = create_build_plan(observation, inspection, approved)
+        source = next(item for item in plan.sources if item.path.endswith(image_suffix))
+        observed = next(
+            item for item in observation.sources if item.extension == image_suffix
+        )
+        original = observation.snapshot(
+            observed.evidence_id,
+            max_bytes=observed.size,
+        )
+        with Image.open(BytesIO(original)) as image:
+            assert image.format == expected_image_format
+        assert source.media_type == "application/octet-stream"
+        assert source.path.endswith(image_suffix)
+        assert source.size == len(original)
+        assert source.sha256 == hashlib.sha256(original).hexdigest()
+        rendered = next(
+            item for item in iter_rendered_artifacts(plan, observation)
+            if item.path.endswith(".png")
+        )
+        assert rendered.content.startswith(b"\x89PNG\r\n\x1a\n")
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_original_xlsm_source_keeps_macro_mime_size_hash_and_path(tmp_path):
+    context, observation, inspection, approved = _approved_inputs(
+        tmp_path,
+        workbook_suffix=".xlsm",
+    )
+    try:
+        plan = create_build_plan(observation, inspection, approved)
+        source = next(item for item in plan.sources if item.path.endswith(".xlsm"))
+        observed = next(item for item in observation.sources if item.extension == ".xlsm")
+        original = observation.snapshot(observed.evidence_id, max_bytes=observed.size)
+        with zipfile.ZipFile(BytesIO(original)) as archive:
+            assert b"macroEnabled.main+xml" in archive.read("[Content_Types].xml")
+        assert source.media_type == "application/octet-stream"
+        assert source.path.endswith(".xlsm")
+        assert source.size == len(original)
+        assert source.sha256 == hashlib.sha256(original).hexdigest()
+        rendered = next(
+            item for item in iter_rendered_artifacts(plan, observation)
+            if item.path == "evidence/evidence-0002.xlsx"
+        )
+        assert rendered.content.startswith(b"PK")
     finally:
         context.__exit__(None, None, None)
 
@@ -383,6 +614,57 @@ def test_rendering_never_acquires_excluded_source_and_stops_at_resource_ceiling(
         assert next(iterator).path == "input.pdf"
         with pytest.raises(PackageBuildError, match="package-artifact-over-limit"):
             next(iterator)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_pdf_and_manifest_abort_on_the_crossing_write_before_more_acquisition(
+    tmp_path, monkeypatch
+):
+    import ctv_package_builder as builder
+
+    sink = builder._CappedBytesIO(4)
+    assert sink.write(b"1234") == 4
+    with pytest.raises(builder._OutputLimitExceeded):
+        sink.write(b"5")
+    assert sink.getvalue() == b"1234"
+
+    context, observation, inspection, approved = _approved_inputs(tmp_path)
+    try:
+        plan = create_build_plan(observation, inspection, approved)
+        acquired = []
+        original_snapshot = InventoryObservation.snapshot
+
+        def recording_snapshot(self, evidence_id, *, max_bytes):
+            acquired.append(evidence_id)
+            return original_snapshot(self, evidence_id, max_bytes=max_bytes)
+
+        monkeypatch.setattr(InventoryObservation, "snapshot", recording_snapshot)
+        monkeypatch.setattr(builder, "MAX_INPUT_PDF_BYTES", 64)
+        with pytest.raises(PackageBuildError, match="package-artifact-over-limit"):
+            next(iter_rendered_artifacts(plan, observation))
+        assert acquired
+        assert set(acquired) == {page.evidence_id for page in plan.pdf_pages}
+        assert all(
+            recipe.evidence_id not in acquired
+            for recipe in plan.recipes[1:]
+            if recipe.evidence_id is not None
+        )
+
+        receipts = tuple(
+            ArtifactReceipt(
+                artifact_id=recipe.artifact_id,
+                kind=recipe.kind,
+                path=recipe.path,
+                source_ids=recipe.source_ids,
+                size=0,
+                sha256="0" * 64,
+            )
+            for recipe in plan.recipes
+        )
+        monkeypatch.setattr(builder, "MAX_JSON_BYTES", 32)
+        with pytest.raises(PackageBuildError, match="package-artifact-over-limit"):
+            build_manifest_bytes(plan, receipts)
     finally:
         context.__exit__(None, None, None)
 
