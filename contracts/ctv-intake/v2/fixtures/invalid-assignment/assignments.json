@@ -1,0 +1,54 @@
+{
+  "exclusions": [],
+  "packageId": "package-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "participants": [
+    {
+      "participantHandle": "participant-0001",
+      "rosterRowId": "roster-row-0001"
+    }
+  ],
+  "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rosterArtifactId": "artifact-roster",
+  "schemaVersion": "2.0",
+  "sourceObservationId": "observation-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "units": [
+    {
+      "decision": "accepted",
+      "decisionId": "decision-9999",
+      "outputLocator": {
+        "artifactId": "artifact-input-pdf",
+        "kind": "pdf-page",
+        "targetPage": 1
+      },
+      "role": "service-contract",
+      "sourceId": "source-0001",
+      "sourceUnitIndex": 1,
+      "target": {
+        "participantHandles": [
+          "participant-0001"
+        ],
+        "scope": "individual"
+      },
+      "unitId": "unit-0001",
+      "unitKind": "pdf-page"
+    },
+    {
+      "decision": "accepted",
+      "decisionId": "decision-0002",
+      "outputLocator": {
+        "artifactId": "artifact-roster",
+        "kind": "roster",
+        "worksheetIndex": 1
+      },
+      "role": "payment-roster",
+      "sourceId": "source-0002",
+      "sourceUnitIndex": 1,
+      "target": {
+        "participantHandles": [],
+        "scope": "case"
+      },
+      "unitId": "unit-0002",
+      "unitKind": "worksheet"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "ExceptionItemV2": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "exceptionId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "title": "Exceptionid",
+          "type": "string"
+        },
+        "explanation": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        },
+        "requiredAction": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Requiredaction",
+          "type": "string"
+        },
+        "resolution": {
+          "enum": [
+            "open",
+            "accepted-partial",
+            "resolved"
+          ],
+          "title": "Resolution",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "blocking"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "exceptionId",
+        "code",
+        "severity",
+        "evidenceRefs",
+        "explanation",
+        "requiredAction",
+        "resolution"
+      ],
+      "title": "ExceptionItemV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ExceptionItemV2"
+      },
+      "maxItems": 10000,
+      "title": "Items",
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "items"
+  ],
+  "title": "ExceptionsDocumentV2",
+  "type": "object"
+}

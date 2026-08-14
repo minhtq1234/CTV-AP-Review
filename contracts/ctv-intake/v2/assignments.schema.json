@@ -1,0 +1,462 @@
+{
+  "$defs": {
+    "AssignmentParticipantV2": {
+      "additionalProperties": false,
+      "properties": {
+        "participantHandle": {
+          "maxLength": 128,
+          "minLength": 14,
+          "pattern": "^participant-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Participanthandle",
+          "type": "string"
+        },
+        "rosterRowId": {
+          "maxLength": 128,
+          "minLength": 12,
+          "pattern": "^roster-row-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Rosterrowid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "participantHandle",
+        "rosterRowId"
+      ],
+      "title": "AssignmentParticipantV2",
+      "type": "object"
+    },
+    "AssignmentUnitV2": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "enum": [
+            "accepted",
+            "reassigned"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "decisionId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Decisionid",
+          "type": "string"
+        },
+        "outputLocator": {
+          "discriminator": {
+            "mapping": {
+              "image": "#/$defs/ImageLocatorV2",
+              "pdf-page": "#/$defs/PdfPageLocatorV2",
+              "roster": "#/$defs/RosterLocatorV2",
+              "worksheet": "#/$defs/WorksheetLocatorV2"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PdfPageLocatorV2"
+            },
+            {
+              "$ref": "#/$defs/RosterLocatorV2"
+            },
+            {
+              "$ref": "#/$defs/ImageLocatorV2"
+            },
+            {
+              "$ref": "#/$defs/WorksheetLocatorV2"
+            }
+          ],
+          "title": "Outputlocator"
+        },
+        "role": {
+          "enum": [
+            "payment-roster",
+            "service-contract",
+            "acceptance-record",
+            "payment-tax-form",
+            "identity-front",
+            "identity-back",
+            "shared-supporting-evidence",
+            "other-supporting-evidence"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sourceId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "sourceUnitIndex": {
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Sourceunitindex",
+          "type": "integer"
+        },
+        "target": {
+          "discriminator": {
+            "mapping": {
+              "case": "#/$defs/CaseTargetV2",
+              "individual": "#/$defs/IndividualTargetV2",
+              "shared": "#/$defs/SharedTargetV2"
+            },
+            "propertyName": "scope"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/IndividualTargetV2"
+            },
+            {
+              "$ref": "#/$defs/SharedTargetV2"
+            },
+            {
+              "$ref": "#/$defs/CaseTargetV2"
+            }
+          ],
+          "title": "Target"
+        },
+        "unitId": {
+          "maxLength": 128,
+          "minLength": 7,
+          "pattern": "^unit-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Unitid",
+          "type": "string"
+        },
+        "unitKind": {
+          "enum": [
+            "pdf-page",
+            "worksheet",
+            "image"
+          ],
+          "title": "Unitkind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unitId",
+        "sourceId",
+        "sourceUnitIndex",
+        "unitKind",
+        "decisionId",
+        "decision",
+        "role",
+        "target",
+        "outputLocator"
+      ],
+      "title": "AssignmentUnitV2",
+      "type": "object"
+    },
+    "CaseTargetV2": {
+      "additionalProperties": false,
+      "properties": {
+        "participantHandles": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 14,
+            "pattern": "^participant-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 0,
+          "title": "Participanthandles",
+          "type": "array"
+        },
+        "scope": {
+          "const": "case",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "participantHandles"
+      ],
+      "title": "CaseTargetV2",
+      "type": "object"
+    },
+    "ExclusionRecordV2": {
+      "additionalProperties": false,
+      "properties": {
+        "decisionId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Decisionid",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "duplicate",
+            "unsupported",
+            "unreadable",
+            "encrypted",
+            "over-limit",
+            "excluded-by-user",
+            "unresolved"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "recordId": {
+          "maxLength": 128,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "title": "Recordid",
+          "type": "string"
+        },
+        "recordType": {
+          "enum": [
+            "unit",
+            "source"
+          ],
+          "title": "Recordtype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recordType",
+        "recordId",
+        "decisionId",
+        "reason"
+      ],
+      "title": "ExclusionRecordV2",
+      "type": "object"
+    },
+    "ImageLocatorV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "image",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "artifactId"
+      ],
+      "title": "ImageLocatorV2",
+      "type": "object"
+    },
+    "IndividualTargetV2": {
+      "additionalProperties": false,
+      "properties": {
+        "participantHandles": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 14,
+            "pattern": "^participant-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Participanthandles",
+          "type": "array"
+        },
+        "scope": {
+          "const": "individual",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "participantHandles"
+      ],
+      "title": "IndividualTargetV2",
+      "type": "object"
+    },
+    "PdfPageLocatorV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "pdf-page",
+          "title": "Kind",
+          "type": "string"
+        },
+        "targetPage": {
+          "maximum": 25000,
+          "minimum": 1,
+          "title": "Targetpage",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "artifactId",
+        "targetPage"
+      ],
+      "title": "PdfPageLocatorV2",
+      "type": "object"
+    },
+    "RosterLocatorV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "roster",
+          "title": "Kind",
+          "type": "string"
+        },
+        "worksheetIndex": {
+          "const": 1,
+          "title": "Worksheetindex",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "artifactId",
+        "worksheetIndex"
+      ],
+      "title": "RosterLocatorV2",
+      "type": "object"
+    },
+    "SharedTargetV2": {
+      "additionalProperties": false,
+      "properties": {
+        "participantHandles": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 14,
+            "pattern": "^participant-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "minItems": 2,
+          "title": "Participanthandles",
+          "type": "array"
+        },
+        "scope": {
+          "const": "shared",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "participantHandles"
+      ],
+      "title": "SharedTargetV2",
+      "type": "object"
+    },
+    "WorksheetLocatorV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "worksheet",
+          "title": "Kind",
+          "type": "string"
+        },
+        "worksheetIndex": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Worksheetindex",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "artifactId",
+        "worksheetIndex"
+      ],
+      "title": "WorksheetLocatorV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "exclusions": {
+      "items": {
+        "$ref": "#/$defs/ExclusionRecordV2"
+      },
+      "maxItems": 10000,
+      "title": "Exclusions",
+      "type": "array"
+    },
+    "packageId": {
+      "pattern": "^package-[0-9a-f]{64}$",
+      "title": "Packageid",
+      "type": "string"
+    },
+    "participants": {
+      "items": {
+        "$ref": "#/$defs/AssignmentParticipantV2"
+      },
+      "maxItems": 10000,
+      "title": "Participants",
+      "type": "array"
+    },
+    "proposalDigest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Proposaldigest",
+      "type": "string"
+    },
+    "rosterArtifactId": {
+      "maxLength": 128,
+      "minLength": 10,
+      "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+      "title": "Rosterartifactid",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "sourceObservationId": {
+      "pattern": "^observation-[0-9a-f]{64}$",
+      "title": "Sourceobservationid",
+      "type": "string"
+    },
+    "units": {
+      "items": {
+        "$ref": "#/$defs/AssignmentUnitV2"
+      },
+      "maxItems": 10000,
+      "title": "Units",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "packageId",
+    "sourceObservationId",
+    "proposalDigest",
+    "rosterArtifactId",
+    "participants",
+    "units",
+    "exclusions"
+  ],
+  "title": "AssignmentsDocumentV2",
+  "type": "object"
+}

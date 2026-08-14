@@ -1,0 +1,14 @@
+{
+  "artifact-outside-package": "Artifact path is outside the package artifact directory.",
+  "assignment-decision-missing": "An assignment references no matching manifest decision.",
+  "assignment-locator-unresolved": "An assignment locator does not resolve to a declared artifact.",
+  "blocking-exception": "A blocking exception prevents a prepared package.",
+  "duplicate-id": "A document contains duplicate stable identifiers.",
+  "malformed-sha256": "A SHA-256 value is malformed.",
+  "participant-roster-mismatch": "Assignment participants do not match canonical roster rows.",
+  "path-not-workspace-relative": "A path is not workspace-relative.",
+  "unacquired-source-provenance": "An unacquired source appears in materialized artifact provenance.",
+  "unassigned-page": "A PDF page is not assigned to package coverage.",
+  "unresolved-coverage": "Coverage remains unresolved.",
+  "zero-based-page": "A PDF page number must be one-based."
+}

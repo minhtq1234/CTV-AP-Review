@@ -1,0 +1,23 @@
+{
+  "checks": [
+    {
+      "code": "manifest-valid",
+      "evidenceRefs": [
+        "artifact-assignments"
+      ],
+      "passed": true
+    }
+  ],
+  "declaredArtifactSetSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "errors": [],
+  "manifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "outcome": "valid",
+  "packageId": "package-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "packageStatus": "prepared",
+  "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schemaVersion": "2.0",
+  "sourceObservationId": "observation-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "validatedAt": "2026-08-14T00:00:00Z",
+  "validatorVersion": "validator-2.0.0",
+  "warnings": []
+}

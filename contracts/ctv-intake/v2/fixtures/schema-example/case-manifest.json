@@ -1,0 +1,142 @@
+{
+  "artifacts": [
+    {
+      "artifactId": "artifact-input-pdf",
+      "formatVersion": "2.0",
+      "kind": "input-pdf",
+      "path": "input.pdf",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 120,
+      "sourceIds": [
+        "source-0001"
+      ]
+    },
+    {
+      "artifactId": "artifact-roster",
+      "formatVersion": "2.0",
+      "kind": "roster",
+      "path": "roster.xlsx",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 80,
+      "sourceIds": [
+        "source-0002"
+      ]
+    },
+    {
+      "artifactId": "artifact-assignments",
+      "formatVersion": "2.0",
+      "kind": "assignments",
+      "path": "assignments.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "size": 40,
+      "sourceIds": []
+    },
+    {
+      "artifactId": "artifact-exceptions",
+      "formatVersion": "2.0",
+      "kind": "exceptions",
+      "path": "exceptions.json",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "size": 30,
+      "sourceIds": []
+    },
+    {
+      "artifactId": "artifact-evidence-0001",
+      "formatVersion": "2.0",
+      "kind": "evidence",
+      "path": "evidence/evidence-0001.png",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "size": 10,
+      "sourceIds": [
+        "source-0001"
+      ]
+    }
+  ],
+  "batchId": "batch-synthetic-001",
+  "caseId": "case-synthetic-001",
+  "compatibilityTarget": "ctv-intake-v2",
+  "decisions": [
+    {
+      "actor": "user",
+      "decisionId": "decision-0001",
+      "evidenceRefs": [
+        "source-0001"
+      ],
+      "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposalVersion": "proposal-2.0",
+      "subjectRefs": [
+        "unit-0001"
+      ],
+      "type": "accept-unit"
+    },
+    {
+      "actor": "user",
+      "decisionId": "decision-0002",
+      "evidenceRefs": [
+        "source-0002"
+      ],
+      "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposalVersion": "proposal-2.0",
+      "subjectRefs": [
+        "unit-0002"
+      ],
+      "type": "select-roster"
+    },
+    {
+      "actor": "user",
+      "decisionId": "decision-0003",
+      "evidenceRefs": [],
+      "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposalVersion": "proposal-2.0",
+      "subjectRefs": [],
+      "type": "approve-proposal"
+    }
+  ],
+  "exceptionIds": [],
+  "faCode": "FA-SYNTHETIC-001",
+  "packageId": "package-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "packageVersion": "writer-2.0.0",
+  "pdfPages": [
+    {
+      "coverageState": "assigned",
+      "sourceId": "source-0001",
+      "sourcePage": 1,
+      "targetPage": 1
+    }
+  ],
+  "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rosterMapping": {
+    "canonicalToSourceColumns": {
+      "faCode": "FA code",
+      "identity": "Identity",
+      "name": "Name"
+    },
+    "sheetName": "Synthetic roster",
+    "sourceId": "source-0002"
+  },
+  "schemaVersion": "2.0",
+  "sourceObservationId": "observation-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sources": [
+    {
+      "bindingStatus": "verified-content",
+      "coverageState": "assigned",
+      "mediaType": "application/pdf",
+      "pageCount": 1,
+      "path": "incoming/synthetic-input.pdf",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 120,
+      "sourceId": "source-0001"
+    },
+    {
+      "bindingStatus": "verified-content",
+      "coverageState": "assigned",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "path": "incoming/synthetic-roster.xlsx",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 80,
+      "sourceId": "source-0002"
+    }
+  ],
+  "status": "prepared",
+  "validatorVersion": "validator-2.0.0"
+}

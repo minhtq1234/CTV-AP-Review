@@ -1,0 +1,162 @@
+{
+  "$defs": {
+    "CanonicalRosterRowV2": {
+      "additionalProperties": false,
+      "properties": {
+        "rosterRowId": {
+          "maxLength": 128,
+          "minLength": 12,
+          "pattern": "^roster-row-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Rosterrowid",
+          "type": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/CanonicalRosterValuesV2"
+        }
+      },
+      "required": [
+        "rosterRowId",
+        "values"
+      ],
+      "title": "CanonicalRosterRowV2",
+      "type": "object"
+    },
+    "CanonicalRosterValuesV2": {
+      "additionalProperties": false,
+      "properties": {
+        "bankAccount": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bankaccount"
+        },
+        "birthDate": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Birthdate"
+        },
+        "faCode": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Facode"
+        },
+        "identity": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Identity",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product"
+        },
+        "serviceFee": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Servicefee"
+        },
+        "taxId": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taxid"
+        }
+      },
+      "required": [
+        "name",
+        "identity"
+      ],
+      "title": "CanonicalRosterValuesV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifactId": {
+      "maxLength": 128,
+      "minLength": 10,
+      "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+      "title": "Artifactid",
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/CanonicalRosterRowV2"
+      },
+      "maxItems": 10000,
+      "title": "Rows",
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "artifactId",
+    "rows"
+  ],
+  "title": "CanonicalRosterDocumentV2",
+  "type": "object"
+}

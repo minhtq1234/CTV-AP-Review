@@ -1,0 +1,136 @@
+{
+  "$defs": {
+    "ValidationCheckV2": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "passed",
+        "evidenceRefs"
+      ],
+      "title": "ValidationCheckV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/ValidationCheckV2"
+      },
+      "maxItems": 10000,
+      "title": "Checks",
+      "type": "array"
+    },
+    "declaredArtifactSetSha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Declaredartifactsetsha256",
+      "type": "string"
+    },
+    "errors": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "title": "Errors",
+      "type": "array"
+    },
+    "manifestSha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifestsha256",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "valid",
+        "invalid"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "packageId": {
+      "pattern": "^package-[0-9a-f]{64}$",
+      "title": "Packageid",
+      "type": "string"
+    },
+    "packageStatus": {
+      "const": "prepared",
+      "title": "Packagestatus",
+      "type": "string"
+    },
+    "proposalDigest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Proposaldigest",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "sourceObservationId": {
+      "pattern": "^observation-[0-9a-f]{64}$",
+      "title": "Sourceobservationid",
+      "type": "string"
+    },
+    "validatedAt": {
+      "format": "date-time",
+      "title": "Validatedat",
+      "type": "string"
+    },
+    "validatorVersion": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Validatorversion",
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "outcome",
+    "packageStatus",
+    "checks",
+    "errors",
+    "warnings",
+    "validatedAt",
+    "validatorVersion",
+    "packageId",
+    "sourceObservationId",
+    "proposalDigest",
+    "manifestSha256",
+    "declaredArtifactSetSha256"
+  ],
+  "title": "ValidationReportV2",
+  "type": "object"
+}

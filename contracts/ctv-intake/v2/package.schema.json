@@ -1,0 +1,595 @@
+{
+  "$defs": {
+    "ArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "formatVersion": {
+          "const": "2.0",
+          "title": "Formatversion",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "input-pdf",
+            "roster",
+            "assignments",
+            "exceptions",
+            "cccd",
+            "evidence"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "formatVersion",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "ArtifactV2",
+      "type": "object"
+    },
+    "DecisionV2": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "user",
+          "title": "Actor",
+          "type": "string"
+        },
+        "decisionId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Decisionid",
+          "type": "string"
+        },
+        "evidenceRefs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Evidencerefs",
+          "type": "array"
+        },
+        "proposalDigest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Proposaldigest",
+          "type": "string"
+        },
+        "proposalVersion": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Proposalversion",
+          "type": "string"
+        },
+        "subjectRefs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Subjectrefs",
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "accept-unit",
+            "reassign-unit",
+            "exclude-unit",
+            "exclude-source",
+            "select-roster",
+            "approve-proposal"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decisionId",
+        "proposalVersion",
+        "proposalDigest",
+        "type",
+        "actor",
+        "subjectRefs",
+        "evidenceRefs"
+      ],
+      "title": "DecisionV2",
+      "type": "object"
+    },
+    "PdfPageV2": {
+      "additionalProperties": false,
+      "properties": {
+        "coverageState": {
+          "enum": [
+            "assigned",
+            "shared",
+            "duplicate",
+            "excluded-by-user"
+          ],
+          "title": "Coveragestate",
+          "type": "string"
+        },
+        "decisionId": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 10,
+              "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decisionid"
+        },
+        "sourceId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Sourceid",
+          "type": "string"
+        },
+        "sourcePage": {
+          "maximum": 25000,
+          "minimum": 1,
+          "title": "Sourcepage",
+          "type": "integer"
+        },
+        "targetPage": {
+          "anyOf": [
+            {
+              "maximum": 25000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targetpage"
+        }
+      },
+      "required": [
+        "sourceId",
+        "sourcePage",
+        "coverageState"
+      ],
+      "title": "PdfPageV2",
+      "type": "object"
+    },
+    "RosterMappingV2": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalToSourceColumns": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 32,
+          "minProperties": 1,
+          "title": "Canonicaltosourcecolumns",
+          "type": "object"
+        },
+        "sheetName": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Sheetname",
+          "type": "string"
+        },
+        "sourceId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "sheetName",
+        "canonicalToSourceColumns"
+      ],
+      "title": "RosterMappingV2",
+      "type": "object"
+    },
+    "UnacquiredSourceV2": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisitionStatus": {
+          "enum": [
+            "opaque",
+            "unsupported",
+            "unreadable",
+            "encrypted",
+            "over-limit"
+          ],
+          "title": "Acquisitionstatus",
+          "type": "string"
+        },
+        "bindingStatus": {
+          "const": "unacquired-exclusion",
+          "title": "Bindingstatus",
+          "type": "string"
+        },
+        "coverageState": {
+          "enum": [
+            "duplicate",
+            "excluded-by-user"
+          ],
+          "title": "Coveragestate",
+          "type": "string"
+        },
+        "decisionId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Decisionid",
+          "type": "string"
+        },
+        "issueCodes": {
+          "items": {
+            "enum": [
+              "symlink",
+              "special-file",
+              "unreadable",
+              "changed-during-read",
+              "type-detection-failed",
+              "type-extension-mismatch",
+              "hash-skipped-too-large",
+              "hash-budget-exhausted",
+              "opaque-archive",
+              "unsupported-document-type",
+              "document-unreadable",
+              "document-encrypted",
+              "document-over-limit",
+              "unit-over-limit",
+              "embedded-media-present",
+              "worksheet-hidden",
+              "multi-frame-image",
+              "ocr-unavailable",
+              "ocr-timeout",
+              "ocr-failed",
+              "ocr-low-confidence",
+              "classification-ambiguous",
+              "classification-conflict"
+            ],
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Issuecodes",
+          "type": "array"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "sourceId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bindingStatus",
+        "sourceId",
+        "acquisitionStatus",
+        "issueCodes",
+        "coverageState",
+        "decisionId"
+      ],
+      "title": "UnacquiredSourceV2",
+      "type": "object"
+    },
+    "VerifiedSourceV2": {
+      "additionalProperties": false,
+      "properties": {
+        "bindingStatus": {
+          "const": "verified-content",
+          "title": "Bindingstatus",
+          "type": "string"
+        },
+        "coverageState": {
+          "enum": [
+            "assigned",
+            "shared",
+            "duplicate",
+            "excluded-by-user"
+          ],
+          "title": "Coveragestate",
+          "type": "string"
+        },
+        "decisionId": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 10,
+              "pattern": "^decision-[0-9a-z]+(?:-[0-9a-z]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decisionid"
+        },
+        "mediaType": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Mediatype",
+          "type": "string"
+        },
+        "pageCount": {
+          "anyOf": [
+            {
+              "maximum": 25000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pagecount"
+        },
+        "path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Sourceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bindingStatus",
+        "sourceId",
+        "path",
+        "mediaType",
+        "size",
+        "sha256",
+        "coverageState"
+      ],
+      "title": "VerifiedSourceV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactV2"
+      },
+      "minItems": 4,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "batchId": {
+      "maxLength": 128,
+      "minLength": 3,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "title": "Batchid",
+      "type": "string"
+    },
+    "caseId": {
+      "maxLength": 128,
+      "minLength": 3,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "title": "Caseid",
+      "type": "string"
+    },
+    "compatibilityTarget": {
+      "const": "ctv-intake-v2",
+      "title": "Compatibilitytarget",
+      "type": "string"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/DecisionV2"
+      },
+      "maxItems": 10002,
+      "minItems": 1,
+      "title": "Decisions",
+      "type": "array"
+    },
+    "exceptionIds": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "maxItems": 10000,
+      "title": "Exceptionids",
+      "type": "array"
+    },
+    "faCode": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Facode"
+    },
+    "packageId": {
+      "pattern": "^package-[0-9a-f]{64}$",
+      "title": "Packageid",
+      "type": "string"
+    },
+    "packageVersion": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Packageversion",
+      "type": "string"
+    },
+    "pdfPages": {
+      "items": {
+        "$ref": "#/$defs/PdfPageV2"
+      },
+      "maxItems": 25000,
+      "title": "Pdfpages",
+      "type": "array"
+    },
+    "proposalDigest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Proposaldigest",
+      "type": "string"
+    },
+    "rosterMapping": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RosterMappingV2"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schemaVersion": {
+      "const": "2.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "sourceObservationId": {
+      "pattern": "^observation-[0-9a-f]{64}$",
+      "title": "Sourceobservationid",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "unacquired-exclusion": "#/$defs/UnacquiredSourceV2",
+            "verified-content": "#/$defs/VerifiedSourceV2"
+          },
+          "propertyName": "bindingStatus"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/VerifiedSourceV2"
+          },
+          {
+            "$ref": "#/$defs/UnacquiredSourceV2"
+          }
+        ]
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    },
+    "status": {
+      "const": "prepared",
+      "title": "Status",
+      "type": "string"
+    },
+    "validatorVersion": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Validatorversion",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "compatibilityTarget",
+    "packageId",
+    "sourceObservationId",
+    "proposalDigest",
+    "batchId",
+    "caseId",
+    "packageVersion",
+    "status",
+    "validatorVersion",
+    "sources",
+    "pdfPages",
+    "artifacts",
+    "decisions",
+    "exceptionIds"
+  ],
+  "title": "PackageManifestV2",
+  "type": "object"
+}
