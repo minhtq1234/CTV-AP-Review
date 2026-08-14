@@ -21,7 +21,9 @@ from ctv_inventory_model import DEFAULT_LIMITS
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _INVOCATION_GUIDANCE = (
     "usage: ctv_intake_cli.py "
-    "{version --json | doctor --json | contract verify --json | "
+    "{version --json | version --target ctv-intake-v1|ctv-intake-v2 --json | "
+    "doctor --json | contract verify --json | "
+    "contract verify --target ctv-intake-v1|ctv-intake-v2 --json | "
     "inventory --source-root <path> --json | "
     "inspect --source-root <path> --json | "
     "proposal review --source-root <path> --json}\n"
@@ -29,8 +31,12 @@ _INVOCATION_GUIDANCE = (
 _APPROVED_ARGV = frozenset(
     {
         ("version", "--json"),
+        ("version", "--target", "ctv-intake-v1", "--json"),
+        ("version", "--target", "ctv-intake-v2", "--json"),
         ("doctor", "--json"),
         ("contract", "verify", "--json"),
+        ("contract", "verify", "--target", "ctv-intake-v1", "--json"),
+        ("contract", "verify", "--target", "ctv-intake-v2", "--json"),
     }
 )
 _RETRYABLE_DOCTOR_CODES = frozenset(
@@ -162,6 +168,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     version = commands.add_parser("version", add_help=False)
+    version.add_argument("--target", choices=("ctv-intake-v1", "ctv-intake-v2"), default="ctv-intake-v1")
     version.add_argument("--json", action="store_true", required=True)
     version.set_defaults(operation="version")
 
@@ -172,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     contract = commands.add_parser("contract", add_help=False)
     contract_commands = contract.add_subparsers(dest="contract_command", required=True)
     verify = contract_commands.add_parser("verify", add_help=False)
+    verify.add_argument("--target", choices=("ctv-intake-v1", "ctv-intake-v2"), default="ctv-intake-v1")
     verify.add_argument("--json", action="store_true", required=True)
     verify.set_defaults(operation="contract.verify")
 
@@ -249,8 +257,12 @@ def _emit_stdout(content: bytes) -> None:
     stream.flush()
 
 
-def _version_envelope():
-    pin = load_contract_pin(REPOSITORY_ROOT)
+def _version_envelope(target: str = "ctv-intake-v1"):
+    pin = (
+        load_contract_pin(REPOSITORY_ROOT)
+        if target == "ctv-intake-v1"
+        else load_contract_pin(REPOSITORY_ROOT, target=target)
+    )
     return succeeded(
         "version",
         "Local CTV toolkit identity is ready",
@@ -304,8 +316,12 @@ def _doctor_result():
     )
 
 
-def _contract_result():
-    verification = verify_contract(REPOSITORY_ROOT)
+def _contract_result(target: str = "ctv-intake-v1"):
+    verification = (
+        verify_contract(REPOSITORY_ROOT)
+        if target == "ctv-intake-v1"
+        else verify_contract(REPOSITORY_ROOT, target=target)
+    )
     result = {
         "verified": verification.verified,
         "sourceCommit": verification.pin.source_commit,
@@ -620,11 +636,19 @@ def main(
     operation = args.operation
     try:
         if operation == "version":
-            envelope, exit_code = _version_envelope(), 0
+            envelope, exit_code = (
+                (_version_envelope(), 0)
+                if args.target == "ctv-intake-v1"
+                else (_version_envelope(args.target), 0)
+            )
         elif operation == "doctor":
             envelope, exit_code = _doctor_result()
         elif operation == "contract.verify":
-            envelope, exit_code = _contract_result()
+            envelope, exit_code = (
+                _contract_result()
+                if args.target == "ctv-intake-v1"
+                else _contract_result(args.target)
+            )
         elif operation == "inventory":
             envelope, exit_code = _inventory_result(args.source_root)
         elif operation == "inspect":

@@ -1,27 +1,60 @@
 # CTV intake contract handoff
 
 This directory is the CTV-to-WePrompt (WP) handoff entrypoint for prepared intake
-packages. CTV owns the executable contract under `v1/`. WP copies a byte-for-byte,
-immutable snapshot into its implementation workspace and validates its generated
-packages against that snapshot.
+packages. CTV owns two executable, immutable contract snapshots: `v1/` and `v2/`.
+`PIN.json` selects `v1/`; `PIN.v2.json` selects `v2/`. WP copies a byte-for-byte
+snapshot into its implementation workspace and validates generated packages against
+that selected snapshot.
 
 Both the CTV and WP contract reviewers must review an update before WP changes its
 pin. WP must never edit, widen, or reinterpret a copied snapshot in place. A needed
 contract change starts in CTV, passes the CTV contract gate, and is then copied as a
 new reviewed snapshot by WP.
 
+## Selecting and pinning a snapshot in WP
+
+The local CTV CLI defaults to v1. These commands are intentionally unchanged:
+
+```bash
+python3 server/ctv_intake_cli.py version --json
+python3 server/ctv_intake_cli.py contract verify --json
+```
+
+Select v2 explicitly when its reviewed pin is required:
+
+```bash
+python3 server/ctv_intake_cli.py version --target ctv-intake-v2 --json
+python3 server/ctv_intake_cli.py contract verify --target ctv-intake-v2 --json
+```
+
+An explicit `--target ctv-intake-v1` emits the same result bytes as the legacy
+no-target command. Each target reads only its paired version directory and pin:
+`ctv-intake-v1` -> `v1/` and `PIN.json`; `ctv-intake-v2` -> `v2/` and
+`PIN.v2.json`.
+
+WP must pin the exact reviewed v2 commit and its `v2/` Git tree; it must not edit,
+reuse, or reinterpret its v1 snapshot as v2. Export a reviewable pin directly from
+the immutable CTV commit, never from working-tree bytes:
+
+```bash
+python3 server/export_contract_pin.py \
+  --repository-root . \
+  --source-commit <reviewed-40-character-commit> \
+  --target ctv-intake-v2 > PIN.v2.json
+```
+
 ## Pinning a snapshot in WP
 
 After the final CTV contract review, WP performs the copy from the exact reviewed
-CTV commit. The WP snapshot contains every versioned file below
-`contracts/ctv-intake/v1/`, unchanged. Alongside the snapshot, WP creates
+CTV commit. The WP snapshot contains every versioned file below the selected
+version directory, unchanged. Alongside the snapshot, WP creates
 `SOURCE.json` with exactly these fields:
 
 | Field | Required value |
 |---|---|
 | `sourceRepository` | Stable identifier for the CTV source repository. |
 | `sourceCommit` | Full 40-character SHA of the reviewed CTV commit. |
-| `contractPath` | Source path `contracts/ctv-intake/v1`. |
+| `contractPath` | Source path `contracts/ctv-intake/v1` or `contracts/ctv-intake/v2`, matching the selected pin. |
 | `contractTreeSha256` | Lowercase SHA-256 produced by the portable algorithm below. |
 | `copiedAt` | ISO-8601 timestamp supplied at the time of the WP copy. |
 
@@ -36,8 +69,8 @@ existing snapshot.
 
 ## Portable `contractTreeSha256`
 
-The tree hash covers every regular versioned file below
-`contracts/ctv-intake/v1/`, including the checked-in synthetic fixture JSON and
+The tree hash covers every regular versioned file below the selected version root,
+such as `contracts/ctv-intake/v1/` or `contracts/ctv-intake/v2/`, including the checked-in synthetic fixture JSON and
 README files. For each file:
 
 1. Compute its lowercase SHA-256.
@@ -48,11 +81,15 @@ README files. For each file:
 
 Only regular blob entries from the exact reviewed commit are inputs. Working-tree
 changes and untracked files cannot affect the result. From the CTV repository root,
-set `source_commit` to the supplied full commit ID. The preflight operations are
-equivalent to `git rev-parse --verify "$source_commit^{commit}"`,
-`git ls-tree -r -z "$source_commit" -- contracts/ctv-intake/v1`, and
+set `source_commit` to the supplied full commit ID and choose the matching version
+root. The preflight operations are equivalent to `git rev-parse --verify "$source_commit^{commit}"`,
+`git ls-tree -r -z "$source_commit" -- <selected-contract-root>`, and
 `git show "$source_commit:$path"`. This Python 3 command implements the complete
 definition without depending on platform-specific `sha256sum` variants:
+
+For the preserved v1 recipe, the selected root remains
+`git ls-tree -r -z "$source_commit" -- contracts/ctv-intake/v1`. V2 uses the
+same recipe with `contracts/ctv-intake/v2`.
 
 ```bash
 source_commit=<reviewed-40-character-commit>

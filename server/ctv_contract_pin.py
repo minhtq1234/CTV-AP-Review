@@ -19,6 +19,10 @@ _READ_CHUNK = 64 * 1024
 _PIN_FIELDS = frozenset(
     {"sourceCommit", "contractTreeSha256", "compatibilityTarget"}
 )
+_CONTRACT_TARGETS = {
+    "ctv-intake-v1": ("v1", "PIN.json"),
+    "ctv-intake-v2": ("v2", "PIN.v2.json"),
+}
 _SHA1 = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _UNAVAILABLE_ERRNOS = frozenset(
@@ -230,7 +234,13 @@ def _pin_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _parse_contract_pin(raw_pin: bytes) -> ContractPin:
+def _target_paths(target: str) -> tuple[str, str]:
+    if not isinstance(target, str) or target not in _CONTRACT_TARGETS:
+        raise ContractPinError("contract-target-invalid")
+    return _CONTRACT_TARGETS[target]
+
+
+def _parse_contract_pin(raw_pin: bytes, *, target: str) -> ContractPin:
     try:
         payload = json.loads(raw_pin.decode("utf-8"), object_pairs_hook=_pin_object)
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -247,7 +257,7 @@ def _parse_contract_pin(raw_pin: bytes) -> ContractPin:
         or _SHA1.fullmatch(source_commit) is None
         or not isinstance(tree_sha256, str)
         or _SHA256.fullmatch(tree_sha256) is None
-        or compatibility_target != "ctv-intake-v1"
+        or compatibility_target != target
     ):
         raise ContractPinError("contract-pin-invalid")
 
@@ -258,12 +268,13 @@ def _parse_contract_pin(raw_pin: bytes) -> ContractPin:
     )
 
 
-def _load_contract_pin_from_intake(intake_fd: int) -> ContractPin:
+def _load_contract_pin_from_intake(intake_fd: int, *, target: str) -> ContractPin:
+    _version_name, pin_name = _target_paths(target)
     pin_fd = None
     try:
         pin_fd = _open_at(
             intake_fd,
-            "PIN.json",
+            pin_name,
             directory=False,
             missing_code="contract-pin-missing",
             invalid_code="contract-pin-invalid",
@@ -271,11 +282,14 @@ def _load_contract_pin_from_intake(intake_fd: int) -> ContractPin:
         raw_pin = _read_pin_bytes(pin_fd)
     finally:
         _close(pin_fd)
-    return _parse_contract_pin(raw_pin)
+    return _parse_contract_pin(raw_pin, target=target)
 
 
-def load_contract_pin(repository_root: Path) -> ContractPin:
+def load_contract_pin(
+    repository_root: Path, target: str = "ctv-intake-v1"
+) -> ContractPin:
     _require_secure_open()
+    _target_paths(target)
     root_fd = intake_fd = None
     try:
         root_fd = _open_root(
@@ -288,7 +302,7 @@ def load_contract_pin(repository_root: Path) -> ContractPin:
             missing_code="contract-pin-missing",
             invalid_code="contract-pin-invalid",
         )
-        return _load_contract_pin_from_intake(intake_fd)
+        return _load_contract_pin_from_intake(intake_fd, target=target)
     finally:
         _close(intake_fd)
         _close(root_fd)
@@ -536,10 +550,11 @@ def _revalidate_contract_tree(
         raise ContractPinError("contract-tree-changed")
 
 
-def _compute_contract_tree_from_intake(intake_fd: int) -> str:
+def _compute_contract_tree_from_intake(intake_fd: int, *, target: str) -> str:
+    version_name, _pin_name = _target_paths(target)
     version_fd = _open_at(
         intake_fd,
-        "v1",
+        version_name,
         directory=True,
         missing_code="contract-entry-unsafe",
         invalid_code="contract-entry-unsafe",
@@ -563,7 +578,7 @@ def compute_contract_tree_sha256(version_root: Path) -> str:
     _require_secure_open()
     version_path = Path(version_root)
     if (
-        version_path.name != "v1"
+        version_path.name not in {version for version, _pin in _CONTRACT_TARGETS.values()}
         or version_path.parent.name != "ctv-intake"
         or version_path.parent.parent.name != "contracts"
     ):
@@ -582,14 +597,22 @@ def compute_contract_tree_sha256(version_root: Path) -> str:
             missing_code="contract-entry-unsafe",
             invalid_code="contract-entry-unsafe",
         )
-        return _compute_contract_tree_from_intake(intake_fd)
+        target = next(
+            target_name
+            for target_name, (version_name, _pin_name) in _CONTRACT_TARGETS.items()
+            if version_name == version_path.name
+        )
+        return _compute_contract_tree_from_intake(intake_fd, target=target)
     finally:
         _close(intake_fd)
         _close(root_fd)
 
 
-def verify_contract(repository_root: Path) -> ContractVerification:
+def verify_contract(
+    repository_root: Path, target: str = "ctv-intake-v1"
+) -> ContractVerification:
     _require_secure_open()
+    _target_paths(target)
     root = Path(repository_root)
     root_fd = intake_fd = None
     try:
@@ -603,8 +626,8 @@ def verify_contract(repository_root: Path) -> ContractVerification:
             missing_code="contract-pin-missing",
             invalid_code="contract-pin-invalid",
         )
-        pin = _load_contract_pin_from_intake(intake_fd)
-        actual_tree_sha256 = _compute_contract_tree_from_intake(intake_fd)
+        pin = _load_contract_pin_from_intake(intake_fd, target=target)
+        actual_tree_sha256 = _compute_contract_tree_from_intake(intake_fd, target=target)
     finally:
         _close(intake_fd)
         _close(root_fd)

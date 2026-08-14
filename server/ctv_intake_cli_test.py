@@ -300,6 +300,38 @@ def test_contract_verify_reports_the_approved_tree(tmp_path):
     assert payload["result"]["actualTreeSha256"] == EXPECTED_TREE
 
 
+def test_v1_cli_target_is_byte_identical_to_legacy_no_target_commands(tmp_path):
+    legacy_version = _run("version", "--json", cwd=tmp_path)
+    explicit_version = _run(
+        "version", "--target", "ctv-intake-v1", "--json", cwd=tmp_path
+    )
+    legacy_contract = _run("contract", "verify", "--json", cwd=tmp_path)
+    explicit_contract = _run(
+        "contract", "verify", "--target", "ctv-intake-v1", "--json", cwd=tmp_path
+    )
+
+    assert explicit_version.returncode == legacy_version.returncode == 0
+    assert explicit_contract.returncode == legacy_contract.returncode == 0
+    assert explicit_version.stderr == legacy_version.stderr == b""
+    assert explicit_contract.stderr == legacy_contract.stderr == b""
+    assert explicit_version.stdout == legacy_version.stdout
+    assert explicit_contract.stdout == legacy_contract.stdout
+
+
+def test_v2_cli_target_reports_and_verifies_the_v2_pin(tmp_path):
+    version = _run("version", "--target", "ctv-intake-v2", "--json", cwd=tmp_path)
+    contract = _run(
+        "contract", "verify", "--target", "ctv-intake-v2", "--json", cwd=tmp_path
+    )
+
+    version_payload = _envelope(version, "version", "succeeded")
+    contract_payload = _envelope(contract, "contract.verify", "succeeded")
+    assert version.returncode == contract.returncode == 0
+    assert version_payload["result"]["compatibilityTarget"] == "ctv-intake-v2"
+    assert contract_payload["result"]["compatibilityTarget"] == "ctv-intake-v2"
+    assert contract_payload["result"]["verified"] is True
+
+
 def test_inventory_returns_private_canonical_json_from_unrelated_cwd(tmp_path):
     source = tmp_path / "Tên khách hàng tuyệt mật"
     source.mkdir()
@@ -1898,7 +1930,7 @@ def test_all_production_modules_keep_process_archive_network_ai_and_shell_bounda
         for path in production_modules
         if "subprocess" in _import_roots(path)
     }
-    assert subprocess_importers == {"ctv_local_ocr.py"}
+    assert subprocess_importers == {"ctv_local_ocr.py", "export_contract_pin.py"}
 
     zip_importers = {
         path.name

@@ -25,6 +25,10 @@ def _copy_contract(tmp_path: Path) -> Path:
     target.mkdir(parents=True)
     shutil.copy2(REPOSITORY_ROOT / "contracts/ctv-intake/PIN.json", target / "PIN.json")
     shutil.copytree(REPOSITORY_ROOT / "contracts/ctv-intake/v1", target / "v1")
+    pin_v2 = REPOSITORY_ROOT / "contracts/ctv-intake/PIN.v2.json"
+    if pin_v2.exists():
+        shutil.copy2(pin_v2, target / "PIN.v2.json")
+    shutil.copytree(REPOSITORY_ROOT / "contracts/ctv-intake/v2", target / "v2")
     return root
 
 
@@ -55,6 +59,62 @@ def test_approved_contract_tree_matches_reviewed_pin(tmp_path):
     assert verification.verified is True
     assert verification.pin.source_commit == "75b3b3bc7e3d4edef1b24a0cfc9bb6c039320f3a"
     assert verification.actual_tree_sha256 == "83d0523ffdf871d79597310d2a24424c8bb17b6fcdb208d9bf28afc70da6900d"
+
+
+def test_default_pin_stays_v1_and_explicit_v2_uses_pin_v2(tmp_path):
+    root = _copy_contract(tmp_path)
+
+    assert load_contract_pin(root).compatibility_target == "ctv-intake-v1"
+    assert load_contract_pin(root, target="ctv-intake-v1").compatibility_target == (
+        "ctv-intake-v1"
+    )
+    assert load_contract_pin(root, target="ctv-intake-v2").compatibility_target == (
+        "ctv-intake-v2"
+    )
+
+
+def test_v2_verification_uses_only_v2_tree_and_detects_v2_mutation(tmp_path):
+    root = _copy_contract(tmp_path)
+    v1 = root / "contracts/ctv-intake/v1"
+    v2 = root / "contracts/ctv-intake/v2"
+
+    assert verify_contract(root, target="ctv-intake-v2").verified is True
+    (v1 / "compatibility.md").write_text("unrelated v1 change\n", encoding="utf-8")
+    assert verify_contract(root, target="ctv-intake-v2").verified is True
+    (v2 / "compatibility.md").write_text("v2 change\n", encoding="utf-8")
+    assert verify_contract(root, target="ctv-intake-v2").verified is False
+
+
+@pytest.mark.parametrize("target", ["", "ctv-intake-v3", "CTV-intake-v2"])
+def test_unknown_contract_target_is_rejected(tmp_path, target):
+    root = _copy_contract(tmp_path)
+
+    _assert_error_code(
+        "contract-target-invalid", lambda: load_contract_pin(root, target=target)
+    )
+
+
+def test_v2_pin_with_mismatched_target_is_rejected(tmp_path):
+    root = _copy_contract(tmp_path)
+    pin_path = root / "contracts/ctv-intake/PIN.v2.json"
+    payload = json.loads(pin_path.read_text(encoding="utf-8"))
+    payload["compatibilityTarget"] = "ctv-intake-v1"
+    pin_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    _assert_error_code(
+        "contract-pin-invalid", lambda: load_contract_pin(root, target="ctv-intake-v2")
+    )
+
+
+def test_compute_contract_tree_accepts_only_correctly_located_v1_or_v2(tmp_path):
+    root = _copy_contract(tmp_path)
+
+    assert compute_contract_tree_sha256(root / "contracts/ctv-intake/v1")
+    assert compute_contract_tree_sha256(root / "contracts/ctv-intake/v2")
+    _assert_error_code(
+        "contract-entry-unsafe",
+        lambda: compute_contract_tree_sha256(root / "contracts/ctv-intake/not-v2"),
+    )
 
 
 @pytest.mark.parametrize("mutation", ["modified", "missing", "added"])
