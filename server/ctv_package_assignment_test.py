@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from io import BytesIO
+import zipfile
 
 import fitz
 from openpyxl import Workbook
@@ -13,7 +13,8 @@ import pytest
 from ctv_inspection import inspect_observation
 from ctv_inventory import open_inventory_observation
 from ctv_package_assignment import build_assignments
-from ctv_proposal import ProposalState, SourceDispositionSnapshot
+from ctv_inspection_model import InspectionLimits
+from ctv_proposal import ProposalState
 from intake_contract_v2 import PdfPageLocatorV2, RosterLocatorV2, WorksheetLocatorV2
 
 
@@ -179,20 +180,65 @@ def test_build_assignments_is_complete_deterministic_and_private_value_free(tmp_
         ("unreadable", "excluded-by-user", ("document-unreadable",), "unreadable"),
         ("encrypted", "excluded-by-user", ("document-encrypted",), "encrypted"),
         ("unsupported", "excluded-by-user", ("unsupported-document-type",), "unsupported"),
+        ("over-limit", "excluded-by-user", ("document-over-limit",), "over-limit"),
     ),
 )
 def test_source_only_exclusion_reason_is_derived_from_frozen_acquisition_facts(
     tmp_path, acquisition_status, coverage_state, issue_codes, expected_reason
 ):
-    context, state, digest = _approved_state(tmp_path)
+    source = _source(tmp_path)
+    private_marker = "PRIVATE-SOURCE-ONLY-079123456789"
+    if acquisition_status == "opaque":
+        archive = BytesIO()
+        with zipfile.ZipFile(archive, "w") as contents:
+            contents.writestr("private.txt", private_marker)
+        (source / "source-only.zip").write_bytes(archive.getvalue())
+        limits = InspectionLimits()
+    elif acquisition_status == "unreadable":
+        (source / "source-only.pdf").write_bytes(b"%PDF-1.7\n" + private_marker.encode())
+        limits = InspectionLimits()
+    elif acquisition_status == "encrypted":
+        document = fitz.open()
+        document.new_page()
+        encrypted = BytesIO()
+        document.save(encrypted, encryption=fitz.PDF_ENCRYPT_AES_256, user_pw="synthetic-user", owner_pw="synthetic-owner")
+        document.close()
+        (source / "source-only.pdf").write_bytes(encrypted.getvalue())
+        limits = InspectionLimits()
+    elif acquisition_status == "unsupported":
+        (source / "source-only.bin").write_bytes(private_marker.encode())
+        limits = InspectionLimits()
+    else:
+        source_bytes = (source / "private-contract.pdf").read_bytes()
+        (source / "source-only.pdf").write_bytes(source_bytes + private_marker.encode())
+        limits = InspectionLimits(max_pdf_source_bytes=len(source_bytes))
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
     try:
+        state = ProposalState.from_inspection(observation, inspect_observation(observation, limits=limits))
+        roster = next(unit for unit in state.units if unit["unitKind"] == "worksheet")
+        state.select_roster({"rosterUnitId": roster["unitId"]})
+        for unit in state.units:
+            state.set_unit_decision({
+                "unitId": unit["unitId"], "decision": "accepted", "role": unit["suggestedRole"],
+                "target": {"scope": "case", "participantHandles": []},
+            })
+        unit_evidence_ids = {unit["evidenceId"] for unit in state.units}
+        for record in state.sources:
+            if record["evidenceId"] not in unit_evidence_ids:
+                state.set_source_disposition({
+                    "evidenceId": record["evidenceId"], "decision": "excluded",
+                    "reason": "duplicate" if coverage_state == "duplicate" else "irrelevant",
+                })
+        digest = state.approval_summary()["proposalDigest"]
+        assert state.approval_summary()["readyToPrepare"] is True
         state.approve(digest)
         snapshot = state.consume_approved_package_snapshot(digest)
-        snapshot = replace(snapshot, source_dispositions=(SourceDispositionSnapshot(
-            evidence_id="evidence-0099", decision="excluded",
-            acquisition_status=acquisition_status, coverage_state=coverage_state,
-            issue_codes=issue_codes,
-        ),))
+        frozen = snapshot.source_dispositions
+        assert len(frozen) == 1
+        assert (frozen[0].acquisition_status, frozen[0].coverage_state, frozen[0].issue_codes) == (
+            acquisition_status, coverage_state, issue_codes,
+        )
         locators = {
             item.unit_id: (
                 RosterLocatorV2(kind="roster", artifactId="artifact-roster", worksheetIndex=1)
@@ -207,5 +253,9 @@ def test_source_only_exclusion_reason_is_derived_from_frozen_acquisition_facts(
         )
         assert source_exclusion.reason == expected_reason
         assert source_exclusion.record_id.startswith("source-")
+        rendered = json.dumps(result.document.model_dump(by_alias=True), sort_keys=True)
+        assert private_marker not in repr(snapshot)
+        assert private_marker not in rendered
+        assert "source-only" not in rendered
     finally:
         context.__exit__(None, None, None)
