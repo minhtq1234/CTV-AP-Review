@@ -1,8 +1,10 @@
 """Bounded, byte-only OOXML workbook inspection."""
 from __future__ import annotations
 
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from io import BytesIO
+import math
 import zipfile
 from xml.etree import ElementTree
 
@@ -120,6 +122,26 @@ class WorkbookPreviewError(RuntimeError):
         }:
             raise ValueError("workbook preview error code must be fixed")
         super().__init__(code)
+
+
+class PackageWorkbookError(RuntimeError):
+    """Fixed bounded failure for package-specific values-only extraction."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {
+            "package-workbook-unavailable",
+            "package-workbook-over-limit",
+            "package-workbook-parser-boundary-exceeded",
+            "package-workbook-formula-unavailable",
+        }:
+            raise ValueError("package workbook error code must be fixed")
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class WorksheetValues:
+    worksheet_index: int
+    rows: tuple[tuple[object, ...], ...]
 
 
 class _UnreadableWorkbookError(ValueError):
@@ -1582,3 +1604,184 @@ def worksheet_preview(
                 workbook.close()
             except Exception:
                 pass
+
+
+def _package_scalar(value: object, character_limit: int) -> object:
+    if value is None or type(value) in {bool, int}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise PackageWorkbookError("package-workbook-over-limit")
+        return value
+    if type(value) is str:
+        if len(value) > character_limit:
+            raise PackageWorkbookError("package-workbook-over-limit")
+        return value
+    if isinstance(value, datetime):
+        if value.time() == datetime.min.time():
+            return value.date().isoformat()
+        return value.isoformat(timespec="microseconds").rstrip("0").rstrip(".")
+    if isinstance(value, date):
+        return value.isoformat()
+    raise PackageWorkbookError("package-workbook-unavailable")
+
+
+def _trim_package_rows(rows: list[list[object]]) -> tuple[tuple[object, ...], ...]:
+    while rows and not any(value is not None for value in rows[-1]):
+        rows.pop()
+    width = max(
+        (index + 1 for row in rows for index, value in enumerate(row) if value is not None),
+        default=0,
+    )
+    return tuple(tuple(row[:width]) for row in rows)
+
+
+def selected_worksheet_values(
+    snapshot: bytes,
+    worksheet_indexes: tuple[int, ...],
+    *,
+    limits: InspectionLimits,
+) -> tuple[WorksheetValues, ...]:
+    """Return bounded values-only rows after the existing OOXML preflight."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("package workbook input must use bounded snapshot bytes and limits")
+    if (
+        type(worksheet_indexes) is not tuple
+        or not worksheet_indexes
+        or any(type(index) is not int for index in worksheet_indexes)
+        or len(set(worksheet_indexes)) != len(worksheet_indexes)
+        or any(not 1 <= index <= limits.max_worksheets_per_workbook for index in worksheet_indexes)
+    ):
+        raise PackageWorkbookError("package-workbook-unavailable")
+    if len(snapshot) > limits.max_workbook_source_bytes:
+        raise PackageWorkbookError("package-workbook-over-limit")
+    if snapshot.startswith(_OLE_COMPOUND_HEADER):
+        raise PackageWorkbookError("package-workbook-unavailable")
+    try:
+        metadata, _spreadsheet_namespace, loader_snapshot = _preflight(snapshot, limits)
+    except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
+        raise PackageWorkbookError("package-workbook-parser-boundary-exceeded") from None
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None
+    if any(index > len(metadata) for index in worksheet_indexes):
+        raise PackageWorkbookError("package-workbook-unavailable")
+
+    formula_book = None
+    value_book = None
+    try:
+        formula_book = openpyxl.load_workbook(
+            BytesIO(loader_snapshot), read_only=True, data_only=False, keep_links=False
+        )
+        value_book = openpyxl.load_workbook(
+            BytesIO(loader_snapshot), read_only=True, data_only=True, keep_links=False
+        )
+        if (
+            len(formula_book.worksheets) != len(metadata)
+            or len(value_book.worksheets) != len(metadata)
+        ):
+            raise PackageWorkbookError("package-workbook-unavailable")
+        consumed = 0
+        result = []
+        for worksheet_index in worksheet_indexes:
+            formula_sheet = formula_book.worksheets[worksheet_index - 1]
+            value_sheet = value_book.worksheets[worksheet_index - 1]
+            if (
+                formula_sheet.max_row != value_sheet.max_row
+                or formula_sheet.max_column != value_sheet.max_column
+            ):
+                raise PackageWorkbookError("package-workbook-unavailable")
+            rows = []
+            formula_rows = formula_sheet.iter_rows()
+            value_rows = value_sheet.iter_rows()
+            for formula_row, value_row in zip(formula_rows, value_rows):
+                if len(formula_row) != len(value_row):
+                    raise PackageWorkbookError("package-workbook-unavailable")
+                output_row = []
+                for formula_cell, value_cell in zip(formula_row, value_row):
+                    consumed += 1
+                    if consumed > limits.max_cells_per_workbook:
+                        raise PackageWorkbookError("package-workbook-over-limit")
+                    if formula_cell.data_type == "f" and value_cell.value is None:
+                        raise PackageWorkbookError("package-workbook-formula-unavailable")
+                    output_row.append(
+                        _package_scalar(
+                            value_cell.value,
+                            limits.max_cell_text_characters,
+                        )
+                    )
+                rows.append(output_row)
+            result.append(WorksheetValues(worksheet_index, _trim_package_rows(rows)))
+        return tuple(result)
+    except PackageWorkbookError:
+        raise
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None
+    finally:
+        for workbook in (formula_book, value_book):
+            if workbook is not None:
+                try:
+                    workbook.close()
+                except Exception:
+                    pass
+
+
+def _canonical_package_workbook_bytes(workbook: openpyxl.Workbook) -> bytes:
+    """Privately repack one generated workbook with fixed archive metadata."""
+    raw = BytesIO()
+    try:
+        workbook.save(raw)
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+    output = BytesIO()
+    try:
+        with zipfile.ZipFile(BytesIO(raw.getvalue()), "r") as source:
+            names = sorted(source.namelist())
+            if len(names) != len(set(names)):
+                raise PackageWorkbookError("package-workbook-unavailable")
+            with zipfile.ZipFile(
+                output,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=9,
+                strict_timestamps=True,
+            ) as target:
+                for name in names:
+                    content = source.read(name)
+                    if name == "docProps/core.xml":
+                        opening = b"<dcterms:modified"
+                        closing = b"</dcterms:modified>"
+                        start = content.find(opening)
+                        value_start = content.find(b">", start) + 1
+                        value_end = content.find(closing, value_start)
+                        if (
+                            start < 0
+                            or value_start <= 0
+                            or value_end < value_start
+                            or content.find(opening, start + 1) >= 0
+                        ):
+                            raise PackageWorkbookError("package-workbook-unavailable")
+                        content = (
+                            content[:value_start]
+                            + b"1980-01-01T00:00:00Z"
+                            + content[value_end:]
+                        )
+                    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = 0o100644 << 16
+                    target.writestr(
+                        info,
+                        content,
+                        compress_type=zipfile.ZIP_DEFLATED,
+                        compresslevel=9,
+                    )
+        return output.getvalue()
+    except PackageWorkbookError:
+        raise
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None

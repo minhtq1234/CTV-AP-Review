@@ -1321,3 +1321,46 @@ def test_media_module_imports_only_approved_parser_and_project_modules():
         "__future__", "io", "math", "re", "warnings", "zlib", "fitz", "PIL",
         "ctv_inspection_classifier", "ctv_inspection_model", "ctv_local_ocr",
     }
+
+
+def test_package_image_normalization_is_rgba_first_frame_metadata_free_and_repeatable():
+    from ctv_inspection_media import normalize_package_image
+
+    first = Image.new("RGBA", (2, 1), (10, 20, 30, 40))
+    second = Image.new("RGBA", (2, 1), (200, 210, 220, 230))
+    source = BytesIO()
+    first.save(
+        source,
+        format="TIFF",
+        save_all=True,
+        append_images=[second],
+        description="PRIVATE-METADATA-079123456789",
+    )
+    first.close()
+    second.close()
+
+    rendered = normalize_package_image(source.getvalue(), limits=InspectionLimits())
+    assert rendered == normalize_package_image(source.getvalue(), limits=InspectionLimits())
+    assert b"PRIVATE-METADATA" not in rendered
+    assert b"acTL" not in rendered
+    with Image.open(BytesIO(rendered)) as image:
+        assert (image.format, image.mode, image.size, image.n_frames) == ("PNG", "RGBA", (2, 1), 1)
+        assert image.getpixel((0, 0)) == (10, 20, 30, 40)
+
+
+def test_package_image_normalization_enforces_source_pixel_and_output_caps():
+    from ctv_inspection_media import PackageImageError, normalize_package_image
+
+    source = _image_bytes("PNG", size=(4, 4), color=(1, 2, 3))
+    with pytest.raises(PackageImageError, match="package-image-over-limit"):
+        normalize_package_image(
+            source,
+            limits=InspectionLimits(max_image_source_bytes=len(source) - 1),
+        )
+    with pytest.raises(PackageImageError, match="package-image-over-limit"):
+        normalize_package_image(
+            source,
+            limits=InspectionLimits(max_decoded_image_pixels=15),
+        )
+    with pytest.raises(PackageImageError, match="package-image-unavailable"):
+        normalize_package_image(b"not-an-image", limits=InspectionLimits())

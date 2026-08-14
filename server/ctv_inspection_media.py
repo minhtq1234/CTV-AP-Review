@@ -8,7 +8,7 @@ import warnings
 import zlib
 
 import fitz
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ctv_inspection_classifier import TextSignalContext, signals_from_private_text
 from ctv_inspection_model import (
@@ -99,6 +99,15 @@ class MediaPreviewError(RuntimeError):
             "preview-parser-boundary-exceeded",
         }:
             raise ValueError("media preview error code must be fixed")
+        super().__init__(code)
+
+
+class PackageImageError(RuntimeError):
+    """Fixed bounded failure for package-specific image normalization."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {"package-image-unavailable", "package-image-over-limit"}:
+            raise ValueError("package image error code must be fixed")
         super().__init__(code)
 
 
@@ -986,3 +995,55 @@ def render_image_preview(
     if over_limit or normalized is None or len(normalized) > _OCR_IMAGE_BYTES:
         raise MediaPreviewError("preview-over-limit")
     return normalized
+
+
+def normalize_package_image(
+    snapshot: bytes,
+    *,
+    limits: InspectionLimits,
+) -> bytes:
+    """Return fixed first-frame RGBA PNG bytes or a fixed bounded media error."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("package image input must use bounded snapshot bytes and limits")
+    if len(snapshot) > limits.max_image_source_bytes:
+        raise PackageImageError("package-image-over-limit")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(snapshot)) as image:
+                image.seek(0)
+                width, height = image.size
+                if (
+                    type(width) is not int
+                    or type(height) is not int
+                    or width <= 0
+                    or height <= 0
+                    or width * height > limits.max_decoded_image_pixels
+                ):
+                    raise PackageImageError("package-image-over-limit")
+                image.load()
+                oriented = ImageOps.exif_transpose(image)
+                normalized = oriented.convert("RGBA")
+                try:
+                    output = BytesIO()
+                    normalized.save(
+                        output,
+                        format="PNG",
+                        compress_level=9,
+                        optimize=False,
+                        bits=8,
+                    )
+                    rendered = output.getvalue()
+                finally:
+                    normalized.close()
+                    if oriented is not image:
+                        oriented.close()
+    except PackageImageError:
+        raise
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+        raise PackageImageError("package-image-over-limit") from None
+    except Exception:
+        raise PackageImageError("package-image-unavailable") from None
+    if len(rendered) > _OCR_IMAGE_BYTES:
+        raise PackageImageError("package-image-over-limit")
+    return rendered

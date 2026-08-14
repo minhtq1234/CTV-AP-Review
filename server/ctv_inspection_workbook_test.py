@@ -1875,8 +1875,10 @@ def test_workbook_module_has_a_narrow_import_and_archive_surface():
             imported_roots.add(node.module.split(".")[0])
     assert imported_roots <= {
         "__future__",
+        "dataclasses",
         "datetime",
         "io",
+        "math",
         "openpyxl",
         "zipfile",
         "xml",
@@ -1919,3 +1921,47 @@ def test_workbook_module_has_a_narrow_import_and_archive_surface():
         ):
             archive_importers.append(candidate.name)
     assert archive_importers == ["ctv_inspection_workbook.py"]
+
+
+def test_selected_worksheet_values_are_bounded_values_only_in_requested_order():
+    from ctv_inspection_workbook import selected_worksheet_values
+
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "PRIVATE FIRST 079123456789"
+    first.append(("Header", "Amount", "Link"))
+    first.append(("Synthetic A", 10, "plain"))
+    first["A2"].comment = __import__("openpyxl").comments.Comment("PRIVATE COMMENT", "Synthetic")
+    first["C2"].hyperlink = "https://private.invalid/079123456789"
+    second = workbook.create_sheet("PRIVATE SECOND")
+    second.sheet_state = "hidden"
+    second.append(("Other", date(2026, 8, 14)))
+    snapshot = _save(workbook)
+
+    values = selected_worksheet_values(snapshot, (2, 1), limits=InspectionLimits())
+    assert [item.worksheet_index for item in values] == [2, 1]
+    assert values[0].rows == (("Other", "2026-08-14"),)
+    assert values[1].rows == (
+        ("Header", "Amount", "Link"),
+        ("Synthetic A", 10, "plain"),
+    )
+    assert "PRIVATE COMMENT" not in repr(values)
+    assert "private.invalid" not in repr(values)
+
+
+def test_selected_worksheet_values_rejects_uncached_formulas_and_invalid_selection():
+    from ctv_inspection_workbook import PackageWorkbookError, selected_worksheet_values
+
+    workbook = Workbook()
+    workbook.active["A1"] = "=1+1"
+    snapshot = _save(workbook)
+    with pytest.raises(PackageWorkbookError, match="package-workbook-formula-unavailable"):
+        selected_worksheet_values(snapshot, (1,), limits=InspectionLimits())
+    with pytest.raises(PackageWorkbookError, match="package-workbook-unavailable"):
+        selected_worksheet_values(snapshot, (1, 1), limits=InspectionLimits())
+    with pytest.raises(PackageWorkbookError, match="package-workbook-over-limit"):
+        selected_worksheet_values(
+            snapshot,
+            (1,),
+            limits=InspectionLimits(max_workbook_source_bytes=len(snapshot) - 1),
+        )
