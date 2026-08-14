@@ -224,3 +224,16 @@ def test_draft_and_cancelled_results_have_their_fixed_public_shapes(tmp_path):
         assert state.cancelled_result() == {"version": "1.0", "outcome": "cancelled", "readyToPrepare": False}
     finally:
         context.__exit__(None, None, None)
+
+
+def test_roster_switch_keeps_public_digest_and_review_values_private(tmp_path):
+    source = _source_with_two_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        state = ProposalState.from_inspection(observation, inspect_observation(observation))
+        rosters = [unit for unit in state.units if unit["suggestedRole"] == "payment-roster"]
+        state.select_roster({"rosterUnitId": rosters[0]["unitId"]})
+        first = state.approval_summary()
+        state.select_roster({"rosterUnitId": rosters[1]["unitId"]})
+        second = state.approval_summary()
+        assert first["proposalDigest"] != second["proposalDigest"]
+        assert all(value not in repr(second) for value in ("Alice", "CTV-001", "Carol", "CTV-101"))

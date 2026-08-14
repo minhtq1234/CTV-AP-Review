@@ -26,6 +26,21 @@ def _decision_type(decision: str) -> str:
     return "accept-unit" if decision == "accepted" else "reassign-unit"
 
 
+def _source_exclusion_reason(item) -> str:
+    if item.coverage_state == "duplicate":
+        return "duplicate"
+    try:
+        return {
+            "opaque": "excluded-by-user",
+            "unsupported": "unsupported",
+            "unreadable": "unreadable",
+            "encrypted": "encrypted",
+            "over-limit": "over-limit",
+        }[item.acquisition_status]
+    except KeyError:
+        raise ValueError("source exclusion facts are unsupported") from None
+
+
 @dataclass(frozen=True)
 class AssignmentBuildResult:
     document: AssignmentsDocumentV2
@@ -99,7 +114,10 @@ def build_assignments(
             continue
         source_id = _source_id(snapshot.proposal_digest, item.evidence_id)
         decision_id = _id("decision", snapshot.proposal_digest, source_id)
-        exclusions.append(ExclusionRecordV2(recordType="source", recordId=source_id, decisionId=decision_id, reason="excluded-by-user"))
+        exclusions.append(ExclusionRecordV2(
+            recordType="source", recordId=source_id, decisionId=decision_id,
+            reason=_source_exclusion_reason(item),
+        ))
         decisions.append(DecisionV2(decisionId=decision_id, proposalVersion="1.0", proposalDigest=snapshot.proposal_digest, type="exclude-source", actor="user", subjectRefs=[source_id], evidenceRefs=[source_id]))
     roster_source_id = _source_id(snapshot.proposal_digest, snapshot.roster_evidence_id)
     decisions.extend((

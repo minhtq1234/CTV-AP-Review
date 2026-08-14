@@ -48,6 +48,13 @@ _ROSTER_ISSUE_ORDER = (
 _CANONICAL_ROSTER_FIELDS = (
     "name", "identity", "faCode", "taxId", "birthDate", "bankAccount", "serviceFee", "product",
 )
+_ACQUISITION_STATUS_BY_INSPECTION_STATUS = {
+    "opaque": "opaque",
+    "unsupported": "unsupported",
+    "unreadable": "unreadable",
+    "encrypted": "encrypted",
+    "over-limit": "over-limit",
+}
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,9 @@ class SourceDispositionSnapshot:
     evidence_id: str
     decision: str
     reason: str = ""
+    acquisition_status: str = ""
+    coverage_state: str = ""
+    issue_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -500,6 +510,16 @@ class ProposalState:
             and roster_decision.get("target", {}).get("scope") == "case"
         ):
             return False
+        source_only_ids = {
+            source.evidence_id for source in self._inspection.sources
+            if not any(unit.evidence_id == source.evidence_id for unit in self._inspection.units)
+        }
+        if any(
+            self._sources_by_id[evidence_id].inspection_status
+            not in _ACQUISITION_STATUS_BY_INSPECTION_STATUS
+            for evidence_id in source_only_ids
+        ):
+            return False
         return any(
             unit.unit_kind == "pdf-page"
             and self._unit_decisions.get(unit.unit_id, {}).get("decision") in {"accepted", "reassigned"}
@@ -529,7 +549,19 @@ class ProposalState:
                 reason=record.get("reason", ""),
             ))
         source_snapshots = tuple(
-            SourceDispositionSnapshot(evidence_id=evidence_id, decision=record["decision"], reason=record.get("reason", ""))
+            SourceDispositionSnapshot(
+                evidence_id=evidence_id,
+                decision=record["decision"],
+                reason=record.get("reason", ""),
+                acquisition_status=_ACQUISITION_STATUS_BY_INSPECTION_STATUS[
+                    self._sources_by_id[evidence_id].inspection_status
+                ],
+                coverage_state=(
+                    "duplicate" if record.get("reason") == "duplicate"
+                    else "excluded-by-user"
+                ),
+                issue_codes=tuple(self._sources_by_id[evidence_id].issue_codes),
+            )
             for evidence_id, record in sorted(self._source_dispositions.items())
         )
         self._approved_package_digest = None
