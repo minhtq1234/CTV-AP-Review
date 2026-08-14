@@ -284,3 +284,48 @@ def test_v2_cross_validation_requires_exact_sources_locators_participants_and_de
     ]
     with pytest.raises(ValueError, match="evidence artifact"):
         AssignmentsDocumentV2.model_validate(missing_evidence_locator).validate_against_manifest(manifest)
+
+
+def test_v2_fa_fields_reject_whitespace_without_canonicalizing_values():
+    blank_manifest_fa = complete_manifest_v2()
+    blank_manifest_fa["faCode"] = "   "
+    with pytest.raises(ValidationError, match="faCode"):
+        PackageManifestV2.model_validate(blank_manifest_fa)
+
+    blank_mapping_fa = complete_manifest_v2()
+    blank_mapping_fa["rosterMapping"]["canonicalToSourceColumns"]["faCode"] = "\t"
+    with pytest.raises(ValidationError, match="faCode"):
+        PackageManifestV2.model_validate(blank_mapping_fa)
+
+    with pytest.raises(ValidationError, match="faCode"):
+        CanonicalRosterDocumentV2.model_validate({
+            "schemaVersion": "2.0", "artifactId": "artifact-roster",
+            "rows": [{"rosterRowId": "roster-row-0001", "values": {"name": "Synthetic Person 0001", "identity": "SYNTHETIC-IDENTITY-0001", "faCode": "\n"}}],
+        })
+
+
+def test_v2_cross_validation_binds_pdf_targets_evidence_provenance_and_source_exclusions():
+    manifest = PackageManifestV2.model_validate(complete_manifest_v2())
+    wrong_pdf_target = complete_assignments_v2()
+    wrong_pdf_target["units"][0]["outputLocator"]["targetPage"] = 2
+    with pytest.raises(ValueError, match="target page"):
+        AssignmentsDocumentV2.model_validate(wrong_pdf_target).validate_against_manifest(manifest)
+
+    evidence_manifest = complete_manifest_v2()
+    evidence_manifest["decisions"][3]["evidenceRefs"] = ["source-0002"]
+    wrong_evidence_source = complete_assignments_v2()
+    wrong_evidence_source["units"][2]["sourceId"] = "source-0002"
+    with pytest.raises(ValueError, match="evidence provenance"):
+        AssignmentsDocumentV2.model_validate(wrong_evidence_source).validate_against_manifest(
+            PackageManifestV2.model_validate(evidence_manifest)
+        )
+
+    exclusion_manifest = complete_manifest_v2()
+    exclusion_manifest["sources"].append({"bindingStatus": "unacquired-exclusion", "sourceId": "source-0004", "path": "incoming/unsafe", "acquisitionStatus": "unreadable", "issueCodes": ["document-unreadable"], "coverageState": "excluded-by-user", "decisionId": "decision-0006"})
+    exclusion_manifest["decisions"].append({"decisionId": "decision-0006", "proposalVersion": "proposal-2.0", "proposalDigest": _SHA, "type": "exclude-source", "actor": "user", "subjectRefs": ["source-0004"], "evidenceRefs": []})
+    source_exclusion = complete_assignments_v2()
+    source_exclusion["exclusions"] = [{"recordType": "source", "recordId": "source-0004", "decisionId": "decision-0006", "reason": "unsupported"}]
+    with pytest.raises(ValueError, match="acquisition status"):
+        AssignmentsDocumentV2.model_validate(source_exclusion).validate_against_manifest(
+            PackageManifestV2.model_validate(exclusion_manifest)
+        )

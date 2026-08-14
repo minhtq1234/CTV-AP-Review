@@ -94,6 +94,7 @@
         "faCode": {
           "maxLength": 128,
           "minLength": 1,
+          "pattern": "\\S",
           "title": "Facode",
           "type": "string"
         },
@@ -834,6 +835,7 @@
     "faCode": {
       "maxLength": 128,
       "minLength": 1,
+      "pattern": "\\S",
       "title": "Facode",
       "type": "string"
     },

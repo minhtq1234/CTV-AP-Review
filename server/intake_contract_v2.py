@@ -33,6 +33,7 @@ OpaqueParticipantHandle = Annotated[str, Field(pattern=r"^participant-[0-9a-z]+(
 OpaqueRosterRowId = Annotated[str, Field(pattern=r"^roster-row-[0-9a-z]+(?:-[0-9a-z]+)*$", min_length=12, max_length=128)]
 OpaquePackageId = Annotated[str, Field(pattern=r"^package-[0-9a-f]{64}$")]
 OpaqueObservationId = Annotated[str, Field(pattern=r"^observation-[0-9a-f]{64}$")]
+NonblankFaCode = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
 
 CoverageStateV2 = Literal["assigned", "shared", "duplicate", "excluded-by-user"]
 ArtifactKindV2 = Literal["input-pdf", "roster", "assignments", "exceptions", "evidence"]
@@ -52,6 +53,13 @@ AcquisitionStatus = Literal["opaque", "unsupported", "unreadable", "encrypted", 
 FixedInspectionIssue = Literal[tuple(INSPECTION_ISSUE_ORDER)]
 
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_EXCLUSION_REASON_BY_ACQUISITION = {
+    "opaque": "excluded-by-user",
+    "unsupported": "unsupported",
+    "unreadable": "unreadable",
+    "encrypted": "encrypted",
+    "over-limit": "over-limit",
+}
 
 
 class _ContractModel(BaseModel):
@@ -184,7 +192,7 @@ ArtifactRecordV2 = Annotated[
 class CanonicalSourceColumnsV2(_ContractModel):
     name: str = Field(min_length=1, max_length=128)
     identity: str = Field(min_length=1, max_length=128)
-    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
+    fa_code: NonblankFaCode = Field(alias="faCode")
     tax_id: str | None = Field(alias="taxId", default=None, min_length=1, max_length=128)
     birth_date: str | None = Field(alias="birthDate", default=None, min_length=1, max_length=128)
     bank_account: str | None = Field(alias="bankAccount", default=None, min_length=1, max_length=128)
@@ -234,7 +242,7 @@ class PackageManifestV2(_ContractModel):
     proposal_digest: Sha256 = Field(alias="proposalDigest")
     batch_id: OpaqueId = Field(alias="batchId")
     case_id: OpaqueId = Field(alias="caseId")
-    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
+    fa_code: NonblankFaCode = Field(alias="faCode")
     package_version: str = Field(alias="packageVersion", min_length=1, max_length=128)
     status: Literal["prepared"]
     validator_version: str = Field(alias="validatorVersion", min_length=1, max_length=128)
@@ -485,9 +493,13 @@ class AssignmentsDocumentV2(_ContractModel):
                     raise ValueError("assignment PDF page must resolve to included coverage")
                 if page_key in assigned_pdf_pages:
                     raise ValueError("included PDF pages require exactly one assignment")
+                if unit.output_locator.target_page != page.target_page:
+                    raise ValueError("PDF locator target page must match manifest coverage")
                 if isinstance(unit.target, SharedTargetV2) != (page.coverage_state == "shared"):
                     raise ValueError("shared PDF pages require a shared target")
                 assigned_pdf_pages[page_key] = unit
+            if artifact.kind == "evidence" and artifact.source_ids != [unit.source_id]:
+                raise ValueError("evidence provenance must match the assignment source")
         if set(assigned_pdf_pages) != set(included_pdf_pages):
             raise ValueError("included PDF pages require exactly one assignment")
         evidence_artifact_ids = {
@@ -505,6 +517,16 @@ class AssignmentsDocumentV2(_ContractModel):
                 raise ValueError("exclusion decision subject must name its record")
             if exclusion.record_type == "source" and exclusion.record_id not in sources:
                 raise ValueError("source exclusion record must resolve")
+            if exclusion.record_type == "source":
+                source = sources[exclusion.record_id]
+                if not isinstance(source, UnacquiredSourceV2):
+                    raise ValueError("source exclusion must bind an unacquired source")
+                expected_reason = (
+                    "duplicate" if source.coverage_state == "duplicate"
+                    else _EXCLUSION_REASON_BY_ACQUISITION[source.acquisition_status]
+                )
+                if source.decision_id != exclusion.decision_id or exclusion.reason != expected_reason:
+                    raise ValueError("source exclusion must match acquisition status and source binding")
 
     def validate_against_roster(self, roster: "CanonicalRosterDocumentV2") -> None:
         if self.roster_artifact_id != roster.artifact_id:
@@ -518,7 +540,7 @@ class AssignmentsDocumentV2(_ContractModel):
 class CanonicalRosterValuesV2(_ContractModel):
     name: str = Field(min_length=1, max_length=256)
     identity: str = Field(min_length=1, max_length=256)
-    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
+    fa_code: NonblankFaCode = Field(alias="faCode")
     tax_id: str | None = Field(alias="taxId", default=None, min_length=1, max_length=128)
     birth_date: str | None = Field(alias="birthDate", default=None, min_length=1, max_length=128)
     bank_account: str | None = Field(alias="bankAccount", default=None, min_length=1, max_length=128)

@@ -164,8 +164,11 @@ def test_v2_exported_schemas_encode_artifact_paths_and_required_roster_fields(tm
     assert "evidence/evidence-" in package_text
     assert "faCode" in package_text
     assert "canonicalToSourceColumns" in package_text
+    assert "\\\\S" in package_text
     assert package_schema == json.loads((V2_CONTRACT_ROOT / "package.schema.json").read_text())
 
     roster_schema = json.loads((output / "canonical-roster.schema.json").read_text())
-    assert "faCode" in json.dumps(roster_schema, sort_keys=True)
+    roster_text = json.dumps(roster_schema, sort_keys=True)
+    assert "faCode" in roster_text
+    assert "\\\\S" in roster_text
     assert roster_schema == json.loads((V2_CONTRACT_ROOT / "canonical-roster.schema.json").read_text())
