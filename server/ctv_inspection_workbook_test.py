@@ -1988,3 +1988,47 @@ def test_package_xlsx_aborts_on_the_write_that_crosses_its_output_cap(monkeypatc
         workbook_adapter._canonical_package_workbook_bytes(workbook, max_bytes=64)
     assert crossings and len(crossings) == 1
     assert crossings[0][0] <= crossings[0][2]
+
+
+def test_canonical_package_xlsx_uses_effective_deflate_level_nine_for_every_member(
+    monkeypatch,
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    workbook = Workbook()
+    workbook.active.append(("Synthetic", "Value"))
+    workbook.create_sheet("Second").append(("Other", 2))
+    effective_levels = {}
+    active_member = [None]
+    original_writer_init = zipfile._ZipWriteFile.__init__
+    original_get_compressor = zipfile._get_compressor
+
+    def recording_writer_init(self, archive, info, zip64):
+        if archive.compresslevel == 9:
+            active_member[0] = info.filename
+        try:
+            return original_writer_init(self, archive, info, zip64)
+        finally:
+            active_member[0] = None
+
+    def recording_get_compressor(compress_type, compresslevel=None):
+        if active_member[0] is not None:
+            effective_levels[active_member[0]] = (compress_type, compresslevel)
+        return original_get_compressor(compress_type, compresslevel)
+
+    monkeypatch.setattr(zipfile._ZipWriteFile, "__init__", recording_writer_init)
+    monkeypatch.setattr(zipfile, "_get_compressor", recording_get_compressor)
+    rendered = workbook_adapter._canonical_package_workbook_bytes(
+        workbook,
+        max_bytes=25 * 1024 * 1024,
+    )
+
+    with zipfile.ZipFile(BytesIO(rendered)) as archive:
+        names = set(archive.namelist())
+    assert set(effective_levels) == names
+    assert effective_levels["docProps/core.xml"] == (zipfile.ZIP_DEFLATED, 9)
+    assert any(name != "docProps/core.xml" for name in effective_levels)
+    assert all(
+        value == (zipfile.ZIP_DEFLATED, 9)
+        for value in effective_levels.values()
+    )
