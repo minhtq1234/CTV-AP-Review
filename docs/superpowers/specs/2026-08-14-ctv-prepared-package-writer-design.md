@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14
 
-**Status:** Design decisions approved; written specification awaiting confirmation
+**Status:** Approved for implementation planning
 
 **Base:** local `ver1` after the lean proposal-review workflow
 
