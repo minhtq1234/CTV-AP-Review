@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from openpyxl import load_workbook
@@ -44,6 +45,57 @@ _ROSTER_ISSUE_ORDER = (
     "roster-header-missing", "roster-row-invalid", "roster-identity-duplicate",
     "roster-over-limit", "roster-unreadable",
 )
+_CANONICAL_ROSTER_FIELDS = (
+    "name", "identity", "faCode", "taxId", "birthDate", "bankAccount", "serviceFee", "product",
+)
+
+
+@dataclass(frozen=True)
+class RosterRowSnapshot:
+    participant_handle: str
+    row_index: int
+    name: str = field(repr=False)
+    identity: str = field(repr=False)
+    fa_code: str = field(repr=False)
+    tax_id: str = field(repr=False)
+    birth_date: str = field(repr=False)
+    bank_account: str = field(repr=False)
+    service_fee: str = field(repr=False)
+    product: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class UnitDecisionSnapshot:
+    unit_id: str
+    evidence_id: str
+    unit_kind: str
+    unit_index: int
+    decision: str
+    role: str = ""
+    scope: str = ""
+    participant_handles: tuple[str, ...] = ()
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class SourceDispositionSnapshot:
+    evidence_id: str
+    decision: str
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ApprovedProposalSnapshot:
+    observation_id: str
+    proposal_digest: str
+    roster_unit_id: str
+    roster_evidence_id: str
+    roster_worksheet_index: int
+    roster_rows: tuple[RosterRowSnapshot, ...]
+    unit_decisions: tuple[UnitDecisionSnapshot, ...]
+    source_dispositions: tuple[SourceDispositionSnapshot, ...]
+    fa_code: str = field(repr=False)
+    canonical_to_source_columns: tuple[tuple[str, str], ...] = field(repr=False)
 
 
 def _mapping(value, keys):
@@ -94,6 +146,10 @@ class ProposalState:
         self._participant_handles = ()
         self._participant_display = ()
         self._roster_issues = ()
+        self._roster_package_issues = ()
+        self._roster_rows_private = ()
+        self._roster_columns_private = ()
+        self._approved_package_digest = None
         self.units = tuple(
             {
                 "unitId": unit.unit_id, "evidenceId": unit.evidence_id,
@@ -121,10 +177,13 @@ class ProposalState:
             raise ValueError("inspection must belong to its observation")
         return cls(observation, inspection)
 
+    def _invalidate_approved_package(self):
+        self._approved_package_digest = None
+
     def _roster_rows(self, unit):
         source = self._sources_by_id[unit.evidence_id]
         if source.detected_type != "xlsx" or source.inspection_status != "inspected":
-            return (), ("roster-unreadable",)
+            return (), ("roster-unreadable",), (), ()
         try:
             snapshot = self._observation.snapshot(unit.evidence_id, max_bytes=_MAX_WORKBOOK_BYTES)
             workbook = load_workbook(
@@ -133,9 +192,10 @@ class ProposalState:
             try:
                 worksheets = workbook.worksheets
                 if unit.unit_index > len(worksheets):
-                    return (), ("roster-unreadable",)
+                    return (), ("roster-unreadable",), (), ()
                 worksheet = worksheets[unit.unit_index - 1]
                 header = None
+                package_issues = set()
                 rows = []
                 cells = 0
                 issues = set()
@@ -153,32 +213,61 @@ class ProposalState:
                     if "roster-over-limit" in issues:
                         break
                     categories = [roster_header_categories_from_private_text(value) if value else () for value in values]
-                    name_columns = [index for index, value in enumerate(categories) if "name" in value]
-                    identity_columns = [index for index, value in enumerate(categories) if "identity" in value]
+                    columns = {
+                        field_name: [index for index, value in enumerate(categories) if field_name in value]
+                        for field_name in _CANONICAL_ROSTER_FIELDS
+                    }
+                    name_columns = columns["name"]
+                    identity_columns = columns["identity"]
                     if header is None and name_columns and identity_columns:
-                        header = (name_columns[0], identity_columns[0])
+                        header = {
+                            field_name: (positions[0], values[positions[0]])
+                            for field_name, positions in columns.items() if positions
+                        }
+                        if any(len(positions) > 1 for positions in columns.values()):
+                            package_issues.add("roster-header-duplicate")
+                        if "faCode" not in header:
+                            package_issues.add("roster-fa-code-missing")
                         continue
                     if header is None:
                         continue
-                    name = values[header[0]] if header[0] < len(values) else ""
-                    identity = values[header[1]] if header[1] < len(values) else ""
+                    row = {
+                        field_name: values[index] if index < len(values) else ""
+                        for field_name, (index, _column_name) in header.items()
+                    }
+                    name = row.get("name", "")
+                    identity = row.get("identity", "")
                     if not name and not identity:
                         issues.add("roster-row-invalid")
                     elif not name or not identity:
                         issues.add("roster-row-invalid")
                     else:
-                        rows.append((name, identity))
+                        rows.append((row, row_index))
                 if header is None:
                     issues.add("roster-header-missing")
                 if not rows:
                     issues.add("roster-row-invalid")
-                if len(rows) != len({identity for _name, identity in rows}):
+                if len(rows) != len({row["identity"] for row, _row_index in rows}):
                     issues.add("roster-identity-duplicate")
-                return tuple(rows), tuple(code for code in _ROSTER_ISSUE_ORDER if code in issues)
+                fa_codes = {row.get("faCode", "") for row, _row_index in rows}
+                if not fa_codes or "" in fa_codes:
+                    package_issues.add("roster-fa-code-blank")
+                if len(fa_codes - {""}) > 1:
+                    package_issues.add("roster-fa-code-conflict")
+                source_columns = tuple(
+                    (field_name, column_name)
+                    for field_name, (_index, column_name) in sorted(header.items())
+                ) if header is not None else ()
+                return (
+                    tuple(rows),
+                    tuple(code for code in _ROSTER_ISSUE_ORDER if code in issues),
+                    tuple(sorted(package_issues)),
+                    source_columns,
+                )
             finally:
                 workbook.close()
         except Exception:
-            return (), ("roster-unreadable",)
+            return (), ("roster-unreadable",), (), ()
 
     def select_roster(self, mapping):
         mapping = _mapping(mapping, {"rosterUnitId"})
@@ -186,7 +275,8 @@ class ProposalState:
         unit = self._units_by_id.get(unit_id)
         if unit is None or unit.unit_kind != "worksheet" or unit.suggested_role != "payment-roster":
             raise ValueError("rosterUnitId must identify an inspected roster worksheet")
-        rows, issues = self._roster_rows(unit)
+        rows, issues, package_issues, columns = self._roster_rows(unit)
+        self._invalidate_approved_package()
         if self._roster_unit_id is not None and self._roster_unit_id != unit_id:
             self._unit_decisions = {
                 decision_unit_id: record
@@ -203,12 +293,29 @@ class ProposalState:
         self._participant_display = tuple(
             {
                 "participantHandle": handle,
-                "name": name,
-                "identityHint": f"***-{identity[-3:]}",
+                "name": row["name"],
+                "identityHint": f"***-{row['identity'][-3:]}",
             }
-            for handle, (name, identity) in zip(self._participant_handles, rows)
+            for handle, (row, _row_index) in zip(self._participant_handles, rows)
         )
         self._roster_issues = issues
+        self._roster_package_issues = package_issues
+        self._roster_rows_private = tuple(
+            RosterRowSnapshot(
+                participant_handle=handle,
+                row_index=row_index,
+                name=row["name"],
+                identity=row["identity"],
+                fa_code=row.get("faCode", ""),
+                tax_id=row.get("taxId", ""),
+                birth_date=row.get("birthDate", ""),
+                bank_account=row.get("bankAccount", ""),
+                service_fee=row.get("serviceFee", ""),
+                product=row.get("product", ""),
+            )
+            for handle, (row, row_index) in zip(self._participant_handles, rows)
+        )
+        self._roster_columns_private = columns
 
     def participants_for_local_review(self):
         """Return private roster display fields only to the local review session."""
@@ -258,6 +365,7 @@ class ProposalState:
         elif decision == "excluded":
             record["reason"] = _enum(mapping["reason"], _EXCLUSION_REASONS, "reason")
         self._unit_decisions[unit_id] = record
+        self._invalidate_approved_package()
 
     def set_source_disposition(self, mapping):
         if type(mapping) is not dict:
@@ -273,6 +381,7 @@ class ProposalState:
         if decision == "excluded":
             record["reason"] = _enum(mapping["reason"], _EXCLUSION_REASONS, "reason")
         self._source_dispositions[evidence_id] = record
+        self._invalidate_approved_package()
 
     def _issue_codes(self):
         issues = set(self._roster_issues)
@@ -370,6 +479,7 @@ class ProposalState:
         summary = self.approval_summary()
         if not self._ready() or not hmac.compare_digest(expected_digest, summary["proposalDigest"]):
             raise ValueError("proposal is not ready for approval")
+        self._approved_package_digest = summary["proposalDigest"]
         assignments, dispositions = self._public_assignments()
         return {
             "version": _VERSION, "outcome": "approved", "observationId": self._inspection.observation_id,
@@ -379,3 +489,55 @@ class ProposalState:
             "issueCodes": self._issue_codes(),
             "approval": {"status": "user-approved", "approvedProposalDigest": summary["proposalDigest"]},
         }
+
+    def _package_ready(self):
+        if not self._ready() or self._roster_unit_id is None or self._roster_package_issues:
+            return False
+        roster_decision = self._unit_decisions.get(self._roster_unit_id)
+        if roster_decision is None or not (
+            roster_decision.get("decision") in {"accepted", "reassigned"}
+            and roster_decision.get("role") == "payment-roster"
+            and roster_decision.get("target", {}).get("scope") == "case"
+        ):
+            return False
+        return any(
+            unit.unit_kind == "pdf-page"
+            and self._unit_decisions.get(unit.unit_id, {}).get("decision") in {"accepted", "reassigned"}
+            for unit in self._inspection.units
+        )
+
+    def consume_approved_package_snapshot(self, expected_digest):
+        """Consume the private local approval token into immutable preparation data."""
+        if (
+            type(expected_digest) is not str
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_digest)
+            or self._approved_package_digest is None
+            or not hmac.compare_digest(expected_digest, self._approved_package_digest)
+            or not self._package_ready()
+            or not hmac.compare_digest(expected_digest, self.approval_summary()["proposalDigest"])
+        ):
+            raise ValueError("approved package snapshot is unavailable")
+        roster_unit = self._units_by_id[self._roster_unit_id]
+        unit_snapshots = []
+        for unit in sorted(self._inspection.units, key=lambda value: int(value.unit_id.rsplit("-", 1)[1])):
+            record = self._unit_decisions[unit.unit_id]
+            target = record.get("target", {})
+            unit_snapshots.append(UnitDecisionSnapshot(
+                unit_id=unit.unit_id, evidence_id=unit.evidence_id, unit_kind=unit.unit_kind,
+                unit_index=unit.unit_index, decision=record["decision"], role=record.get("role", ""),
+                scope=target.get("scope", ""), participant_handles=tuple(target.get("participantHandles", ())),
+                reason=record.get("reason", ""),
+            ))
+        source_snapshots = tuple(
+            SourceDispositionSnapshot(evidence_id=evidence_id, decision=record["decision"], reason=record.get("reason", ""))
+            for evidence_id, record in sorted(self._source_dispositions.items())
+        )
+        self._approved_package_digest = None
+        return ApprovedProposalSnapshot(
+            observation_id=self._inspection.observation_id, proposal_digest=expected_digest,
+            roster_unit_id=roster_unit.unit_id, roster_evidence_id=roster_unit.evidence_id,
+            roster_worksheet_index=roster_unit.unit_index, roster_rows=tuple(self._roster_rows_private),
+            unit_decisions=tuple(unit_snapshots), source_dispositions=source_snapshots,
+            fa_code=self._roster_rows_private[0].fa_code,
+            canonical_to_source_columns=tuple(self._roster_columns_private),
+        )

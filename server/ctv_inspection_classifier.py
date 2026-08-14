@@ -50,14 +50,22 @@ _ACCEPTANCE_PERIOD = re.compile(r"\b(?:thoi\s+gian|ky)\s+nghiem\s+thu\b")
 _PAYMENT_REQUEST = re.compile(r"\bde\s+nghi\s+thanh\s+toan\b")
 _TAX_FORM = re.compile(r"\b(?:chung\s+tu|to\s+khai)\s+thue\b")
 _ROSTER_HEADER_NAME = re.compile(
-    r"^(?:ho\s+ten|ten\s+(?:ctv|nhan\s+vien|nguoi\s+nhan))$"
+    r"^(?:name|ho\s+ten|ten\s+(?:ctv|nhan\s+vien|nguoi\s+nhan))$"
 )
 _ROSTER_HEADER_IDENTITY = re.compile(
-    r"^(?:cccd|cmnd|so\s+(?:cccd|cmnd)|ma\s+(?:so\s+)?(?:ctv|nhan\s+vien))$"
+    r"^(?:identity|cccd|cmnd|so\s+(?:cccd|cmnd)|ma\s+(?:so\s+)?(?:ctv|nhan\s+vien))$"
 )
 _ROSTER_HEADER_PAYMENT = re.compile(
     r"^(?:so\s+tien|thanh\s+tien|tien\s+(?:chi\s+tra|thanh\s+toan)|gross|net)$"
 )
+_ROSTER_HEADER_CANONICAL = {
+    "faCode": re.compile(r"^(?:fa\s*code|ma\s*fa)$"),
+    "taxId": re.compile(r"^(?:tax\s*id|ma\s*so\s*thue)$"),
+    "birthDate": re.compile(r"^(?:birth\s*date|ngay\s*sinh)$"),
+    "bankAccount": re.compile(r"^(?:bank\s*account|tai\s*khoan\s*(?:ngan\s*hang)?)$"),
+    "serviceFee": re.compile(r"^(?:service\s*fee|phi\s*dich\s*vu)$"),
+    "product": re.compile(r"^(?:product|san\s*pham)$"),
+}
 _IDENTITY_FRONT_HEADING = re.compile(r"\b(?:can\s+cuoc\s+cong\s+dan|chung\s+minh\s+nhan\s+dan)\b")
 _IDENTITY_FRONT_LAYOUT = re.compile(r"\bmat\s+truoc\b")
 _IDENTITY_BACK_LAYOUT = re.compile(r"\bmat\s+sau\b")
@@ -163,6 +171,9 @@ def roster_header_categories_from_private_text(text: str) -> tuple[str, ...]:
         ("identity", _ROSTER_HEADER_IDENTITY),
         ("payment", _ROSTER_HEADER_PAYMENT),
     ):
+        if pattern.fullmatch(normalized):
+            categories.append(category)
+    for category, pattern in _ROSTER_HEADER_CANONICAL.items():
         if pattern.fullmatch(normalized):
             categories.append(category)
     normalized = ""

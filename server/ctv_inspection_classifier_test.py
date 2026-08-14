@@ -7,6 +7,7 @@ from ctv_inspection_classifier import (
     Classification,
     TextSignalContext,
     classify,
+    roster_header_categories_from_private_text,
     signals_from_private_text,
 )
 from ctv_inspection_model import SIGNAL_ORDER
@@ -212,6 +213,13 @@ def test_private_text_reducer_normalizes_vietnamese_and_emits_only_safe_codes():
     assert tuple(sorted(signals, key=SIGNAL_ORDER.index)) == signals
     forbidden = ("012345678901", "12/08/2026", "1.250.000", "Nguyễn", private_text)
     assert all(fragment not in " ".join(signals) for fragment in forbidden)
+
+
+def test_roster_header_reducer_recognizes_only_fixed_canonical_categories():
+    assert roster_header_categories_from_private_text("faCode") == ("faCode",)
+    assert roster_header_categories_from_private_text("bankAccount") == ("bankAccount",)
+    assert roster_header_categories_from_private_text("serviceFee") == ("serviceFee",)
+    assert roster_header_categories_from_private_text("PRIVATE PERSON 079123456781") == ()
 
 
 def test_private_text_reducer_does_not_leak_invalid_input_into_errors():
