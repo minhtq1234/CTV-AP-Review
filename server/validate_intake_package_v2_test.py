@@ -30,7 +30,9 @@ def _canonical(stdout: bytes) -> dict:
     return report
 
 
-def test_v2_standalone_dispatch_validates_existing_publication_receipt(tmp_path):
+def test_v2_standalone_mechanically_validates_existing_publication_receipt(
+    tmp_path,
+):
     fixture = materialize_v2_fixture(
         "complete", tmp_path / "fixture", include_receipt=True
     )
@@ -48,6 +50,10 @@ def test_v2_standalone_dispatch_validates_existing_publication_receipt(tmp_path)
         "evidenceRefs": ["receipt"],
         "passed": True,
     }
+    assert all(
+        not check["code"].startswith("writer-manifest-binding")
+        for check in report["checks"]
+    )
     assert result.stderr == b""
 
 

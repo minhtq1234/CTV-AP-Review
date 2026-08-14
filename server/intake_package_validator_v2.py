@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+import hmac
 from io import BytesIO
 import json
 import threading
@@ -28,6 +29,9 @@ from ctv_package_builder import (
 from ctv_proposal import (
     ApprovedProposalSnapshot,
     ProposalState,
+    RosterRowSnapshot,
+    SourceDispositionSnapshot,
+    UnitDecisionSnapshot,
 )
 from intake_contract_v2 import (
     AssignmentsDocumentV2,
@@ -77,6 +81,7 @@ _ROLES_BY_KIND = {
 class V2ValidationExpectation:
     observation_id: str
     proposal_digest: str
+    expected_manifest_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -86,6 +91,17 @@ class V2ValidationExpectation:
             or type(self.proposal_digest) is not str
             or len(self.proposal_digest) != 64
             or any(character not in "0123456789abcdef" for character in self.proposal_digest)
+            or (
+                self.expected_manifest_sha256 is not None
+                and (
+                    type(self.expected_manifest_sha256) is not str
+                    or len(self.expected_manifest_sha256) != 64
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in self.expected_manifest_sha256
+                    )
+                )
+            )
         ):
             raise ValueError("v2-validation-expectation-invalid")
 
@@ -435,15 +451,14 @@ def _assignment_semantics_are_consistent(
     return True
 
 
-def _approved_projection(
+def _normalized_projection(
     manifest: PackageManifestV2,
     assignments: AssignmentsDocumentV2,
     observation: InventoryObservation,
     inspection,
-    expectation: V2ValidationExpectation,
     snapshot_source,
 ) -> ApprovedProposalSnapshot:
-    """Replay deterministic proposal APIs, not a browser-session proof."""
+    """Rebuild only the normalized persisted projection, not user intent."""
     inspected_units = {item.unit_id: item for item in inspection.units}
     roster_units = [
         item
@@ -464,7 +479,26 @@ def _approved_projection(
     proposal = ProposalState.from_inspection(
         observation, inspection, _snapshot_source=snapshot_source
     )
-    proposal.select_roster({"rosterUnitId": inspected_roster.unit_id})
+    rows, row_issues, package_issues, columns = proposal._roster_rows(
+        inspected_roster
+    )
+    if not rows or row_issues or package_issues:
+        raise ValueError("roster projection mismatch")
+    roster_rows = tuple(
+        RosterRowSnapshot(
+            participant_handle=f"participant-{index:04d}",
+            row_index=row_index,
+            name=row["name"],
+            identity=row["identity"],
+            fa_code=row.get("faCode", ""),
+            tax_id=row.get("taxId", ""),
+            birth_date=row.get("birthDate", ""),
+            bank_account=row.get("bankAccount", ""),
+            service_fee=row.get("serviceFee", ""),
+            product=row.get("product", ""),
+        )
+        for index, (row, row_index) in enumerate(rows, start=1)
+    )
 
     included = {item.unit_id: item for item in assignments.units}
     excluded = {
@@ -479,43 +513,55 @@ def _approved_projection(
     pdf_pages = {
         (item.source_id, item.source_page): item for item in manifest.pdf_pages
     }
+    source_models = {item.source_id: item for item in manifest.sources}
+    unit_decisions = []
     for unit in sorted(
         inspection.units, key=lambda item: int(item.unit_id.rsplit("-", 1)[1])
     ):
         assigned = included.get(unit.unit_id)
         if assigned is not None:
-            proposal.set_unit_decision({
-                "unitId": unit.unit_id,
-                "decision": assigned.decision,
-                "role": assigned.role,
-                "target": {
-                    "scope": assigned.target.scope,
-                    "participantHandles": list(
+            unit_decisions.append(
+                UnitDecisionSnapshot(
+                    unit_id=unit.unit_id,
+                    evidence_id=unit.evidence_id,
+                    unit_kind=unit.unit_kind,
+                    unit_index=unit.unit_index,
+                    decision=assigned.decision,
+                    role=assigned.role,
+                    scope=assigned.target.scope,
+                    participant_handles=tuple(
                         assigned.target.participant_handles
                     ),
-                },
-            })
+                )
+            )
             continue
-        reason = "intentionally-omitted"
+        source_id = _source_id(manifest.proposal_digest, unit.evidence_id)
+        source_model = source_models.get(source_id)
+        if source_model is None:
+            raise ValueError("source projection mismatch")
+        reason = source_model.coverage_state
         if unit.unit_kind == "pdf-page":
             page = pdf_pages.get(
-                (
-                    _source_id(manifest.proposal_digest, unit.evidence_id),
-                    unit.unit_index,
-                )
+                (source_id, unit.unit_index)
             )
             if page is None:
                 raise ValueError("PDF projection mismatch")
-            if page.coverage_state == "duplicate":
-                reason = "duplicate"
-        proposal.set_unit_decision({
-            "unitId": unit.unit_id,
-            "decision": "excluded",
-            "reason": reason,
-        })
+            reason = page.coverage_state
+        if reason not in {"duplicate", "excluded-by-user"}:
+            raise ValueError("unit projection mismatch")
+        unit_decisions.append(
+            UnitDecisionSnapshot(
+                unit_id=unit.unit_id,
+                evidence_id=unit.evidence_id,
+                unit_kind=unit.unit_kind,
+                unit_index=unit.unit_index,
+                decision="excluded",
+                reason=reason,
+            )
+        )
 
-    source_models = {item.source_id: item for item in manifest.sources}
     unit_evidence_ids = {item.evidence_id for item in inspection.units}
+    source_dispositions = []
     for source in inspection.sources:
         if source.evidence_id in unit_evidence_ids:
             continue
@@ -524,25 +570,28 @@ def _approved_projection(
         )
         if not isinstance(source_model, UnacquiredSourceV2):
             raise ValueError("source projection mismatch")
-        proposal.set_source_disposition({
-            "evidenceId": source.evidence_id,
-            "decision": "excluded",
-            "reason": (
-                "duplicate"
-                if source_model.coverage_state == "duplicate"
-                else "irrelevant"
-            ),
-        })
-    summary = proposal.approval_summary()
-    proposal_digest = summary["proposalDigest"]
-    if (
-        not summary["readyToPrepare"]
-        or proposal_digest != manifest.proposal_digest
-        or proposal_digest != expectation.proposal_digest
-    ):
-        raise ValueError("proposal coherence mismatch")
-    proposal.approve(proposal_digest)
-    return proposal.consume_approved_package_snapshot(proposal_digest)
+        source_dispositions.append(
+            SourceDispositionSnapshot(
+                evidence_id=source.evidence_id,
+                decision="excluded",
+                reason=source_model.coverage_state,
+                acquisition_status=source_model.acquisition_status,
+                coverage_state=source_model.coverage_state,
+                issue_codes=tuple(source_model.issue_codes),
+            )
+        )
+    return ApprovedProposalSnapshot(
+        observation_id=observation.observation_id,
+        proposal_digest=manifest.proposal_digest,
+        roster_unit_id=inspected_roster.unit_id,
+        roster_evidence_id=inspected_roster.evidence_id,
+        roster_worksheet_index=inspected_roster.unit_index,
+        roster_rows=roster_rows,
+        unit_decisions=tuple(unit_decisions),
+        source_dispositions=tuple(source_dispositions),
+        fa_code=roster_rows[0].fa_code,
+        canonical_to_source_columns=columns,
+    )
 
 
 def _production_projection_is_consistent(
@@ -587,6 +636,15 @@ def _validate_content(
         checks.add("manifest-invalid", False, "manifest")
         return _fallback_result(checks, expectation)
     manifest_digest = sha256(manifest_content).hexdigest()
+    if (
+        expectation.expected_manifest_sha256 is not None
+        and not hmac.compare_digest(
+            manifest_digest, expectation.expected_manifest_sha256
+        )
+    ):
+        checks.add(
+            "writer-manifest-binding-mismatch", False, "manifest"
+        )
     try:
         manifest = PackageManifestV2.model_validate(_strict_json(manifest_content))
     except (UnicodeError, ValueError, ValidationError):
@@ -793,8 +851,6 @@ def _validate_content(
         assignments_valid,
         "artifact-assignments",
     )
-    approved = None
-    proposal_coherence_valid = False
     projection_valid = False
     if (
         assignments is not None
@@ -802,15 +858,13 @@ def _validate_content(
         and artifacts_valid
     ):
         try:
-            approved = _approved_projection(
+            approved = _normalized_projection(
                 manifest,
                 assignments,
                 observation,
                 inspection,
-                expectation,
                 source_cache.snapshot,
             )
-            proposal_coherence_valid = True
         except Exception:
             approved = None
         if approved is not None:
@@ -826,15 +880,6 @@ def _validate_content(
                 )
             except Exception:
                 projection_valid = False
-    checks.add(
-        (
-            "proposal-coherence-valid"
-            if proposal_coherence_valid
-            else "proposal-coherence-mismatch"
-        ),
-        proposal_coherence_valid,
-        "proposal-projection",
-    )
     checks.add(
         (
             "production-projection-valid"

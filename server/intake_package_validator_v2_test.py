@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -17,8 +18,15 @@ import openpyxl
 import pytest
 from PIL import Image
 
+from ctv_inspection import inspect_observation
 from ctv_inventory import InventoryObservation, open_inventory_observation
-from intake_fixture_factory_v2 import materialize_v2_fixture
+from ctv_package_builder import (
+    ArtifactReceipt,
+    build_manifest_bytes,
+    create_build_plan,
+    iter_rendered_artifacts,
+)
+from intake_fixture_factory_v2 import _approve, materialize_v2_fixture
 from intake_package_validator import _PackageReader
 from intake_package_validator_v2 import (
     V2ValidationExpectation,
@@ -49,6 +57,7 @@ def _expectation(fixture):
     return V2ValidationExpectation(
         observation_id=fixture.observation_id,
         proposal_digest=fixture.proposal_digest,
+        expected_manifest_sha256=fixture.manifest_sha256,
     )
 
 
@@ -62,6 +71,44 @@ def _validate_publication(fixture):
         return validate_v2_publication_reader(
             reader, observation, _expectation(fixture)
         )
+
+
+def _rebuild_with_changed_decision(fixture):
+    original_manifest_sha256 = sha256(
+        (fixture.package_dir / "case-manifest.json").read_bytes()
+    ).hexdigest()
+    with open_inventory_observation(fixture.source_dir) as observation:
+        inspection = inspect_observation(observation)
+        approved = _approve(observation, inspection)
+        changed_item = next(
+            item
+            for item in approved.unit_decisions
+            if item.unit_kind == "pdf-page" and item.decision == "accepted"
+        )
+        changed = dataclasses.replace(
+            changed_item,
+            decision="reassigned",
+            role="payment-tax-form",
+        )
+        changed_approved = dataclasses.replace(
+            approved,
+            unit_decisions=tuple(
+                changed if item is changed_item else item
+                for item in approved.unit_decisions
+            ),
+        )
+        plan = create_build_plan(observation, inspection, changed_approved)
+        rendered = tuple(iter_rendered_artifacts(plan, observation))
+        manifest_bytes = build_manifest_bytes(
+            plan, tuple(ArtifactReceipt.from_rendered(item) for item in rendered)
+        )
+        for item in rendered:
+            path = fixture.package_dir.joinpath(*item.path.split("/"))
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(item.content)
+        (fixture.package_dir / "case-manifest.json").write_bytes(manifest_bytes)
+    assert sha256(manifest_bytes).hexdigest() != original_manifest_sha256
+    return original_manifest_sha256
 
 
 def _read_document(path):
@@ -106,6 +153,96 @@ def test_complete_content_is_valid_and_binds_manifest_artifacts_and_checks(tmp_p
     assert content.report.checks
     assert all(check.passed for check in content.report.checks)
     assert canonical_v2_receipt_bytes(content).endswith(b"\n")
+
+
+@pytest.mark.parametrize(
+    ("record_type", "reason"),
+    [
+        *(('unit', reason) for reason in (
+            "duplicate",
+            "irrelevant",
+            "unreadable-replacement-available",
+            "intentionally-omitted",
+            "other",
+        )),
+        *(('source', reason) for reason in (
+            "duplicate",
+            "irrelevant",
+            "unreadable-replacement-available",
+            "intentionally-omitted",
+            "other",
+        )),
+    ],
+)
+def test_content_accepts_real_packages_for_lossy_user_exclusion_reasons(
+    tmp_path, record_type, reason
+):
+    fixture = materialize_v2_fixture(
+        "complete",
+        tmp_path / f"{record_type}-{reason}",
+        unit_exclusion_reason=reason if record_type == "unit" else None,
+        source_exclusion_reason=reason if record_type == "source" else "irrelevant",
+    )
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "valid", (record_type, reason, content.report.errors)
+
+
+def test_writer_manifest_binding_rejects_coherent_rebuilt_changed_decision(tmp_path):
+    fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
+    expected_manifest_sha256 = _rebuild_with_changed_decision(fixture)
+    expectation = V2ValidationExpectation(
+        observation_id=fixture.observation_id,
+        proposal_digest=fixture.proposal_digest,
+        expected_manifest_sha256=expected_manifest_sha256,
+    )
+
+    with _opened(fixture.package_dir, fixture.source_dir) as (reader, observation):
+        content = validate_v2_content_reader(reader, observation, expectation)
+
+    assert content.report.outcome == "invalid"
+    assert content.report.errors == ["writer-manifest-binding-mismatch"]
+    binding_check = next(
+        check
+        for check in content.report.checks
+        if check.code == "writer-manifest-binding-mismatch"
+    )
+    assert binding_check.evidence_refs == ["manifest"]
+    assert expected_manifest_sha256.encode() not in canonical_v2_receipt_bytes(content)
+
+
+@pytest.mark.parametrize(
+    "value", [b"0" * 64, "0" * 63, "A" * 64, "0" * 65]
+)
+def test_writer_manifest_binding_expectation_is_closed(value):
+    with pytest.raises(ValueError, match="^v2-validation-expectation-invalid$"):
+        V2ValidationExpectation(
+            observation_id="observation-" + "0" * 64,
+            proposal_digest="0" * 64,
+            expected_manifest_sha256=value,
+        )
+
+
+def test_publication_without_writer_manifest_binding_is_mechanical_only(tmp_path):
+    fixture = materialize_v2_fixture(
+        "complete", tmp_path / "fixture", include_receipt=True
+    )
+    expectation = V2ValidationExpectation(
+        observation_id=fixture.observation_id,
+        proposal_digest=fixture.proposal_digest,
+    )
+
+    with _opened(fixture.package_dir, fixture.source_dir) as (reader, observation):
+        publication = validate_v2_publication_reader(
+            reader, observation, expectation
+        )
+
+    assert publication.report.outcome == "valid"
+    assert all(
+        not check.code.startswith("writer-manifest-binding")
+        for check in publication.report.checks
+    )
 
 
 def test_content_acquires_each_verified_source_once_and_skips_unacquired(
@@ -417,7 +554,7 @@ def test_content_rejects_nonproduction_complete_projection(tmp_path, case):
     assert "production-projection-mismatch" in content.report.errors
 
 
-def test_content_rejects_coherent_changed_decision_that_retains_expected_digest(
+def test_mechanical_content_accepts_coherent_changed_decision_without_writer_binding(
     tmp_path,
 ):
     fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
@@ -449,10 +586,18 @@ def test_content_rejects_coherent_changed_decision_that_retains_expected_digest(
     artifact["sha256"] = sha256(assignment_bytes).hexdigest()
     _write_manifest(fixture, manifest)
 
-    content = _validate_content(fixture)
+    expectation = V2ValidationExpectation(
+        observation_id=fixture.observation_id,
+        proposal_digest=fixture.proposal_digest,
+    )
+    with _opened(fixture.package_dir, fixture.source_dir) as (reader, observation):
+        content = validate_v2_content_reader(reader, observation, expectation)
 
-    assert content.report.outcome == "invalid"
-    assert "proposal-coherence-mismatch" in content.report.errors
+    assert content.report.outcome == "valid"
+    assert all(
+        not check.code.startswith("writer-manifest-binding")
+        for check in content.report.checks
+    )
 
 
 def test_two_validations_share_no_snapshot_cache_or_global_serialization(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from datetime import date, datetime
+from hashlib import sha256
 from io import BytesIO
 import json
 from pathlib import Path
@@ -36,6 +37,7 @@ class MaterializedV2Fixture:
     assignments: AssignmentsDocumentV2
     observation_id: str
     proposal_digest: str
+    manifest_sha256: str
 
 
 def _fixed_workbook_bytes(sheets) -> bytes:
@@ -109,7 +111,13 @@ def _write_sources(source_dir: Path) -> None:
     (source_dir / "z-roster.xlsx").write_bytes(roster_bytes)
 
 
-def _approve(observation, inspection):
+def _approve(
+    observation,
+    inspection,
+    *,
+    unit_exclusion_reason: str | None = None,
+    source_exclusion_reason: str = "irrelevant",
+):
     state = ProposalState.from_inspection(observation, inspection)
     roster = next(
         unit for unit in state.units if unit["suggestedRole"] == "payment-roster"
@@ -121,7 +129,22 @@ def _approve(observation, inspection):
         "unit-0003": ("individual", ["participant-0002"]),
         "unit-0004": ("case", []),
     }
+    excluded_unit_id = next(
+        (
+            unit["unitId"]
+            for unit in state.units
+            if unit["unitKind"] == "image"
+        ),
+        None,
+    )
     for unit in state.units:
+        if unit_exclusion_reason is not None and unit["unitId"] == excluded_unit_id:
+            state.set_unit_decision({
+                "unitId": unit["unitId"],
+                "decision": "excluded",
+                "reason": unit_exclusion_reason,
+            })
+            continue
         if unit["unitId"] == roster["unitId"]:
             role, target = "payment-roster", ("case", [])
         elif unit["unitKind"] == "pdf-page":
@@ -146,7 +169,7 @@ def _approve(observation, inspection):
             state.set_source_disposition({
                 "evidenceId": source["evidenceId"],
                 "decision": "excluded",
-                "reason": "irrelevant",
+                "reason": source_exclusion_reason,
             })
     digest = state.approval_summary()["proposalDigest"]
     state.approve(digest)
@@ -171,7 +194,12 @@ def _invalid_assignment(
 
 
 def materialize_v2_fixture(
-    name: str, output: Path, include_receipt: bool = False
+    name: str,
+    output: Path,
+    include_receipt: bool = False,
+    *,
+    unit_exclusion_reason: str | None = None,
+    source_exclusion_reason: str = "irrelevant",
 ) -> MaterializedV2Fixture:
     """Generate one bounded fixture through inspection, approval, and Task 4."""
     if name not in {"complete", "invalid-assignment"}:
@@ -185,7 +213,12 @@ def materialize_v2_fixture(
 
     with open_inventory_observation(source_dir) as observation:
         inspection = inspect_observation(observation)
-        approved = _approve(observation, inspection)
+        approved = _approve(
+            observation,
+            inspection,
+            unit_exclusion_reason=unit_exclusion_reason,
+            source_exclusion_reason=source_exclusion_reason,
+        )
         plan = create_build_plan(observation, inspection, approved)
         first = tuple(iter_rendered_artifacts(plan, observation))
         second = tuple(iter_rendered_artifacts(plan, observation))
@@ -196,6 +229,7 @@ def materialize_v2_fixture(
         rendered = _invalid_assignment(first) if name == "invalid-assignment" else first
         receipts = tuple(ArtifactReceipt.from_rendered(item) for item in rendered)
         manifest_bytes = build_manifest_bytes(plan, receipts)
+        manifest_sha256 = sha256(manifest_bytes).hexdigest()
         for item in rendered:
             target = package_dir.joinpath(*item.path.split("/"))
             target.parent.mkdir(mode=0o700, exist_ok=True)
@@ -220,6 +254,7 @@ def materialize_v2_fixture(
                     V2ValidationExpectation(
                         observation_id=observation.observation_id,
                         proposal_digest=approved.proposal_digest,
+                        expected_manifest_sha256=manifest_sha256,
                     ),
                 )
             finally:
@@ -242,4 +277,5 @@ def materialize_v2_fixture(
             assignments=assignments,
             observation_id=observation.observation_id,
             proposal_digest=approved.proposal_digest,
+            manifest_sha256=manifest_sha256,
         )

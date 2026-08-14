@@ -42,6 +42,9 @@ def test_complete_fixture_uses_production_outputs_and_is_deterministic(tmp_path)
     assert isinstance(first.assignments, AssignmentsDocumentV2)
     assert first.observation_id == first.manifest.source_observation_id
     assert first.proposal_digest == first.manifest.proposal_digest
+    assert first.manifest_sha256 == sha256(
+        (first.package_dir / "case-manifest.json").read_bytes()
+    ).hexdigest()
     package = _tree(first.package_dir)
     for artifact in first.manifest.artifacts:
         assert sha256(package[artifact.path]).hexdigest() == artifact.sha256
@@ -84,6 +87,7 @@ def test_receipt_is_created_only_from_a_valid_content_result(tmp_path):
                 V2ValidationExpectation(
                     observation_id=fixture.observation_id,
                     proposal_digest=fixture.proposal_digest,
+                    expected_manifest_sha256=fixture.manifest_sha256,
                 ),
             )
     assert publication.report.outcome == "valid"

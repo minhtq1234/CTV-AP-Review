@@ -208,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
                 expectation = V2ValidationExpectation(
                     observation_id=observation.observation_id,
                     proposal_digest=_v2_manifest_proposal_digest(manifest_content),
+                    # Standalone validation is deliberately mechanical-only;
+                    # only the in-process writer owns an external manifest pin.
+                    expected_manifest_sha256=None,
                 )
                 result = validate_v2_publication_reader(
                     reader, observation, expectation
