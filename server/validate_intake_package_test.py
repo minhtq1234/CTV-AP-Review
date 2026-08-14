@@ -50,7 +50,9 @@ def test_valid_package_emits_one_canonical_report_and_exits_zero(tmp_path):
     result = _run_cli_with_source(package_dir)
 
     assert result.returncode == 0
-    _assert_canonical_report(result.stdout, "valid")
+    report = _assert_canonical_report(result.stdout, "valid")
+    assert report["schemaVersion"] == "1.0"
+    assert report["validatorVersion"] == "1.0.0"
     assert result.stderr == b""
 
 

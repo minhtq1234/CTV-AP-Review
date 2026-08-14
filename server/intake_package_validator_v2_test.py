@@ -1,0 +1,342 @@
+"""Capability-aware semantic validation for generated intake v2 packages."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from hashlib import sha256
+import json
+import re
+
+import fitz
+import pytest
+
+from ctv_inventory import open_inventory_observation
+from intake_fixture_factory_v2 import materialize_v2_fixture
+from intake_package_validator import _PackageReader
+from intake_package_validator_v2 import (
+    V2ValidationExpectation,
+    canonical_v2_receipt_bytes,
+    validate_v2_content_reader,
+    validate_v2_publication_reader,
+)
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode() + b"\n"
+
+
+@contextmanager
+def _opened(package_dir, source_dir):
+    reader, failure = _PackageReader.open(package_dir)
+    assert failure is None and reader is not None
+    with open_inventory_observation(source_dir) as observation:
+        try:
+            yield reader, observation
+        finally:
+            reader.close()
+
+
+def _expectation(fixture):
+    return V2ValidationExpectation(
+        observation_id=fixture.observation_id,
+        proposal_digest=fixture.proposal_digest,
+    )
+
+
+def _validate_content(fixture):
+    with _opened(fixture.package_dir, fixture.source_dir) as (reader, observation):
+        return validate_v2_content_reader(reader, observation, _expectation(fixture))
+
+
+def _validate_publication(fixture):
+    with _opened(fixture.package_dir, fixture.source_dir) as (reader, observation):
+        return validate_v2_publication_reader(
+            reader, observation, _expectation(fixture)
+        )
+
+
+def _read_document(path):
+    return json.loads(path.read_bytes())
+
+
+def _write_manifest(fixture, document):
+    (fixture.package_dir / "case-manifest.json").write_bytes(_canonical(document))
+
+
+def _rewrite_artifact(fixture, relative_path, document, *, bind_digest=True):
+    content = _canonical(document)
+    (fixture.package_dir / relative_path).write_bytes(content)
+    if bind_digest:
+        manifest = _read_document(fixture.package_dir / "case-manifest.json")
+        artifact = next(item for item in manifest["artifacts"] if item["path"] == relative_path)
+        artifact["size"] = len(content)
+        artifact["sha256"] = sha256(content).hexdigest()
+        _write_manifest(fixture, manifest)
+
+
+def test_complete_content_is_valid_and_binds_manifest_artifacts_and_checks(tmp_path):
+    fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
+    content = _validate_content(fixture)
+
+    manifest_bytes = (fixture.package_dir / "case-manifest.json").read_bytes()
+    assert content.report.outcome == "valid"
+    assert content.manifest_sha256 == sha256(manifest_bytes).hexdigest()
+    assert content.declared_artifact_set_sha256
+    assert content.tree_sha256
+    assert content.report.checks
+    assert all(check.passed for check in content.report.checks)
+    assert canonical_v2_receipt_bytes(content).endswith(b"\n")
+
+
+def _corrupt(fixture, case):
+    manifest_path = fixture.package_dir / "case-manifest.json"
+    manifest = _read_document(manifest_path)
+    assignments_path = fixture.package_dir / "assignments.json"
+    assignments = _read_document(assignments_path)
+
+    if case == "artifact-digest":
+        next(item for item in manifest["artifacts"] if item["kind"] == "input-pdf")["sha256"] = "0" * 64
+        _write_manifest(fixture, manifest)
+    elif case == "assignment-digest":
+        assignments["units"][0]["role"] = "acceptance-record"
+        _rewrite_artifact(fixture, "assignments.json", assignments, bind_digest=False)
+    elif case == "source-binding":
+        manifest["sourceObservationId"] = "observation-" + "f" * 64
+        _write_manifest(fixture, manifest)
+    elif case == "actual-pdf-page-count":
+        document = fitz.open()
+        document.new_page().insert_text((72, 72), "Synthetic changed PDF")
+        document.save(fixture.package_dir / "input.pdf")
+        document.close()
+        content = (fixture.package_dir / "input.pdf").read_bytes()
+        artifact = next(item for item in manifest["artifacts"] if item["kind"] == "input-pdf")
+        artifact["size"] = len(content)
+        artifact["sha256"] = sha256(content).hexdigest()
+        _write_manifest(fixture, manifest)
+    elif case == "hidden-target-page":
+        page = manifest["pdfPages"][-1]
+        page["targetPage"] = None
+        page["coverageState"] = "excluded-by-user"
+        _write_manifest(fixture, manifest)
+    elif case == "duplicate-target-page":
+        manifest["pdfPages"][-1]["targetPage"] = manifest["pdfPages"][0]["targetPage"]
+        _write_manifest(fixture, manifest)
+    elif case == "missing-target-page":
+        manifest["pdfPages"][-1]["targetPage"] += 1
+        _write_manifest(fixture, manifest)
+    elif case == "participant-row":
+        assignments["participants"][0]["rosterRowId"] = "roster-row-deadbeef"
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+    elif case == "decision-type":
+        unit = assignments["units"][0]
+        next(item for item in manifest["decisions"] if item["decisionId"] == unit["decisionId"])["type"] = "exclude-unit"
+        _write_manifest(fixture, manifest)
+    elif case == "accepted-role":
+        unit = next(item for item in assignments["units"] if item["unitKind"] == "pdf-page" and item["decision"] == "accepted")
+        unit["role"] = "acceptance-record" if unit["role"] != "acceptance-record" else "service-contract"
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+    elif case == "scope-order":
+        unit = next(item for item in assignments["units"] if item["target"]["scope"] == "shared")
+        unit["target"]["participantHandles"].reverse()
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+    elif case == "artifact-source-ids":
+        evidence = next(item for item in manifest["artifacts"] if item["kind"] == "evidence")
+        evidence["sourceIds"] = [manifest["rosterMapping"]["sourceId"]]
+        _write_manifest(fixture, manifest)
+    elif case == "output-locator":
+        unit = next(item for item in assignments["units"] if item["unitKind"] == "pdf-page")
+        unit["outputLocator"]["targetPage"] += 1
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+    elif case == "evidence-index":
+        unit = next(item for item in assignments["units"] if item["outputLocator"]["kind"] == "worksheet" and item["role"] != "payment-roster")
+        unit["outputLocator"]["worksheetIndex"] = 2 if unit["outputLocator"]["worksheetIndex"] == 1 else 1
+        _rewrite_artifact(fixture, "assignments.json", assignments)
+    elif case == "fa-code":
+        manifest["faCode"] = "FA-SYNTHETIC-OTHER"
+        _write_manifest(fixture, manifest)
+    elif case == "package-identity":
+        manifest["packageId"] = "package-" + "f" * 64
+        _write_manifest(fixture, manifest)
+    elif case == "nonempty-exceptions":
+        exceptions = {
+            "schemaVersion": "2.0",
+            "items": [{
+                "exceptionId": "exception-synthetic",
+                "code": "synthetic-review",
+                "severity": "warning",
+                "evidenceRefs": [],
+                "explanation": "Synthetic fixture exception.",
+                "requiredAction": "Review synthetic fixture.",
+                "resolution": "resolved",
+            }],
+        }
+        _rewrite_artifact(fixture, "exceptions.json", exceptions)
+    elif case == "extra-file":
+        (fixture.package_dir / "extra-private-name.txt").write_text("PRIVATE-079123456789")
+    elif case == "content-report-present":
+        (fixture.package_dir / "validation-report.json").write_bytes(b"{}\n")
+    else:
+        raise AssertionError(case)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "artifact-digest",
+        "assignment-digest",
+        "source-binding",
+        "actual-pdf-page-count",
+        "hidden-target-page",
+        "duplicate-target-page",
+        "missing-target-page",
+        "participant-row",
+        "decision-type",
+        "accepted-role",
+        "scope-order",
+        "artifact-source-ids",
+        "output-locator",
+        "evidence-index",
+        "fa-code",
+        "package-identity",
+        "nonempty-exceptions",
+        "extra-file",
+        "content-report-present",
+    ],
+)
+def test_content_independently_rejects_each_corrupted_relationship(tmp_path, case):
+    fixture = materialize_v2_fixture("complete", tmp_path / case)
+    _corrupt(fixture, case)
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "invalid", case
+    assert content.report.errors, case
+    serialized = canonical_v2_receipt_bytes(content)
+    assert str(tmp_path).encode() not in serialized
+    assert b"PRIVATE-079123456789" not in serialized
+    assert all(
+        re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", ref)
+        for check in content.report.checks
+        for ref in check.evidence_refs
+    )
+
+
+def test_invalid_assignment_fixture_fails_semantics_not_digest_binding(tmp_path):
+    fixture = materialize_v2_fixture("invalid-assignment", tmp_path / "fixture")
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "invalid"
+    assert "assignment-invalid" in content.report.errors
+    assert "artifact-digest-mismatch" not in content.report.errors
+
+
+def test_publication_matches_content_and_adds_only_receipt_consistency(tmp_path):
+    fixture = materialize_v2_fixture(
+        "complete", tmp_path / "fixture", include_receipt=True
+    )
+    receipt = _read_document(fixture.package_dir / "validation-report.json")
+    publication = _validate_publication(fixture)
+
+    assert publication.report.outcome == "valid"
+    assert [check.code for check in publication.report.checks[:-1]] == [
+        check["code"] for check in receipt["checks"]
+    ]
+    assert publication.report.checks[-1].model_dump(by_alias=True) == {
+        "code": "validation-report-consistent",
+        "passed": True,
+        "evidenceRefs": ["receipt"],
+    }
+    assert all(
+        check["code"] != "validation-report-consistent"
+        for check in receipt["checks"]
+    )
+
+
+def _mutate_receipt(fixture, case):
+    report_path = fixture.package_dir / "validation-report.json"
+    if case == "missing":
+        report_path.unlink()
+        return
+    if case == "malformed":
+        report_path.write_bytes(b"{not-json\n")
+        return
+    receipt = _read_document(report_path)
+    if case == "stale":
+        manifest = _read_document(fixture.package_dir / "case-manifest.json")
+        (fixture.package_dir / "case-manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        )
+        return
+    if case == "self-declared":
+        manifest = _read_document(fixture.package_dir / "case-manifest.json")
+        manifest["artifacts"].append({
+            "artifactId": "artifact-validation-report",
+            "kind": "validation-report",
+            "formatVersion": "2.0",
+            "path": "validation-report.json",
+            "size": report_path.stat().st_size,
+            "sha256": sha256(report_path.read_bytes()).hexdigest(),
+            "sourceIds": [],
+        })
+        _write_manifest(fixture, manifest)
+        return
+    if case == "empty-checks":
+        receipt["checks"] = []
+    elif case == "private-verbose":
+        receipt["diagnostic"] = "PRIVATE-079123456789 /private/source/path"
+    elif case == "observation":
+        receipt["sourceObservationId"] = "observation-" + "f" * 64
+    elif case == "proposal":
+        receipt["proposalDigest"] = "f" * 64
+    elif case == "package":
+        receipt["packageId"] = "package-" + "f" * 64
+    elif case == "manifest":
+        receipt["manifestSha256"] = "f" * 64
+    elif case == "artifacts":
+        receipt["declaredArtifactSetSha256"] = "f" * 64
+    elif case == "outcome":
+        receipt["outcome"] = "invalid"
+        receipt["errors"] = [receipt["checks"][0]["code"]]
+        receipt["checks"][0]["passed"] = False
+    elif case == "ordered-checks":
+        receipt["checks"].reverse()
+    else:
+        raise AssertionError(case)
+    report_path.write_bytes(_canonical(receipt))
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "malformed",
+        "stale",
+        "self-declared",
+        "empty-checks",
+        "private-verbose",
+        "observation",
+        "proposal",
+        "package",
+        "manifest",
+        "artifacts",
+        "outcome",
+        "ordered-checks",
+    ],
+)
+def test_publication_rejects_missing_malformed_stale_or_mismatched_receipt(
+    tmp_path, case
+):
+    fixture = materialize_v2_fixture(
+        "complete", tmp_path / case, include_receipt=True
+    )
+    _mutate_receipt(fixture, case)
+
+    publication = _validate_publication(fixture)
+
+    assert publication.report.outcome == "invalid", case
+    assert "validation-report-consistent" in publication.report.errors
+    serialized = canonical_v2_receipt_bytes(publication)
+    assert b"PRIVATE-079123456789" not in serialized
+    assert b"/private/source/path" not in serialized

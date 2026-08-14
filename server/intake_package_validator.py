@@ -53,6 +53,22 @@ _NON_BLOCKING = getattr(os, "O_NONBLOCK", 0)
 _SUPPORTS_SECURE_RELATIVE_OPEN = os.open in os.supports_dir_fd and bool(_NO_FOLLOW)
 
 
+@dataclass(frozen=True)
+class PackageTreeSnapshot:
+    """A private-content-free digest of one exact opened package tree."""
+
+    paths: tuple[str, ...]
+    file_sha256: tuple[tuple[str, str], ...]
+    tree_sha256: str
+    total_bytes: int
+
+
+@dataclass(frozen=True)
+class _TreeEntry:
+    path: str
+    identity: tuple[int, int, int, int, int]
+
+
 def _make_package_reader_type():
     registry: dict[int, dict[str, object]] = {}
     manifest_not_read = object()
@@ -93,6 +109,8 @@ def _make_package_reader_type():
             "closed": False,
             "manifest_snapshot": manifest_not_read,
             "read_cache": {},
+            "read_identities": {},
+            "charged_bytes": 0,
         }
 
         def release(dead_ref) -> None:
@@ -145,6 +163,65 @@ def _make_package_reader_type():
                 return None, "missing"
             return reader, None
 
+        @classmethod
+        def open_at(
+            cls,
+            parent_fd: int,
+            child_name: str,
+            expected_identity: tuple[int, int] | None = None,
+        ) -> tuple["_PackageReader | None", str | None]:
+            """Open one exact directory child without resolving a pathname."""
+            if (
+                not _SUPPORTS_SECURE_RELATIVE_OPEN
+                or type(parent_fd) is not int
+                or type(child_name) is not str
+            ):
+                return None, "secure-open-unavailable"
+            if (
+                not child_name
+                or child_name in {".", ".."}
+                or "/" in child_name
+                or "\\" in child_name
+                or "\x00" in child_name
+            ):
+                return None, "unsafe"
+            try:
+                parent_metadata = os.fstat(parent_fd)
+            except OSError:
+                return None, "secure-open-unavailable"
+            if not stat.S_ISDIR(parent_metadata.st_mode):
+                return None, "secure-open-unavailable"
+            try:
+                root_fd = os.open(
+                    child_name,
+                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except OSError:
+                return (
+                    None,
+                    "symlink" if _is_symlink_at(parent_fd, child_name) else "missing",
+                )
+            try:
+                metadata = os.fstat(root_fd)
+                identity = (metadata.st_dev, metadata.st_ino)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ValueError("package child is not a directory")
+                if expected_identity is not None and identity != expected_identity:
+                    os.close(root_fd)
+                    return None, "changed"
+                reader = object.__new__(cls)
+                reader.root_path = Path(child_name)
+                reader.__root_fd = root_fd
+                register(reader, root_fd, identity)
+            except (OSError, RuntimeError, ValueError):
+                try:
+                    os.close(root_fd)
+                except OSError:
+                    pass
+                return None, "missing"
+            return reader, None
+
         def has_secure_open_provenance(self) -> bool:
             return has_authority(self)
 
@@ -183,12 +260,31 @@ def _make_package_reader_type():
             state = lookup(self)
             if state is None:
                 return None, "secure-open-unavailable"
-            return _read_relative_to_fd(
+            identity_before, identity_failure = _regular_identity_relative_to_fd(
+                state["descriptor"], parts
+            )
+            if identity_before is not None:
+                state["charged_bytes"] += identity_before[2]
+            content, failure = _read_relative_to_fd(
                 state["descriptor"],
                 parts,
                 expected_size=expected_size,
                 max_bytes=max_bytes,
             )
+            identity_after, after_failure = _regular_identity_relative_to_fd(
+                state["descriptor"], parts
+            )
+            if (
+                failure is None
+                and identity_before is not None
+                and identity_after is not None
+                and identity_before != identity_after
+            ):
+                content, failure = None, "changed"
+            elif failure is None and (identity_failure or after_failure):
+                content, failure = None, "changed"
+            state["read_identities"][declared_path] = identity_before
+            return content, failure
 
         def read_manifest(self) -> tuple[bytes | None, str | None]:
             state = lookup(self)
@@ -196,7 +292,9 @@ def _make_package_reader_type():
                 return None, "secure-open-unavailable"
             cached = state["manifest_snapshot"]
             if cached is manifest_not_read:
-                cached = self.read(_MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES)
+                cached = self.read_cached(
+                    _MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES
+                )
                 state["manifest_snapshot"] = cached
             return cached
 
@@ -226,6 +324,96 @@ def _make_package_reader_type():
             state = lookup(self)
             if state is not None and has_authority(self):
                 state["read_cache"].pop(declared_path, None)
+                state["read_identities"].pop(declared_path, None)
+
+        @property
+        def charged_bytes(self) -> int:
+            state = lookup(self)
+            if state is None or not has_authority(self):
+                return 0
+            return state["charged_bytes"]
+
+        def snapshot_tree(
+            self,
+            required_paths: set[str] | frozenset[str],
+            *,
+            max_bytes_by_path: dict[str, int],
+            max_total_bytes: int,
+            optional_paths: set[str] | frozenset[str] = frozenset(),
+            exclude_from_digest: set[str] | frozenset[str] = frozenset(),
+        ) -> tuple[PackageTreeSnapshot | None, str | None]:
+            """Snapshot one exact regular allowlisted tree through this reader."""
+            state = lookup(self)
+            if state is None or not has_authority(self):
+                return None, "secure-open-unavailable"
+            if (
+                not isinstance(required_paths, (set, frozenset))
+                or not isinstance(optional_paths, (set, frozenset))
+                or not isinstance(max_bytes_by_path, dict)
+                or type(max_total_bytes) is not int
+                or max_total_bytes <= 0
+            ):
+                return None, "unsafe"
+            required = frozenset(required_paths)
+            optional = frozenset(optional_paths)
+            allowed = required | optional
+            excluded = frozenset(exclude_from_digest)
+            if (
+                required & optional
+                or excluded - allowed
+                or set(max_bytes_by_path) != set(allowed)
+            ):
+                return None, "unsafe"
+            if any(not _is_v2_tree_path(path) for path in allowed):
+                return None, "unsafe"
+
+            before, failure = _scan_package_tree(state["descriptor"])
+            if failure is not None:
+                return None, failure
+            before_by_path = {entry.path: entry.identity for entry in before}
+            actual_paths = set(before_by_path)
+            if actual_paths - allowed:
+                return None, "extra"
+            if required - actual_paths:
+                return None, "missing"
+            for path, identity in state["read_identities"].items():
+                if (
+                    path in allowed
+                    and identity is not None
+                    and before_by_path.get(path) != identity
+                ):
+                    return None, "changed"
+
+            total = 0
+            digests: list[tuple[str, str]] = []
+            for path in sorted(actual_paths, key=lambda value: value.encode("utf-8")):
+                size = before_by_path[path][2]
+                total += size
+                content, read_failure = self.read_cached(
+                    path, max_bytes=max_bytes_by_path[path]
+                )
+                if read_failure is not None or content is None:
+                    return None, read_failure or "missing"
+                if total > max_total_bytes:
+                    return None, "too-large"
+                if path not in excluded:
+                    digests.append((path, hashlib.sha256(content).hexdigest()))
+
+            after, failure = _scan_package_tree(state["descriptor"])
+            if failure is not None:
+                return None, failure
+            if before != after:
+                return None, "changed"
+            lines = b"".join(
+                f"{digest}  {path}\n".encode("utf-8")
+                for path, digest in digests
+            )
+            return PackageTreeSnapshot(
+                paths=tuple(path for path, _digest in digests),
+                file_sha256=tuple(digests),
+                tree_sha256=hashlib.sha256(lines).hexdigest(),
+                total_bytes=total,
+            ), None
 
     def has_authority(reader: object) -> bool:
         state = lookup(reader)
@@ -265,6 +453,104 @@ def _relative_path_parts(declared_path: str) -> tuple[str, ...] | None:
     ):
         return None
     return tuple(parts)
+
+
+def _is_v2_tree_path(path: str) -> bool:
+    parts = _relative_path_parts(path)
+    return parts is not None and (
+        len(parts) == 1 or (len(parts) == 2 and parts[0] == "evidence")
+    )
+
+
+def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _regular_identity_relative_to_fd(
+    root_fd: int, parts: tuple[str, ...]
+) -> tuple[tuple[int, int, int, int, int] | None, str | None]:
+    parent_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            try:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except OSError:
+                return None, "symlink" if _is_symlink_at(parent_fd, part) else "missing"
+            os.close(parent_fd)
+            parent_fd = child_fd
+        try:
+            metadata = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            return None, "missing"
+        if stat.S_ISLNK(metadata.st_mode):
+            return None, "symlink"
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, "not-regular"
+        return _identity(metadata), None
+    finally:
+        os.close(parent_fd)
+
+
+def _scan_package_tree(
+    root_fd: int,
+) -> tuple[tuple[_TreeEntry, ...], str | None]:
+    entries: list[_TreeEntry] = []
+    try:
+        root_names = sorted(os.listdir(root_fd), key=os.fsencode)
+    except OSError:
+        return (), "changed"
+    for name in root_names:
+        try:
+            metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        except OSError:
+            return (), "changed"
+        if stat.S_ISLNK(metadata.st_mode):
+            return (), "symlink"
+        if stat.S_ISDIR(metadata.st_mode):
+            if name != "evidence":
+                return (), "nested"
+            try:
+                evidence_fd = os.open(
+                    name,
+                    os.O_RDONLY | _CLOSE_ON_EXEC | _DIRECTORY | _NO_FOLLOW,
+                    dir_fd=root_fd,
+                )
+            except OSError:
+                return (), "changed"
+            try:
+                for child in sorted(os.listdir(evidence_fd), key=os.fsencode):
+                    try:
+                        child_metadata = os.stat(
+                            child, dir_fd=evidence_fd, follow_symlinks=False
+                        )
+                    except OSError:
+                        return (), "changed"
+                    if stat.S_ISLNK(child_metadata.st_mode):
+                        return (), "symlink"
+                    if stat.S_ISDIR(child_metadata.st_mode):
+                        return (), "nested"
+                    if not stat.S_ISREG(child_metadata.st_mode):
+                        return (), "not-regular"
+                    entries.append(
+                        _TreeEntry(f"evidence/{child}", _identity(child_metadata))
+                    )
+            finally:
+                os.close(evidence_fd)
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            return (), "not-regular"
+        entries.append(_TreeEntry(name, _identity(metadata)))
+    return tuple(sorted(entries, key=lambda entry: entry.path.encode("utf-8"))), None
 
 
 def _read_relative_to_fd(

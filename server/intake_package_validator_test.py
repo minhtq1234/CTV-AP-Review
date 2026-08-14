@@ -953,6 +953,156 @@ def test_internal_open_reader_validation_uses_and_does_not_close_owned_descripto
     ]
 
 
+def test_package_reader_open_at_requires_one_exact_child_and_expected_identity(tmp_path):
+    import intake_package_validator as validator
+
+    parent = tmp_path / "parent"
+    package = parent / "package"
+    parent.mkdir()
+    _write_package(package)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        identity = os.stat(package, follow_symlinks=False)
+        reader, failure = validator._PackageReader.open_at(
+            parent_fd,
+            "package",
+            expected_identity=(identity.st_dev, identity.st_ino),
+        )
+        assert failure is None and reader is not None
+        reader.close()
+
+        for name in ("", ".", "..", "package/child", "package\\child", "/package"):
+            rejected, code = validator._PackageReader.open_at(parent_fd, name)
+            assert rejected is None
+            assert code == "unsafe"
+
+        rejected, code = validator._PackageReader.open_at(
+            parent_fd,
+            "package",
+            expected_identity=(identity.st_dev, identity.st_ino + 1),
+        )
+        assert rejected is None
+        assert code == "changed"
+    finally:
+        os.close(parent_fd)
+
+
+def test_package_reader_open_at_rejects_symlink_closed_and_file_descriptors(tmp_path):
+    import intake_package_validator as validator
+
+    parent = tmp_path / "parent"
+    package = parent / "package"
+    parent.mkdir()
+    _write_package(package)
+    (parent / "alias").symlink_to(package, target_is_directory=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    file_fd = os.open(package / "case-manifest.json", os.O_RDONLY)
+    closed_fd = os.dup(parent_fd)
+    os.close(closed_fd)
+    try:
+        reader, failure = validator._PackageReader.open_at(parent_fd, "alias")
+        assert reader is None and failure == "symlink"
+        reader, failure = validator._PackageReader.open_at(file_fd, "package")
+        assert reader is None and failure == "secure-open-unavailable"
+        reader, failure = validator._PackageReader.open_at(closed_fd, "package")
+        assert reader is None and failure == "secure-open-unavailable"
+    finally:
+        os.close(file_fd)
+        os.close(parent_fd)
+
+
+def test_package_reader_tree_snapshot_is_sorted_allowlisted_and_portable(tmp_path):
+    import intake_package_validator as validator
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "z.json").write_bytes(b"z\n")
+    evidence = package / "evidence"
+    evidence.mkdir()
+    (evidence / "a.png").write_bytes(b"a\n")
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    try:
+        snapshot, tree_failure = reader.snapshot_tree(
+            {"z.json", "evidence/a.png"},
+            max_bytes_by_path={"z.json": 8, "evidence/a.png": 8},
+            max_total_bytes=16,
+        )
+        assert tree_failure is None and snapshot is not None
+        assert snapshot.paths == ("evidence/a.png", "z.json")
+        lines = b"".join(
+            f"{digest}  {path}\n".encode()
+            for path, digest in snapshot.file_sha256
+        )
+        assert snapshot.tree_sha256 == hashlib.sha256(lines).hexdigest()
+        assert reader.charged_bytes == 4
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("kind", ["extra", "nested", "symlink", "fifo", "changed"])
+def test_package_reader_tree_snapshot_rejects_non_allowlisted_or_changed_members(
+    tmp_path, kind, monkeypatch
+):
+    import intake_package_validator as validator
+
+    package = tmp_path / kind
+    package.mkdir()
+    (package / "case-manifest.json").write_bytes(b"{}\n")
+    allowed = {"case-manifest.json"}
+    limits = {"case-manifest.json": 16}
+    if kind == "extra":
+        (package / "extra.bin").write_bytes(b"extra")
+    elif kind == "nested":
+        (package / "nested").mkdir()
+        (package / "nested" / "file.bin").write_bytes(b"nested")
+    elif kind == "symlink":
+        (package / "alias").symlink_to(package / "case-manifest.json")
+    elif kind == "fifo":
+        os.mkfifo(package / "pipe")
+
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    try:
+        if kind == "changed":
+            real_read = reader.read_cached
+
+            def mutate_after_read(self, path, *, max_bytes):
+                result = real_read(path, max_bytes=max_bytes)
+                (package / path).write_bytes(b'{"changed":true}\n')
+                return result
+
+            monkeypatch.setattr(type(reader), "read_cached", mutate_after_read)
+        snapshot, tree_failure = reader.snapshot_tree(
+            allowed,
+            max_bytes_by_path=limits,
+            max_total_bytes=16,
+        )
+        assert snapshot is None
+        assert tree_failure in {"extra", "nested", "symlink", "not-regular", "changed"}
+    finally:
+        reader.close()
+
+
+def test_package_reader_charges_attempted_bytes_even_when_read_fails(tmp_path):
+    import intake_package_validator as validator
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "large.bin").write_bytes(b"x" * 17)
+    reader, failure = validator._PackageReader.open(package)
+    assert failure is None and reader is not None
+    try:
+        content, read_failure = reader.read_cached("large.bin", max_bytes=16)
+        assert content is None and read_failure == "too-large"
+        assert reader.charged_bytes == 17
+        content, read_failure = reader.read_cached("large.bin", max_bytes=16)
+        assert content is None and read_failure == "too-large"
+        assert reader.charged_bytes == 17
+    finally:
+        reader.close()
+
+
 def test_abandoned_factory_reader_does_not_leak_registry_or_descriptor(tmp_path):
     import intake_package_validator as validator
 

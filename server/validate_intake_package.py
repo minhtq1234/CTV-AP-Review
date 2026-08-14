@@ -149,6 +149,31 @@ def _package_root_write_error(root_failure: str | None) -> ReportWriteError:
     return ReportWriteError("package root is not a safe directory")
 
 
+def _manifest_schema_version(content: bytes | None) -> str | None:
+    if content is None:
+        return None
+    try:
+        document = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    value = document.get("schemaVersion")
+    return value if isinstance(value, str) else None
+
+
+def _v2_manifest_proposal_digest(content: bytes) -> str:
+    document = json.loads(content.decode("utf-8"))
+    value = document.get("proposalDigest") if isinstance(document, dict) else None
+    if (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    ):
+        return value
+    return "0" * 64
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     reader = None
@@ -166,8 +191,32 @@ def main(argv: list[str] | None = None) -> int:
         root_descriptor = reader.root_fd
         if root_descriptor is None:
             raise ReportWriteError("secure package-root descriptor is unavailable")
+        manifest_content, _manifest_failure = reader.read_manifest()
+        if _manifest_schema_version(manifest_content) == "2.0":
+            if args.write_report:
+                raise ReportWriteError("v2-report-writer-only")
+            if args.source_root is None:
+                raise ReportWriteError("v2-source-root-required")
+            from ctv_inventory import open_inventory_observation
+            from intake_package_validator_v2 import (
+                V2ValidationExpectation,
+                validate_v2_publication_reader,
+            )
+
+            assert manifest_content is not None
+            with open_inventory_observation(args.source_root) as observation:
+                expectation = V2ValidationExpectation(
+                    observation_id=observation.observation_id,
+                    proposal_digest=_v2_manifest_proposal_digest(manifest_content),
+                )
+                result = validate_v2_publication_reader(
+                    reader, observation, expectation
+                )
+            content = _canonical_report_bytes(result.report)
+            _emit_stdout(content)
+            return 0 if result.report.outcome == "valid" else 2
+
         if args.write_report:
-            manifest_content, _manifest_failure = reader.read_manifest()
             _guard_report_target(root_descriptor)
             if _manifest_declares_historical_report(manifest_content):
                 raise ReportWriteError(
