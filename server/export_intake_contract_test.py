@@ -149,3 +149,23 @@ def test_v2_exported_examples_are_closed_documents_and_invalid_assignment_has_on
     assert ExceptionsDocumentV2.model_validate(json.loads((invalid / "exceptions.json").read_text())).items == []
     with pytest.raises(ValueError, match="assignment decision must resolve"):
         invalid_assignments.validate_against_manifest(invalid_manifest)
+
+
+def test_v2_exported_schemas_encode_artifact_paths_and_required_roster_fields(tmp_path):
+    exporter = importlib.import_module("export_intake_contract").export_contract_artifacts
+    output = tmp_path / "v2"
+    exporter(output, compatibility_target="ctv-intake-v2")
+
+    package_schema = json.loads((output / "package.schema.json").read_text())
+    package_text = json.dumps(package_schema, sort_keys=True)
+    assert '"cccd"' not in package_text
+    assert '"input.pdf"' in package_text
+    assert '"roster.xlsx"' in package_text
+    assert "evidence/evidence-" in package_text
+    assert "faCode" in package_text
+    assert "canonicalToSourceColumns" in package_text
+    assert package_schema == json.loads((V2_CONTRACT_ROOT / "package.schema.json").read_text())
+
+    roster_schema = json.loads((output / "canonical-roster.schema.json").read_text())
+    assert "faCode" in json.dumps(roster_schema, sort_keys=True)
+    assert roster_schema == json.loads((V2_CONTRACT_ROOT / "canonical-roster.schema.json").read_text())

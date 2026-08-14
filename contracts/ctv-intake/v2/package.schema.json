@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "ArtifactV2": {
+    "AssignmentsArtifactV2": {
       "additionalProperties": false,
       "properties": {
         "artifactId": {
@@ -16,20 +16,12 @@
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "input-pdf",
-            "roster",
-            "assignments",
-            "exceptions",
-            "cccd",
-            "evidence"
-          ],
+          "const": "assignments",
           "title": "Kind",
           "type": "string"
         },
         "path": {
-          "maxLength": 1024,
-          "minLength": 1,
+          "const": "assignments.json",
           "title": "Path",
           "type": "string"
         },
@@ -65,7 +57,107 @@
         "sha256",
         "sourceIds"
       ],
-      "title": "ArtifactV2",
+      "title": "AssignmentsArtifactV2",
+      "type": "object"
+    },
+    "CanonicalSourceColumnsV2": {
+      "additionalProperties": false,
+      "properties": {
+        "bankAccount": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bankaccount"
+        },
+        "birthDate": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Birthdate"
+        },
+        "faCode": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Facode",
+          "type": "string"
+        },
+        "identity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Identity",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product"
+        },
+        "serviceFee": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Servicefee"
+        },
+        "taxId": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taxid"
+        }
+      },
+      "required": [
+        "name",
+        "identity",
+        "faCode"
+      ],
+      "title": "CanonicalSourceColumnsV2",
       "type": "object"
     },
     "DecisionV2": {
@@ -141,6 +233,186 @@
       "title": "DecisionV2",
       "type": "object"
     },
+    "EvidenceArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "formatVersion": {
+          "const": "2.0",
+          "title": "Formatversion",
+          "type": "string"
+        },
+        "kind": {
+          "const": "evidence",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "pattern": "^evidence/evidence-[0-9]{4}\\.(?:png|xlsx)$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "formatVersion",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "EvidenceArtifactV2",
+      "type": "object"
+    },
+    "ExceptionsArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "formatVersion": {
+          "const": "2.0",
+          "title": "Formatversion",
+          "type": "string"
+        },
+        "kind": {
+          "const": "exceptions",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "const": "exceptions.json",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "formatVersion",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "ExceptionsArtifactV2",
+      "type": "object"
+    },
+    "InputPdfArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "formatVersion": {
+          "const": "2.0",
+          "title": "Formatversion",
+          "type": "string"
+        },
+        "kind": {
+          "const": "input-pdf",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "const": "input.pdf",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "formatVersion",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "InputPdfArtifactV2",
+      "type": "object"
+    },
     "PdfPageV2": {
       "additionalProperties": false,
       "properties": {
@@ -205,17 +477,71 @@
       "title": "PdfPageV2",
       "type": "object"
     },
+    "RosterArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 128,
+          "minLength": 10,
+          "pattern": "^artifact-[0-9a-z]+(?:-[0-9a-z]+)*$",
+          "title": "Artifactid",
+          "type": "string"
+        },
+        "formatVersion": {
+          "const": "2.0",
+          "title": "Formatversion",
+          "type": "string"
+        },
+        "kind": {
+          "const": "roster",
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "const": "roster.xlsx",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "maximum": 268435456,
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sourceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^source-[0-9a-z]+(?:-[0-9a-z]+)*$",
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Sourceids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "kind",
+        "formatVersion",
+        "path",
+        "size",
+        "sha256",
+        "sourceIds"
+      ],
+      "title": "RosterArtifactV2",
+      "type": "object"
+    },
     "RosterMappingV2": {
       "additionalProperties": false,
       "properties": {
         "canonicalToSourceColumns": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "maxProperties": 32,
-          "minProperties": 1,
-          "title": "Canonicaltosourcecolumns",
-          "type": "object"
+          "$ref": "#/$defs/CanonicalSourceColumnsV2"
         },
         "sheetName": {
           "maxLength": 128,
@@ -434,7 +760,33 @@
   "properties": {
     "artifacts": {
       "items": {
-        "$ref": "#/$defs/ArtifactV2"
+        "discriminator": {
+          "mapping": {
+            "assignments": "#/$defs/AssignmentsArtifactV2",
+            "evidence": "#/$defs/EvidenceArtifactV2",
+            "exceptions": "#/$defs/ExceptionsArtifactV2",
+            "input-pdf": "#/$defs/InputPdfArtifactV2",
+            "roster": "#/$defs/RosterArtifactV2"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/InputPdfArtifactV2"
+          },
+          {
+            "$ref": "#/$defs/RosterArtifactV2"
+          },
+          {
+            "$ref": "#/$defs/AssignmentsArtifactV2"
+          },
+          {
+            "$ref": "#/$defs/ExceptionsArtifactV2"
+          },
+          {
+            "$ref": "#/$defs/EvidenceArtifactV2"
+          }
+        ]
       },
       "minItems": 4,
       "title": "Artifacts",
@@ -480,18 +832,10 @@
       "type": "array"
     },
     "faCode": {
-      "anyOf": [
-        {
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Facode"
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Facode",
+      "type": "string"
     },
     "packageId": {
       "pattern": "^package-[0-9a-f]{64}$",
@@ -509,6 +853,7 @@
         "$ref": "#/$defs/PdfPageV2"
       },
       "maxItems": 25000,
+      "minItems": 1,
       "title": "Pdfpages",
       "type": "array"
     },
@@ -518,15 +863,7 @@
       "type": "string"
     },
     "rosterMapping": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/RosterMappingV2"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/RosterMappingV2"
     },
     "schemaVersion": {
       "const": "2.0",
@@ -581,12 +918,14 @@
     "proposalDigest",
     "batchId",
     "caseId",
+    "faCode",
     "packageVersion",
     "status",
     "validatorVersion",
     "sources",
     "pdfPages",
     "artifacts",
+    "rosterMapping",
     "decisions",
     "exceptionIds"
   ],

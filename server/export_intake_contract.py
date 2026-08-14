@@ -106,6 +106,15 @@ def _v2_manifest_document() -> dict[str, object]:
                 "sha256": "b" * 64,
                 "coverageState": "assigned",
             },
+            {
+                "bindingStatus": "verified-content",
+                "sourceId": "source-0003",
+                "path": "incoming/synthetic-evidence.png",
+                "mediaType": "image/png",
+                "size": 10,
+                "sha256": "e" * 64,
+                "coverageState": "assigned",
+            },
         ],
         "pdfPages": [{
             "sourceId": "source-0001", "sourcePage": 1, "targetPage": 1,
@@ -116,7 +125,8 @@ def _v2_manifest_document() -> dict[str, object]:
             {"artifactId": "artifact-roster", "kind": "roster", "formatVersion": "2.0", "path": "roster.xlsx", "size": 80, "sha256": "b" * 64, "sourceIds": ["source-0002"]},
             {"artifactId": "artifact-assignments", "kind": "assignments", "formatVersion": "2.0", "path": "assignments.json", "size": 40, "sha256": "c" * 64, "sourceIds": []},
             {"artifactId": "artifact-exceptions", "kind": "exceptions", "formatVersion": "2.0", "path": "exceptions.json", "size": 30, "sha256": "d" * 64, "sourceIds": []},
-            {"artifactId": "artifact-evidence-0001", "kind": "evidence", "formatVersion": "2.0", "path": "evidence/evidence-0001.png", "size": 10, "sha256": "e" * 64, "sourceIds": ["source-0001"]},
+            {"artifactId": "artifact-evidence-0001", "kind": "evidence", "formatVersion": "2.0", "path": "evidence/evidence-0001.png", "size": 10, "sha256": "e" * 64, "sourceIds": ["source-0003"]},
+            {"artifactId": "artifact-evidence-0002", "kind": "evidence", "formatVersion": "2.0", "path": "evidence/evidence-0002.xlsx", "size": 10, "sha256": "f" * 64, "sourceIds": ["source-0002"]},
         ],
         "rosterMapping": {
             "sourceId": "source-0002", "sheetName": "Synthetic roster",
@@ -126,6 +136,8 @@ def _v2_manifest_document() -> dict[str, object]:
             {"decisionId": "decision-0001", "proposalVersion": "proposal-2.0", "proposalDigest": sha_a, "type": "accept-unit", "actor": "user", "subjectRefs": ["unit-0001"], "evidenceRefs": ["source-0001"]},
             {"decisionId": "decision-0002", "proposalVersion": "proposal-2.0", "proposalDigest": sha_a, "type": "select-roster", "actor": "user", "subjectRefs": ["unit-0002"], "evidenceRefs": ["source-0002"]},
             {"decisionId": "decision-0003", "proposalVersion": "proposal-2.0", "proposalDigest": sha_a, "type": "approve-proposal", "actor": "user", "subjectRefs": [], "evidenceRefs": []},
+            {"decisionId": "decision-0004", "proposalVersion": "proposal-2.0", "proposalDigest": sha_a, "type": "accept-unit", "actor": "user", "subjectRefs": ["unit-0003"], "evidenceRefs": ["source-0003"]},
+            {"decisionId": "decision-0005", "proposalVersion": "proposal-2.0", "proposalDigest": sha_a, "type": "accept-unit", "actor": "user", "subjectRefs": ["unit-0004"], "evidenceRefs": ["source-0002"]},
         ],
         "exceptionIds": [],
     }
@@ -142,6 +154,8 @@ def _v2_assignments_document(*, invalid_decision: bool = False) -> dict[str, obj
         "units": [
             {"unitId": "unit-0001", "sourceId": "source-0001", "sourceUnitIndex": 1, "unitKind": "pdf-page", "decisionId": unit_decision_id, "decision": "accepted", "role": "service-contract", "target": {"scope": "individual", "participantHandles": ["participant-0001"]}, "outputLocator": {"kind": "pdf-page", "artifactId": "artifact-input-pdf", "targetPage": 1}},
             {"unitId": "unit-0002", "sourceId": "source-0002", "sourceUnitIndex": 1, "unitKind": "worksheet", "decisionId": "decision-0002", "decision": "accepted", "role": "payment-roster", "target": {"scope": "case", "participantHandles": []}, "outputLocator": {"kind": "roster", "artifactId": "artifact-roster", "worksheetIndex": 1}},
+            {"unitId": "unit-0003", "sourceId": "source-0003", "sourceUnitIndex": 1, "unitKind": "image", "decisionId": "decision-0004", "decision": "accepted", "role": "identity-front", "target": {"scope": "individual", "participantHandles": ["participant-0001"]}, "outputLocator": {"kind": "image", "artifactId": "artifact-evidence-0001"}},
+            {"unitId": "unit-0004", "sourceId": "source-0002", "sourceUnitIndex": 2, "unitKind": "worksheet", "decisionId": "decision-0005", "decision": "accepted", "role": "other-supporting-evidence", "target": {"scope": "case", "participantHandles": []}, "outputLocator": {"kind": "worksheet", "artifactId": "artifact-evidence-0002", "worksheetIndex": 1}},
         ],
         "exclusions": [],
     }

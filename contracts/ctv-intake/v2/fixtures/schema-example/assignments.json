@@ -49,6 +49,43 @@
       },
       "unitId": "unit-0002",
       "unitKind": "worksheet"
+    },
+    {
+      "decision": "accepted",
+      "decisionId": "decision-0004",
+      "outputLocator": {
+        "artifactId": "artifact-evidence-0001",
+        "kind": "image"
+      },
+      "role": "identity-front",
+      "sourceId": "source-0003",
+      "sourceUnitIndex": 1,
+      "target": {
+        "participantHandles": [
+          "participant-0001"
+        ],
+        "scope": "individual"
+      },
+      "unitId": "unit-0003",
+      "unitKind": "image"
+    },
+    {
+      "decision": "accepted",
+      "decisionId": "decision-0005",
+      "outputLocator": {
+        "artifactId": "artifact-evidence-0002",
+        "kind": "worksheet",
+        "worksheetIndex": 1
+      },
+      "role": "other-supporting-evidence",
+      "sourceId": "source-0002",
+      "sourceUnitIndex": 2,
+      "target": {
+        "participantHandles": [],
+        "scope": "case"
+      },
+      "unitId": "unit-0004",
+      "unitKind": "worksheet"
     }
   ]
 }

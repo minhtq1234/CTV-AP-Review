@@ -48,7 +48,18 @@
       "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "size": 10,
       "sourceIds": [
-        "source-0001"
+        "source-0003"
+      ]
+    },
+    {
+      "artifactId": "artifact-evidence-0002",
+      "formatVersion": "2.0",
+      "kind": "evidence",
+      "path": "evidence/evidence-0002.xlsx",
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "size": 10,
+      "sourceIds": [
+        "source-0002"
       ]
     }
   ],
@@ -90,6 +101,32 @@
       "proposalVersion": "proposal-2.0",
       "subjectRefs": [],
       "type": "approve-proposal"
+    },
+    {
+      "actor": "user",
+      "decisionId": "decision-0004",
+      "evidenceRefs": [
+        "source-0003"
+      ],
+      "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposalVersion": "proposal-2.0",
+      "subjectRefs": [
+        "unit-0003"
+      ],
+      "type": "accept-unit"
+    },
+    {
+      "actor": "user",
+      "decisionId": "decision-0005",
+      "evidenceRefs": [
+        "source-0002"
+      ],
+      "proposalDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proposalVersion": "proposal-2.0",
+      "subjectRefs": [
+        "unit-0004"
+      ],
+      "type": "accept-unit"
     }
   ],
   "exceptionIds": [],
@@ -135,6 +172,15 @@
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 80,
       "sourceId": "source-0002"
+    },
+    {
+      "bindingStatus": "verified-content",
+      "coverageState": "assigned",
+      "mediaType": "image/png",
+      "path": "incoming/synthetic-evidence.png",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "size": 10,
+      "sourceId": "source-0003"
     }
   ],
   "status": "prepared",

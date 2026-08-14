@@ -53,18 +53,10 @@
           "title": "Birthdate"
         },
         "faCode": {
-          "anyOf": [
-            {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Facode"
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Facode",
+          "type": "string"
         },
         "identity": {
           "maxLength": 256,
@@ -123,7 +115,8 @@
       },
       "required": [
         "name",
-        "identity"
+        "identity",
+        "faCode"
       ],
       "title": "CanonicalRosterValuesV2",
       "type": "object"
@@ -143,6 +136,7 @@
         "$ref": "#/$defs/CanonicalRosterRowV2"
       },
       "maxItems": 10000,
+      "minItems": 1,
       "title": "Rows",
       "type": "array"
     },

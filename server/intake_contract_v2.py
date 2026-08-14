@@ -35,7 +35,7 @@ OpaquePackageId = Annotated[str, Field(pattern=r"^package-[0-9a-f]{64}$")]
 OpaqueObservationId = Annotated[str, Field(pattern=r"^observation-[0-9a-f]{64}$")]
 
 CoverageStateV2 = Literal["assigned", "shared", "duplicate", "excluded-by-user"]
-ArtifactKindV2 = Literal["input-pdf", "roster", "assignments", "exceptions", "cccd", "evidence"]
+ArtifactKindV2 = Literal["input-pdf", "roster", "assignments", "exceptions", "evidence"]
 DecisionTypeV2 = Literal["accept-unit", "reassign-unit", "exclude-unit", "exclude-source", "select-roster", "approve-proposal"]
 UnitKindV2 = Literal["pdf-page", "worksheet", "image"]
 AssignmentDecisionV2 = Literal["accepted", "reassigned"]
@@ -86,6 +86,12 @@ class VerifiedSourceV2(_ContractModel):
     @classmethod
     def path_is_safe(cls, value: str) -> str:
         return _safe_relative_path(value)
+
+    @model_validator(mode="after")
+    def PDF_page_count_is_exactly_typed(self) -> "VerifiedSourceV2":
+        if (self.media_type == "application/pdf") != (self.page_count is not None):
+            raise ValueError("pageCount is required exactly for verified PDF sources")
+        return self
 
 
 class UnacquiredSourceV2(_ContractModel):
@@ -143,10 +149,65 @@ class ArtifactV2(_ContractModel):
         return self
 
 
+class InputPdfArtifactV2(ArtifactV2):
+    kind: Literal["input-pdf"]
+    path: Literal["input.pdf"]
+
+
+class RosterArtifactV2(ArtifactV2):
+    kind: Literal["roster"]
+    path: Literal["roster.xlsx"]
+
+
+class AssignmentsArtifactV2(ArtifactV2):
+    kind: Literal["assignments"]
+    path: Literal["assignments.json"]
+
+
+class ExceptionsArtifactV2(ArtifactV2):
+    kind: Literal["exceptions"]
+    path: Literal["exceptions.json"]
+
+
+class EvidenceArtifactV2(ArtifactV2):
+    kind: Literal["evidence"]
+    path: str = Field(pattern=r"^evidence/evidence-[0-9]{4}\.(?:png|xlsx)$")
+
+
+ArtifactRecordV2 = Annotated[
+    InputPdfArtifactV2 | RosterArtifactV2 | AssignmentsArtifactV2 |
+    ExceptionsArtifactV2 | EvidenceArtifactV2,
+    Field(discriminator="kind"),
+]
+
+
+class CanonicalSourceColumnsV2(_ContractModel):
+    name: str = Field(min_length=1, max_length=128)
+    identity: str = Field(min_length=1, max_length=128)
+    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
+    tax_id: str | None = Field(alias="taxId", default=None, min_length=1, max_length=128)
+    birth_date: str | None = Field(alias="birthDate", default=None, min_length=1, max_length=128)
+    bank_account: str | None = Field(alias="bankAccount", default=None, min_length=1, max_length=128)
+    service_fee: str | None = Field(alias="serviceFee", default=None, min_length=1, max_length=128)
+    product: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def source_columns_are_unambiguous(self) -> "CanonicalSourceColumnsV2":
+        columns = [
+            value.strip().casefold() for value in (
+                self.name, self.identity, self.fa_code, self.tax_id, self.birth_date,
+                self.bank_account, self.service_fee, self.product,
+            ) if value is not None
+        ]
+        if len(columns) != len(set(columns)):
+            raise ValueError("canonical source columns must be unambiguous")
+        return self
+
+
 class RosterMappingV2(_ContractModel):
     source_id: OpaqueSourceId = Field(alias="sourceId")
     sheet_name: str = Field(alias="sheetName", min_length=1, max_length=128)
-    canonical_to_source_columns: dict[str, str] = Field(alias="canonicalToSourceColumns", min_length=1, max_length=32)
+    canonical_to_source_columns: CanonicalSourceColumnsV2 = Field(alias="canonicalToSourceColumns")
 
 
 class DecisionV2(_ContractModel):
@@ -173,14 +234,14 @@ class PackageManifestV2(_ContractModel):
     proposal_digest: Sha256 = Field(alias="proposalDigest")
     batch_id: OpaqueId = Field(alias="batchId")
     case_id: OpaqueId = Field(alias="caseId")
-    fa_code: str | None = Field(alias="faCode", default=None, min_length=1, max_length=128)
+    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
     package_version: str = Field(alias="packageVersion", min_length=1, max_length=128)
     status: Literal["prepared"]
     validator_version: str = Field(alias="validatorVersion", min_length=1, max_length=128)
     sources: list[SourceV2] = Field(min_length=1, max_length=MAX_INSPECTED_UNITS)
-    pdf_pages: list[PdfPageV2] = Field(alias="pdfPages", max_length=MAX_PACKAGE_PDF_PAGES)
-    artifacts: list[ArtifactV2] = Field(min_length=4)
-    roster_mapping: RosterMappingV2 | None = Field(alias="rosterMapping", default=None)
+    pdf_pages: list[PdfPageV2] = Field(alias="pdfPages", min_length=1, max_length=MAX_PACKAGE_PDF_PAGES)
+    artifacts: list[ArtifactRecordV2] = Field(min_length=4)
+    roster_mapping: RosterMappingV2 = Field(alias="rosterMapping")
     decisions: list[DecisionV2] = Field(min_length=1, max_length=MAX_INSPECTED_UNITS + 2)
     exception_ids: list[OpaqueId] = Field(alias="exceptionIds", max_length=MAX_INSPECTED_UNITS)
 
@@ -199,13 +260,76 @@ class PackageManifestV2(_ContractModel):
         if len(singles) != len(set(singles)):
             raise ValueError("single-instance artifact kinds must be unique")
         _unique([artifact.artifact_id for artifact in self.artifacts], "artifact IDs")
+        _unique([artifact.path for artifact in self.artifacts], "artifact paths")
         if sum(artifact.size for artifact in self.artifacts) > MAX_PACKAGE_BYTES:
             raise ValueError("package artifacts exceed 1 GiB")
-        unacquired_ids = {source.source_id for source in self.sources if isinstance(source, UnacquiredSourceV2)}
+        sources = {source.source_id: source for source in self.sources}
+        unacquired_ids = {
+            source.source_id for source in self.sources
+            if isinstance(source, UnacquiredSourceV2)
+        }
+        if any(set(artifact.source_ids) - set(sources) for artifact in self.artifacts):
+            raise ValueError("artifact source IDs must resolve")
         if any(unacquired_ids & set(artifact.source_ids) for artifact in self.artifacts):
             raise ValueError("unacquired sources cannot have artifact provenance")
+        pdf_sources = {
+            source.source_id: source for source in self.sources
+            if isinstance(source, VerifiedSourceV2)
+            and source.media_type == "application/pdf"
+        }
+        page_keys = [(page.source_id, page.source_page) for page in self.pdf_pages]
+        _unique(page_keys, "PDF source pages")
+        pages_by_source: dict[str, list[PdfPageV2]] = {}
+        for page in self.pdf_pages:
+            if page.source_id not in pdf_sources:
+                raise ValueError("PDF pages must resolve to verified PDF sources")
+            pages_by_source.setdefault(page.source_id, []).append(page)
+            included = page.coverage_state in {"assigned", "shared"}
+            if included != (page.target_page is not None):
+                raise ValueError("included PDF pages require a target page")
+        for source_id, source in pdf_sources.items():
+            if source.page_count is None:
+                raise ValueError("verified PDF sources require pageCount")
+            source_pages = pages_by_source.get(source_id, [])
+            if {page.source_page for page in source_pages} != set(range(1, source.page_count + 1)):
+                raise ValueError("PDF pages must match source pageCount")
+        included_pages = [
+            page for page in self.pdf_pages
+            if page.coverage_state in {"assigned", "shared"}
+        ]
+        targets = [page.target_page for page in included_pages]
+        if not included_pages or sorted(targets) != list(range(1, len(targets) + 1)):
+            raise ValueError("included PDF target pages must be contiguous and one-based")
+        included_pdf_source_ids = [
+            source.source_id for source in self.sources
+            if source.source_id in {page.source_id for page in included_pages}
+        ]
+        artifacts_by_kind = {artifact.kind: artifact for artifact in self.artifacts if artifact.kind != "evidence"}
+        if artifacts_by_kind["input-pdf"].source_ids != included_pdf_source_ids:
+            raise ValueError("input PDF provenance must match included PDF sources")
+        if artifacts_by_kind["roster"].source_ids != [self.roster_mapping.source_id]:
+            raise ValueError("roster provenance must match the selected roster source")
+        roster_source = sources.get(self.roster_mapping.source_id)
+        if not isinstance(roster_source, VerifiedSourceV2) or roster_source.media_type == "application/pdf":
+            raise ValueError("selected roster source must be verified workbook content")
+        if artifacts_by_kind["assignments"].source_ids or artifacts_by_kind["exceptions"].source_ids:
+            raise ValueError("generated artifact provenance must be empty")
+        if any(len(artifact.source_ids) != 1 for artifact in evidence):
+            raise ValueError("evidence artifacts require exactly one verified source")
+        if any(
+            not isinstance(sources[artifact.source_ids[0]], VerifiedSourceV2)
+            or sources[artifact.source_ids[0]].media_type == "application/pdf"
+            for artifact in evidence
+        ):
+            raise ValueError("evidence provenance must resolve to verified non-PDF sources")
         if any(decision.proposal_digest != self.proposal_digest for decision in self.decisions):
             raise ValueError("decision proposal digests must match the manifest")
+        decisions = {decision.decision_id: decision for decision in self.decisions}
+        for source in self.sources:
+            if isinstance(source, UnacquiredSourceV2):
+                decision = decisions.get(source.decision_id)
+                if decision is None or decision.type != "exclude-source" or decision.subject_refs != [source.source_id]:
+                    raise ValueError("unacquired source exclusion decision must name its source")
         return self
 
 
@@ -306,24 +430,81 @@ class AssignmentsDocumentV2(_ContractModel):
         artifacts = {artifact.artifact_id: artifact for artifact in manifest.artifacts}
         if self.roster_artifact_id not in artifacts or artifacts[self.roster_artifact_id].kind != "roster":
             raise ValueError("assignments roster artifact must resolve to the roster")
-        sources = {source.source_id for source in manifest.sources}
+        sources = {source.source_id: source for source in manifest.sources}
         decisions = {decision.decision_id: decision for decision in manifest.decisions}
+        participant_handles = {participant.participant_handle for participant in self.participants}
+        known_evidence_refs = set(sources) | set(artifacts)
+        referenced_evidence_artifacts: set[str] = set()
+        included_pdf_pages = {
+            (page.source_id, page.source_page): page for page in manifest.pdf_pages
+            if page.coverage_state in {"assigned", "shared"}
+        }
+        assigned_pdf_pages: dict[tuple[str, int], AssignmentUnitV2] = {}
         for unit in self.units:
             decision = decisions.get(unit.decision_id)
             if unit.source_id not in sources:
                 raise ValueError("assignment source must resolve")
+            if isinstance(sources[unit.source_id], UnacquiredSourceV2):
+                raise ValueError("assignment source must be verified content")
+            if set(unit.target.participant_handles) - participant_handles:
+                raise ValueError("assignment target participant handles must resolve")
             expected_types = {"accept-unit"} if unit.decision == "accepted" else {"reassign-unit"}
             if unit.role == "payment-roster" and unit.output_locator.kind == "roster":
                 expected_types.add("select-roster")
             if decision is None or decision.type not in expected_types:
                 raise ValueError("assignment decision must resolve")
-            if unit.output_locator.artifact_id not in artifacts:
+            if decision.subject_refs != [unit.unit_id]:
+                raise ValueError("assignment decision subject must name its unit")
+            if unit.source_id not in decision.evidence_refs or set(decision.evidence_refs) - known_evidence_refs:
+                raise ValueError("assignment decision evidence must resolve to its source")
+            artifact = artifacts.get(unit.output_locator.artifact_id)
+            if artifact is None:
                 raise ValueError("assignment output locator must resolve")
+            expected_artifact_kind = {
+                "pdf-page": "input-pdf", "roster": "roster", "image": "evidence", "worksheet": "evidence",
+            }[unit.output_locator.kind]
+            if artifact.kind != expected_artifact_kind:
+                raise ValueError("assignment locator artifact kind must match its locator")
+            expected_locator_kinds = {
+                "pdf-page": {"pdf-page"},
+                "image": {"image"},
+                "worksheet": {"roster"} if unit.role == "payment-roster" else {"worksheet"},
+            }[unit.unit_kind]
+            if unit.output_locator.kind not in expected_locator_kinds:
+                raise ValueError("assignment locator kind must match its unit")
+            if unit.output_locator.kind == "image" and not artifact.path.endswith(".png"):
+                raise ValueError("image locators require PNG evidence")
+            if unit.output_locator.kind == "worksheet" and not artifact.path.endswith(".xlsx"):
+                raise ValueError("worksheet locators require workbook evidence")
+            if artifact.kind == "evidence":
+                referenced_evidence_artifacts.add(artifact.artifact_id)
+            if unit.unit_kind == "pdf-page":
+                page_key = (unit.source_id, unit.source_unit_index)
+                page = included_pdf_pages.get(page_key)
+                if page is None:
+                    raise ValueError("assignment PDF page must resolve to included coverage")
+                if page_key in assigned_pdf_pages:
+                    raise ValueError("included PDF pages require exactly one assignment")
+                if isinstance(unit.target, SharedTargetV2) != (page.coverage_state == "shared"):
+                    raise ValueError("shared PDF pages require a shared target")
+                assigned_pdf_pages[page_key] = unit
+        if set(assigned_pdf_pages) != set(included_pdf_pages):
+            raise ValueError("included PDF pages require exactly one assignment")
+        evidence_artifact_ids = {
+            artifact.artifact_id for artifact in manifest.artifacts
+            if artifact.kind == "evidence"
+        }
+        if evidence_artifact_ids != referenced_evidence_artifacts:
+            raise ValueError("every evidence artifact requires an assignment locator")
         for exclusion in self.exclusions:
             decision = decisions.get(exclusion.decision_id)
             expected_type = "exclude-unit" if exclusion.record_type == "unit" else "exclude-source"
             if decision is None or decision.type != expected_type:
                 raise ValueError("exclusion decision must resolve")
+            if decision.subject_refs != [exclusion.record_id]:
+                raise ValueError("exclusion decision subject must name its record")
+            if exclusion.record_type == "source" and exclusion.record_id not in sources:
+                raise ValueError("source exclusion record must resolve")
 
     def validate_against_roster(self, roster: "CanonicalRosterDocumentV2") -> None:
         if self.roster_artifact_id != roster.artifact_id:
@@ -337,7 +518,7 @@ class AssignmentsDocumentV2(_ContractModel):
 class CanonicalRosterValuesV2(_ContractModel):
     name: str = Field(min_length=1, max_length=256)
     identity: str = Field(min_length=1, max_length=256)
-    fa_code: str | None = Field(alias="faCode", default=None, min_length=1, max_length=128)
+    fa_code: str = Field(alias="faCode", min_length=1, max_length=128)
     tax_id: str | None = Field(alias="taxId", default=None, min_length=1, max_length=128)
     birth_date: str | None = Field(alias="birthDate", default=None, min_length=1, max_length=128)
     bank_account: str | None = Field(alias="bankAccount", default=None, min_length=1, max_length=128)
@@ -353,7 +534,7 @@ class CanonicalRosterRowV2(_ContractModel):
 class CanonicalRosterDocumentV2(_ContractModel):
     schema_version: Literal["2.0"] = Field(alias="schemaVersion")
     artifact_id: OpaqueArtifactId = Field(alias="artifactId")
-    rows: list[CanonicalRosterRowV2] = Field(max_length=MAX_INSPECTED_UNITS)
+    rows: list[CanonicalRosterRowV2] = Field(min_length=1, max_length=MAX_INSPECTED_UNITS)
 
     @model_validator(mode="after")
     def row_ids_are_unique(self) -> "CanonicalRosterDocumentV2":
