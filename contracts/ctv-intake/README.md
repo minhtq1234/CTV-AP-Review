@@ -74,10 +74,15 @@ such as `contracts/ctv-intake/v1/` or `contracts/ctv-intake/v2/`, including the 
 README files. For each file:
 
 1. Compute its lowercase SHA-256.
-2. Express its path relative to `v1/` with POSIX `/` separators.
+2. Express its path relative to the selected version root with POSIX `/` separators.
 3. Form the UTF-8 line `<lowercase-file-sha256><two spaces><relative-path>\n`.
 4. Sort those contract-relative paths lexicographically, concatenate their lines,
    and SHA-256 the resulting bytes.
+
+`contracts/ctv-intake/v1/` has paths relative to `v1/`;
+`contracts/ctv-intake/v2/` has paths relative to `v2/`. The v1 code example below
+uses the former selected root; the v2 recipe changes only `root` to
+`contracts/ctv-intake/v2` before deriving `prefix` and `relative`.
 
 Only regular blob entries from the exact reviewed commit are inputs. Working-tree
 changes and untracked files cannot affect the result. From the CTV repository root,

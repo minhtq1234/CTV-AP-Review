@@ -323,6 +323,19 @@ def test_handoff_hash_recipe_reads_only_blobs_from_the_exact_commit():
     assert "path.read_bytes()" not in handoff
 
 
+def test_handoff_hash_recipe_defines_paths_relative_to_the_selected_version_root():
+    handoff = (
+        Path(__file__).parents[1] / "contracts" / "ctv-intake" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "2. Express its path relative to the selected version root "
+        "with POSIX `/` separators."
+    ) in handoff
+    assert "`contracts/ctv-intake/v1/` has paths relative to `v1/`" in handoff
+    assert "`contracts/ctv-intake/v2/` has paths relative to `v2/`" in handoff
+
+
 def test_cli_package_only_returns_source_verification_diagnostic(tmp_path):
     package_dir = tmp_path / "package"
     _write_package(package_dir)
