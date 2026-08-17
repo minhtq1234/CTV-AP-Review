@@ -63,6 +63,30 @@ def _approved_state(tmp_path, **source_kwargs):
     return context, state, digest
 
 
+def _cache_formula_value(path, *, cell_reference, formula, cached_value):
+    snapshot = path.read_bytes()
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as source:
+        worksheet = source.read("xl/worksheets/sheet1.xml")
+        original = (
+            f'<c r="{cell_reference}"><f>{formula}</f><v></v></c>'.encode()
+        )
+        replacement = (
+            f'<c r="{cell_reference}"><f>{formula}</f>'
+            f'<v>{cached_value}</v></c>'
+        ).encode()
+        assert worksheet.count(original) == 1
+        with zipfile.ZipFile(
+            output, "w", compression=zipfile.ZIP_DEFLATED
+        ) as target:
+            for info in source.infolist():
+                content = source.read(info)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    content = worksheet.replace(original, replacement)
+                target.writestr(info.filename, content)
+    path.write_bytes(output.getvalue())
+
+
 def test_consume_freezes_one_private_approved_snapshot_and_invalidates_on_mutation(tmp_path):
     context, state, digest = _approved_state(tmp_path)
     try:
@@ -131,6 +155,78 @@ def test_package_snapshot_ignores_wholly_blank_roster_separator(tmp_path):
         snapshot = state.consume_approved_package_snapshot(digest)
         assert [row.row_index for row in snapshot.roster_rows] == [2, 4]
         assert snapshot.fa_code == "FA-SYNTHETIC-001"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_formula_only_trailing_roster_row_blocks_approval_before_builder(tmp_path):
+    rows = (
+        (
+            "Synthetic Person",
+            "079123456781",
+            "FA-SYNTHETIC-001",
+            "0123456789",
+            "1990-01-01",
+            "123",
+            "100",
+            "Synthetic product",
+            "100",
+        ),
+        (None, None, None, None, None, None, None, None, "=1+1"),
+    )
+    context, state, digest = _approved_state(tmp_path, rows=rows)
+    try:
+        summary = state.approval_summary()
+        assert summary["participantHandles"] == ["participant-0001"]
+        assert "roster-row-invalid" in summary["issueCodes"]
+        assert summary["readyToPrepare"] is False
+        with pytest.raises(ValueError, match="proposal is not ready"):
+            state.approve(digest)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_cached_formula_on_valid_roster_row_remains_approvable_and_private(tmp_path):
+    rows = ((
+        "Synthetic Person",
+        "079123456781",
+        "FA-SYNTHETIC-001",
+        "0123456789",
+        "1990-01-01",
+        "123",
+        "100",
+        "Synthetic product",
+        "=1+1",
+    ),)
+    source = _source(tmp_path, rows=rows)
+    _cache_formula_value(
+        source / "private-roster.xlsx",
+        cell_reference="I2",
+        formula="1+1",
+        cached_value="2",
+    )
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    try:
+        inspection = inspect_observation(observation)
+        state = ProposalState.from_inspection(observation, inspection)
+        roster = next(unit for unit in state.units if unit["unitKind"] == "worksheet")
+        state.select_roster({"rosterUnitId": roster["unitId"]})
+        for unit in state.units:
+            state.set_unit_decision(
+                {
+                    "unitId": unit["unitId"],
+                    "decision": "accepted",
+                    "role": unit["suggestedRole"],
+                    "target": {"scope": "case", "participantHandles": []},
+                }
+            )
+        digest = state.approval_summary()["proposalDigest"]
+        assert "roster-row-invalid" not in state.approval_summary()["issueCodes"]
+        state.approve(digest)
+        snapshot = state.consume_approved_package_snapshot(digest)
+        assert len(snapshot.roster_rows) == 1
+        assert "1+1" not in repr(snapshot)
     finally:
         context.__exit__(None, None, None)
 

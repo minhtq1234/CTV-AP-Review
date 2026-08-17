@@ -1656,6 +1656,79 @@ def _trim_package_rows(rows: list[list[object]]) -> tuple[tuple[object, ...], ..
     return tuple(tuple(row[:width]) for row in rows)
 
 
+def worksheet_nonblank_row_indexes(
+    snapshot: bytes,
+    worksheet_index: int,
+    *,
+    limits: InspectionLimits,
+) -> tuple[int, ...]:
+    """Return bounded physical row presence without exposing workbook values."""
+    if type(snapshot) is not bytes or type(limits) is not InspectionLimits:
+        raise TypeError("package workbook input must use bounded snapshot bytes and limits")
+    if (
+        type(worksheet_index) is not int
+        or not 1 <= worksheet_index <= limits.max_worksheets_per_workbook
+    ):
+        raise PackageWorkbookError("package-workbook-unavailable")
+    if len(snapshot) > limits.max_workbook_source_bytes:
+        raise PackageWorkbookError("package-workbook-over-limit")
+    if snapshot.startswith(_OLE_COMPOUND_HEADER):
+        raise PackageWorkbookError("package-workbook-unavailable")
+    try:
+        metadata, _spreadsheet_namespace, loader_snapshot = _preflight(snapshot, limits)
+    except (WorkbookParserBoundaryExceededError, WorkbookWorksheetCountExceededError):
+        raise PackageWorkbookError("package-workbook-parser-boundary-exceeded") from None
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None
+    if worksheet_index > len(metadata):
+        raise PackageWorkbookError("package-workbook-unavailable")
+
+    workbook = None
+    try:
+        workbook = openpyxl.load_workbook(
+            BytesIO(loader_snapshot),
+            read_only=True,
+            data_only=False,
+            keep_links=False,
+        )
+        if len(workbook.worksheets) != len(metadata):
+            raise PackageWorkbookError("package-workbook-unavailable")
+        worksheet = workbook.worksheets[worksheet_index - 1]
+        max_row = worksheet.max_row
+        max_column = worksheet.max_column
+        if (
+            type(max_row) is not int
+            or type(max_column) is not int
+            or max_row < 0
+            or max_column < 0
+            or max_row * max_column > limits.max_cells_per_workbook
+        ):
+            raise PackageWorkbookError("package-workbook-over-limit")
+        nonblank_rows = []
+        consumed = 0
+        for row_index, row in enumerate(worksheet.iter_rows(), start=1):
+            present = False
+            for cell in row:
+                consumed += 1
+                if consumed > limits.max_cells_per_workbook:
+                    raise PackageWorkbookError("package-workbook-over-limit")
+                if cell.data_type == "f" or cell.value is not None:
+                    present = True
+            if present:
+                nonblank_rows.append(row_index)
+        return tuple(nonblank_rows)
+    except PackageWorkbookError:
+        raise
+    except Exception:
+        raise PackageWorkbookError("package-workbook-unavailable") from None
+    finally:
+        if workbook is not None:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+
+
 def selected_worksheet_values(
     snapshot: bytes,
     worksheet_indexes: tuple[int, ...],

@@ -10,7 +10,8 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 from ctv_inspection_classifier import roster_header_categories_from_private_text
-from ctv_inspection_model import InspectionResult
+from ctv_inspection_model import DEFAULT_INSPECTION_LIMITS, InspectionResult
+from ctv_inspection_workbook import worksheet_nonblank_row_indexes
 from ctv_inventory import InventoryObservation
 
 
@@ -203,6 +204,13 @@ class ProposalState:
             snapshot = self._snapshot_source(
                 unit.evidence_id, max_bytes=_MAX_WORKBOOK_BYTES
             )
+            physically_nonblank_rows = frozenset(
+                worksheet_nonblank_row_indexes(
+                    snapshot,
+                    unit.unit_index,
+                    limits=DEFAULT_INSPECTION_LIMITS,
+                )
+            )
             workbook = load_workbook(
                 BytesIO(snapshot), read_only=True, data_only=True, keep_links=False
             )
@@ -248,7 +256,7 @@ class ProposalState:
                         continue
                     if header is None:
                         continue
-                    if not any(values):
+                    if row_index not in physically_nonblank_rows:
                         continue
                     row = {
                         field_name: values[index] if index < len(values) else ""

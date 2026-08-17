@@ -1949,6 +1949,67 @@ def test_selected_worksheet_values_are_bounded_values_only_in_requested_order():
     assert "private.invalid" not in repr(values)
 
 
+def test_worksheet_nonblank_row_indexes_include_uncached_formulas_not_blank_rows():
+    from ctv_inspection_workbook import worksheet_nonblank_row_indexes
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(("name", "identity", "faCode", "So tien"))
+    sheet.append(("Synthetic Person", "ID-SYNTHETIC-001", "FA-SYNTHETIC-001", 100))
+    sheet.append((None, None, None, None))
+    sheet["D4"] = "=1+1"
+    snapshot = _save(workbook)
+
+    rows = worksheet_nonblank_row_indexes(
+        snapshot,
+        1,
+        limits=InspectionLimits(),
+    )
+
+    assert rows == (1, 2, 4)
+    assert "1+1" not in repr(rows)
+
+
+def test_selected_worksheet_values_keeps_only_cached_formula_value():
+    from ctv_inspection_workbook import selected_worksheet_values
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(("name", "identity", "faCode", "So tien"))
+    sheet.append(
+        (
+            "Synthetic Person",
+            "ID-SYNTHETIC-001",
+            "FA-SYNTHETIC-001",
+            "=1+1",
+        )
+    )
+    snapshot = _save(workbook)
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        worksheet = archive.read("xl/worksheets/sheet1.xml")
+    formula = b'<c r="D2"><f>1+1</f><v></v></c>'
+    assert worksheet.count(formula) == 1
+    snapshot = _rewrite_package(
+        snapshot,
+        replacements={
+            "xl/worksheets/sheet1.xml": worksheet.replace(
+                formula,
+                b'<c r="D2"><f>1+1</f><v>2</v></c>',
+            )
+        },
+    )
+
+    values = selected_worksheet_values(snapshot, (1,), limits=InspectionLimits())
+
+    assert values[0].rows[-1] == (
+        "Synthetic Person",
+        "ID-SYNTHETIC-001",
+        "FA-SYNTHETIC-001",
+        2,
+    )
+    assert "=1+1" not in repr(values)
+
+
 def test_selected_worksheet_values_rejects_uncached_formulas_and_invalid_selection():
     from ctv_inspection_workbook import PackageWorkbookError, selected_worksheet_values
 
