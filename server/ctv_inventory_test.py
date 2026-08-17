@@ -441,6 +441,117 @@ def test_observation_context_revalidates_before_returning_result(tmp_path):
     )
 
 
+def test_observation_finalization_revalidates_once_and_blocks_later_snapshots(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "private-source-name"
+    source.mkdir()
+    private_file = source / "private-record.pdf"
+    private_file.write_bytes(b"%PDF-1.7\nimmutable")
+    original_revalidate = inventory_module._revalidate_tree
+    revalidations = 0
+
+    def tracked_revalidate(*args, **kwargs):
+        nonlocal revalidations
+        revalidations += 1
+        return original_revalidate(*args, **kwargs)
+
+    monkeypatch.setattr(inventory_module, "_revalidate_tree", tracked_revalidate)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        assert observation.snapshot("evidence-0001", max_bytes=1024)
+        token = observation.finalize_for_publication()
+        assert token.observation_id == observation.observation_id
+        assert revalidations == 1
+        error = _assert_safe_error(
+            RuntimeError,
+            "inventory observation is finalized",
+            lambda: observation.snapshot("evidence-0001", max_bytes=1024),
+            private_path=private_file,
+        )
+        assert str(source) not in repr(token)
+        assert str(private_file) not in str(error)
+
+    assert revalidations == 1
+
+
+def test_observation_finalization_fails_closed_on_tree_mutation(tmp_path):
+    source = tmp_path / "private-source-name"
+    source.mkdir()
+    private_file = source / "private-record.bin"
+    private_file.write_bytes(b"approved")
+
+    with pytest.raises(InventoryError, match="^inventory-tree-changed$"):
+        with open_inventory_observation(source, limits=_small_limits()) as observation:
+            private_file.write_bytes(b"tampered")
+            observation.finalize_for_publication()
+
+
+def test_observation_directory_identity_chain_is_path_free_and_rooted(tmp_path):
+    source = tmp_path / "private-parent" / "private-source"
+    source.mkdir(parents=True)
+    (source / "safe.bin").write_bytes(b"safe")
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        chain = observation.directory_identity_chain()
+        source_metadata = source.stat()
+        filesystem_root = Path(source.anchor).stat()
+
+    assert chain[0] == (source_metadata.st_dev, source_metadata.st_ino)
+    assert chain[-1] == (filesystem_root.st_dev, filesystem_root.st_ino)
+    assert all(
+        type(identity) is tuple
+        and len(identity) == 2
+        and all(type(value) is int for value in identity)
+        for identity in chain
+    )
+    assert str(source) not in repr(chain)
+
+
+def test_observation_finalization_waits_for_in_flight_snapshot(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    private_file = source / "safe.pdf"
+    private_file.write_bytes(b"%PDF-1.7\ncontent")
+    identity = (private_file.stat().st_dev, private_file.stat().st_ino)
+    real_read = os.read
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_read(descriptor, count):
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == identity and not entered.is_set():
+            entered.set()
+            assert release.wait(timeout=2)
+        return real_read(descriptor, count)
+
+    with open_inventory_observation(source, limits=_small_limits()) as observation:
+        monkeypatch.setattr(os, "read", blocked_read)
+        snapshot = {}
+        finalization = {}
+        snapshot_thread = threading.Thread(
+            target=lambda: snapshot.setdefault(
+                "content", observation.snapshot("evidence-0001", max_bytes=1024)
+            )
+        )
+        snapshot_thread.start()
+        assert entered.wait(timeout=2)
+        finalize_thread = threading.Thread(
+            target=lambda: finalization.setdefault(
+                "token", observation.finalize_for_publication()
+            )
+        )
+        finalize_thread.start()
+        time.sleep(0.02)
+        assert finalize_thread.is_alive()
+        release.set()
+        snapshot_thread.join(timeout=2)
+        finalize_thread.join(timeout=2)
+
+        assert snapshot["content"] == b"%PDF-1.7\ncontent"
+        assert finalization["token"].observation_id == observation.observation_id
+
+
 def test_observation_double_close_is_safe_and_use_after_close_fails(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
@@ -947,7 +1058,14 @@ def test_observation_public_surface_and_errors_hide_private_authority(tmp_path):
             lambda: observation.snapshot("private-forged-id", max_bytes=1024),
         )
 
-    assert public_names == {"observation_id", "result", "snapshot", "sources"}
+    assert public_names == {
+        "directory_identity_chain",
+        "finalize_for_publication",
+        "observation_id",
+        "result",
+        "snapshot",
+        "sources",
+    }
     for private in (
         str(tmp_path),
         source.name,

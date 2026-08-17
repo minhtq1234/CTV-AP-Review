@@ -27,6 +27,7 @@ from ctv_inventory_model import (
 
 _READ_CHUNK = 64 * 1024
 _OBSERVATION_CLOSE_WAIT_SECONDS = 5.0
+_DIRECTORY_IDENTITY_DEPTH_LIMIT = 256
 _INSPECTION_CONTENT_TYPES = frozenset({"pdf", "xlsx", "image"})
 _UNAVAILABLE_ERRNOS = frozenset(
     value
@@ -86,6 +87,13 @@ class ObservedInventorySource:
     issue_codes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ObservationPublicationToken:
+    """Path-free proof that one observation passed its final tree check."""
+
+    observation_id: str
+
+
 class InventoryObservation:
     """A public-safe handle to one live descriptor-bound observation."""
 
@@ -112,6 +120,12 @@ class InventoryObservation:
     def snapshot(self, evidence_id: str, *, max_bytes: int) -> bytes:
         return _snapshot_observed_source(self, evidence_id, max_bytes=max_bytes)
 
+    def directory_identity_chain(self) -> tuple[tuple[int, int], ...]:
+        return _observation_directory_identity_chain(self)
+
+    def finalize_for_publication(self) -> ObservationPublicationToken:
+        return _finalize_observation_for_publication(self)
+
     def __repr__(self) -> str:
         return (
             "InventoryObservation("
@@ -136,6 +150,7 @@ class _ObservationState:
     in_flight_snapshots: int = 0
     finalize_when_idle: bool = False
     finalizing: bool = False
+    finalized: bool = False
 
 
 _OBSERVATION_STATES: dict[
@@ -239,9 +254,42 @@ def _acquire_snapshot_lease(
             raise RuntimeError("inventory observation is closed")
         state = current[1]
         with state.condition:
+            if state.finalized or state.finalizing:
+                raise RuntimeError("inventory observation is finalized")
             if state.closing or state.root_descriptor is None:
                 raise RuntimeError("inventory observation is closed")
             state.in_flight_snapshots += 1
+        return state
+
+
+def _lookup_observation_state(
+    observation: InventoryObservation,
+) -> _ObservationState | None:
+    if type(observation) is not InventoryObservation:
+        return None
+    with _OBSERVATION_REGISTRY_LOCK:
+        current = _OBSERVATION_STATES.get(id(observation))
+        if current is None or current[0]() is not observation:
+            return None
+        return current[1]
+
+
+def _begin_observation_finalization(
+    observation: InventoryObservation,
+) -> _ObservationState:
+    if type(observation) is not InventoryObservation:
+        raise RuntimeError("inventory observation is closed")
+    with _OBSERVATION_REGISTRY_LOCK:
+        current = _OBSERVATION_STATES.get(id(observation))
+        if current is None or current[0]() is not observation:
+            raise RuntimeError("inventory observation is closed")
+        state = current[1]
+        with state.condition:
+            if state.finalized or state.finalizing:
+                raise RuntimeError("inventory observation is finalized")
+            if state.closing or state.root_descriptor is None:
+                raise RuntimeError("inventory observation is closed")
+            state.finalizing = True
         return state
 
 
@@ -260,6 +308,83 @@ def _begin_observation_close(
                 raise RuntimeError("inventory observation is closed")
             state.closing = True
         return state
+
+
+def _observation_directory_identity_chain(
+    observation: InventoryObservation,
+) -> tuple[tuple[int, int], ...]:
+    state = _acquire_snapshot_lease(observation)
+    current = None
+    try:
+        root_descriptor = state.root_descriptor
+        if root_descriptor is None:
+            raise RuntimeError("inventory observation is closed")
+        try:
+            current = os.dup(root_descriptor)
+        except OSError:
+            raise InventoryError("inventory-tree-changed") from None
+        chain: list[tuple[int, int]] = []
+        for _depth in range(_DIRECTORY_IDENTITY_DEPTH_LIMIT):
+            try:
+                metadata = os.fstat(current)
+            except OSError:
+                raise InventoryError("inventory-tree-changed") from None
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise InventoryError("inventory-tree-changed")
+            identity = (metadata.st_dev, metadata.st_ino)
+            chain.append(identity)
+            parent = None
+            try:
+                parent = os.open("..", _directory_flags(), dir_fd=current)
+                parent_metadata = os.fstat(parent)
+            except (NotImplementedError, TypeError):
+                _close(parent)
+                raise InventoryError("secure-open-unavailable") from None
+            except OSError as error:
+                _close(parent)
+                if _unavailable(error):
+                    raise InventoryError("secure-open-unavailable") from None
+                raise InventoryError("inventory-tree-changed") from None
+            parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
+            if parent_identity == identity:
+                _close(parent)
+                return tuple(chain)
+            _close(current)
+            current = parent
+        raise InventoryError("source-root-unsafe")
+    finally:
+        _close(current)
+        _release_snapshot_lease(observation, state)
+
+
+def _finalize_observation_for_publication(
+    observation: InventoryObservation,
+) -> ObservationPublicationToken:
+    state = _begin_observation_finalization(observation)
+    if not _wait_for_snapshot_leases(state):
+        with state.condition:
+            state.closing = True
+            state.finalizing = False
+        raise InventoryError("inventory-tree-changed")
+    root_descriptor = state.root_descriptor
+    if root_descriptor is None:
+        _release_observation(observation)
+        raise RuntimeError("inventory observation is closed")
+    try:
+        _revalidate_tree(
+            root_descriptor,
+            state.source_components,
+            state.root_fact,
+            state.authoritative_facts,
+            state.limits,
+        )
+    except Exception:
+        _release_observation(observation)
+        raise
+    with state.condition:
+        state.finalizing = False
+        state.finalized = True
+    return ObservationPublicationToken(observation.observation_id)
 
 
 def _wait_for_snapshot_leases(state: _ObservationState) -> bool:
@@ -1261,23 +1386,33 @@ def _inventory_observation_context(
     try:
         yield observation
     finally:
-        state = _begin_observation_close(observation)
-        if not _wait_for_snapshot_leases(state):
-            raise InventoryError("inventory-tree-changed")
-        root_descriptor = state.root_descriptor
-        if root_descriptor is None:
-            _release_observation(observation)
-            raise RuntimeError("inventory observation is closed")
-        try:
-            _revalidate_tree(
-                root_descriptor,
-                state.source_components,
-                state.root_fact,
-                state.authoritative_facts,
-                state.limits,
-            )
-        finally:
-            _release_observation(observation)
+        current_state = _lookup_observation_state(observation)
+        if current_state is not None:
+            with current_state.condition:
+                finalized = current_state.finalized
+                deferred_close = (
+                    current_state.closing and current_state.finalize_when_idle
+                )
+            if finalized:
+                _release_observation(observation)
+            elif not deferred_close:
+                state = _begin_observation_close(observation)
+                if not _wait_for_snapshot_leases(state):
+                    raise InventoryError("inventory-tree-changed")
+                root_descriptor = state.root_descriptor
+                if root_descriptor is None:
+                    _release_observation(observation)
+                    raise RuntimeError("inventory observation is closed")
+                try:
+                    _revalidate_tree(
+                        root_descriptor,
+                        state.source_components,
+                        state.root_fact,
+                        state.authoritative_facts,
+                        state.limits,
+                    )
+                finally:
+                    _release_observation(observation)
 
 
 @contextmanager
