@@ -84,6 +84,15 @@ _PREPARED_RESULT = {
 }
 
 
+class _EqualitySpoof:
+    def __init__(self):
+        self.comparisons = 0
+
+    def __eq__(self, _other):
+        self.comparisons += 1
+        return True
+
+
 def _run(
     *args: str,
     cwd: Path | None = None,
@@ -1846,6 +1855,53 @@ def test_prepared_result_rejects_missing_or_private_shaped_validation(validation
         )
 
     assert "Synthetic Person" not in str(raised.value)
+
+
+@pytest.mark.parametrize("field", ["contractVersion", "validation.outcome"])
+def test_prepared_result_rejects_equality_spoofing_fixed_strings_without_comparison(
+    field,
+):
+    cli = _module()
+    spoof = _EqualitySpoof()
+    result = {
+        **_PREPARED_RESULT,
+        "validation": dict(_PREPARED_RESULT["validation"]),
+    }
+    if field == "contractVersion":
+        result["contractVersion"] = spoof
+    else:
+        result["validation"]["outcome"] = spoof
+
+    with pytest.raises(ValueError):
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+    assert spoof.comparisons == 0
+
+
+@pytest.mark.parametrize("index", range(len(_INTERNAL_VALIDATION_CODES)))
+def test_prepared_result_rejects_equality_spoofing_each_check_code_without_comparison(
+    index,
+):
+    cli = _module()
+    spoof = _EqualitySpoof()
+    check_codes = list(_INTERNAL_VALIDATION_CODES)
+    check_codes[index] = spoof
+    result = {
+        **_PREPARED_RESULT,
+        "validation": {
+            **_PREPARED_RESULT["validation"],
+            "checkCodes": check_codes,
+        },
+    }
+
+    with pytest.raises(ValueError):
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+    assert spoof.comparisons == 0
 
 
 @pytest.mark.parametrize(

@@ -829,7 +829,12 @@ def _normalize_prepared_result(result) -> dict[str, object]:
         digest = public[name]
         if type(digest) is not str or _SHA256.fullmatch(digest) is None:
             raise ValueError("prepared package digest is invalid")
-    if public["contractVersion"] != "2.0" or public["readyForCtvReview"] is not True:
+    contract_version = public["contractVersion"]
+    if (
+        type(contract_version) is not str
+        or contract_version != "2.0"
+        or public["readyForCtvReview"] is not True
+    ):
         raise ValueError("prepared package status is invalid")
     counts = _require_nonnegative_counts(
         public["counts"],
@@ -850,12 +855,14 @@ def _normalize_prepared_result(result) -> dict[str, object]:
         frozenset({"outcome", "checkCodes", "warningCodes"}),
         "validation",
     )
-    if validation["outcome"] != "valid":
+    validation_outcome = validation["outcome"]
+    if type(validation_outcome) is not str or validation_outcome != "valid":
         raise ValueError("prepared package validation is invalid")
     check_codes = validation["checkCodes"]
     warning_codes = validation["warningCodes"]
     if (
         type(check_codes) is not list
+        or any(type(code) is not str for code in check_codes)
         or tuple(check_codes) != _INTERNAL_PREPARED_CHECK_CODES
         or type(warning_codes) is not list
         or warning_codes
