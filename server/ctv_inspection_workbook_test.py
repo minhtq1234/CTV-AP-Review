@@ -41,6 +41,29 @@ TRANSITIONAL_OFFICE_RELATIONSHIPS = (
 STRICT_OFFICE_RELATIONSHIPS = (
     b"http://purl.oclc.org/ooxml/officeDocument/relationships"
 )
+MARKUP_COMPATIBILITY_NAMESPACE = (
+    b"http://schemas.openxmlformats.org/markup-compatibility/2006"
+)
+OFFICE_2010_AC_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac"
+)
+OFFICE_2009_MAIN_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"
+)
+OFFICE_2010_MAIN_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"
+)
+OFFICE_2014_REVISION_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2014/revision"
+)
+OFFICE_2018_CALC_FEATURES_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2018/calcfeatures"
+)
+OFFICE_2024_WORKBOOK_COMPATIBILITY_NAMESPACE = (
+    b"http://schemas.microsoft.com/office/spreadsheetml/2024/"
+    b"workbookCompatibilityVersion"
+)
+GOOGLE_CUSTOM_OOXML_NAMESPACE = b"http://customooxmlschemas.google.com/"
 
 
 def _save(workbook):
@@ -229,6 +252,46 @@ def _strict_package(snapshot):
                 )
                 replacements[info.filename] = content
     return _rewrite_package(snapshot, replacements=replacements)
+
+
+def _workbook_extension_package(snapshot, *, declarations, fragment):
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        workbook_xml = archive.read("xl/workbook.xml")
+    assert b'<workbook xmlns="' in workbook_xml
+    assert b"</workbook>" in workbook_xml
+    workbook_xml = workbook_xml.replace(
+        b"<workbook ",
+        b"<workbook " + declarations + b" ",
+        1,
+    ).replace(
+        b"</workbook>",
+        fragment + b"</workbook>",
+        1,
+    )
+    return _rewrite_package(
+        snapshot,
+        replacements={"xl/workbook.xml": workbook_xml},
+    )
+
+
+def _styles_extension_package(snapshot, *, declarations, fragment):
+    with zipfile.ZipFile(BytesIO(snapshot), "r") as archive:
+        styles_xml = archive.read("xl/styles.xml")
+    assert b'<styleSheet xmlns="' in styles_xml
+    assert b"</styleSheet>" in styles_xml
+    styles_xml = styles_xml.replace(
+        b"<styleSheet ",
+        b"<styleSheet " + declarations + b" ",
+        1,
+    ).replace(
+        b"</styleSheet>",
+        fragment + b"</styleSheet>",
+        1,
+    )
+    return _rewrite_package(
+        snapshot,
+        replacements={"xl/styles.xml": styles_xml},
+    )
 
 
 def _encoded_xml(content, encoding):
@@ -1111,6 +1174,184 @@ def test_attacker_relationship_id_qname_is_rejected_before_openpyxl(
     assert result.inspection_status == "unreadable"
     assert result.source_issue_codes == ("document-unreadable",)
     assert loader_calls == []
+
+
+def test_known_modern_workbook_extension_paths_are_ignored_without_losing_sheets():
+    declarations = b" ".join(
+        (
+            b'xmlns:mc="' + MARKUP_COMPATIBILITY_NAMESPACE + b'"',
+            b'xmlns:x15ac="' + OFFICE_2010_AC_NAMESPACE + b'"',
+            b'xmlns:x15="' + OFFICE_2010_MAIN_NAMESPACE + b'"',
+            b'xmlns:xr="' + OFFICE_2014_REVISION_NAMESPACE + b'"',
+            b'xmlns:xcalcf="' + OFFICE_2018_CALC_FEATURES_NAMESPACE + b'"',
+            b'xmlns:xlrd2="'
+            + OFFICE_2024_WORKBOOK_COMPATIBILITY_NAMESPACE
+            + b'"',
+            b'xmlns:gs="' + GOOGLE_CUSTOM_OOXML_NAMESPACE + b'"',
+        )
+    )
+    fragment = b"".join(
+        (
+            b'<mc:AlternateContent><mc:Choice Requires="x15ac">',
+            b'<x15ac:absPath url="ignored"/>',
+            b"</mc:Choice></mc:AlternateContent>",
+            b'<xr:revisionPtr revIDLastSave="0"/>',
+            b'<extLst><ext uri="one"><x15:workbookPr/></ext>',
+            b'<ext uri="two"><xcalcf:calcFeatures>',
+            b'<xcalcf:feature name="ignored"/>',
+            b"</xcalcf:calcFeatures></ext>",
+            b'<ext uri="three"><xlrd2:version version="1"/></ext>',
+            b'<ext uri="four"><gs:sheetsCustomData/></ext></extLst>',
+        )
+    )
+    snapshot = _workbook_extension_package(
+        _save(_roster_workbook()),
+        declarations=declarations,
+        fragment=fragment,
+    )
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.source_issue_codes == ()
+    assert result.unit_count == 3
+    assert tuple((unit.unit_kind, unit.unit_index) for unit in result.units) == (
+        ("worksheet", 1),
+        ("worksheet", 2),
+        ("worksheet", 3),
+    )
+
+
+@pytest.mark.parametrize(
+    ("declarations", "fragment"),
+    (
+        (
+            b'xmlns:evil="https://attacker.invalid/workbook-extension"',
+            b'<extLst><ext uri="one"><evil:metadata/></ext></extLst>',
+        ),
+        (
+            b'xmlns:x15ac="' + OFFICE_2010_AC_NAMESPACE + b'"',
+            b'<x15ac:absPath url="wrong-location"/>',
+        ),
+        (
+            b" ".join(
+                (
+                    b'xmlns:mc="' + MARKUP_COMPATIBILITY_NAMESPACE + b'"',
+                    b'xmlns:x15ac="' + OFFICE_2010_AC_NAMESPACE + b'"',
+                )
+            ),
+            b'<mc:AlternateContent><mc:Choice Requires="x15ac">'
+            b"<x15ac:unknown/>"
+            b"</mc:Choice></mc:AlternateContent>",
+        ),
+        (
+            b" ".join(
+                (
+                    b'xmlns:mc="' + MARKUP_COMPATIBILITY_NAMESPACE + b'"',
+                    b'xmlns:r="'
+                    + TRANSITIONAL_OFFICE_RELATIONSHIPS
+                    + b'"',
+                )
+            ),
+            b'<mc:AlternateContent><mc:Choice Requires="ignored">'
+            b'<sheet name="ignored" sheetId="999" r:id="rId999"/>'
+            b"</mc:Choice></mc:AlternateContent>",
+        ),
+    ),
+)
+def test_unknown_or_misplaced_workbook_extensions_fail_before_openpyxl(
+    monkeypatch, declarations, fragment
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _workbook_extension_package(
+        _save(_roster_workbook()),
+        declarations=declarations,
+        fragment=fragment,
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append(True)
+        raise AssertionError("unsafe workbook extension must fail in preflight")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+    _assert_private_values_absent(result, "attacker.invalid", "wrong-location")
+
+
+def test_known_modern_style_extension_paths_are_ignored():
+    declarations = b" ".join(
+        (
+            b'xmlns:x14="' + OFFICE_2009_MAIN_NAMESPACE + b'"',
+            b'xmlns:x15="' + OFFICE_2010_MAIN_NAMESPACE + b'"',
+        )
+    )
+    fragment = b"".join(
+        (
+            b'<extLst><ext uri="one"><x14:slicerStyles/></ext>',
+            b'<ext uri="two"><x15:timelineStyles/></ext></extLst>',
+        )
+    )
+    snapshot = _styles_extension_package(
+        _save(_roster_workbook()),
+        declarations=declarations,
+        fragment=fragment,
+    )
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.source_issue_codes == ()
+    assert result.unit_count == 3
+
+
+@pytest.mark.parametrize(
+    ("declarations", "fragment"),
+    (
+        (
+            b'xmlns:evil="https://attacker.invalid/style-extension"',
+            b'<extLst><ext uri="one"><evil:styleData/></ext></extLst>',
+        ),
+        (
+            b'xmlns:x14="' + OFFICE_2009_MAIN_NAMESPACE + b'"',
+            b"<x14:slicerStyles/>",
+        ),
+        (
+            b'xmlns:x14="' + OFFICE_2009_MAIN_NAMESPACE + b'"',
+            b'<extLst><ext uri="one"><x14:unknown/></ext></extLst>',
+        ),
+    ),
+)
+def test_unknown_or_misplaced_style_extensions_fail_before_openpyxl(
+    monkeypatch, declarations, fragment
+):
+    import ctv_inspection_workbook as workbook_adapter
+
+    snapshot = _styles_extension_package(
+        _save(_roster_workbook()),
+        declarations=declarations,
+        fragment=fragment,
+    )
+    loader_calls = []
+
+    def forbidden_loader(*args, **kwargs):
+        loader_calls.append(True)
+        raise AssertionError("unsafe style extension must fail in preflight")
+
+    monkeypatch.setattr(workbook_adapter.openpyxl, "load_workbook", forbidden_loader)
+
+    result = _inspect(snapshot)
+
+    assert result.inspection_status == "unreadable"
+    assert result.source_issue_codes == ("document-unreadable",)
+    assert loader_calls == []
+    _assert_private_values_absent(result, "attacker.invalid")
 
 
 def test_strict_namespace_workbook_is_inspected_with_its_cell_signals():

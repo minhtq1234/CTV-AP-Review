@@ -77,6 +77,29 @@ _TRANSITIONAL_OFFICE_RELATIONSHIPS_NAMESPACE = (
 _STRICT_OFFICE_RELATIONSHIPS_NAMESPACE = (
     "http://purl.oclc.org/ooxml/officeDocument/relationships"
 )
+_MARKUP_COMPATIBILITY_NAMESPACE = (
+    "http://schemas.openxmlformats.org/markup-compatibility/2006"
+)
+_OFFICE_2010_AC_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac"
+)
+_OFFICE_2009_MAIN_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"
+)
+_OFFICE_2010_MAIN_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"
+)
+_OFFICE_2014_REVISION_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2014/revision"
+)
+_OFFICE_2018_CALC_FEATURES_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2018/calcfeatures"
+)
+_OFFICE_2024_WORKBOOK_COMPATIBILITY_NAMESPACE = (
+    "http://schemas.microsoft.com/office/spreadsheetml/2024/"
+    "workbookCompatibilityVersion"
+)
+_GOOGLE_CUSTOM_OOXML_NAMESPACE = "http://customooxmlschemas.google.com/"
 _SPREADSHEET_NAMESPACES = frozenset({
     _TRANSITIONAL_SPREADSHEET_NAMESPACE,
     _STRICT_SPREADSHEET_NAMESPACE,
@@ -781,6 +804,101 @@ def _loader_content_types(parts, workbook_content_type: str) -> bytes:
     return _serialized_xml(root)
 
 
+def _allowed_workbook_extension_paths(spreadsheet_namespace: str):
+    ext_list = (spreadsheet_namespace, "extLst")
+    extension = (spreadsheet_namespace, "ext")
+    alternate_content = (_MARKUP_COMPATIBILITY_NAMESPACE, "AlternateContent")
+    choice = (_MARKUP_COMPATIBILITY_NAMESPACE, "Choice")
+    calc_features = (_OFFICE_2018_CALC_FEATURES_NAMESPACE, "calcFeatures")
+    return frozenset({
+        (alternate_content,),
+        (alternate_content, choice),
+        (
+            alternate_content,
+            choice,
+            (_OFFICE_2010_AC_NAMESPACE, "absPath"),
+        ),
+        ((_OFFICE_2014_REVISION_NAMESPACE, "revisionPtr"),),
+        (ext_list, extension, (_OFFICE_2010_MAIN_NAMESPACE, "workbookPr")),
+        (ext_list, extension, calc_features),
+        (
+            ext_list,
+            extension,
+            calc_features,
+            (_OFFICE_2018_CALC_FEATURES_NAMESPACE, "feature"),
+        ),
+        (
+            ext_list,
+            extension,
+            (_OFFICE_2024_WORKBOOK_COMPATIBILITY_NAMESPACE, "version"),
+        ),
+        (
+            ext_list,
+            extension,
+            (_GOOGLE_CUSTOM_OOXML_NAMESPACE, "sheetsCustomData"),
+        ),
+    })
+
+
+def _allowed_style_extension_paths(spreadsheet_namespace: str):
+    ext_list = (spreadsheet_namespace, "extLst")
+    extension = (spreadsheet_namespace, "ext")
+    return frozenset({
+        (
+            ext_list,
+            extension,
+            (_OFFICE_2009_MAIN_NAMESPACE, "slicerStyles"),
+        ),
+        (
+            ext_list,
+            extension,
+            (_OFFICE_2010_MAIN_NAMESPACE, "timelineStyles"),
+        ),
+    })
+
+
+def _validate_auxiliary_xml(
+    content: bytes,
+    *,
+    spreadsheet_namespace: str,
+    expected_root: str,
+) -> None:
+    allowed_extension_paths = (
+        _allowed_style_extension_paths(spreadsheet_namespace)
+        if expected_root == "styleSheet"
+        else frozenset()
+    )
+    element_path = []
+    root_seen = False
+    for event, element in _safe_xml_events(content):
+        expanded = _expanded_name(element.tag)
+        if event == "start" and not root_seen:
+            if expanded != (spreadsheet_namespace, expected_root):
+                raise _UnreadableWorkbookError()
+            root_seen = True
+            element_path.append(expanded)
+        elif event == "start":
+            if expanded is None:
+                raise _UnreadableWorkbookError()
+            relative_path = tuple(element_path[1:]) + (expanded,)
+            if expanded[0] != spreadsheet_namespace:
+                if relative_path not in allowed_extension_paths:
+                    raise _UnreadableWorkbookError()
+            elif any(
+                ancestor[0] != spreadsheet_namespace
+                for ancestor in element_path[1:]
+            ):
+                raise _UnreadableWorkbookError()
+            element_path.append(expanded)
+        if event == "end":
+            element.clear()
+            if not element_path or element_path[-1] != expanded:
+                raise _UnreadableWorkbookError()
+            element_path.pop()
+    if not root_seen:
+        raise _UnreadableWorkbookError()
+
+
 def _workbook_sheet_relationship_ids(
     content: bytes,
     max_worksheets: int,
@@ -789,6 +907,8 @@ def _workbook_sheet_relationship_ids(
     seen_ids = set()
     root_seen = False
     spreadsheet_namespace = None
+    element_path = []
+    allowed_extension_paths = frozenset()
     for event, element in _safe_xml_events(content):
         expanded = _expanded_name(element.tag)
         local = _local_name(element.tag)
@@ -800,11 +920,24 @@ def _workbook_sheet_relationship_ids(
             ):
                 raise _UnreadableWorkbookError()
             spreadsheet_namespace = expanded[0]
+            allowed_extension_paths = _allowed_workbook_extension_paths(
+                spreadsheet_namespace
+            )
             root_seen = True
-        elif event == "start" and (
-            expanded is None or expanded[0] != spreadsheet_namespace
-        ):
-            raise _UnreadableWorkbookError()
+            element_path.append(expanded)
+        elif event == "start":
+            if expanded is None:
+                raise _UnreadableWorkbookError()
+            relative_path = tuple(element_path[1:]) + (expanded,)
+            if expanded[0] != spreadsheet_namespace:
+                if relative_path not in allowed_extension_paths:
+                    raise _UnreadableWorkbookError()
+            elif any(
+                ancestor[0] != spreadsheet_namespace
+                for ancestor in element_path[1:]
+            ):
+                raise _UnreadableWorkbookError()
+            element_path.append(expanded)
         if event == "start" and local == "sheet":
             if expanded != (spreadsheet_namespace, "sheet"):
                 raise _UnreadableWorkbookError()
@@ -817,6 +950,9 @@ def _workbook_sheet_relationship_ids(
                 raise WorkbookWorksheetCountExceededError()
         if event == "end":
             element.clear()
+            if not element_path or element_path[-1] != expanded:
+                raise _UnreadableWorkbookError()
+            element_path.pop()
     if not root_seen:
         raise _UnreadableWorkbookError()
     return tuple(relationship_ids), spreadsheet_namespace
@@ -1130,24 +1266,11 @@ def _worksheet_package_metadata(
         if not member_exists:
             continue
         auxiliary_xml = _read_member(archive, members[part_name], budget)
-        root_seen = False
-        for event, element in _safe_xml_events(auxiliary_xml):
-            if event == "start" and not root_seen:
-                if _expanded_name(element.tag) != (
-                    spreadsheet_namespace,
-                    expected_root,
-                ):
-                    raise _UnreadableWorkbookError()
-                root_seen = True
-            elif event == "start" and (
-                _expanded_name(element.tag) is None
-                or _expanded_name(element.tag)[0] != spreadsheet_namespace
-            ):
-                raise _UnreadableWorkbookError()
-            if event == "end":
-                element.clear()
-        if not root_seen:
-            raise _UnreadableWorkbookError()
+        _validate_auxiliary_xml(
+            auxiliary_xml,
+            spreadsheet_namespace=spreadsheet_namespace,
+            expected_root=expected_root,
+        )
         loader_parts[part_name] = (
             _normalized_strict_xml(auxiliary_xml)
             if normalize_strict
