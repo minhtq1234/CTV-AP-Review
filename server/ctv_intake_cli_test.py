@@ -40,6 +40,26 @@ PACKAGE_MODULE_FILENAMES = (
     "intake_package_validator_v2.py",
 )
 _PROPOSAL_DIGEST = "0" * 64
+_INTERNAL_VALIDATION_CODES = [
+    "manifest-valid",
+    "package-tree-valid",
+    "artifacts-valid",
+    "source-binding-valid",
+    "package-identity-valid",
+    "sources-valid",
+    "pdf-coverage-valid",
+    "roster-valid",
+    "exceptions-valid",
+    "assignments-valid",
+    "production-projection-valid",
+    "validation-report-consistent",
+]
+_PUBLIC_VALIDATION_CODES = [
+    "manifest-valid",
+    "assignments-valid",
+    "source-verification-complete",
+    "validation-report-consistent",
+]
 _PREPARED_RESULT = {
     "packageId": "package-" + "0" * 64,
     "packageDirectoryName": "ctv-package-" + "0" * 24,
@@ -57,12 +77,7 @@ _PREPARED_RESULT = {
     },
     "validation": {
         "outcome": "valid",
-        "checkCodes": [
-            "manifest-valid",
-            "assignments-valid",
-            "source-verification-complete",
-            "validation-report-consistent",
-        ],
+        "checkCodes": list(_INTERNAL_VALIDATION_CODES),
         "warningCodes": [],
     },
     "readyForCtvReview": True,
@@ -1746,6 +1761,11 @@ def test_exact_package_prepare_argv_runs_one_retained_approved_lifecycle(
         "version": "1.0",
         "outcome": "prepared",
         **_PREPARED_RESULT,
+        "validation": {
+            "outcome": "valid",
+            "checkCodes": _PUBLIC_VALIDATION_CODES,
+            "warningCodes": [],
+        },
     }
     assert events == [
         ("pin", "ctv-intake-v2"),
@@ -1763,6 +1783,171 @@ def test_exact_package_prepare_argv_runs_one_retained_approved_lifecycle(
         "source-exit",
         "output-exit",
     ]
+
+
+@pytest.mark.parametrize(
+    ("check_codes", "warning_codes"),
+    [
+        ([], []),
+        (_INTERNAL_VALIDATION_CODES[:-1], []),
+        (
+            [
+                *_INTERNAL_VALIDATION_CODES[:-1],
+                "private-name-nguyen-van-a",
+            ],
+            [],
+        ),
+        (_INTERNAL_VALIDATION_CODES, ["private-name-nguyen-van-a"]),
+    ],
+)
+def test_prepared_result_rejects_incomplete_or_private_validation_facts(
+    check_codes, warning_codes
+):
+    cli = _module()
+    result = dict(_PREPARED_RESULT)
+    result["validation"] = {
+        "outcome": "valid",
+        "checkCodes": list(check_codes),
+        "warningCodes": list(warning_codes),
+    }
+
+    with pytest.raises((TypeError, ValueError)) as raised:
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+    assert "nguyen-van-a" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [
+        {},
+        {"outcome": "valid", "warningCodes": []},
+        {
+            "outcome": "valid",
+            "checkCodes": {"privateValue": "Synthetic Person"},
+            "warningCodes": [],
+        },
+        {
+            "outcome": "valid",
+            "checkCodes": list(_INTERNAL_VALIDATION_CODES),
+            "warningCodes": {"privateValue": "Synthetic Person"},
+        },
+    ],
+)
+def test_prepared_result_rejects_missing_or_private_shaped_validation(validation):
+    cli = _module()
+    result = {**_PREPARED_RESULT, "validation": validation}
+
+    with pytest.raises((TypeError, ValueError)) as raised:
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+    assert "Synthetic Person" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sources", 10_001),
+        ("participants", 10_001),
+        ("pdfPages", 25_001),
+        ("evidenceArtifacts", 1_001),
+        ("assignments", 10_001),
+        ("exclusions", 20_001),
+    ],
+)
+def test_prepared_result_rejects_counts_above_fixed_public_bounds(field, value):
+    cli = _module()
+    result = dict(_PREPARED_RESULT)
+    result["counts"] = {**_PREPARED_RESULT["counts"], field: value}
+
+    with pytest.raises(ValueError, match="counts"):
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "ready"),
+    [("invalid", True), ("valid", False)],
+)
+def test_prepared_result_requires_valid_ready_coupling(outcome, ready):
+    cli = _module()
+    result = dict(_PREPARED_RESULT)
+    result["readyForCtvReview"] = ready
+    result["validation"] = {
+        **_PREPARED_RESULT["validation"],
+        "outcome": outcome,
+    }
+
+    with pytest.raises(ValueError):
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+
+def test_real_writer_validation_is_projected_to_exact_public_codes():
+    cli = _module()
+    probe = """
+import json
+from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
+
+sys.path.insert(0, str(Path.cwd() / "server"))
+
+from ctv_inspection import inspect_observation
+from ctv_inventory import open_inventory_observation
+from ctv_package_transaction import OutputParent
+from ctv_package_writer import prepare_package
+from intake_fixture_factory_v2 import _approve, _write_sources
+
+with TemporaryDirectory(prefix="ctv-writer-probe-", dir="/private/tmp") as temp:
+    root = Path(temp)
+    source = root / "source"
+    output = root / "output"
+    output.mkdir()
+    _write_sources(source)
+
+    with OutputParent.open(output) as output_parent:
+        with open_inventory_observation(source) as observation:
+            output_parent.require_disjoint(
+                observation.directory_identity_chain()
+            )
+            inspection = inspect_observation(observation)
+            approved = _approve(observation, inspection)
+            writer_result = prepare_package(
+                observation,
+                inspection,
+                approved,
+                output_parent,
+            )
+
+print(json.dumps(writer_result.to_dict(), sort_keys=True))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.fail("isolated real writer probe failed")
+    writer_result = json.loads(completed.stdout)
+
+    assert writer_result["validation"]["checkCodes"] == _INTERNAL_VALIDATION_CODES
+    projected = cli._normalize_prepared_result(
+        SimpleNamespace(to_dict=lambda: writer_result)
+    )
+    assert projected["validation"] == {
+        "outcome": "valid",
+        "checkCodes": _PUBLIC_VALIDATION_CODES,
+        "warningCodes": [],
+    }
 
 
 @pytest.mark.parametrize(
@@ -1901,6 +2086,50 @@ def test_package_v2_pin_failure_precedes_output_and_source_open(
             "message": "The local v2 contract could not be verified safely.",
         }
     ]
+
+
+def test_package_missing_v2_pin_is_controlled_before_source_open(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    import ctv_inventory
+
+    opened = []
+    monkeypatch.setattr(
+        cli,
+        "verify_contract",
+        lambda _root, *, target: (_ for _ in ()).throw(
+            cli.ContractPinError("contract-pin-missing")
+        ),
+    )
+    monkeypatch.setattr(
+        ctv_inventory,
+        "open_inventory_observation",
+        lambda _path: opened.append("source"),
+    )
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "PRIVATE-SOURCE",
+            "--output-root",
+            "PRIVATE-OUTPUT",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 2
+    assert opened == []
+    assert payload["errors"] == [
+        {
+            "code": "contract-pin-missing",
+            "message": "The local v2 contract could not be verified safely.",
+        }
+    ]
+    assert "PRIVATE" not in json.dumps(payload)
 
 
 def test_package_v2_pin_mismatch_precedes_output_and_source_open(
@@ -2097,9 +2326,14 @@ def test_package_oversized_result_is_replaced_before_one_stdout_write(
     _install_package_lifecycle(monkeypatch, cli)
     writes = []
     monkeypatch.setattr(cli, "_emit_stdout", lambda content: writes.append(content))
-    oversized = dict(_PREPARED_RESULT)
-    oversized["validation"] = dict(_PREPARED_RESULT["validation"])
-    oversized["validation"]["warningCodes"] = ["synthetic-warning"] * 1_100_000
+    canonical = cli.canonical_json_bytes
+
+    def oversized_success(envelope):
+        if envelope.operation == "package.prepare" and envelope.status == "succeeded":
+            return b"x" * (16 * 1024 * 1024 + 1)
+        return canonical(envelope)
+
+    monkeypatch.setattr(cli, "canonical_json_bytes", oversized_success)
 
     exit_code = cli.main(
         [
@@ -2116,7 +2350,7 @@ def test_package_oversized_result_is_replaced_before_one_stdout_write(
             "proposalDigest": _PROPOSAL_DIGEST,
         },
         package_prepare_driver=lambda *_args: SimpleNamespace(
-            to_dict=lambda: oversized
+            to_dict=lambda: dict(_PREPARED_RESULT)
         ),
     )
 
@@ -2125,7 +2359,7 @@ def test_package_oversized_result_is_replaced_before_one_stdout_write(
     payload = json.loads(writes[0])
     assert payload["errors"][0]["code"] == "package-output-too-large"
     assert len(writes[0]) <= 16 * 1024 * 1024
-    assert b"synthetic-warning" not in writes[0]
+    assert b"package-output-too-large" in writes[0]
 
 
 def test_published_package_survives_stdout_failure(monkeypatch):
@@ -2164,6 +2398,59 @@ def test_published_package_survives_stdout_failure(monkeypatch):
     assert exit_code == 1
     assert published == ["ctv-package-" + "0" * 24]
     assert "prepare" in events
+
+
+@pytest.mark.parametrize("returned", [1, None, True, "all-bytes"])
+def test_published_package_survives_invalid_stdout_write_count(
+    returned, monkeypatch
+):
+    cli = _module()
+    _install_package_lifecycle(monkeypatch, cli)
+    published = []
+
+    class ShortStream:
+        def __init__(self):
+            self.writes = 0
+            self.received = b""
+            self.flushes = 0
+
+        def write(self, content):
+            self.writes += 1
+            self.received = content[:1]
+            return returned
+
+        def flush(self):
+            self.flushes += 1
+
+    stream = ShortStream()
+    monkeypatch.setattr(cli.sys, "stdout", SimpleNamespace(buffer=stream))
+
+    def prepare(*_args):
+        published.append("ctv-package-" + "0" * 24)
+        return SimpleNamespace(to_dict=lambda: dict(_PREPARED_RESULT))
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda _state: {
+            "outcome": "approved",
+            "proposalDigest": _PROPOSAL_DIGEST,
+        },
+        package_prepare_driver=prepare,
+    )
+
+    assert exit_code == 1
+    assert published == ["ctv-package-" + "0" * 24]
+    assert stream.writes == 1
+    assert len(stream.received) == 1
+    assert stream.flushes == 0
 
 
 @pytest.mark.parametrize(

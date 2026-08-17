@@ -226,6 +226,7 @@ _PACKAGE_PIN_ERROR_CODES = frozenset(
         "contract-file-count-exceeded",
         "contract-file-too-large",
         "contract-pin-invalid",
+        "contract-pin-missing",
         "contract-pin-too-large",
         "contract-target-invalid",
         "contract-tree-changed",
@@ -237,6 +238,34 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PACKAGE_ID = re.compile(r"^package-[0-9a-f]{64}$")
 _PACKAGE_DIRECTORY = re.compile(r"^ctv-package-[0-9a-f]{24}$")
 _SAFE_CODE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_INTERNAL_PREPARED_CHECK_CODES = (
+    "manifest-valid",
+    "package-tree-valid",
+    "artifacts-valid",
+    "source-binding-valid",
+    "package-identity-valid",
+    "sources-valid",
+    "pdf-coverage-valid",
+    "roster-valid",
+    "exceptions-valid",
+    "assignments-valid",
+    "production-projection-valid",
+    "validation-report-consistent",
+)
+_PUBLIC_PREPARED_CHECK_CODES = (
+    "manifest-valid",
+    "assignments-valid",
+    "source-verification-complete",
+    "validation-report-consistent",
+)
+_PREPARED_COUNT_LIMITS = {
+    "sources": 10_000,
+    "participants": 10_000,
+    "pdfPages": 25_000,
+    "evidenceArtifacts": 1_000,
+    "assignments": 10_000,
+    "exclusions": 20_000,
+}
 
 
 class CliInvocationError(RuntimeError):
@@ -376,7 +405,9 @@ def _is_package_prepare_argv(invocation: list[str]) -> bool:
 
 def _emit_stdout(content: bytes) -> None:
     stream = getattr(sys.stdout, "buffer", sys.stdout)
-    stream.write(content)
+    written = stream.write(content)
+    if type(written) is not int or written != len(content):
+        raise OSError("stdout-write-failed")
     stream.flush()
 
 
@@ -665,10 +696,19 @@ def _require_exact_dict(value, keys: frozenset[str], name: str) -> dict:
     return value
 
 
-def _require_nonnegative_counts(value, keys: frozenset[str]) -> dict[str, int]:
+def _require_nonnegative_counts(
+    value,
+    keys: frozenset[str],
+    *,
+    limits: dict[str, int] | None = None,
+) -> dict[str, int]:
     counts = _require_exact_dict(value, keys, "counts")
     if any(type(count) is not int or count < 0 for count in counts.values()):
         raise ValueError("counts must be non-negative integers")
+    if limits is not None and any(
+        counts[name] > limit for name, limit in limits.items()
+    ):
+        raise ValueError("counts exceed their fixed public bounds")
     return dict(counts)
 
 
@@ -803,6 +843,7 @@ def _normalize_prepared_result(result) -> dict[str, object]:
                 "exclusions",
             }
         ),
+        limits=_PREPARED_COUNT_LIMITS,
     )
     validation = _require_exact_dict(
         public["validation"],
@@ -811,6 +852,15 @@ def _normalize_prepared_result(result) -> dict[str, object]:
     )
     if validation["outcome"] != "valid":
         raise ValueError("prepared package validation is invalid")
+    check_codes = validation["checkCodes"]
+    warning_codes = validation["warningCodes"]
+    if (
+        type(check_codes) is not list
+        or tuple(check_codes) != _INTERNAL_PREPARED_CHECK_CODES
+        or type(warning_codes) is not list
+        or warning_codes
+    ):
+        raise ValueError("prepared package validation facts are invalid")
     return {
         "version": "1.0",
         "outcome": "prepared",
@@ -823,12 +873,8 @@ def _normalize_prepared_result(result) -> dict[str, object]:
         "counts": counts,
         "validation": {
             "outcome": "valid",
-            "checkCodes": _require_safe_codes(
-                validation["checkCodes"], "checkCodes"
-            ),
-            "warningCodes": _require_safe_codes(
-                validation["warningCodes"], "warningCodes"
-            ),
+            "checkCodes": list(_PUBLIC_PREPARED_CHECK_CODES),
+            "warningCodes": [],
         },
         "readyForCtvReview": True,
     }
