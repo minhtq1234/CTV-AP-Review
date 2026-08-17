@@ -116,6 +116,7 @@ def _approve(
     inspection,
     *,
     unit_exclusion_reason: str | None = None,
+    workbook_unit_exclusion_reason: str | None = None,
     source_exclusion_reason: str = "irrelevant",
 ):
     state = ProposalState.from_inspection(observation, inspection)
@@ -137,12 +138,38 @@ def _approve(
         ),
         None,
     )
+    excluded_workbook_unit_id = (
+        next(
+            (
+                unit.unit_id
+                for unit in inspection.units
+                if unit.unit_kind == "worksheet"
+                and unit.unit_index == 2
+                and unit.suggested_role != "payment-roster"
+            ),
+            None,
+        )
+        if workbook_unit_exclusion_reason is not None
+        else None
+    )
+    if (
+        workbook_unit_exclusion_reason is not None
+        and excluded_workbook_unit_id is None
+    ):
+        raise ValueError("mixed-workbook-fixture-unavailable")
     for unit in state.units:
         if unit_exclusion_reason is not None and unit["unitId"] == excluded_unit_id:
             state.set_unit_decision({
                 "unitId": unit["unitId"],
                 "decision": "excluded",
                 "reason": unit_exclusion_reason,
+            })
+            continue
+        if unit["unitId"] == excluded_workbook_unit_id:
+            state.set_unit_decision({
+                "unitId": unit["unitId"],
+                "decision": "excluded",
+                "reason": workbook_unit_exclusion_reason,
             })
             continue
         if unit["unitId"] == roster["unitId"]:
@@ -199,6 +226,7 @@ def materialize_v2_fixture(
     include_receipt: bool = False,
     *,
     unit_exclusion_reason: str | None = None,
+    workbook_unit_exclusion_reason: str | None = None,
     source_exclusion_reason: str = "irrelevant",
 ) -> MaterializedV2Fixture:
     """Generate one bounded fixture through inspection, approval, and Task 4."""
@@ -217,6 +245,7 @@ def materialize_v2_fixture(
             observation,
             inspection,
             unit_exclusion_reason=unit_exclusion_reason,
+            workbook_unit_exclusion_reason=workbook_unit_exclusion_reason,
             source_exclusion_reason=source_exclusion_reason,
         )
         plan = create_build_plan(observation, inspection, approved)

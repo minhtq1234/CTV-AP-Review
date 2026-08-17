@@ -539,7 +539,7 @@ def _normalized_projection(
         source_model = source_models.get(source_id)
         if source_model is None:
             raise ValueError("source projection mismatch")
-        reason = source_model.coverage_state
+        exclusion = excluded[unit.unit_id]
         if unit.unit_kind == "pdf-page":
             page = pdf_pages.get(
                 (source_id, unit.unit_index)
@@ -547,6 +547,12 @@ def _normalized_projection(
             if page is None:
                 raise ValueError("PDF projection mismatch")
             reason = page.coverage_state
+        elif source_model.coverage_state == "duplicate":
+            reason = "duplicate"
+        elif exclusion.reason == "excluded-by-user":
+            reason = exclusion.reason
+        else:
+            raise ValueError("unit projection mismatch")
         if reason not in {"duplicate", "excluded-by-user"}:
             raise ValueError("unit projection mismatch")
         unit_decisions.append(

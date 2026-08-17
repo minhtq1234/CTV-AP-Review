@@ -189,6 +189,65 @@ def test_content_accepts_real_packages_for_lossy_user_exclusion_reasons(
     assert content.report.outcome == "valid", (record_type, reason, content.report.errors)
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "duplicate",
+        "irrelevant",
+        "unreadable-replacement-available",
+        "intentionally-omitted",
+        "other",
+    ],
+)
+def test_content_accepts_mixed_included_and_excluded_workbook_units(
+    tmp_path, reason
+):
+    fixture = materialize_v2_fixture(
+        "complete",
+        tmp_path / reason,
+        workbook_unit_exclusion_reason=reason,
+    )
+    manifest_bytes = (fixture.package_dir / "case-manifest.json").read_bytes()
+    unit_exclusion = next(
+        item
+        for item in fixture.assignments.exclusions
+        if item.record_type == "unit"
+    )
+    included_worksheet = next(
+        item
+        for item in fixture.assignments.units
+        if item.unit_kind == "worksheet" and item.role != "payment-roster"
+    )
+    exclusion_decision = next(
+        item
+        for item in fixture.manifest.decisions
+        if item.decision_id == unit_exclusion.decision_id
+    )
+    source = next(
+        item
+        for item in fixture.manifest.sources
+        if item.source_id == included_worksheet.source_id
+    )
+    evidence_artifact = next(
+        item
+        for item in fixture.manifest.artifacts
+        if item.artifact_id == included_worksheet.output_locator.artifact_id
+    )
+
+    assert included_worksheet.source_unit_index == 1
+    assert included_worksheet.output_locator.worksheet_index == 1
+    assert unit_exclusion.record_id != included_worksheet.unit_id
+    assert unit_exclusion.reason == "excluded-by-user"
+    assert exclusion_decision.evidence_refs == [included_worksheet.source_id]
+    assert source.coverage_state == "assigned"
+    assert evidence_artifact.source_ids == [included_worksheet.source_id]
+    assert fixture.manifest_sha256 == sha256(manifest_bytes).hexdigest()
+
+    content = _validate_content(fixture)
+
+    assert content.report.outcome == "valid", (reason, content.report.errors)
+
+
 def test_writer_manifest_binding_rejects_coherent_rebuilt_changed_decision(tmp_path):
     fixture = materialize_v2_fixture("complete", tmp_path / "fixture")
     expected_manifest_sha256 = _rebuild_with_changed_decision(fixture)
