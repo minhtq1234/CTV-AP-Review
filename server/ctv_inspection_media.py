@@ -65,6 +65,11 @@ class _CappedBytesIO(BytesIO):
         return super().write(value)
 _MAX_XREF_DIGITS = 10
 _MAX_XREF_REFERENCE_CHARS = 32
+_MAX_PDF_METADATA_CHARS = 64 * 1024
+_MAX_PDF_METADATA_TOKENS = 4_096
+_MAX_PDF_METADATA_DEPTH = 8
+_MAX_PDF_NAME_CHARS = 128
+_MAX_PDF_OBJECT_CHARS = 2_048
 _STANDARD_TYPE1_FONTS = frozenset(
     {
         "Courier",
@@ -83,8 +88,13 @@ _STANDARD_TYPE1_FONTS = frozenset(
         "ZapfDingbats",
     }
 )
-_SAFE_RESOURCE_KEYS = frozenset({"Font", "ProcSet", "XObject"})
-_SAFE_IMAGE_FILTERS = frozenset({"/FlateDecode"})
+_SAFE_RESOURCE_KEYS = frozenset(
+    {"ColorSpace", "ExtGState", "Font", "ProcSet", "XObject"}
+)
+_SAFE_PROCSET_NAMES = frozenset(
+    {"/PDF", "/Text", "/ImageB", "/ImageC", "/ImageI"}
+)
+_SAFE_IMAGE_FILTERS = frozenset({"/DCTDecode", "/FlateDecode"})
 _DEVICE_COLOR_SPACES = frozenset({"/DeviceGray", "/DeviceRGB", "/DeviceCMYK"})
 _ICC_COLOR_SPACE = re.compile(r"\[\s*/ICCBased\s+(\d+)\s+0\s+R\s*\]")
 _INLINE_IMAGE_OPERATOR = re.compile(
@@ -152,7 +162,28 @@ def _xref_key(document: object, xref: int, key: str) -> tuple[str, str]:
 
 def _positive_int_key(document: object, xref: int, key: str) -> int:
     value_type, value = _xref_key(document, xref, key)
-    if value_type != "int" or not value.isascii() or not value.isdigit():
+    if value_type == "xref":
+        value_xref = _xref_reference(value)
+        try:
+            is_stream = document.xref_is_stream(value_xref)  # type: ignore[attr-defined]
+            value = document.xref_object(  # type: ignore[attr-defined]
+                value_xref,
+                compressed=False,
+            )
+        except Exception:
+            is_stream = None
+            value = None
+        if is_stream is not False or type(value) is not str:
+            _pdf_boundary()
+        value = value.strip()
+    elif value_type != "int":
+        _pdf_boundary()
+    if (
+        type(value) is not str
+        or len(value) > _MAX_XREF_DIGITS
+        or not value.isascii()
+        or not value.isdigit()
+    ):
         _pdf_boundary()
     parsed = int(value)
     if parsed <= 0:
@@ -176,6 +207,191 @@ def _xref_reference(value: object) -> int:
     if parsed <= 0:
         _pdf_boundary()
     return parsed
+
+
+def _pdf_metadata_tokens(value: object) -> tuple[str, ...]:
+    if (
+        type(value) is not str
+        or len(value) > _MAX_PDF_METADATA_CHARS
+        or not value.isascii()
+    ):
+        _pdf_boundary()
+    whitespace = "\x00\t\n\f\r "
+    delimiters = whitespace + "()<>[]{}/%"
+    tokens = []
+    position = 0
+    while position < len(value):
+        while position < len(value) and value[position] in whitespace:
+            position += 1
+        if position == len(value):
+            break
+        if value.startswith("<<", position) or value.startswith(">>", position):
+            token = value[position : position + 2]
+            position += 2
+        elif value[position] in "[]":
+            token = value[position]
+            position += 1
+        elif value[position] == "/":
+            end = position + 1
+            while end < len(value) and value[end] not in delimiters:
+                end += 1
+            token = value[position:end]
+            if (
+                len(token) <= 1
+                or len(token) > _MAX_PDF_NAME_CHARS
+                or "#" in token
+            ):
+                _pdf_boundary()
+            position = end
+        else:
+            end = position
+            while end < len(value) and value[end] not in delimiters:
+                end += 1
+            token = value[position:end]
+            if not token:
+                _pdf_boundary()
+            position = end
+        tokens.append(token)
+        if len(tokens) > _MAX_PDF_METADATA_TOKENS:
+            _pdf_boundary()
+    return tuple(tokens)
+
+
+def _parse_pdf_metadata_object(value: object):
+    tokens = _pdf_metadata_tokens(value)
+    position = 0
+
+    def parse(depth: int):
+        nonlocal position
+        if depth > _MAX_PDF_METADATA_DEPTH or position >= len(tokens):
+            _pdf_boundary()
+        token = tokens[position]
+        position += 1
+        if token == "<<":
+            pairs = []
+            keys = set()
+            while True:
+                if position >= len(tokens):
+                    _pdf_boundary()
+                if tokens[position] == ">>":
+                    position += 1
+                    return "dict", tuple(pairs)
+                key = tokens[position]
+                position += 1
+                if not key.startswith("/") or key in keys:
+                    _pdf_boundary()
+                keys.add(key)
+                pairs.append((key, parse(depth + 1)))
+        if token == "[":
+            items = []
+            while True:
+                if position >= len(tokens):
+                    _pdf_boundary()
+                if tokens[position] == "]":
+                    position += 1
+                    return "array", tuple(items)
+                items.append(parse(depth + 1))
+        if token in {">>", "]"}:
+            _pdf_boundary()
+        if token.startswith("/"):
+            return "name", token
+        if token in {"true", "false"}:
+            return "bool", token == "true"
+        if token == "null":
+            return "null", None
+        if len(token) > 32 or re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", token) is None:
+            _pdf_boundary()
+        if (
+            token.isdigit()
+            and len(token) <= _MAX_XREF_DIGITS
+            and position + 1 < len(tokens)
+            and tokens[position] == "0"
+            and tokens[position + 1] == "R"
+        ):
+            position += 2
+            parsed_xref = int(token)
+            if parsed_xref <= 0:
+                _pdf_boundary()
+            return "ref", parsed_xref
+        return "number", token
+
+    parsed = parse(0)
+    if position != len(tokens):
+        _pdf_boundary()
+    return parsed
+
+
+def _pdf_metadata_node(value_type: object, value: object):
+    if type(value_type) is not str or type(value) is not str:
+        _pdf_boundary()
+    expected_kind = {
+        "array": "array",
+        "bool": "bool",
+        "dict": "dict",
+        "float": "number",
+        "int": "number",
+        "name": "name",
+        "null": "null",
+        "xref": "ref",
+    }.get(value_type)
+    if expected_kind is None:
+        _pdf_boundary()
+    parsed = _parse_pdf_metadata_object(value)
+    if parsed[0] != expected_kind:
+        _pdf_boundary()
+    return parsed
+
+
+def _dictionary_items(node: object) -> dict[str, object]:
+    if type(node) is not tuple or len(node) != 2 or node[0] != "dict":
+        _pdf_boundary()
+    pairs = node[1]
+    if type(pairs) is not tuple:
+        _pdf_boundary()
+    return {key[1:]: value for key, value in pairs}
+
+
+def _reference_map(node: object) -> tuple[int, ...]:
+    items = _dictionary_items(node)
+    if len(items) > _MAX_RESOURCE_RECORDS_PER_PAGE:
+        _pdf_boundary()
+    references = []
+    for value in items.values():
+        if type(value) is not tuple or len(value) != 2 or value[0] != "ref":
+            _pdf_boundary()
+        references.append(value[1])
+    return tuple(references)
+
+
+def _bounded_object_node(document: object, xref: int):
+    try:
+        is_stream = document.xref_is_stream(xref)  # type: ignore[attr-defined]
+        value = document.xref_object(  # type: ignore[attr-defined]
+            xref,
+            compressed=False,
+        )
+    except Exception:
+        is_stream = None
+        value = None
+    if (
+        is_stream is not False
+        or type(value) is not str
+        or len(value) > _MAX_PDF_OBJECT_CHARS
+    ):
+        _pdf_boundary()
+    return _parse_pdf_metadata_object(value)
+
+
+def _number(node: object) -> float:
+    if type(node) is not tuple or len(node) != 2 or node[0] != "number":
+        _pdf_boundary()
+    try:
+        value = float(node[1])
+    except Exception:
+        value = math.nan
+    if not math.isfinite(value):
+        _pdf_boundary()
+    return value
 
 
 def _bounded_flate_size(raw: bytes, limit: int) -> int:
@@ -217,6 +433,101 @@ def _bounded_flate_size(raw: bytes, limit: int) -> int:
     return produced
 
 
+def _bounded_flate_output(raw: bytes, limit: int) -> bytes:
+    if type(raw) is not bytes or type(limit) is not int or limit < 0:
+        _pdf_boundary()
+    decompressor = zlib.decompressobj()
+    output = bytearray()
+    try:
+        for offset in range(0, len(raw), 64 * 1024):
+            pending = raw[offset : offset + 64 * 1024]
+            while pending:
+                chunk = decompressor.decompress(
+                    pending,
+                    min(_MAX_ZLIB_OUTPUT_CHUNK, limit - len(output) + 1),
+                )
+                output.extend(chunk)
+                if len(output) > limit:
+                    output.clear()
+                    _pdf_boundary()
+                unconsumed = decompressor.unconsumed_tail
+                if unconsumed and len(unconsumed) == len(pending) and not chunk:
+                    output.clear()
+                    _pdf_boundary()
+                pending = unconsumed
+    except PdfParserBoundaryExceededError:
+        raise
+    except Exception:
+        output.clear()
+        _pdf_boundary()
+    if (
+        not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+    ):
+        output.clear()
+        _pdf_boundary()
+    return bytes(output)
+
+
+def _prove_jpeg_header(
+    snapshot: bytes,
+    *,
+    width: int,
+    height: int,
+    bits: int,
+) -> None:
+    if (
+        type(snapshot) is not bytes
+        or type(width) is not int
+        or type(height) is not int
+        or type(bits) is not int
+        or len(snapshot) < 4
+        or snapshot[:2] != b"\xff\xd8"
+    ):
+        _pdf_boundary()
+    position = 2
+    while position < len(snapshot):
+        if snapshot[position] != 0xFF:
+            _pdf_boundary()
+        while position < len(snapshot) and snapshot[position] == 0xFF:
+            position += 1
+        if position >= len(snapshot):
+            _pdf_boundary()
+        marker = snapshot[position]
+        position += 1
+        if marker in {0x01, 0xD8} or 0xD0 <= marker <= 0xD7:
+            continue
+        if marker in {0xD9, 0xDA} or position + 2 > len(snapshot):
+            _pdf_boundary()
+        segment_length = int.from_bytes(snapshot[position : position + 2], "big")
+        if segment_length < 2 or position + segment_length > len(snapshot):
+            _pdf_boundary()
+        if marker in {0xC0, 0xC1, 0xC2}:
+            if segment_length < 8:
+                _pdf_boundary()
+            precision = snapshot[position + 2]
+            jpeg_height = int.from_bytes(
+                snapshot[position + 3 : position + 5],
+                "big",
+            )
+            jpeg_width = int.from_bytes(
+                snapshot[position + 5 : position + 7],
+                "big",
+            )
+            components = snapshot[position + 7]
+            if (
+                precision != bits
+                or jpeg_width != width
+                or jpeg_height != height
+                or components not in {1, 3, 4}
+            ):
+                _pdf_boundary()
+            return
+        position += segment_length
+    _pdf_boundary()
+
+
 def _decoded_stream_after_proof(
     document: object,
     xref: int,
@@ -232,6 +543,23 @@ def _decoded_stream_after_proof(
     return decoded
 
 
+def _empty_decode_parameters(node: object) -> bool:
+    return node == ("null", None) or node == ("dict", ())
+
+
+def _prove_dct_decode_parameters(node: object) -> None:
+    if _empty_decode_parameters(node):
+        return
+    items = _dictionary_items(node)
+    if set(items) - {"Quality"}:
+        _pdf_boundary()
+    quality = items.get("Quality")
+    if quality is not None:
+        value = _number(quality)
+        if not value.is_integer() or not 0 <= value <= 100:
+            _pdf_boundary()
+
+
 def _bounded_stream_size(
     document: object,
     xref: int,
@@ -239,6 +567,7 @@ def _bounded_stream_size(
     decoded_limit: int,
     raw_limit: int,
     allowed_filters: frozenset[str],
+    dct_dimensions: tuple[int, int, int] | None = None,
 ) -> tuple[int, int]:
     if (
         type(xref) is not int
@@ -249,6 +578,14 @@ def _bounded_stream_size(
         or raw_limit < 0
         or type(allowed_filters) is not frozenset
         or any(type(value) is not str for value in allowed_filters)
+        or (
+            dct_dimensions is not None
+            and (
+                type(dct_dimensions) is not tuple
+                or len(dct_dimensions) != 3
+                or any(type(value) is not int or value <= 0 for value in dct_dimensions)
+            )
+        )
     ):
         _pdf_boundary()
     try:
@@ -263,22 +600,46 @@ def _bounded_stream_size(
         _pdf_boundary()
     filter_type, filter_value = _xref_key(document, xref, "Filter")
     if filter_type == "null" and filter_value == "null":
-        selected_filter = None
+        selected_filters = ()
     elif filter_type == "name" and filter_value in allowed_filters:
-        selected_filter = filter_value
+        selected_filters = (filter_value,)
+    elif filter_type == "array":
+        filter_node = _pdf_metadata_node(filter_type, filter_value)
+        selected_filters = tuple(
+            value[1]
+            for value in filter_node[1]
+            if type(value) is tuple
+            and len(value) == 2
+            and value[0] == "name"
+        )
+        if (
+            len(selected_filters) != len(filter_node[1])
+            or selected_filters != ("/FlateDecode", "/DCTDecode")
+            or any(value not in allowed_filters for value in selected_filters)
+        ):
+            _pdf_boundary()
     else:
         _pdf_boundary()
     decode_type, decode_value = _xref_key(document, xref, "DecodeParms")
-    if selected_filter == "/FlateDecode":
-        if (decode_type, decode_value) not in {
-            ("null", "null"),
-            ("dict", "<<>>"),
-        }:
+    decode_parameters = _pdf_metadata_node(decode_type, decode_value)
+    if selected_filters in {(), ("/FlateDecode",)}:
+        if not _empty_decode_parameters(decode_parameters):
             _pdf_boundary()
-    elif (decode_type, decode_value) not in {
-        ("null", "null"),
-        ("dict", "<<>>"),
-    }:
+    elif selected_filters == ("/DCTDecode",):
+        _prove_dct_decode_parameters(decode_parameters)
+    elif selected_filters == ("/FlateDecode", "/DCTDecode"):
+        if (
+            type(decode_parameters) is not tuple
+            or len(decode_parameters) != 2
+            or decode_parameters[0] != "array"
+            or len(decode_parameters[1]) != 2
+            or not _empty_decode_parameters(decode_parameters[1][0])
+        ):
+            _pdf_boundary()
+        _prove_dct_decode_parameters(decode_parameters[1][1])
+    else:
+        _pdf_boundary()
+    if "/DCTDecode" in selected_filters and dct_dimensions is None:
         _pdf_boundary()
     try:
         raw = document.xref_stream_raw(xref)  # type: ignore[attr-defined]
@@ -287,21 +648,191 @@ def _bounded_stream_size(
     if type(raw) is not bytes or len(raw) != declared_length or len(raw) > raw_limit:
         raw = b""
         _pdf_boundary()
-    if selected_filter is None:
+    charged_size = len(raw)
+    if not selected_filters:
         decoded_size = len(raw)
         if decoded_size > decoded_limit:
             raw = b""
             _pdf_boundary()
-    elif selected_filter == "/FlateDecode":
+    elif selected_filters == ("/FlateDecode",):
         decoded_size = _bounded_flate_size(raw, decoded_limit)
-    else:
+    elif selected_filters == ("/DCTDecode",):
+        _prove_jpeg_header(
+            raw,
+            width=dct_dimensions[0],
+            height=dct_dimensions[1],
+            bits=dct_dimensions[2],
+        )
         decoded_size = 0
-    raw_size = len(raw)
+    else:
+        jpeg = _bounded_flate_output(raw, raw_limit - len(raw))
+        _prove_jpeg_header(
+            jpeg,
+            width=dct_dimensions[0],
+            height=dct_dimensions[1],
+            bits=dct_dimensions[2],
+        )
+        charged_size += len(jpeg)
+        jpeg = b""
+        decoded_size = 0
+    raw_size = charged_size
     raw = b""
     return raw_size, decoded_size
 
 
-def _resource_xref(document: object, page: object) -> int | None:
+def _prove_calgray(node: object) -> None:
+    items = _dictionary_items(node)
+    if set(items) - {"BlackPoint", "Gamma", "WhitePoint"}:
+        _pdf_boundary()
+    white_point = items.get("WhitePoint")
+    if (
+        type(white_point) is not tuple
+        or len(white_point) != 2
+        or white_point[0] != "array"
+        or len(white_point[1]) != 3
+    ):
+        _pdf_boundary()
+    if any(not 0 < _number(value) <= 10 for value in white_point[1]):
+        _pdf_boundary()
+    gamma = items.get("Gamma")
+    if gamma is not None and not 0 < _number(gamma) <= 10:
+        _pdf_boundary()
+    black_point = items.get("BlackPoint")
+    if black_point is not None:
+        if (
+            type(black_point) is not tuple
+            or len(black_point) != 2
+            or black_point[0] != "array"
+            or len(black_point[1]) != 3
+            or any(not 0 <= _number(value) <= 10 for value in black_point[1])
+        ):
+            _pdf_boundary()
+
+
+def _prove_color_space(
+    document: object,
+    node: object,
+    *,
+    raw_limit: int,
+) -> int:
+    if type(node) is not tuple or len(node) != 2:
+        _pdf_boundary()
+    if node[0] == "ref":
+        node = _bounded_object_node(document, node[1])
+    if node[0] == "name":
+        if node[1] not in _DEVICE_COLOR_SPACES:
+            _pdf_boundary()
+        return 0
+    if node[0] != "array" or len(node[1]) != 2:
+        _pdf_boundary()
+    family, detail = node[1]
+    if family == ("name", "/ICCBased"):
+        if type(detail) is not tuple or len(detail) != 2 or detail[0] != "ref":
+            _pdf_boundary()
+        profile_xref = detail[1]
+        if _positive_int_key(document, profile_xref, "N") not in {1, 3, 4}:
+            _pdf_boundary()
+        raw_size, _ = _bounded_stream_size(
+            document,
+            profile_xref,
+            decoded_limit=_MAX_ICC_PROFILE_BYTES,
+            raw_limit=raw_limit,
+            allowed_filters=frozenset({"/FlateDecode"}),
+        )
+        return raw_size
+    if family == ("name", "/CalGray"):
+        _prove_calgray(detail)
+        return 0
+    _pdf_boundary()
+
+
+def _prove_resource_metadata(
+    document: object,
+    resource_xref: int | None,
+    direct_resources: object | None,
+    resource_keys: tuple[str, ...] | None,
+) -> int:
+    if resource_xref is None and direct_resources is None:
+        return 0
+    if resource_xref is not None:
+        try:
+            is_stream = document.xref_is_stream(resource_xref)  # type: ignore[attr-defined]
+        except Exception:
+            is_stream = None
+        if (
+            is_stream is not False
+            or type(resource_keys) is not tuple
+        ):
+            _pdf_boundary()
+        items = {}
+        for key in resource_keys:
+            value_type, value = _xref_key(document, resource_xref, key)
+            items[key] = _pdf_metadata_node(value_type, value)
+    else:
+        items = _dictionary_items(direct_resources)
+        if len(items) > len(_SAFE_RESOURCE_KEYS) or set(items) - _SAFE_RESOURCE_KEYS:
+            _pdf_boundary()
+
+    for key in ("Font", "XObject"):
+        if key in items:
+            _reference_map(items[key])
+
+    if "ProcSet" in items:
+        procset = items["ProcSet"]
+        if (
+            type(procset) is not tuple
+            or len(procset) != 2
+            or procset[0] != "array"
+            or len(procset[1]) > len(_SAFE_PROCSET_NAMES)
+            or any(
+                type(value) is not tuple
+                or len(value) != 2
+                or value[0] != "name"
+                or value[1] not in _SAFE_PROCSET_NAMES
+                for value in procset[1]
+            )
+        ):
+            _pdf_boundary()
+
+    if "ExtGState" in items:
+        for graphics_state_xref in _reference_map(items["ExtGState"]):
+            graphics_state = _dictionary_items(
+                _bounded_object_node(document, graphics_state_xref)
+            )
+            if set(graphics_state) - {"AIS", "BM", "CA", "SMask", "Type", "ca"}:
+                _pdf_boundary()
+            if graphics_state.get("Type") not in {None, ("name", "/ExtGState")}:
+                _pdf_boundary()
+            if graphics_state.get("BM") not in {None, ("name", "/Normal")}:
+                _pdf_boundary()
+            if graphics_state.get("AIS") not in {None, ("bool", False)}:
+                _pdf_boundary()
+            if graphics_state.get("SMask") not in {None, ("name", "/None")}:
+                _pdf_boundary()
+            for alpha_key in ("CA", "ca"):
+                if alpha_key in graphics_state:
+                    alpha = _number(graphics_state[alpha_key])
+                    if not 0 <= alpha <= 1:
+                        _pdf_boundary()
+
+    total_raw = 0
+    if "ColorSpace" in items:
+        color_spaces = _dictionary_items(items["ColorSpace"])
+        if len(color_spaces) > _MAX_RESOURCE_RECORDS_PER_PAGE:
+            _pdf_boundary()
+        for color_space in color_spaces.values():
+            total_raw += _prove_color_space(
+                document,
+                color_space,
+                raw_limit=_MAX_RAW_RESOURCE_BYTES_PER_PAGE - total_raw,
+            )
+    return total_raw
+
+
+def _resource_xref(
+    document: object,
+    page: object,
+) -> tuple[int | None, object | None, tuple[str, ...] | None]:
     try:
         page_xref = page.xref  # type: ignore[attr-defined]
     except Exception:
@@ -312,6 +843,8 @@ def _resource_xref(document: object, page: object) -> int | None:
     visited = set()
     parent_depth = 0
     resource_xref = None
+    direct_resources = None
+    resource_keys = None
     while True:
         if current_xref in visited:
             _pdf_boundary()
@@ -321,34 +854,38 @@ def _resource_xref(document: object, page: object) -> int | None:
             "/Pages",
         ):
             _pdf_boundary()
-        if resource_xref is None:
+        if resource_xref is None and direct_resources is None:
             value_type, value = _xref_key(document, current_xref, "Resources")
             if (value_type, value) != ("null", "null"):
-                if value_type != "xref":
-                    _pdf_boundary()
-                resource_xref = _xref_reference(value)
-                keys = None
-                try:
-                    keys = document.xref_get_keys(  # type: ignore[attr-defined]
-                        resource_xref
-                    )
-                except Exception:
-                    pass
-                if (
-                    type(keys) not in {list, tuple}
-                    or len(keys) > len(_SAFE_RESOURCE_KEYS)
-                    or any(
-                        type(key) is not str or key not in _SAFE_RESOURCE_KEYS
-                        for key in keys
-                    )
-                ):
+                if value_type == "xref":
+                    resource_xref = _xref_reference(value)
+                    keys = None
+                    try:
+                        keys = document.xref_get_keys(  # type: ignore[attr-defined]
+                            resource_xref
+                        )
+                    except Exception:
+                        pass
+                    if (
+                        type(keys) not in {list, tuple}
+                        or len(keys) > len(_SAFE_RESOURCE_KEYS)
+                        or any(
+                            type(key) is not str or key not in _SAFE_RESOURCE_KEYS
+                            for key in keys
+                        )
+                    ):
+                        _pdf_boundary()
+                    resource_keys = tuple(keys)
+                elif value_type == "dict":
+                    direct_resources = _pdf_metadata_node(value_type, value)
+                else:
                     _pdf_boundary()
 
         parent_type, parent_value = _xref_key(document, current_xref, "Parent")
         if (parent_type, parent_value) == ("null", "null"):
             if parent_depth == 0:
                 _pdf_boundary()
-            return resource_xref
+            return resource_xref, direct_resources, resource_keys
         if parent_type != "xref":
             _pdf_boundary()
         current_xref = _xref_reference(parent_value)
@@ -430,6 +967,7 @@ def _prove_image_resources(
     document: object,
     *,
     pixel_limit: int,
+    initial_raw: int = 0,
 ) -> bool:
     try:
         images = page.get_images(full=True)  # type: ignore[attr-defined]
@@ -441,7 +979,13 @@ def _prove_image_resources(
     if type(images) not in {list, tuple} or len(images) > _MAX_RESOURCE_RECORDS_PER_PAGE:
         _pdf_boundary()
     total_pixels = 0
-    total_raw = 0
+    if (
+        type(initial_raw) is not int
+        or initial_raw < 0
+        or initial_raw > _MAX_RAW_RESOURCE_BYTES_PER_PAGE
+    ):
+        _pdf_boundary()
+    total_raw = initial_raw
     for image in images:
         if type(image) not in {list, tuple} or len(image) < 10:
             _pdf_boundary()
@@ -470,6 +1014,7 @@ def _prove_image_resources(
             decoded_limit=max(1, pixels * 8),
             raw_limit=remaining_raw,
             allowed_filters=_SAFE_IMAGE_FILTERS,
+            dct_dimensions=(width, height, bits),
         )
         total_raw += raw_size
         remaining_raw = _MAX_RAW_RESOURCE_BYTES_PER_PAGE - total_raw
@@ -479,13 +1024,26 @@ def _prove_image_resources(
             raw_limit=remaining_raw,
         )
         if smask:
+            mask_width = _positive_int_key(document, smask, "Width")
+            mask_height = _positive_int_key(document, smask, "Height")
+            mask_bits = _positive_int_key(document, smask, "BitsPerComponent")
+            mask_pixels = mask_width * mask_height
+            if (
+                mask_width != width
+                or mask_height != height
+                or mask_pixels > pixel_limit
+                or total_pixels + mask_pixels > pixel_limit
+            ):
+                _pdf_boundary()
+            total_pixels += mask_pixels
             remaining_raw = _MAX_RAW_RESOURCE_BYTES_PER_PAGE - total_raw
             mask_raw, _ = _bounded_stream_size(
                 document,
                 smask,
-                decoded_limit=max(1, pixels * 2),
+                decoded_limit=max(1, mask_pixels * 2),
                 raw_limit=remaining_raw,
                 allowed_filters=_SAFE_IMAGE_FILTERS,
+                dct_dimensions=(mask_width, mask_height, mask_bits),
             )
             total_raw += mask_raw
     return bool(images)
@@ -496,7 +1054,13 @@ def _prove_pdf_page_bounds(
     page: object,
     limits: InspectionLimits,
 ) -> tuple[bool, bool]:
-    _resource_xref(document, page)
+    resource_xref, direct_resources, resource_keys = _resource_xref(document, page)
+    resource_raw = _prove_resource_metadata(
+        document,
+        resource_xref,
+        direct_resources,
+        resource_keys,
+    )
     try:
         content_xrefs = page.get_contents()  # type: ignore[attr-defined]
     except Exception:
@@ -534,6 +1098,7 @@ def _prove_pdf_page_bounds(
         page,
         document,
         pixel_limit=limits.max_decoded_image_pixels,
+        initial_raw=resource_raw,
     )
     return has_fonts, has_images
 

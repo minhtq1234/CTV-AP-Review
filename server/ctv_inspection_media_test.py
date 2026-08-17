@@ -48,6 +48,35 @@ def _scanned_pdf():
     return snapshot
 
 
+def _jpeg_pdf(*, flate_wrapped=False, mismatched_dimensions=False):
+    jpeg_bytes = _image_bytes("JPEG", size=(120, 80), color=(245, 245, 245))
+    document = fitz.open()
+    page = document.new_page(width=120, height=80)
+    page.insert_image(page.rect, stream=jpeg_bytes)
+    image_xref = page.get_images(full=True)[0][0]
+    if flate_wrapped:
+        document.update_stream(
+            image_xref,
+            zlib.compress(jpeg_bytes),
+            compress=False,
+        )
+        document.xref_set_key(
+            image_xref,
+            "Filter",
+            "[/FlateDecode /DCTDecode]",
+        )
+        document.xref_set_key(
+            image_xref,
+            "DecodeParms",
+            "[null << /Quality 65 >>]",
+        )
+    if mismatched_dimensions:
+        document.xref_set_key(image_xref, "Width", "1")
+    snapshot = document.tobytes(garbage=0, clean=False, deflate=False)
+    document.close()
+    return snapshot
+
+
 def _small_pdf_with_hostile_expanded_content_stream():
     document = fitz.open()
     page = document.new_page()
@@ -87,6 +116,8 @@ def _pdf_with_resource(resource_key, *, inherited):
         resource_object = f"<< /Pattern << /P0 {pattern_xref} 0 R >> >>"
     elif resource_key == "ColorSpace":
         resource_object = "<< /ColorSpace << /CS0 /DeviceRGB >> >>"
+    elif resource_key == "HostileColorSpace":
+        resource_object = "<< /ColorSpace << /CS0 /Pattern >> >>"
     else:
         raise ValueError("unsupported synthetic resource")
     document.update_object(resource_xref, resource_object)
@@ -98,6 +129,99 @@ def _pdf_with_resource(resource_key, *, inherited):
     snapshot = document.tobytes()
     document.close()
     return snapshot, pattern_xref
+
+
+def _pdf_with_direct_resources(*, hostile_pattern=False):
+    image_bytes = _image_bytes("PNG", size=(12, 8), color=(240, 240, 240))
+    document = fitz.open()
+    page = document.new_page(width=120, height=80)
+    page.insert_image(page.rect, stream=image_bytes)
+    image_record = page.get_images(full=True)[0]
+    image_xref = image_record[0]
+    image_name = image_record[7]
+    graphics_state_xref = document.get_new_xref()
+    document.update_object(
+        graphics_state_xref,
+        "<< /Type /ExtGState /ca 1 /CA 1 >>",
+    )
+    direct_resources = (
+        f"<< /XObject << /{image_name} {image_xref} 0 R >> "
+        f"/ExtGState << /GS0 {graphics_state_xref} 0 R >> "
+        "/ProcSet [/PDF /ImageC] >>"
+    )
+    if hostile_pattern:
+        direct_resources = (
+            direct_resources[:-2]
+            + " /Pattern << /P0 << /PatternType 1 >> >> >>"
+        )
+    document.xref_set_key(page.xref, "Resources", direct_resources)
+    snapshot = document.tobytes()
+    document.close()
+    with fitz.open(stream=snapshot, filetype="pdf") as reopened:
+        assert reopened.xref_get_key(reopened[0].xref, "Resources")[0] == "dict"
+    return snapshot
+
+
+def _pdf_with_safe_default_color_spaces():
+    document = fitz.open()
+    page = document.new_page(width=120, height=80)
+    profile_xref = document.get_new_xref()
+    document.update_object(profile_xref, "<< /N 3 >>")
+    document.update_stream(profile_xref, b"bounded synthetic profile")
+    default_rgb_xref = document.get_new_xref()
+    document.update_object(default_rgb_xref, f"[/ICCBased {profile_xref} 0 R]")
+    default_gray_xref = document.get_new_xref()
+    document.update_object(
+        default_gray_xref,
+        "[/CalGray << /WhitePoint [0.9505 1 1.089] /Gamma 2.2 >>]",
+    )
+    resource_xref = int(
+        document.xref_get_key(page.xref, "Resources")[1].split()[0]
+    )
+    document.update_object(
+        resource_xref,
+        "<< /ColorSpace << "
+        f"/DefaultRGB {default_rgb_xref} 0 R "
+        f"/DefaultGray {default_gray_xref} 0 R >> >>",
+    )
+    snapshot = document.tobytes()
+    document.close()
+    return snapshot
+
+
+def _pdf_with_indirect_stream_length():
+    content = b"q\nQ\n"
+    objects = (
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources 5 0 R /Contents 4 0 R >>",
+        b"<< /Length 6 0 R >>\nstream\n" + content + b"endstream",
+        b"<< >>",
+        str(len(content)).encode("ascii"),
+    )
+    snapshot = b"%PDF-1.4\n"
+    offsets = [0]
+    for object_number, body in enumerate(objects, start=1):
+        offsets.append(len(snapshot))
+        snapshot += (
+            f"{object_number} 0 obj\n".encode("ascii")
+            + body
+            + b"\nendobj\n"
+        )
+    xref_offset = len(snapshot)
+    snapshot += f"xref\n0 {len(objects) + 1}\n".encode("ascii")
+    snapshot += b"0000000000 65535 f \n"
+    for offset in offsets[1:]:
+        snapshot += f"{offset:010d} 00000 n \n".encode("ascii")
+    snapshot += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n"
+    ).encode("ascii")
+    with fitz.open(stream=snapshot, filetype="pdf") as reopened:
+        reopened_content_xref = reopened[0].get_contents()[0]
+        assert reopened.xref_get_key(reopened_content_xref, "Length")[0] == "xref"
+    return snapshot
 
 
 def _encrypted_pdf():
@@ -289,15 +413,87 @@ def test_pdf_inherited_hostile_pattern_fails_closed():
 
 
 @pytest.mark.parametrize("inherited", [False, True])
-def test_pdf_top_level_colorspace_fails_closed(inherited):
+def test_pdf_safe_device_colorspace_is_accepted(inherited):
+    snapshot, _ = _pdf_with_resource("ColorSpace", inherited=inherited)
+
+    result = _inspect_pdf(snapshot)
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+
+
+def test_pdf_safe_default_icc_and_calgray_color_spaces_are_accepted():
+    result = _inspect_pdf(_pdf_with_safe_default_color_spaces())
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+def test_pdf_hostile_top_level_colorspace_fails_closed(inherited):
     import ctv_inspection_media as media
 
-    snapshot, _ = _pdf_with_resource("ColorSpace", inherited=inherited)
+    snapshot, _ = _pdf_with_resource("HostileColorSpace", inherited=inherited)
 
     with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
         _inspect_pdf(snapshot)
 
     assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+def test_pdf_direct_resources_with_bounded_extgstate_are_accepted():
+    result = _inspect_pdf(_pdf_with_direct_resources())
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+    assert result.units[0].inspection_method == "local-ocr"
+
+
+def test_pdf_direct_resources_still_reject_hostile_pattern():
+    import ctv_inspection_media as media
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        _inspect_pdf(_pdf_with_direct_resources(hostile_pattern=True))
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
+
+
+def test_pdf_direct_resources_stop_parent_resource_lookup():
+    import ctv_inspection_media as media
+
+    class Page:
+        xref = 1
+
+    class Document:
+        def xref_get_key(self, xref, key):
+            values = {
+                (1, "Resources"): ("dict", "<< /ProcSet [/PDF] >>"),
+                (1, "Parent"): ("xref", "2 0 R"),
+                (2, "Type"): ("name", "/Pages"),
+                (2, "Parent"): ("null", "null"),
+            }
+            if (xref, key) == (2, "Resources"):
+                raise AssertionError("local resources must stop inheritance")
+            return values.get((xref, key), ("null", "null"))
+
+    resource_xref, direct_resources, resource_keys = media._resource_xref(
+        Document(),
+        Page(),
+    )
+
+    assert resource_xref is None
+    assert direct_resources == (
+        "dict",
+        (("/ProcSet", ("array", (("name", "/PDF"),))),),
+    )
+    assert resource_keys is None
+
+
+def test_pdf_indirect_numeric_stream_length_is_accepted():
+    result = _inspect_pdf(_pdf_with_indirect_stream_length())
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
 
 
 @pytest.mark.parametrize(
@@ -588,6 +784,24 @@ def test_scanned_pdf_renders_one_150_dpi_png_and_invokes_ocr_once():
     assert result.units[0].inspection_method == "local-ocr"
     assert "identity-front-heading" in result.units[0].signal_codes
     assert "embedded-media-present" in result.units[0].signal_codes
+
+
+@pytest.mark.parametrize("flate_wrapped", [False, True])
+def test_pdf_bounded_jpeg_image_filters_are_accepted(flate_wrapped):
+    result = _inspect_pdf(_jpeg_pdf(flate_wrapped=flate_wrapped))
+
+    assert result.inspection_status == "inspected"
+    assert result.unit_count == 1
+    assert result.units[0].inspection_method == "local-ocr"
+
+
+def test_pdf_jpeg_filter_rejects_mismatched_declared_dimensions():
+    import ctv_inspection_media as media
+
+    with pytest.raises(media.PdfParserBoundaryExceededError) as raised:
+        _inspect_pdf(_jpeg_pdf(mismatched_dimensions=True))
+
+    assert str(raised.value) == "inspection-parser-boundary-exceeded"
 
 
 def test_pdf_text_prefix_never_full_encodes_or_reads_beyond_the_byte_cap():
