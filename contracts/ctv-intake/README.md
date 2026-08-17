@@ -59,8 +59,9 @@ version directory, unchanged. Alongside the snapshot, WP creates
 | `copiedAt` | ISO-8601 timestamp supplied at the time of the WP copy. |
 
 `copiedAt` is copy-operation metadata. It is not generated into the deterministic
-CTV artifacts. Task 7 supplies the final commit and tree hash; this document does
-not publish provisional values or create a sample `SOURCE.json`.
+CTV artifacts. The final CTV handoff supplies the exact accepted commit and tree
+hash; this document does not publish provisional values, update WP's pin, or
+create a sample `SOURCE.json`.
 
 WP must then run its contract tests against the copied bytes. If copying, the tree
 hash, or contract tests fail, WP does not mark the snapshot compatible. Later
@@ -139,9 +140,43 @@ PY
 ```
 
 The hash is meaningful only together with the exact 40-character `sourceCommit`;
-WP records both after Task 7 rather than pinning a branch name.
+WP records both after final CTV acceptance rather than pinning a branch name.
 
 ## Handoff boundary
+
+### Prepared v2 handoff
+
+The local v2 writer publishes one opaque directory containing exactly
+`case-manifest.json`, `input.pdf`, `roster.xlsx`, `assignments.json`,
+`exceptions.json`, `validation-report.json`, and zero or more opaque
+`evidence/evidence-NNNN.(png|xlsx)` files. `assignments.json` is the durable
+human-approved unit map; it uses only opaque participant handles and roster row
+IDs. Private participant values remain in the local normalized roster and never
+enter the WP-facing JSON result.
+
+WP must run the v2 preflight and local package command from `server/README.md`,
+then treat only `outcome: prepared` plus exit `0` as a newly published package.
+The returned directory name is relative to the user-selected output parent; WP
+must not guess a path, rename files, merge packages, or retry by deleting an
+existing deterministic directory. A collision is a controlled non-overwrite
+result and requires the user to decide whether the existing package is the one
+they intended.
+
+The generated local acceptance gate covers a two-page PDF, selected roster,
+included image, mixed included/excluded workbook, unsupported source-only
+exclusion, authenticated loopback approval, atomic publication, standalone v2
+validation, exact source immutability, and deterministic collision. Those checks
+are a local release gate; they do not copy the runtime or contract into WP. WP
+pinning remains a later separately reviewed operation against the exact accepted
+CTV commit and the immutable v2 tree hash in `PIN.v2.json`.
+
+A v2 package is always fully resolved and `prepared`; unresolved evidence,
+missing or conflicting FA code, draft, cancellation, build failure, or validation
+failure publishes nothing. Mechanical validity does not prove evidence
+authenticity, identify or cryptographically authenticate the original human
+reviewer, authorize accounting/payment, or submit the package to CTV or ACC.
+
+### Legacy v1 handoff
 
 A valid report requires `--source-root` access to the immutable original workspace
 and proves mechanical schema, package/source digests, actual source PDF page counts,

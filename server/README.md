@@ -325,6 +325,45 @@ ready to enter the existing CTV human review workflow. It does not prove evidenc
 authenticity, authorize payment, approve accounting treatment, identify the
 reviewer, or submit anything to CTV or ACC. Human CTV review remains required.
 
+#### Local acceptance and WP handoff
+
+The executable generated acceptance gate is:
+
+```bash
+python3 -m pytest server/ctv_package_acceptance_test.py -q
+```
+
+It creates only synthetic local inputs: a two-page PDF, a selected two-person
+roster, an included image, an included worksheet, an excluded worksheet, and an
+excluded unsupported source. The test drives the authenticated loopback HTTP
+review endpoints, approves the fully resolved proposal, publishes through the
+real writer, validates through the standalone v2 validator, and repeats the same
+preparation to prove deterministic collision without overwrite. It also checks
+the exact allowlisted layout and modes, PDF order, values-only workbooks,
+assignment cross-references, excluded-byte absence, canonical privacy-safe CLI
+JSON, source immutability, and absence of hidden staging after handled outcomes.
+
+For an installed-user workflow, WP supplies the explicit script, source, and
+existing output-parent paths and starts the exact `package prepare` command
+above. The human works only in the loopback screen. WP receives the one bounded
+JSON envelope, explains the fixed outcome and counts, and asks the user to review
+the opaque package directory locally. WP does not read source or package content,
+copy this runtime into a plugin, infer missing facts, approve payment, or submit
+the result to CTV/ACC.
+
+To recheck a published v2 directory mechanically, use:
+
+```bash
+python3 server/validate_intake_package.py \
+  /path/to/ctv-package-opaque-id \
+  --source-root /path/to/original-source
+```
+
+The writer alone creates the v2 `validation-report.json`; standalone v2
+validation is read-only and rejects `--write-report`. A valid standalone result
+proves current source/package/contract coherence, not that a particular browser
+session or reviewer can be cryptographically authenticated later.
+
 ## Validating a prepared intake package
 
 The CTV intake contract validator is a read-only mechanical gate for a prepared
@@ -334,6 +373,10 @@ package. From the repository root, run:
 python3 server/validate_intake_package.py /path/to/package --source-root /path/to/workspace
 python3 server/validate_intake_package.py /path/to/package --source-root /path/to/workspace --write-report
 ```
+
+The second form is the legacy v1 report-writing path. For v2, the transactional
+writer has already installed the canonical receipt and the standalone validator
+must be invoked without `--write-report`.
 
 The command writes one canonical `ValidationReport` JSON object to stdout. It exits
 `0` for a valid package and `2` for a completed validation with an invalid outcome.
