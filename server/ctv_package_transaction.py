@@ -103,6 +103,14 @@ def _close(descriptor: int | None) -> None:
         pass
 
 
+def _fstat_with_retry(descriptor: int) -> tuple[os.stat_result, bool]:
+    try:
+        return os.fstat(descriptor), False
+    except (OSError, NotImplementedError, TypeError):
+        metadata = os.fstat(descriptor)
+        return metadata, True
+
+
 def _normalize_components(path: Path) -> tuple[str, ...]:
     try:
         raw = os.fspath(path)
@@ -486,6 +494,8 @@ class StagingTransaction:
             raise PackageTransactionError("package-path-unsafe")
         if self._evidence_fd is None:
             created_identity = None
+            evidence_fd = None
+            ownership_proven = False
             try:
                 os.mkdir("evidence", 0o700, dir_fd=self._staging_fd)
                 created = os.stat(
@@ -495,23 +505,34 @@ class StagingTransaction:
                     raise OSError(errno.ENOTDIR, "not directory")
                 created_identity = (created.st_dev, created.st_ino)
                 evidence_fd = os.open("evidence", _directory_flags(), dir_fd=self._staging_fd)
-                self._evidence_fd = evidence_fd
-                self._evidence_identity = created_identity
-                os.fchmod(evidence_fd, 0o700)
-                metadata = os.fstat(evidence_fd)
+                metadata, metadata_retry = _fstat_with_retry(evidence_fd)
+                named = os.stat(
+                    "evidence", dir_fd=self._staging_fd, follow_symlinks=False
+                )
                 if (
                     not stat.S_ISDIR(metadata.st_mode)
                     or (metadata.st_dev, metadata.st_ino) != created_identity
+                    or not stat.S_ISDIR(named.st_mode)
+                    or (named.st_dev, named.st_ino) != created_identity
                 ):
                     raise OSError(errno.EIO, "directory identity changed")
+                ownership_proven = True
+                self._evidence_fd = evidence_fd
+                self._evidence_identity = created_identity
+                if metadata_retry:
+                    raise OSError(errno.EIO, "directory identity unavailable")
+                os.fchmod(evidence_fd, 0o700)
                 os.fsync(self._staging_fd)
             except (OSError, NotImplementedError, TypeError):
-                if _rmdir_if_identity(
+                removed = _rmdir_if_identity(
                     self._staging_fd, "evidence", created_identity
-                ):
-                    _close(self._evidence_fd)
+                )
+                if removed:
+                    _close(evidence_fd)
                     self._evidence_fd = None
                     self._evidence_identity = None
+                elif not ownership_proven:
+                    _close(evidence_fd)
                 raise PackageTransactionError("package-write-failed") from None
         return self._evidence_fd, path.split("/", 1)[1]
 
@@ -552,20 +573,20 @@ class StagingTransaction:
                     continue
             if file_descriptor is None or temporary is None:
                 raise PackageTransactionError("package-temporary-collision")
+            metadata, metadata_retry = _fstat_with_retry(file_descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise PackageTransactionError("package-write-failed")
+            temporary_identity = (metadata.st_dev, metadata.st_ino)
             named_temporary = os.stat(
                 temporary, dir_fd=directory_fd, follow_symlinks=False
             )
-            if not stat.S_ISREG(named_temporary.st_mode):
-                raise PackageTransactionError("package-write-failed")
-            temporary_identity = (
-                named_temporary.st_dev,
-                named_temporary.st_ino,
-            )
-            metadata = os.fstat(file_descriptor)
             if (
-                not stat.S_ISREG(metadata.st_mode)
-                or (metadata.st_dev, metadata.st_ino) != temporary_identity
+                not stat.S_ISREG(named_temporary.st_mode)
+                or (named_temporary.st_dev, named_temporary.st_ino)
+                != temporary_identity
             ):
+                raise PackageTransactionError("package-write-failed")
+            if metadata_retry:
                 raise PackageTransactionError("package-write-failed")
             os.fchmod(file_descriptor, 0o600)
             view = memoryview(content)

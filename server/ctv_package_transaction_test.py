@@ -466,6 +466,112 @@ def test_staging_early_file_setup_failure_preserves_error_and_cleans_owned_objec
     assert list(output.iterdir()) == []
 
 
+def test_temporary_name_swap_after_open_never_deletes_foreign_replacement(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "output"
+    output.mkdir()
+    real_stat = os.stat
+    swapped = False
+
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            staging_fd = staging._staging_fd
+            temporary = ".tmp-raced"
+            moved = ".moved-run-owned-temp"
+            monkeypatch.setattr(
+                transaction_module.StagingTransaction,
+                "_temporary_name",
+                staticmethod(lambda: temporary),
+            )
+
+            def swap_before_named_stat(path, *args, **kwargs):
+                nonlocal swapped
+                if (
+                    not swapped
+                    and path == temporary
+                    and kwargs.get("dir_fd") == staging_fd
+                ):
+                    swapped = True
+                    os.rename(
+                        temporary,
+                        moved,
+                        src_dir_fd=staging_fd,
+                        dst_dir_fd=staging_fd,
+                    )
+                    descriptor = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=staging_fd,
+                    )
+                    try:
+                        os.write(descriptor, b"foreign")
+                    finally:
+                        os.close(descriptor)
+                return real_stat(path, *args, **kwargs)
+
+            monkeypatch.setattr(os, "stat", swap_before_named_stat)
+            _assert_error(
+                "package-write-failed",
+                lambda: staging.write_bytes("input.pdf", b"run-owned"),
+            )
+            root = output / staging.staging_name
+            assert (root / temporary).read_bytes() == b"foreign"
+            assert (root / moved).read_bytes() == b""
+            (root / temporary).unlink()
+            (root / moved).unlink()
+
+
+def test_evidence_name_swap_before_open_never_chmods_foreign_replacement(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "output"
+    output.mkdir()
+    real_open = os.open
+    directory_flags = transaction_module._directory_flags()
+    swapped = False
+
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            staging_fd = staging._staging_fd
+            moved = ".moved-run-owned-evidence"
+
+            def swap_before_evidence_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                if (
+                    not swapped
+                    and path == "evidence"
+                    and kwargs.get("dir_fd") == staging_fd
+                ):
+                    swapped = True
+                    os.rename(
+                        "evidence",
+                        moved,
+                        src_dir_fd=staging_fd,
+                        dst_dir_fd=staging_fd,
+                    )
+                    os.mkdir("evidence", 0o755, dir_fd=staging_fd)
+                return real_open(path, flags, *args, **kwargs)
+
+            monkeypatch.setattr(os, "open", swap_before_evidence_open)
+            monkeypatch.setattr(
+                transaction_module, "_directory_flags", lambda: directory_flags
+            )
+            _assert_error(
+                "package-write-failed",
+                lambda: staging.write_bytes(
+                    "evidence/evidence-0001.png", b"content"
+                ),
+            )
+            root = output / staging.staging_name
+            replacement = root / "evidence"
+            assert stat.S_IMODE(replacement.stat().st_mode) == 0o755
+            assert (root / moved).is_dir()
+            replacement.rmdir()
+            (root / moved).rmdir()
+
+
 def test_deterministic_final_collision_is_checked_before_staging(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
