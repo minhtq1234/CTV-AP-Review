@@ -1,3 +1,6 @@
+import os
+import stat
+
 import pytest
 
 import ctv_package_writer as writer_module
@@ -44,6 +47,18 @@ def test_prepare_package_real_flow_publishes_valid_complete_tree(tmp_path):
 
     final = output_root / result.package_directory_name
     assert final.is_dir()
+    assert stat.S_IMODE(final.stat().st_mode) == 0o700
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) == 0o700
+        for path in final.rglob("*")
+        if path.is_dir()
+    )
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) == 0o600
+        and path.stat().st_nlink == 1
+        for path in final.rglob("*")
+        if path.is_file()
+    )
     assert sorted(
         path.relative_to(final).as_posix()
         for path in final.rglob("*")
@@ -259,3 +274,49 @@ def test_prepare_package_writes_declared_artifacts_in_plan_order(tmp_path, monke
         "case-manifest.json",
         "validation-report.json",
     ]
+
+
+@pytest.mark.parametrize("mutation", ["file-mode", "identical-hardlink"])
+def test_prepare_package_rejects_final_staging_metadata_or_identity_mutation(
+    tmp_path, monkeypatch, mutation
+):
+    source = _approved_source(tmp_path)
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    external = tmp_path / "identical-input.pdf"
+
+    with OutputParent.open(output_root) as output:
+        with pytest.raises(PackageWriterError, match="^package-staging-changed$"):
+            with open_inventory_observation(source) as observation:
+                output.require_disjoint(observation.directory_identity_chain())
+                inspection = inspect_observation(observation)
+                approved = _approve(observation, inspection)
+                real_finalize = type(observation).finalize_for_publication
+
+                def finalize_then_mutate(self):
+                    token = real_finalize(self)
+                    staging_root = next(output_root.glob(".ctv-staging-*"))
+                    target = staging_root / "input.pdf"
+                    if mutation == "file-mode":
+                        target.chmod(0o666)
+                    else:
+                        external.write_bytes(target.read_bytes())
+                        target.unlink()
+                        os.link(external, target)
+                    return token
+
+                monkeypatch.setattr(
+                    type(observation), "finalize_for_publication", finalize_then_mutate
+                )
+                prepare_package(observation, inspection, approved, output)
+
+    assert not list(output_root.glob("ctv-package-*"))
+    leftovers = list(output_root.glob(".ctv-staging-*"))
+    if mutation == "identical-hardlink":
+        assert len(leftovers) == 1
+        replacement = leftovers[0] / "input.pdf"
+        assert replacement.stat().st_nlink == 2
+        replacement.unlink()
+        leftovers[0].rmdir()
+    else:
+        assert leftovers == []

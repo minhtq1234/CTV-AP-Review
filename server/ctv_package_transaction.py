@@ -64,6 +64,23 @@ class WrittenFile:
     sha256: str
 
 
+@dataclass(frozen=True)
+class PublicationPathState:
+    path: str
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+@dataclass(frozen=True)
+class StagingPublicationState:
+    entries: tuple[PublicationPathState, ...]
+
+
 def _directory_flags() -> int:
     required = ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")
     if not all(hasattr(os, name) for name in required) or os.open not in os.supports_dir_fd:
@@ -201,6 +218,24 @@ def _stat_at(parent_fd: int, name: str) -> os.stat_result | None:
         raise PackageTransactionError("output-root-unsafe") from None
 
 
+def _rmdir_if_identity(
+    parent_fd: int, name: str, expected_identity: tuple[int, int] | None
+) -> bool:
+    if expected_identity is None:
+        return False
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == expected_identity
+        ):
+            os.rmdir(name, dir_fd=parent_fd)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def _load_renameatx_np():
     try:
         operation = ctypes.CDLL(None, use_errno=True).renameatx_np
@@ -321,32 +356,36 @@ class OutputParent:
                 raise PackageTransactionError("package-staging-create-failed") from None
             staging_fd = None
             parent_fd = None
+            created_identity = None
             try:
+                created = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not stat.S_ISDIR(created.st_mode):
+                    raise PackageTransactionError("package-staging-create-failed")
+                created_identity = (created.st_dev, created.st_ino)
                 staging_fd = os.open(name, _directory_flags(), dir_fd=descriptor)
-                os.fchmod(staging_fd, 0o700)
                 metadata = os.fstat(staging_fd)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or (metadata.st_dev, metadata.st_ino) != created_identity
+                ):
+                    raise PackageTransactionError("package-staging-create-failed")
                 parent_fd = os.dup(descriptor)
+                os.fchmod(staging_fd, 0o700)
                 return StagingTransaction._create(
                     parent_fd,
                     name,
                     staging_fd,
-                    (metadata.st_dev, metadata.st_ino),
+                    created_identity,
                 )
             except PackageTransactionError:
                 _close(parent_fd)
                 _close(staging_fd)
-                try:
-                    os.rmdir(name, dir_fd=descriptor)
-                except OSError:
-                    pass
+                _rmdir_if_identity(descriptor, name, created_identity)
                 raise
             except (OSError, NotImplementedError, TypeError):
                 _close(parent_fd)
                 _close(staging_fd)
-                try:
-                    os.rmdir(name, dir_fd=descriptor)
-                except OSError:
-                    pass
+                _rmdir_if_identity(descriptor, name, created_identity)
                 raise PackageTransactionError(
                     "package-staging-create-failed"
                 ) from None
@@ -398,7 +437,11 @@ class StagingTransaction:
         return self
 
     def __exit__(self, _type, _value, _traceback) -> bool:
-        self.close()
+        try:
+            self.close()
+        except PackageTransactionError:
+            if _type is None:
+                raise
         return False
 
     def __repr__(self) -> str:
@@ -442,19 +485,33 @@ class StagingTransaction:
         if _EVIDENCE_PATH.fullmatch(path) is None:
             raise PackageTransactionError("package-path-unsafe")
         if self._evidence_fd is None:
+            created_identity = None
             try:
                 os.mkdir("evidence", 0o700, dir_fd=self._staging_fd)
+                created = os.stat(
+                    "evidence", dir_fd=self._staging_fd, follow_symlinks=False
+                )
+                if not stat.S_ISDIR(created.st_mode):
+                    raise OSError(errno.ENOTDIR, "not directory")
+                created_identity = (created.st_dev, created.st_ino)
                 evidence_fd = os.open("evidence", _directory_flags(), dir_fd=self._staging_fd)
+                self._evidence_fd = evidence_fd
+                self._evidence_identity = created_identity
                 os.fchmod(evidence_fd, 0o700)
                 metadata = os.fstat(evidence_fd)
-            except (OSError, NotImplementedError, TypeError):
-                _close(locals().get("evidence_fd"))
-                raise PackageTransactionError("package-write-failed") from None
-            self._evidence_fd = evidence_fd
-            self._evidence_identity = (metadata.st_dev, metadata.st_ino)
-            try:
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or (metadata.st_dev, metadata.st_ino) != created_identity
+                ):
+                    raise OSError(errno.EIO, "directory identity changed")
                 os.fsync(self._staging_fd)
-            except OSError:
+            except (OSError, NotImplementedError, TypeError):
+                if _rmdir_if_identity(
+                    self._staging_fd, "evidence", created_identity
+                ):
+                    _close(self._evidence_fd)
+                    self._evidence_fd = None
+                    self._evidence_identity = None
                 raise PackageTransactionError("package-write-failed") from None
         return self._evidence_fd, path.split("/", 1)[1]
 
@@ -495,9 +552,22 @@ class StagingTransaction:
                     continue
             if file_descriptor is None or temporary is None:
                 raise PackageTransactionError("package-temporary-collision")
-            os.fchmod(file_descriptor, 0o600)
+            named_temporary = os.stat(
+                temporary, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if not stat.S_ISREG(named_temporary.st_mode):
+                raise PackageTransactionError("package-write-failed")
+            temporary_identity = (
+                named_temporary.st_dev,
+                named_temporary.st_ino,
+            )
             metadata = os.fstat(file_descriptor)
-            temporary_identity = (metadata.st_dev, metadata.st_ino)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != temporary_identity
+            ):
+                raise PackageTransactionError("package-write-failed")
+            os.fchmod(file_descriptor, 0o600)
             view = memoryview(content)
             offset = 0
             while offset < len(view):
@@ -511,14 +581,27 @@ class StagingTransaction:
                 raise PackageTransactionError("package-write-failed")
             _close(file_descriptor)
             file_descriptor = None
-            if _stat_at(directory_fd, final_component) is not None:
-                raise PackageTransactionError("package-path-collision")
-            os.rename(
-                temporary,
-                final_component,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
+            operation = _load_renameatx_np()
+            if operation is None:
+                raise PackageTransactionError("atomic-install-unavailable")
+            ctypes.set_errno(0)
+            result = operation(
+                directory_fd,
+                temporary.encode("utf-8"),
+                directory_fd,
+                final_component.encode("utf-8"),
+                RENAME_EXCL,
             )
+            if result != 0:
+                error_number = ctypes.get_errno()
+                if error_number in {
+                    errno.EEXIST,
+                    getattr(errno, "ENOTEMPTY", errno.EEXIST),
+                }:
+                    raise PackageTransactionError("package-path-collision")
+                if error_number in _UNAVAILABLE_ERRNOS:
+                    raise PackageTransactionError("atomic-install-unavailable")
+                raise PackageTransactionError("package-write-failed")
             temporary = None
             installed = os.stat(
                 final_component, dir_fd=directory_fd, follow_symlinks=False
@@ -559,6 +642,105 @@ class StagingTransaction:
             _close(file_descriptor)
             if temporary is not None and temporary_identity is not None:
                 self._unlink_if_identity(directory_fd, temporary, temporary_identity)
+
+    @staticmethod
+    def _publication_path_state(
+        path: str, metadata: os.stat_result
+    ) -> PublicationPathState:
+        return PublicationPathState(
+            path=path,
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            mode=stat.S_IMODE(metadata.st_mode),
+            link_count=metadata.st_nlink,
+            size=metadata.st_size,
+            modified_ns=metadata.st_mtime_ns,
+            changed_ns=metadata.st_ctime_ns,
+        )
+
+    def snapshot_publication_state(
+        self, required_paths: set[str]
+    ) -> StagingPublicationState:
+        self._require_identity()
+        if (
+            type(required_paths) is not set
+            or any(not _safe_package_path(path) for path in required_paths)
+            or required_paths != set(self._written)
+        ):
+            raise PackageTransactionError("package-staging-changed")
+        try:
+            root = os.fstat(self._staging_fd)
+            if not stat.S_ISDIR(root.st_mode) or stat.S_IMODE(root.st_mode) != 0o700:
+                raise PackageTransactionError("package-staging-changed")
+            entries = [self._publication_path_state(".", root)]
+
+            evidence_required = any(path.startswith("evidence/") for path in required_paths)
+            if evidence_required:
+                if self._evidence_fd is None or self._evidence_identity is None:
+                    raise PackageTransactionError("package-staging-changed")
+                evidence = os.fstat(self._evidence_fd)
+                named_evidence = os.stat(
+                    "evidence", dir_fd=self._staging_fd, follow_symlinks=False
+                )
+                if (
+                    not stat.S_ISDIR(evidence.st_mode)
+                    or stat.S_IMODE(evidence.st_mode) != 0o700
+                    or (evidence.st_dev, evidence.st_ino) != self._evidence_identity
+                    or (named_evidence.st_dev, named_evidence.st_ino)
+                    != self._evidence_identity
+                ):
+                    raise PackageTransactionError("package-staging-changed")
+                entries.append(self._publication_path_state("evidence", evidence))
+
+            read_flags = (
+                os.O_RDONLY
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+            for path in sorted(required_paths):
+                if path.startswith("evidence/"):
+                    parent_fd = self._evidence_fd
+                    component = path.split("/", 1)[1]
+                else:
+                    parent_fd = self._staging_fd
+                    component = path
+                descriptor = None
+                try:
+                    descriptor = os.open(component, read_flags, dir_fd=parent_fd)
+                    opened = os.fstat(descriptor)
+                    named = os.stat(
+                        component, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    expected_identity = self._written[path]
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or stat.S_IMODE(opened.st_mode) != 0o600
+                        or opened.st_nlink != 1
+                        or (opened.st_dev, opened.st_ino) != expected_identity
+                        or (named.st_dev, named.st_ino) != expected_identity
+                    ):
+                        raise PackageTransactionError("package-staging-changed")
+                    state = self._publication_path_state(path, opened)
+                    if self._publication_path_state(path, named) != state:
+                        raise PackageTransactionError("package-staging-changed")
+                    final_opened = os.fstat(descriptor)
+                    final_named = os.stat(
+                        component, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if (
+                        self._publication_path_state(path, final_opened) != state
+                        or self._publication_path_state(path, final_named) != state
+                    ):
+                        raise PackageTransactionError("package-staging-changed")
+                    entries.append(state)
+                finally:
+                    _close(descriptor)
+            return StagingPublicationState(entries=tuple(entries))
+        except PackageTransactionError:
+            raise
+        except (OSError, NotImplementedError, TypeError):
+            raise PackageTransactionError("package-staging-changed") from None
 
     @staticmethod
     def _unlink_if_identity(

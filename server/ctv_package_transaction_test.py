@@ -181,6 +181,58 @@ def test_staging_writes_exact_modes_nested_evidence_and_portable_tree_digest(
 
 
 @pytest.mark.parametrize(
+    "mutation",
+    ["root-mode", "evidence-mode", "file-mode", "identical-hardlink"],
+)
+def test_staging_publication_state_rejects_metadata_or_identity_mutation(
+    tmp_path, mutation
+):
+    output = tmp_path / "output"
+    output.mkdir()
+    external = tmp_path / "identical-input.pdf"
+    with OutputParent.open(output) as capability:
+        staging = capability.create_staging()
+        staging.__enter__()
+        try:
+            staging.write_bytes("input.pdf", b"same bytes")
+            staging.write_bytes("evidence/evidence-0001.png", b"png")
+            required = {"input.pdf", "evidence/evidence-0001.png"}
+            baseline = staging.snapshot_publication_state(required)
+            assert baseline == staging.snapshot_publication_state(required)
+            root = output / staging.staging_name
+            if mutation == "root-mode":
+                root.chmod(0o755)
+            elif mutation == "evidence-mode":
+                (root / "evidence").chmod(0o755)
+            elif mutation == "file-mode":
+                (root / "input.pdf").chmod(0o666)
+            else:
+                external.write_bytes(b"same bytes")
+                (root / "input.pdf").unlink()
+                os.link(external, root / "input.pdf")
+
+            _assert_error(
+                "package-staging-changed",
+                lambda: staging.snapshot_publication_state(required),
+            )
+        finally:
+            try:
+                staging.__exit__(None, None, None)
+            except PackageTransactionError:
+                pass
+
+    leftovers = list(output.glob(".ctv-staging-*"))
+    if mutation == "identical-hardlink":
+        assert len(leftovers) == 1
+        replacement = leftovers[0] / "input.pdf"
+        assert replacement.read_bytes() == b"same bytes"
+        replacement.unlink()
+        leftovers[0].rmdir()
+    else:
+        assert leftovers == []
+
+
+@pytest.mark.parametrize(
     "path",
     ["", ".", "../input.pdf", "/input.pdf", "nested/file.bin", "evidence/x/y"],
 )
@@ -356,6 +408,64 @@ def test_staging_creation_failure_is_fixed_private_and_leaves_no_child(
     assert list(output.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    "path,boundary",
+    [
+        ("input.pdf", "fchmod"),
+        ("input.pdf", "fstat"),
+        ("evidence/evidence-0001.png", "fchmod"),
+        ("evidence/evidence-0001.png", "fstat"),
+    ],
+)
+def test_staging_early_file_setup_failure_preserves_error_and_cleans_owned_objects(
+    tmp_path, monkeypatch, path, boundary
+):
+    output = tmp_path / "private-output"
+    output.mkdir()
+    real_fchmod = os.fchmod
+    real_fstat = os.fstat
+
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            staging_fd = staging._staging_fd
+            failed = False
+
+            def should_fail(descriptor):
+                metadata = real_fstat(descriptor)
+                if path.startswith("evidence/"):
+                    return stat.S_ISDIR(metadata.st_mode) and descriptor != staging_fd
+                return stat.S_ISREG(metadata.st_mode)
+
+            def fail_target_fchmod(descriptor, mode):
+                nonlocal failed
+                if not failed and should_fail(descriptor):
+                    failed = True
+                    raise OSError(errno.EIO, "private setup diagnostic")
+                return real_fchmod(descriptor, mode)
+
+            def fail_target_fstat(descriptor):
+                nonlocal failed
+                metadata = real_fstat(descriptor)
+                if not failed and should_fail(descriptor):
+                    failed = True
+                    raise OSError(errno.EIO, "private setup diagnostic")
+                return metadata
+
+            monkeypatch.setattr(
+                os,
+                "fchmod" if boundary == "fchmod" else "fstat",
+                fail_target_fchmod if boundary == "fchmod" else fail_target_fstat,
+            )
+            error = _assert_error(
+                "package-write-failed",
+                lambda: staging.write_bytes(path, b"content"),
+                private_path=output,
+            )
+            assert "diagnostic" not in str(error)
+
+    assert list(output.iterdir()) == []
+
+
 def test_deterministic_final_collision_is_checked_before_staging(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
@@ -410,6 +520,63 @@ def test_real_darwin_publish_closes_creation_after_absence_precheck(tmp_path):
 
 
 @pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
+def test_real_darwin_staged_file_install_does_not_replace_competing_destination(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "output"
+    output.mkdir()
+    real_operation = transaction_module._load_renameatx_np()
+    assert real_operation is not None
+    raced = False
+
+    def install_competitor_then_rename(
+        source_fd, source_name, destination_fd, destination_name, flags
+    ):
+        nonlocal raced
+        if not raced:
+            raced = True
+            descriptor = os.open(
+                os.fsdecode(destination_name),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=destination_fd,
+            )
+            try:
+                os.write(descriptor, b"competitor")
+            finally:
+                os.close(descriptor)
+        return real_operation(
+            source_fd, source_name, destination_fd, destination_name, flags
+        )
+
+    monkeypatch.setattr(
+        transaction_module, "_load_renameatx_np", lambda: install_competitor_then_rename
+    )
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            _assert_error(
+                "package-path-collision",
+                lambda: staging.write_bytes("input.pdf", b"ours"),
+            )
+            competitor = output / staging.staging_name / "input.pdf"
+            assert competitor.read_bytes() == b"competitor"
+            competitor.unlink()
+
+
+def test_unavailable_atomic_staged_file_install_fails_closed(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setattr(transaction_module, "_load_renameatx_np", lambda: None)
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            _assert_error(
+                "atomic-install-unavailable",
+                lambda: staging.write_bytes("input.pdf", b"content"),
+            )
+            assert list((output / staging.staging_name).iterdir()) == []
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
 def test_real_darwin_publication_has_no_partial_final_visibility(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
@@ -451,10 +618,10 @@ def test_unavailable_atomic_publish_fails_closed_without_final_name(
     output = tmp_path / "output"
     output.mkdir()
     final_name = "ctv-package-0123456789abcdef01234567"
-    monkeypatch.setattr(transaction_module, "_load_renameatx_np", lambda: None)
     with OutputParent.open(output) as capability:
         with capability.create_staging() as staging:
             staging.write_bytes("input.pdf", b"content")
+            monkeypatch.setattr(transaction_module, "_load_renameatx_np", lambda: None)
             _assert_error("atomic-publish-unavailable", lambda: staging.publish(final_name))
         assert not (output / final_name).exists()
 

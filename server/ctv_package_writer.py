@@ -166,6 +166,13 @@ def _snapshot_complete_tree(
     return tree
 
 
+def _snapshot_publication_state(staging, required_paths):
+    try:
+        return staging.snapshot_publication_state(required_paths)
+    except Exception:
+        raise PackageWriterError("package-staging-changed") from None
+
+
 def _build_plan(observation, inspection, approved) -> PackageBuildPlan:
     try:
         return create_build_plan(observation, inspection, approved)
@@ -262,6 +269,11 @@ def prepare_package(
             raise PackageWriterError("package-receipt-write-failed") from None
         staging.write_bytes("validation-report.json", receipt_bytes)
 
+        required_paths, _limits = _tree_limits(plan)
+        pre_publication_state = _snapshot_publication_state(
+            staging, required_paths
+        )
+
         publication_reader = _open_staging_reader(
             staging, "package-publication-validation-failed"
         )
@@ -278,6 +290,9 @@ def prepare_package(
             _close_staging_reader(
                 publication_reader, "package-publication-validation-failed"
             )
+        validated_state = _snapshot_publication_state(staging, required_paths)
+        if validated_state != pre_publication_state:
+            raise PackageWriterError("package-staging-changed")
 
         token = observation.finalize_for_publication()
         if token.observation_id != plan.observation_id:
@@ -290,7 +305,8 @@ def prepare_package(
             )
         finally:
             _close_staging_reader(final_reader, "package-staging-changed")
-        if final_tree != validated_tree:
+        final_state = _snapshot_publication_state(staging, required_paths)
+        if final_tree != validated_tree or final_state != validated_state:
             raise PackageWriterError("package-staging-changed")
 
         staging.publish(plan.identity.final_directory)
