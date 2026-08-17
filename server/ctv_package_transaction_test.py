@@ -605,6 +605,49 @@ def test_real_darwin_publication_is_atomic_no_replace_and_fsyncs_parent(tmp_path
 
 
 @pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
+def test_parent_fsync_failure_after_atomic_publish_keeps_prepared_package(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "output"
+    output.mkdir()
+    final_name = "ctv-package-3123456789abcdef01234567"
+    parent_identity = (output.stat().st_dev, output.stat().st_ino)
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_parent_fsync_after_rename(descriptor):
+        nonlocal failed
+        metadata = os.fstat(descriptor)
+        if (
+            not failed
+            and stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == parent_identity
+            and (output / final_name).is_dir()
+        ):
+            failed = True
+            raise OSError(errno.EIO, "private post-rename sync diagnostic")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_parent_fsync_after_rename)
+    with OutputParent.open(output) as capability:
+        with capability.create_staging() as staging:
+            staging.write_bytes("input.pdf", b"complete")
+            staging.publish(final_name)
+            assert repr(staging) == "StagingTransaction(published=True)"
+
+        with capability.create_staging() as retry:
+            retry.write_bytes("input.pdf", b"replacement")
+            with pytest.raises(
+                PackageCollisionError, match="^package-output-collision$"
+            ):
+                retry.publish(final_name)
+
+    assert failed is True
+    assert (output / final_name / "input.pdf").read_bytes() == b"complete"
+    assert not list(output.glob(".ctv-staging-*"))
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
 def test_real_darwin_publish_closes_creation_after_absence_precheck(tmp_path):
     output = tmp_path / "output"
     output.mkdir()

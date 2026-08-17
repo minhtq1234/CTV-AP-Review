@@ -248,6 +248,8 @@ class ProposalState:
                         continue
                     if header is None:
                         continue
+                    if not any(values):
+                        continue
                     row = {
                         field_name: values[index] if index < len(values) else ""
                         for field_name, (index, _column_name) in header.items()

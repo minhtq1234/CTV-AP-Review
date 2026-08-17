@@ -320,6 +320,13 @@ automatic broad staging cleanup is deliberately out of scope. If terminal stdout
 fails after publication, the complete package remains in place and a retry meets
 the same collision boundary.
 
+The Darwin atomic no-replace rename is the publication point. Failures before
+that rename publish no final package. The toolkit then attempts a best-effort
+parent-directory sync for crash durability; if that later sync fails, it does not
+report the already published complete package as a failed or unpublished run.
+The command still returns the canonical `prepared` result, and an identical retry
+meets the deterministic collision boundary.
+
 `prepared` means the local package passed the mechanical v2 validator and is
 ready to enter the existing CTV human review workflow. It does not prove evidence
 authenticity, authorize payment, approve accounting treatment, identify the

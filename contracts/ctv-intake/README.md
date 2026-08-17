@@ -172,9 +172,13 @@ CTV commit and the immutable v2 tree hash in `PIN.v2.json`.
 
 A v2 package is always fully resolved and `prepared`; unresolved evidence,
 missing or conflicting FA code, draft, cancellation, build failure, or validation
-failure publishes nothing. Mechanical validity does not prove evidence
-authenticity, identify or cryptographically authenticate the original human
-reviewer, authorize accounting/payment, or submit the package to CTV or ACC.
+failure stops before the atomic rename and publishes nothing. The rename is the
+publication point. A later best-effort parent-directory sync failure does not
+reverse that publication or replace the canonical `prepared` result; an identical
+retry reaches the deterministic collision boundary. Mechanical validity does not
+prove evidence authenticity, identify or cryptographically authenticate the
+original human reviewer, authorize accounting/payment, or submit the package to
+CTV or ACC.
 
 ### Legacy v1 handoff
 

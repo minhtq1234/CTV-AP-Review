@@ -808,7 +808,11 @@ class StagingTransaction:
         try:
             os.fsync(self._parent_fd)
         except OSError:
-            raise PackageTransactionError("package-publication-sync-failed") from None
+            # The no-replace rename is the publication linearization point. A
+            # later parent sync can improve crash durability, but it cannot turn
+            # the already visible complete package back into an unpublished
+            # controlled failure.
+            pass
 
     def _cleanup_written(self) -> None:
         for path, identity in reversed(tuple(self._written.items())):

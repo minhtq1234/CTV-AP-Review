@@ -3,6 +3,7 @@ import stat
 
 import pytest
 
+import ctv_package_transaction as transaction_module
 import ctv_package_writer as writer_module
 from ctv_inspection import inspect_observation
 from ctv_inventory import InventoryError, open_inventory_observation
@@ -137,6 +138,52 @@ def test_prepare_package_second_identical_run_collides_without_modifying_output(
     assert [path.name for path in output_root.iterdir()] == [
         first.package_directory_name
     ]
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
+def test_prepare_package_returns_prepared_when_parent_fsync_fails_after_publish(
+    tmp_path, monkeypatch
+):
+    source = _approved_source(tmp_path)
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_identity = (output_root.stat().st_dev, output_root.stat().st_ino)
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_parent_fsync_after_rename(descriptor):
+        nonlocal failed
+        metadata = os.fstat(descriptor)
+        if (
+            not failed
+            and stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == parent_identity
+            and any(path.name.startswith("ctv-package-") for path in output_root.iterdir())
+        ):
+            failed = True
+            raise OSError("private post-rename sync diagnostic")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(transaction_module.os, "fsync", fail_parent_fsync_after_rename)
+
+    def run_once():
+        with OutputParent.open(output_root) as output:
+            with open_inventory_observation(source) as observation:
+                output.require_disjoint(observation.directory_identity_chain())
+                inspection = inspect_observation(observation)
+                approved = _approve(observation, inspection)
+                return prepare_package(
+                    observation, inspection, approved, output
+                )
+
+    result = run_once()
+    assert failed is True
+    assert result.ready_for_ctv_review is True
+    final = output_root / result.package_directory_name
+    assert final.is_dir()
+    assert (final / "validation-report.json").is_file()
+    _assert_safe_error("package-output-collision", run_once)
+    assert not list(output_root.glob(".ctv-staging-*"))
 
 
 def test_prepare_package_build_failure_occurs_before_staging(tmp_path, monkeypatch):

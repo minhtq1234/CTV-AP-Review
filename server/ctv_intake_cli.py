@@ -182,7 +182,6 @@ _PACKAGE_TRANSACTION_ERROR_CODES = frozenset(
         "package-output-collision",
         "package-path-collision",
         "package-path-unsafe",
-        "package-publication-sync-failed",
         "package-publish-failed",
         "package-staging-changed",
         "package-staging-closed",

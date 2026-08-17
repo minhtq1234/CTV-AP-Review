@@ -2006,6 +2006,110 @@ print(json.dumps(writer_result.to_dict(), sort_keys=True))
     }
 
 
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Darwin renameatx_np contract")
+def test_real_package_cli_returns_prepared_after_post_rename_parent_fsync_failure(
+    tmp_path, monkeypatch, capsysbinary
+):
+    cli = _module()
+    import ctv_package_transaction as transaction_module
+    from intake_fixture_factory_v2 import _write_sources
+
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    output.mkdir()
+    _write_sources(source)
+    parent_identity = (output.stat().st_dev, output.stat().st_ino)
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_parent_fsync_after_rename(descriptor):
+        nonlocal failed
+        metadata = os.fstat(descriptor)
+        if (
+            not failed
+            and stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == parent_identity
+            and any(path.name.startswith("ctv-package-") for path in output.iterdir())
+        ):
+            failed = True
+            raise OSError("private post-rename sync diagnostic")
+        return real_fsync(descriptor)
+
+    def approve(state):
+        roster = next(
+            unit
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+        )
+        state.select_roster({"rosterUnitId": roster["unitId"]})
+        pdf_targets = {
+            "unit-0001": ("individual", ["participant-0001"]),
+            "unit-0002": ("shared", ["participant-0001", "participant-0002"]),
+            "unit-0003": ("individual", ["participant-0002"]),
+            "unit-0004": ("case", []),
+        }
+        for unit in state.units:
+            if unit["unitId"] == roster["unitId"]:
+                role, target = "payment-roster", ("case", [])
+            elif unit["unitKind"] == "pdf-page":
+                role, target = "service-contract", pdf_targets[unit["unitId"]]
+            elif unit["unitKind"] == "image":
+                role, target = "identity-front", (
+                    "individual",
+                    ["participant-0001"],
+                )
+            else:
+                role, target = "other-supporting-evidence", ("case", [])
+            decision = (
+                "accepted" if unit["suggestedRole"] == role else "reassigned"
+            )
+            state.set_unit_decision(
+                {
+                    "unitId": unit["unitId"],
+                    "decision": decision,
+                    "role": role,
+                    "target": {
+                        "scope": target[0],
+                        "participantHandles": target[1],
+                    },
+                }
+            )
+        unit_source_ids = {unit["evidenceId"] for unit in state.units}
+        for record in state.sources:
+            if record["evidenceId"] not in unit_source_ids:
+                state.set_source_disposition(
+                    {
+                        "evidenceId": record["evidenceId"],
+                        "decision": "excluded",
+                        "reason": "irrelevant",
+                    }
+                )
+        digest = state.approval_summary()["proposalDigest"]
+        return state.approve(digest)
+
+    monkeypatch.setattr(transaction_module.os, "fsync", fail_parent_fsync_after_rename)
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ],
+        package_review_driver=approve,
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "succeeded")
+    assert exit_code == 0
+    assert failed is True
+    assert payload["result"]["outcome"] == "prepared"
+    final_name = payload["result"]["packageDirectoryName"]
+    assert (output / final_name / "validation-report.json").is_file()
+    assert not list(output.glob(".ctv-staging-*"))
+
+
 @pytest.mark.parametrize(
     ("outcome", "terminal"),
     [

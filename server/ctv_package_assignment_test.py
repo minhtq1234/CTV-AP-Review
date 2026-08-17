@@ -93,6 +93,48 @@ def test_consumption_requires_the_exact_approved_digest(tmp_path):
         context.__exit__(None, None, None)
 
 
+def test_package_snapshot_ignores_wholly_blank_roster_separator(tmp_path):
+    rows = (
+        (
+            "Synthetic Person",
+            "079123456781",
+            "FA-SYNTHETIC-001",
+            "0123456789",
+            "1990-01-01",
+            "123",
+            "100",
+            "Synthetic product",
+            "100",
+        ),
+        (None, None, None, None, None, None, None, None, None),
+        (
+            "Other Person",
+            "079123456782",
+            "FA-SYNTHETIC-001",
+            "0123456788",
+            "1990-01-02",
+            "456",
+            "200",
+            "Other product",
+            "200",
+        ),
+    )
+    context, state, digest = _approved_state(tmp_path, rows=rows)
+    try:
+        summary = state.approval_summary()
+        assert summary["participantHandles"] == [
+            "participant-0001",
+            "participant-0002",
+        ]
+        assert "roster-row-invalid" not in summary["issueCodes"]
+        state.approve(digest)
+        snapshot = state.consume_approved_package_snapshot(digest)
+        assert [row.row_index for row in snapshot.roster_rows] == [2, 4]
+        assert snapshot.fa_code == "FA-SYNTHETIC-001"
+    finally:
+        context.__exit__(None, None, None)
+
+
 @pytest.mark.parametrize(
     ("headers", "rows"),
     (

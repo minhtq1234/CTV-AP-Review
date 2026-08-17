@@ -14,8 +14,8 @@ def _roster_bytes(rows=(("Alice", "CTV-001"), ("Bao", "CTV-002"))):
     sheet = workbook.active
     sheet.title = "Payment roster"
     sheet.append(("Ho ten", "Ma so nhan vien", "So tien"))
-    for name, identity in rows:
-        sheet.append((name, identity, 100))
+    for row in rows:
+        sheet.append((*row, 100) if len(row) == 2 else row)
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -133,15 +133,60 @@ def test_local_participant_display_keeps_name_and_masked_identity_out_of_public_
         context.__exit__(None, None, None)
 
 
-def test_roster_duplicate_blank_and_malformed_rows_block_readiness_with_fixed_issues(tmp_path):
-    source = _source(tmp_path, roster_rows=(("Alice", "CTV-001"), ("", ""), ("Bao", "CTV-001")))
+def test_roster_blank_separator_is_ignored_while_duplicate_identity_still_blocks(
+    tmp_path,
+):
+    source = _source(
+        tmp_path,
+        roster_rows=(
+            ("Alice", "CTV-001"),
+            (None, None, None),
+            ("Bao", "CTV-001"),
+        ),
+    )
     with open_inventory_observation(source) as observation:
         state = ProposalState.from_inspection(observation, inspect_observation(observation))
         roster = next(unit for unit in state.units if unit["suggestedRole"] == "payment-roster")
         state.select_roster({"rosterUnitId": roster["unitId"]})
         summary = state.approval_summary()
         assert summary["readyToPrepare"] is False
-        assert {"roster-row-invalid", "roster-identity-duplicate"} <= set(summary["issueCodes"])
+        assert summary["participantHandles"] == [
+            "participant-0001",
+            "participant-0002",
+        ]
+        assert "roster-row-invalid" not in summary["issueCodes"]
+        assert "roster-identity-duplicate" in summary["issueCodes"]
+
+
+@pytest.mark.parametrize(
+    "invalid_row",
+    [
+        ("Alice", "", 100),
+        ("", "CTV-001", 100),
+        ("", "", 100),
+    ],
+    ids=("missing-identity", "missing-name", "trailing-data"),
+)
+def test_roster_nonblank_incomplete_rows_remain_invalid(tmp_path, invalid_row):
+    source = _source(
+        tmp_path,
+        roster_rows=(("Alice", "CTV-001"), invalid_row),
+    )
+    with open_inventory_observation(source) as observation:
+        state = ProposalState.from_inspection(
+            observation, inspect_observation(observation)
+        )
+        roster = next(
+            unit
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+        )
+        state.select_roster({"rosterUnitId": roster["unitId"]})
+
+        summary = state.approval_summary()
+        assert summary["participantHandles"] == ["participant-0001"]
+        assert "roster-row-invalid" in summary["issueCodes"]
+        assert summary["readyToPrepare"] is False
 
 
 def test_header_only_roster_is_invalid_and_has_no_usable_participants(tmp_path):
