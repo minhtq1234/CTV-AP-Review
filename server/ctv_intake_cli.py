@@ -10,6 +10,7 @@ sys.dont_write_bytecode = True
 import argparse
 import os
 from pathlib import Path
+import re
 
 from ctv_cli_doctor import run_doctor
 from ctv_cli_protocol import CliError, canonical_json_bytes, failed, succeeded
@@ -26,7 +27,8 @@ _INVOCATION_GUIDANCE = (
     "contract verify --target ctv-intake-v1|ctv-intake-v2 --json | "
     "inventory --source-root <path> --json | "
     "inspect --source-root <path> --json | "
-    "proposal review --source-root <path> --json}\n"
+    "proposal review --source-root <path> --json | "
+    "package prepare --source-root <path> --output-root <path> --json}\n"
 )
 _APPROVED_ARGV = frozenset(
     {
@@ -88,8 +90,10 @@ _INSPECTION_ERROR_CODES = frozenset(
 _INSPECTION_ERROR_MESSAGE = "The source folder could not be inspected safely."
 _INSPECTION_MAX_JSON_BYTES = 16 * 1024 * 1024
 _PROPOSAL_MAX_JSON_BYTES = 16 * 1024 * 1024
+_PACKAGE_MAX_JSON_BYTES = 16 * 1024 * 1024
 _INSPECT_INTERNAL_FAILURE = object()
 _PROPOSAL_INTERNAL_FAILURE = object()
+_PACKAGE_INTERNAL_FAILURE = object()
 _INSPECT_INTERNAL_ERROR_BYTES = (
     b'{\n'
     b'  "errors": [\n'
@@ -115,6 +119,22 @@ _PROPOSAL_INTERNAL_ERROR_BYTES = (
     b'    }\n'
     b'  ],\n'
     b'  "operation": "proposal.review",\n'
+    b'  "result": {},\n'
+    b'  "retryable": false,\n'
+    b'  "schemaVersion": "1.0",\n'
+    b'  "status": "failed",\n'
+    b'  "summary": "The local toolkit could not complete the check"\n'
+    b'}\n'
+)
+_PACKAGE_INTERNAL_ERROR_BYTES = (
+    b'{\n'
+    b'  "errors": [\n'
+    b'    {\n'
+    b'      "code": "internal-error",\n'
+    b'      "message": "The local toolkit could not complete the check."\n'
+    b'    }\n'
+    b'  ],\n'
+    b'  "operation": "package.prepare",\n'
     b'  "result": {},\n'
     b'  "retryable": false,\n'
     b'  "schemaVersion": "1.0",\n'
@@ -148,6 +168,75 @@ _PROPOSAL_SUMMARIES = {
     "draft": "Proposal review returned a draft",
     "cancelled": "Proposal review cancelled",
 }
+_PACKAGE_TRANSACTION_ERROR_CODES = frozenset(
+    {
+        "atomic-install-unavailable",
+        "atomic-publish-unavailable",
+        "output-root-changed",
+        "output-root-closed",
+        "output-root-missing",
+        "output-root-unsafe",
+        "package-aggregate-over-limit",
+        "package-cleanup-failed",
+        "package-final-name-invalid",
+        "package-output-collision",
+        "package-path-collision",
+        "package-path-unsafe",
+        "package-publication-sync-failed",
+        "package-publish-failed",
+        "package-staging-changed",
+        "package-staging-closed",
+        "package-staging-collision",
+        "package-staging-create-failed",
+        "package-temporary-collision",
+        "package-write-failed",
+        "secure-output-unavailable",
+        "source-output-identity-invalid",
+        "source-output-overlap",
+    }
+)
+_PACKAGE_BUILD_ERROR_CODES = frozenset(
+    {
+        "package-source-over-limit",
+        "package-artifact-over-limit",
+        "package-aggregate-over-limit",
+        "package-pdf-unavailable",
+        "package-roster-unavailable",
+        "package-evidence-unavailable",
+        "package-receipt-invalid",
+        "package-plan-invalid",
+    }
+)
+_PACKAGE_WRITER_ERROR_CODES = frozenset(
+    {
+        "package-build-failed",
+        "package-content-validation-failed",
+        "package-publication-validation-failed",
+        "package-receipt-write-failed",
+        "package-source-finalization-failed",
+        "package-staging-changed",
+    }
+)
+_PACKAGE_PIN_ERROR_CODES = frozenset(
+    {
+        "contract-depth-exceeded",
+        "contract-directory-count-exceeded",
+        "contract-entry-count-exceeded",
+        "contract-entry-unsafe",
+        "contract-file-count-exceeded",
+        "contract-file-too-large",
+        "contract-pin-invalid",
+        "contract-pin-too-large",
+        "contract-target-invalid",
+        "contract-tree-changed",
+        "contract-tree-too-large",
+        "secure-open-unavailable",
+    }
+)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PACKAGE_ID = re.compile(r"^package-[0-9a-f]{64}$")
+_PACKAGE_DIRECTORY = re.compile(r"^ctv-package-[0-9a-f]{24}$")
+_SAFE_CODE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class CliInvocationError(RuntimeError):
@@ -201,6 +290,16 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--source-root", type=Path, required=True)
     review.add_argument("--json", action="store_true", required=True)
     review.set_defaults(operation="proposal.review")
+
+    package = commands.add_parser("package", add_help=False)
+    package_commands = package.add_subparsers(
+        dest="package_command", required=True
+    )
+    prepare = package_commands.add_parser("prepare", add_help=False)
+    prepare.add_argument("--source-root", type=Path, required=True)
+    prepare.add_argument("--output-root", type=Path, required=True)
+    prepare.add_argument("--json", action="store_true", required=True)
+    prepare.set_defaults(operation="package.prepare")
     return parser
 
 
@@ -249,6 +348,30 @@ def _is_proposal_review_argv(invocation: list[str]) -> bool:
     if raw_source.startswith(os.sep):
         components = components[1:]
     return bool(components) and all(components)
+
+
+def _is_safe_path_argument(raw_path: str) -> bool:
+    if not raw_path or raw_path.startswith("-"):
+        return False
+    if raw_path == os.sep:
+        return True
+    components = raw_path.split(os.sep)
+    if raw_path.startswith(os.sep):
+        components = components[1:]
+    return bool(components) and all(components)
+
+
+def _is_package_prepare_argv(invocation: list[str]) -> bool:
+    return (
+        len(invocation) == 7
+        and invocation[0] == "package"
+        and invocation[1] == "prepare"
+        and invocation[2] == "--source-root"
+        and _is_safe_path_argument(invocation[3])
+        and invocation[4] == "--output-root"
+        and _is_safe_path_argument(invocation[5])
+        and invocation[6] == "--json"
+    )
 
 
 def _emit_stdout(content: bytes) -> None:
@@ -520,6 +643,350 @@ def _proposal_result(source_root: Path, *, review_driver=None):
         return _PROPOSAL_INTERNAL_FAILURE, 1
 
 
+def _package_failure(code: str, message: str):
+    return failed(
+        "package.prepare",
+        "CTV package could not be prepared",
+        [CliError(code, message)],
+        retryable=False,
+    )
+
+
+def _package_controlled_failure(code: str):
+    return _package_failure(
+        code,
+        "The local CTV package could not be prepared safely.",
+    )
+
+
+def _require_exact_dict(value, keys: frozenset[str], name: str) -> dict:
+    if type(value) is not dict or frozenset(value) != keys:
+        raise ValueError(f"{name} must use its exact public shape")
+    return value
+
+
+def _require_nonnegative_counts(value, keys: frozenset[str]) -> dict[str, int]:
+    counts = _require_exact_dict(value, keys, "counts")
+    if any(type(count) is not int or count < 0 for count in counts.values()):
+        raise ValueError("counts must be non-negative integers")
+    return dict(counts)
+
+
+def _require_safe_codes(value, name: str) -> list[str]:
+    if type(value) is not list or any(
+        type(code) is not str or _SAFE_CODE.fullmatch(code) is None
+        for code in value
+    ):
+        raise ValueError(f"{name} must contain fixed codes")
+    return list(value)
+
+
+def _normalize_review_terminal(result: dict) -> dict[str, object]:
+    if type(result) is not dict:
+        raise TypeError("review terminal must be a dictionary")
+    outcome = result.get("outcome")
+    if outcome == "cancelled":
+        terminal = _require_exact_dict(
+            result,
+            frozenset({"version", "outcome", "readyToPrepare"}),
+            "cancelled result",
+        )
+        if terminal != {
+            "version": "1.0",
+            "outcome": "cancelled",
+            "readyToPrepare": False,
+        }:
+            raise ValueError("cancelled result is invalid")
+        return dict(terminal)
+    if outcome == "draft":
+        terminal = _require_exact_dict(
+            result,
+            frozenset(
+                {
+                    "version",
+                    "outcome",
+                    "observationId",
+                    "readyToPrepare",
+                    "counts",
+                    "issueCodes",
+                }
+            ),
+            "draft result",
+        )
+        observation_id = terminal["observationId"]
+        if (
+            terminal["version"] != "1.0"
+            or terminal["readyToPrepare"] is not False
+            or type(observation_id) is not str
+            or not observation_id.startswith("observation-")
+            or _SHA256.fullmatch(observation_id.removeprefix("observation-")) is None
+        ):
+            raise ValueError("draft result is invalid")
+        counts = _require_nonnegative_counts(
+            terminal["counts"],
+            frozenset(
+                {
+                    "sources",
+                    "units",
+                    "participants",
+                    "accepted",
+                    "reassigned",
+                    "excluded",
+                    "unresolved",
+                }
+            ),
+        )
+        return {
+            "version": "1.0",
+            "outcome": "draft",
+            "observationId": observation_id,
+            "readyToPrepare": False,
+            "counts": counts,
+            "issueCodes": _require_safe_codes(
+                terminal["issueCodes"], "issueCodes"
+            ),
+        }
+    raise ValueError("review outcome must be terminal")
+
+
+def _normalize_prepared_result(result) -> dict[str, object]:
+    to_dict = getattr(result, "to_dict", None)
+    if not callable(to_dict):
+        raise TypeError("package result must provide a public dictionary")
+    public = _require_exact_dict(
+        to_dict(),
+        frozenset(
+            {
+                "packageId",
+                "packageDirectoryName",
+                "manifestSha256",
+                "declaredArtifactSetSha256",
+                "publishedTreeSha256",
+                "contractVersion",
+                "counts",
+                "validation",
+                "readyForCtvReview",
+            }
+        ),
+        "prepared result",
+    )
+    package_id = public["packageId"]
+    package_directory = public["packageDirectoryName"]
+    if (
+        type(package_id) is not str
+        or _PACKAGE_ID.fullmatch(package_id) is None
+        or type(package_directory) is not str
+        or _PACKAGE_DIRECTORY.fullmatch(package_directory) is None
+        or package_directory.removeprefix("ctv-package-")
+        != package_id.removeprefix("package-")[:24]
+    ):
+        raise ValueError("prepared package identity is invalid")
+    for name in (
+        "manifestSha256",
+        "declaredArtifactSetSha256",
+        "publishedTreeSha256",
+    ):
+        digest = public[name]
+        if type(digest) is not str or _SHA256.fullmatch(digest) is None:
+            raise ValueError("prepared package digest is invalid")
+    if public["contractVersion"] != "2.0" or public["readyForCtvReview"] is not True:
+        raise ValueError("prepared package status is invalid")
+    counts = _require_nonnegative_counts(
+        public["counts"],
+        frozenset(
+            {
+                "sources",
+                "participants",
+                "pdfPages",
+                "evidenceArtifacts",
+                "assignments",
+                "exclusions",
+            }
+        ),
+    )
+    validation = _require_exact_dict(
+        public["validation"],
+        frozenset({"outcome", "checkCodes", "warningCodes"}),
+        "validation",
+    )
+    if validation["outcome"] != "valid":
+        raise ValueError("prepared package validation is invalid")
+    return {
+        "version": "1.0",
+        "outcome": "prepared",
+        "packageId": package_id,
+        "packageDirectoryName": package_directory,
+        "manifestSha256": public["manifestSha256"],
+        "declaredArtifactSetSha256": public["declaredArtifactSetSha256"],
+        "publishedTreeSha256": public["publishedTreeSha256"],
+        "contractVersion": "2.0",
+        "counts": counts,
+        "validation": {
+            "outcome": "valid",
+            "checkCodes": _require_safe_codes(
+                validation["checkCodes"], "checkCodes"
+            ),
+            "warningCodes": _require_safe_codes(
+                validation["warningCodes"], "warningCodes"
+            ),
+        },
+        "readyForCtvReview": True,
+    }
+
+
+def _package_result(
+    source_root: Path,
+    output_root: Path,
+    *,
+    review_driver=None,
+    prepare_driver=None,
+):
+    try:
+        verification = verify_contract(
+            REPOSITORY_ROOT, target="ctv-intake-v2"
+        )
+    except BaseException as error:
+        code = _safe_fixed_error_code(
+            error, ContractPinError, _PACKAGE_PIN_ERROR_CODES
+        )
+        if code is None:
+            return _PACKAGE_INTERNAL_FAILURE, 1
+        return (
+            _package_failure(
+                code,
+                "The local v2 contract could not be verified safely.",
+            ),
+            2,
+        )
+    try:
+        verified = verification.verified
+    except BaseException:
+        return _PACKAGE_INTERNAL_FAILURE, 1
+    if verified is False:
+        return (
+            _package_failure(
+                "contract-tree-mismatch",
+                "The local v2 contract does not match the approved tree.",
+            ),
+            2,
+        )
+    if verified is not True:
+        return _PACKAGE_INTERNAL_FAILURE, 1
+
+    inspection_error_type = None
+    review_error_type = None
+    transaction_error_type = None
+    collision_error_type = None
+    build_error_type = None
+    writer_error_type = None
+    try:
+        from ctv_inspection import InspectionError, inspect_observation
+        from ctv_inventory import open_inventory_observation
+        from ctv_package_builder import PackageBuildError
+        from ctv_package_transaction import (
+            OutputParent,
+            PackageCollisionError,
+            PackageTransactionError,
+        )
+        from ctv_package_writer import PackageWriterError, prepare_package
+        from ctv_proposal import ProposalState
+        from ctv_proposal_review import ReviewError, run_local_review
+
+        inspection_error_type = InspectionError
+        review_error_type = ReviewError
+        transaction_error_type = PackageTransactionError
+        collision_error_type = PackageCollisionError
+        build_error_type = PackageBuildError
+        writer_error_type = PackageWriterError
+        if review_driver is None:
+            review_driver = run_local_review
+        if prepare_driver is None:
+            prepare_driver = prepare_package
+        if not callable(review_driver) or not callable(prepare_driver):
+            raise TypeError("package drivers must be callable")
+
+        with OutputParent.open(output_root) as output:
+            with open_inventory_observation(source_root) as observation:
+                output.require_disjoint(observation.directory_identity_chain())
+                inspection = inspect_observation(observation)
+                state = ProposalState.from_inspection(observation, inspection)
+                terminal = review_driver(state)
+                if type(terminal) is not dict:
+                    raise TypeError("package review result must be a dictionary")
+                outcome = terminal.get("outcome")
+                if outcome in {"draft", "cancelled"}:
+                    result = _normalize_review_terminal(terminal)
+                    return (
+                        succeeded(
+                            "package.prepare",
+                            (
+                                "Package preparation returned a draft"
+                                if outcome == "draft"
+                                else "Package preparation cancelled"
+                            ),
+                            result,
+                        ),
+                        0,
+                    )
+                if outcome != "approved":
+                    raise ValueError("package review outcome must be terminal")
+                try:
+                    approved = state.consume_approved_package_snapshot(
+                        terminal.get("proposalDigest")
+                    )
+                except ValueError:
+                    return (
+                        _package_controlled_failure("package-approval-invalid"),
+                        2,
+                    )
+                prepared = prepare_driver(
+                    observation, inspection, approved, output
+                )
+        return (
+            succeeded(
+                "package.prepare",
+                "Prepared package is ready for CTV review",
+                _normalize_prepared_result(prepared),
+            ),
+            0,
+        )
+    except BaseException as error:
+        review_code = _safe_fixed_error_code(
+            error,
+            review_error_type,
+            frozenset(_PROPOSAL_REVIEW_ERRORS),
+        )
+        if review_code is not None:
+            public_code, message = _PROPOSAL_REVIEW_ERRORS[review_code]
+            return _package_failure(public_code, message), 2
+
+        inventory_code = _safe_fixed_error_code(
+            error, InventoryError, _PROPOSAL_SOURCE_ERROR_CODES
+        )
+        inspection_code = _safe_fixed_error_code(
+            error, inspection_error_type, _INSPECTION_ERROR_CODES
+        )
+        source_code = inventory_code if inventory_code is not None else inspection_code
+        if source_code is not None:
+            if source_code in {"inventory-tree-changed", "inspection-tree-changed"}:
+                source_code = "package-source-changed"
+                message = "The source folder changed during package preparation."
+            else:
+                message = "The source folder could not be prepared safely."
+            return _package_failure(source_code, message), 2
+
+        for error_type, allowed in (
+            (collision_error_type, frozenset({"package-output-collision"})),
+            (transaction_error_type, _PACKAGE_TRANSACTION_ERROR_CODES),
+            (build_error_type, _PACKAGE_BUILD_ERROR_CODES),
+            (writer_error_type, _PACKAGE_WRITER_ERROR_CODES),
+        ):
+            code = _safe_fixed_error_code(error, error_type, allowed)
+            if code is not None:
+                return _package_controlled_failure(code), 2
+        return _PACKAGE_INTERNAL_FAILURE, 1
+
+
 def _operation_failure(operation: str, code: str, message: str):
     return failed(
         operation,
@@ -610,10 +1077,41 @@ def _emit_proposal_result(envelope, exit_code: int) -> int:
     return exit_code
 
 
+def _emit_package_result(envelope, exit_code: int) -> int:
+    if envelope is _PACKAGE_INTERNAL_FAILURE:
+        content = _PACKAGE_INTERNAL_ERROR_BYTES
+        exit_code = 1
+    else:
+        try:
+            content = canonical_json_bytes(envelope)
+            if type(content) is not bytes:
+                raise TypeError("canonical package output must be bytes")
+            if len(content) > _PACKAGE_MAX_JSON_BYTES:
+                content = canonical_json_bytes(
+                    _package_failure(
+                        "package-output-too-large",
+                        "The package preparation result exceeded its safe limit.",
+                    )
+                )
+                if type(content) is not bytes or len(content) > _PACKAGE_MAX_JSON_BYTES:
+                    raise ValueError("canonical package failure exceeds output limit")
+                exit_code = 2
+        except BaseException:
+            content = _PACKAGE_INTERNAL_ERROR_BYTES
+            exit_code = 1
+    try:
+        _emit_stdout(content)
+    except BaseException:
+        return 1
+    return exit_code
+
+
 def main(
     argv: list[str] | None = None,
     *,
     proposal_review_driver=None,
+    package_review_driver=None,
+    package_prepare_driver=None,
 ) -> int:
     invocation = list(sys.argv[1:] if argv is None else argv)
     if (
@@ -621,6 +1119,7 @@ def main(
         and not _is_inventory_argv(invocation)
         and not _is_inspect_argv(invocation)
         and not _is_proposal_review_argv(invocation)
+        and not _is_package_prepare_argv(invocation)
     ):
         sys.stderr.write(_INVOCATION_GUIDANCE)
         sys.stderr.flush()
@@ -653,10 +1152,17 @@ def main(
             envelope, exit_code = _inventory_result(args.source_root)
         elif operation == "inspect":
             envelope, exit_code = _inspection_result(args.source_root)
-        else:
+        elif operation == "proposal.review":
             envelope, exit_code = _proposal_result(
                 args.source_root,
                 review_driver=proposal_review_driver,
+            )
+        else:
+            envelope, exit_code = _package_result(
+                args.source_root,
+                args.output_root,
+                review_driver=package_review_driver,
+                prepare_driver=package_prepare_driver,
             )
     except InventoryError as error:
         if isinstance(error.code, str) and error.code in _INVENTORY_ERROR_CODES:
@@ -687,6 +1193,8 @@ def main(
         return _emit_inspection_result(envelope, exit_code)
     if operation == "proposal.review":
         return _emit_proposal_result(envelope, exit_code)
+    if operation == "package.prepare":
+        return _emit_package_result(envelope, exit_code)
 
     content = canonical_json_bytes(envelope)
     if operation == "inventory" and len(content) > DEFAULT_LIMITS.max_json_bytes:

@@ -32,6 +32,41 @@ PROPOSAL_MODULE_FILENAMES = (
     "ctv_proposal_review.py",
     "ctv_proposal_review_ui.py",
 )
+PACKAGE_MODULE_FILENAMES = (
+    "ctv_package_assignment.py",
+    "ctv_package_builder.py",
+    "ctv_package_transaction.py",
+    "ctv_package_writer.py",
+    "intake_package_validator_v2.py",
+)
+_PROPOSAL_DIGEST = "0" * 64
+_PREPARED_RESULT = {
+    "packageId": "package-" + "0" * 64,
+    "packageDirectoryName": "ctv-package-" + "0" * 24,
+    "manifestSha256": "1" * 64,
+    "declaredArtifactSetSha256": "2" * 64,
+    "publishedTreeSha256": "3" * 64,
+    "contractVersion": "2.0",
+    "counts": {
+        "sources": 5,
+        "participants": 2,
+        "pdfPages": 3,
+        "evidenceArtifacts": 2,
+        "assignments": 5,
+        "exclusions": 1,
+    },
+    "validation": {
+        "outcome": "valid",
+        "checkCodes": [
+            "manifest-valid",
+            "assignments-valid",
+            "source-verification-complete",
+            "validation-report-consistent",
+        ],
+        "warningCodes": [],
+    },
+    "readyForCtvReview": True,
+}
 
 
 def _run(
@@ -93,7 +128,91 @@ def _copy_toolkit(tmp_path: Path) -> Path:
         REPOSITORY_ROOT / "contracts" / "ctv-intake" / "v1",
         intake / "v1",
     )
+    shutil.copy2(
+        REPOSITORY_ROOT / "contracts" / "ctv-intake" / "PIN.v2.json",
+        intake / "PIN.v2.json",
+    )
+    shutil.copytree(
+        REPOSITORY_ROOT / "contracts" / "ctv-intake" / "v2",
+        intake / "v2",
+    )
     return root
+
+
+def _install_package_lifecycle(monkeypatch, cli, *, events=None):
+    """Install path-free fakes around the real package lifecycle composition."""
+    import ctv_inspection
+    import ctv_inventory
+    import ctv_package_transaction
+    import ctv_proposal
+
+    events = [] if events is None else events
+    inspection = object()
+    approved = object()
+
+    class Observation:
+        def __enter__(self):
+            events.append("source-enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("source-exit")
+            return False
+
+        def directory_identity_chain(self):
+            events.append("source-chain")
+            return ((7, 11),)
+
+    class Output:
+        def __enter__(self):
+            events.append("output-enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("output-exit")
+            return False
+
+        def require_disjoint(self, chain):
+            assert chain == ((7, 11),)
+            events.append("disjoint")
+
+    class State:
+        def consume_approved_package_snapshot(self, digest):
+            assert digest == _PROPOSAL_DIGEST
+            events.append("consume")
+            return approved
+
+    monkeypatch.setattr(
+        cli,
+        "verify_contract",
+        lambda _root, *, target: (
+            events.append(("pin", target))
+            or SimpleNamespace(verified=True)
+        ),
+    )
+    monkeypatch.setattr(
+        ctv_package_transaction.OutputParent,
+        "open",
+        staticmethod(
+            lambda path: events.append(("output-open", path)) or Output()
+        ),
+    )
+    monkeypatch.setattr(
+        ctv_inventory,
+        "open_inventory_observation",
+        lambda path: events.append(("source-open", path)) or Observation(),
+    )
+    monkeypatch.setattr(
+        ctv_inspection,
+        "inspect_observation",
+        lambda observation: events.append("inspect") or inspection,
+    )
+    monkeypatch.setattr(
+        ctv_proposal.ProposalState,
+        "from_inspection",
+        lambda observation, inspected: events.append("state") or State(),
+    )
+    return events, inspection, approved
 
 
 def _install_generator_exit_injection(root: Path, injection: str) -> None:
@@ -1586,6 +1705,554 @@ def test_exact_proposal_review_argv_dispatches_source_root_lazily(
     }
 
 
+def test_exact_package_prepare_argv_runs_one_retained_approved_lifecycle(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    events, inspection, approved = _install_package_lifecycle(monkeypatch, cli)
+
+    def review(state):
+        events.append("review")
+        return {
+            "version": "1.0",
+            "outcome": "approved",
+            "proposalDigest": _PROPOSAL_DIGEST,
+            "readyToPrepare": True,
+        }
+
+    def prepare(observation, actual_inspection, actual_approved, output):
+        assert actual_inspection is inspection
+        assert actual_approved is approved
+        events.append("prepare")
+        return SimpleNamespace(to_dict=lambda: dict(_PREPARED_RESULT))
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=review,
+        package_prepare_driver=prepare,
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "succeeded")
+    assert exit_code == 0
+    assert payload["result"] == {
+        "version": "1.0",
+        "outcome": "prepared",
+        **_PREPARED_RESULT,
+    }
+    assert events == [
+        ("pin", "ctv-intake-v2"),
+        ("output-open", Path("synthetic-output")),
+        "output-enter",
+        ("source-open", Path("synthetic-source")),
+        "source-enter",
+        "source-chain",
+        "disjoint",
+        "inspect",
+        "state",
+        "review",
+        "consume",
+        "prepare",
+        "source-exit",
+        "output-exit",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "terminal"),
+    [
+        (
+            "draft",
+            {
+                "version": "1.0",
+                "outcome": "draft",
+                "observationId": "observation-" + "0" * 64,
+                "readyToPrepare": False,
+                "counts": {
+                    "sources": 1,
+                    "units": 2,
+                    "participants": 0,
+                    "accepted": 0,
+                    "reassigned": 0,
+                    "excluded": 0,
+                    "unresolved": 2,
+                },
+                "issueCodes": ["review-required"],
+            },
+        ),
+        (
+            "cancelled",
+            {"version": "1.0", "outcome": "cancelled", "readyToPrepare": False},
+        ),
+    ],
+)
+def test_package_draft_and_cancel_write_nothing(
+    outcome, terminal, monkeypatch, capsysbinary, tmp_path
+):
+    cli = _module()
+    import ctv_inspection
+    import ctv_proposal
+
+    source = tmp_path / "source"
+    source.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    source_before = _external_tree_snapshot(source)
+    events = []
+
+    class State:
+        def consume_approved_package_snapshot(self, _digest):
+            events.append("consume")
+            raise AssertionError("draft/cancel must not consume approval")
+
+    monkeypatch.setattr(
+        cli,
+        "verify_contract",
+        lambda _root, *, target: SimpleNamespace(verified=True),
+    )
+    monkeypatch.setattr(
+        ctv_inspection,
+        "inspect_observation",
+        lambda _observation: object(),
+    )
+    monkeypatch.setattr(
+        ctv_proposal.ProposalState,
+        "from_inspection",
+        lambda _observation, _inspection: State(),
+    )
+    writer_calls = []
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ],
+        package_review_driver=lambda _state: dict(terminal),
+        package_prepare_driver=lambda *_args: writer_calls.append(_args),
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "succeeded")
+    assert exit_code == 0
+    assert payload["result"] == terminal
+    assert payload["result"]["outcome"] == outcome
+    assert writer_calls == []
+    assert "consume" not in events
+    assert "prepare" not in events
+    assert list(output.iterdir()) == []
+    _assert_external_tree_unchanged(source, source_before)
+
+
+def test_package_v2_pin_failure_precedes_output_and_source_open(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    import ctv_inventory
+    import ctv_package_transaction
+
+    opened = []
+    monkeypatch.setattr(
+        cli,
+        "verify_contract",
+        lambda _root, *, target: (_ for _ in ()).throw(
+            cli.ContractPinError("contract-tree-changed")
+        ),
+    )
+    monkeypatch.setattr(
+        ctv_package_transaction.OutputParent,
+        "open",
+        staticmethod(lambda _path: opened.append("output")),
+    )
+    monkeypatch.setattr(
+        ctv_inventory,
+        "open_inventory_observation",
+        lambda _path: opened.append("source"),
+    )
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 2
+    assert opened == []
+    assert payload["errors"] == [
+        {
+            "code": "contract-tree-changed",
+            "message": "The local v2 contract could not be verified safely.",
+        }
+    ]
+
+
+def test_package_v2_pin_mismatch_precedes_output_and_source_open(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    import ctv_package_transaction
+
+    opened = []
+    monkeypatch.setattr(
+        cli,
+        "verify_contract",
+        lambda _root, *, target: SimpleNamespace(verified=False),
+    )
+    monkeypatch.setattr(
+        ctv_package_transaction.OutputParent,
+        "open",
+        staticmethod(lambda _path: opened.append("output")),
+    )
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 2
+    assert opened == []
+    assert payload["errors"][0]["code"] == "contract-tree-mismatch"
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_code"),
+    [
+        (
+            lambda: __import__("ctv_proposal_review").ReviewError("review-timeout"),
+            "proposal-session-timeout",
+        ),
+        (
+            lambda: __import__("ctv_package_writer").PackageWriterError(
+                "package-build-failed"
+            ),
+            "package-build-failed",
+        ),
+        (
+            lambda: __import__("ctv_package_writer").PackageWriterError(
+                "package-content-validation-failed"
+            ),
+            "package-content-validation-failed",
+        ),
+        (
+            lambda: __import__("ctv_package_transaction").PackageCollisionError(),
+            "package-output-collision",
+        ),
+        (
+            lambda: __import__("ctv_package_transaction").PackageTransactionError(
+                "package-cleanup-failed"
+            ),
+            "package-cleanup-failed",
+        ),
+    ],
+)
+def test_package_controlled_failures_are_private_exit_two(
+    error_factory, expected_code, monkeypatch, capsysbinary
+):
+    cli = _module()
+    _install_package_lifecycle(monkeypatch, cli)
+
+    def fail(_state):
+        raise error_factory()
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "PRIVATE-SOURCE",
+            "--output-root",
+            "PRIVATE-OUTPUT",
+            "--json",
+        ],
+        package_review_driver=fail,
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 2
+    assert payload["errors"][0]["code"] == expected_code
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "PRIVATE-SOURCE" not in serialized
+    assert "PRIVATE-OUTPUT" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_code"),
+    [
+        ("output", "output-root-unsafe"),
+        ("source", "source-root-unsafe"),
+    ],
+)
+def test_package_output_and_source_failures_stop_before_review(
+    stage, expected_code, monkeypatch, capsysbinary
+):
+    cli = _module()
+    import ctv_inventory
+    import ctv_package_transaction
+
+    events, _inspection, _approved = _install_package_lifecycle(monkeypatch, cli)
+    if stage == "output":
+        monkeypatch.setattr(
+            ctv_package_transaction.OutputParent,
+            "open",
+            staticmethod(
+                lambda _path: (_ for _ in ()).throw(
+                    ctv_package_transaction.PackageTransactionError(
+                        "output-root-unsafe"
+                    )
+                )
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            ctv_inventory,
+            "open_inventory_observation",
+            lambda _path: (_ for _ in ()).throw(
+                ctv_inventory.InventoryError("source-root-unsafe")
+            ),
+        )
+
+    review_calls = []
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda state: review_calls.append(state),
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 2
+    assert payload["errors"][0]["code"] == expected_code
+    assert review_calls == []
+    assert "review" not in events
+
+
+def test_package_unexpected_failure_uses_fixed_internal_result(
+    monkeypatch, capsysbinary
+):
+    cli = _module()
+    _install_package_lifecycle(monkeypatch, cli)
+
+    def fail(_state):
+        raise RuntimeError("PRIVATE unexpected parser detail")
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=fail,
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert b"PRIVATE" not in capsysbinary.readouterr().out
+
+
+def test_package_oversized_result_is_replaced_before_one_stdout_write(
+    monkeypatch
+):
+    cli = _module()
+    _install_package_lifecycle(monkeypatch, cli)
+    writes = []
+    monkeypatch.setattr(cli, "_emit_stdout", lambda content: writes.append(content))
+    oversized = dict(_PREPARED_RESULT)
+    oversized["validation"] = dict(_PREPARED_RESULT["validation"])
+    oversized["validation"]["warningCodes"] = ["synthetic-warning"] * 1_100_000
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda _state: {
+            "outcome": "approved",
+            "proposalDigest": _PROPOSAL_DIGEST,
+        },
+        package_prepare_driver=lambda *_args: SimpleNamespace(
+            to_dict=lambda: oversized
+        ),
+    )
+
+    assert exit_code == 2
+    assert len(writes) == 1
+    payload = json.loads(writes[0])
+    assert payload["errors"][0]["code"] == "package-output-too-large"
+    assert len(writes[0]) <= 16 * 1024 * 1024
+    assert b"synthetic-warning" not in writes[0]
+
+
+def test_published_package_survives_stdout_failure(monkeypatch):
+    cli = _module()
+    events, _inspection, _approved = _install_package_lifecycle(monkeypatch, cli)
+    published = []
+
+    def prepare(*_args):
+        published.append("ctv-package-" + "0" * 24)
+        events.append("prepare")
+        return SimpleNamespace(to_dict=lambda: dict(_PREPARED_RESULT))
+
+    monkeypatch.setattr(
+        cli,
+        "_emit_stdout",
+        lambda _content: (_ for _ in ()).throw(BrokenPipeError()),
+    )
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda _state: {
+            "outcome": "approved",
+            "proposalDigest": _PROPOSAL_DIGEST,
+        },
+        package_prepare_driver=prepare,
+    )
+
+    assert exit_code == 1
+    assert published == ["ctv-package-" + "0" * 24]
+    assert "prepare" in events
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["package", "prepare"],
+        ["package", "prep", "--source-root", "/source", "--output-root", "/output", "--json"],
+        ["package", "prepare", "--source-root", "", "--output-root", "/output", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--output-root", "", "--json"],
+        ["package", "prepare", "--source-root", "--private", "--output-root", "/output", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--output-root", "--private", "--json"],
+        ["package", "prepare", "--output-root", "/output", "--source-root", "/source", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--json", "--output-root", "/output"],
+        ["package", "prepare", "--source-root", "/source/", "--output-root", "/output", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--output-root", "/output//child", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--output-root", "/output", "--json", "extra"],
+        ["package", "prepare", "--source-root", "/source", "--source-root", "/other", "--output-root", "/output", "--json"],
+        ["package", "prepare", "--source-root", "/source", "--output-root", "/output", "--json", "--json"],
+    ],
+)
+def test_invalid_package_prepare_surface_is_exact_and_private(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert 0 < len(result.stderr) <= 512
+    assert b"--private" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["contract", "verify", "--json", "--target", "ctv-intake-v2"],
+        ["contract", "verify", "--target", "ctv-intake-v2", "--json", "--json"],
+        ["contract", "verify", "--target", "ctv-intake-v2", "--target", "ctv-intake-v2", "--json"],
+        ["contract", "verify", "--target", "ctv-intake-v", "--json"],
+        ["contract", "verify", "--target", "", "--json"],
+    ],
+)
+def test_v2_contract_verify_accepts_only_its_exact_argv(argv):
+    result = _run(*argv)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+    assert len(result.stderr) <= 512
+
+
+@pytest.mark.parametrize("module_filename", PACKAGE_MODULE_FILENAMES)
+@pytest.mark.parametrize("module_fault", ["missing", "poisoned"])
+def test_nonpackage_forms_do_not_import_package_writer_modules(
+    module_filename, module_fault, tmp_path
+):
+    root = _copy_toolkit(tmp_path)
+    module_path = root / "server" / module_filename
+    if module_fault == "missing":
+        module_path.unlink()
+    else:
+        module_path.write_text(
+            "raise KeyboardInterrupt('private-poisoned-package-import')\n",
+            encoding="utf-8",
+        )
+    source = tmp_path / "synthetic-source"
+    source.mkdir()
+    invocations = (
+        (("version", "--json"), "version", 0),
+        (("doctor", "--json"), "doctor", 0),
+        (("contract", "verify", "--json"), "contract.verify", 0),
+        (("contract", "verify", "--target", "ctv-intake-v2", "--json"), "contract.verify", 0),
+        (("inventory", "--source-root", str(source), "--json"), "inventory", 0),
+        (("inspect", "--source-root", str(source), "--json"), "inspect", 0),
+        (("package", "prepare", "--json"), None, 1),
+    )
+
+    for argv, operation, expected_exit in invocations:
+        result = _run(*argv, cwd=tmp_path, script=root / "server" / SCRIPT.name)
+
+        assert result.returncode == expected_exit
+        if operation is None:
+            assert result.stdout == b""
+            assert result.stderr.startswith(b"usage: ctv_intake_cli.py ")
+        else:
+            _envelope(result, operation, "succeeded")
+            assert result.stderr == b""
+        assert b"private-poisoned-package-import" not in result.stdout
+        assert b"private-poisoned-package-import" not in result.stderr
+
+
 def test_proposal_review_output_over_16_mib_is_replaced_before_one_stdout_write(
     monkeypatch, capsysbinary
 ):
@@ -2198,8 +2865,11 @@ def test_parser_exposes_source_root_only_on_document_commands():
     assert "source-root" in _parser_destinations(commands["inventory"])
     assert "source-root" in _parser_destinations(commands["inspect"])
     assert "source-root" in _parser_destinations(commands["proposal"])
+    assert "source-root" in _parser_destinations(commands["package"])
+    assert "output-root" in _parser_destinations(commands["package"])
     for command in ("version", "doctor", "contract"):
         assert "source-root" not in _parser_destinations(commands[command])
+        assert "output-root" not in _parser_destinations(commands[command])
 
     forbidden = {
         "workspace-root",

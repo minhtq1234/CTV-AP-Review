@@ -41,6 +41,25 @@ def test_proposal_review_is_a_supported_canonical_operation():
     assert payload["status"] == "succeeded"
 
 
+def test_package_prepare_is_a_supported_canonical_operation():
+    envelope = succeeded(
+        "package.prepare",
+        "Prepared package is ready for CTV review",
+        {
+            "version": "1.0",
+            "outcome": "prepared",
+            "packageId": "package-" + "0" * 64,
+            "readyForCtvReview": True,
+        },
+    )
+
+    payload = json.loads(canonical_json_bytes(envelope))
+
+    assert payload["schemaVersion"] == "1.0"
+    assert payload["operation"] == "package.prepare"
+    assert payload["status"] == "succeeded"
+
+
 def test_success_envelope_is_exact_canonical_utf8_json():
     envelope = succeeded(
         "doctor",

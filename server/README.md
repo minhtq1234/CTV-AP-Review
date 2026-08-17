@@ -264,15 +264,66 @@ approval digest/status where applicable. Names, identity values, roster cells,
 paths, filenames, previews, raw OCR/text, tokens, ports, private notes, and parser
 diagnostics stay local and are never returned to WP.
 
-This milestone returns a preparation proposal only. It does not create a prepared
-package, prove authenticity, completeness, ownership, or user identity, or grant
-payment readiness or payment approval. Any package writer remains a separate,
-explicitly approved milestone.
+`proposal review` remains a read-only preview. It does not persist a draft or
+create a package. Use the separate combined command below only when the user has
+also selected an existing output parent and intends to prepare a package.
 
 The 2026-08-13 acceptance snapshot used Python 3.14.3, PyMuPDF 1.27.2.3,
 OpenPyXL 3.1.5, Pillow 12.1.1, and Pydantic 2.13.4. These are privacy-safe test
 environment identifiers, not minimum-version promises. Dependency versions are
 not added to the public v1 doctor JSON because that would widen its fixed schema.
+
+### Preparing one local CTV v2 package
+
+WP calls the toolkit script installed on the user's local machine. No CTV runtime,
+script, plugin, or skill is bundled into WP. Before opening the selected source,
+the combined command verifies the immutable v2 contract again. The recommended
+preflight and exact preparation command are:
+
+```bash
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py version --target ctv-intake-v2 --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py doctor --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py contract verify --target ctv-intake-v2 --json
+python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py package prepare --source-root /explicit/local/source --output-root /explicit/local/output-parent --json
+```
+
+`--output-root` is an existing local parent directory for newly published
+packages. It must be separate from the source tree. Opening it and proving the
+separation writes nothing. The toolkit then retains one read-only source
+observation, opens the same authenticated loopback review screen, and requires
+the user to select one roster and resolve every unit and source-only item. A
+draft or cancellation writes no staging directory or package and cannot be
+resumed. Approval is consumed once in that same command; only then can the
+transaction build, validate, revalidate, and atomically publish the package.
+
+A successful prepared result uses operation `package.prepare`, exit `0`, and an
+opaque directory name such as `ctv-package-0123456789abcdef01234567`. The JSON
+contains only opaque package identity, fixed contract/digest fields, bounded
+counts, fixed validation codes, and `readyForCtvReview: true`. It does not contain
+the source or output path, original filenames, FA code, participant values,
+roster cells, previews, OCR text, browser token/port, timestamps, staging name,
+or raw parser diagnostics.
+
+| Exit | Outcome | Meaning |
+| --- | --- | --- |
+| `0` | `prepared` | One new complete package was atomically published. |
+| `0` | `draft` | Review ended without approval; nothing was written. |
+| `0` | `cancelled` | The user cancelled; nothing was written. |
+| `2` | failed envelope | A controlled source, output, collision, build, validation, or cleanup boundary stopped preparation. |
+| `1` | invalid invocation or internal failure | Invalid argv leaves stdout empty; a parsed command uses a fixed private-safe failure. |
+
+The final directory is deterministic. Repeating the same approved preparation
+after success returns a controlled collision and never opens, changes, merges,
+or replaces the existing package. Before atomic publication, a crash may leave a
+hidden run-owned staging directory under the output parent. Later runs ignore it;
+automatic broad staging cleanup is deliberately out of scope. If terminal stdout
+fails after publication, the complete package remains in place and a retry meets
+the same collision boundary.
+
+`prepared` means the local package passed the mechanical v2 validator and is
+ready to enter the existing CTV human review workflow. It does not prove evidence
+authenticity, authorize payment, approve accounting treatment, identify the
+reviewer, or submit anything to CTV or ACC. Human CTV review remains required.
 
 ## Validating a prepared intake package
 
