@@ -94,10 +94,13 @@ _INSPECTION_MAX_JSON_BYTES = 16 * 1024 * 1024
 _PROPOSAL_MAX_JSON_BYTES = 16 * 1024 * 1024
 _PACKAGE_MAX_JSON_BYTES = 16 * 1024 * 1024
 _TERMINAL_MAX_CONTAINER_ITEMS = 10_000
-_TERMINAL_MAX_NODES = 250_000
+# The largest contract-shaped terminal that still fits 16 MiB stays below one
+# million nodes; retain headroom without admitting cheap empty-node trees.
+_TERMINAL_MAX_NODES = 1_250_000
+_TERMINAL_MAX_DEPTH = 64
 _TERMINAL_MAX_STRING_CHARACTERS = 128
-_TERMINAL_MAX_STRING_BYTES = 4 * 1024 * 1024
-_TERMINAL_MAX_JSON_BYTES = 8 * 1024 * 1024
+_TERMINAL_MAX_STRING_BYTES = _PROPOSAL_MAX_JSON_BYTES
+_TERMINAL_MAX_JSON_BYTES = _PROPOSAL_MAX_JSON_BYTES
 _TERMINAL_MAX_INTEGER = 100_000
 _MAX_NUMERIC_ID_DIGITS = 10
 _INSPECT_INTERNAL_FAILURE = object()
@@ -777,16 +780,18 @@ def _preflight_terminal_budget(value) -> None:
     """Bound exact terminal primitives before comparison or serialization."""
     if type(value) is not dict:
         raise TypeError("terminal must be an exact dictionary")
-    stack = [value]
+    stack = [(value, 0)]
     seen_containers = set()
     nodes = 0
     string_bytes = 0
     json_bytes = 0
     while stack:
-        item = stack.pop()
+        item, depth = stack.pop()
         nodes += 1
         if nodes > _TERMINAL_MAX_NODES:
             raise ValueError("terminal exceeds its fixed node budget")
+        if depth > _TERMINAL_MAX_DEPTH:
+            raise ValueError("terminal exceeds its fixed depth budget")
         if type(item) is dict:
             if len(item) > _TERMINAL_MAX_CONTAINER_ITEMS:
                 raise ValueError("terminal dictionary exceeds its item budget")
@@ -796,8 +801,8 @@ def _preflight_terminal_budget(value) -> None:
             seen_containers.add(container_id)
             json_bytes += 2 + max(0, len(item) - 1) + len(item)
             for key, nested in item.items():
-                stack.append(nested)
-                stack.append(key)
+                stack.append((nested, depth + 1))
+                stack.append((key, depth + 1))
         elif type(item) is list:
             if len(item) > _TERMINAL_MAX_CONTAINER_ITEMS:
                 raise ValueError("terminal list exceeds its item budget")
@@ -806,7 +811,7 @@ def _preflight_terminal_budget(value) -> None:
                 raise ValueError("terminal containers must not be reused")
             seen_containers.add(container_id)
             json_bytes += 2 + max(0, len(item) - 1)
-            stack.extend(item)
+            stack.extend((nested, depth + 1) for nested in item)
         elif type(item) is str:
             item_json_bytes, item_string_bytes = _terminal_string_json_size(item)
             json_bytes += item_json_bytes
@@ -814,7 +819,7 @@ def _preflight_terminal_budget(value) -> None:
         elif type(item) is bool:
             json_bytes += 4 if item else 5
         elif type(item) is int:
-            if abs(item) > _TERMINAL_MAX_INTEGER:
+            if item < -_TERMINAL_MAX_INTEGER or item > _TERMINAL_MAX_INTEGER:
                 raise ValueError("terminal integer exceeds its fixed bound")
             json_bytes += len(str(item))
         elif item is None:

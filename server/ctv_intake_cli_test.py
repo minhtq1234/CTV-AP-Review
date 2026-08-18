@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tracemalloc
 from types import SimpleNamespace
 
 import fitz
@@ -142,7 +143,7 @@ def _approved_terminal_with_assignment():
     return terminal
 
 
-def _aggregate_approved_terminal():
+def _aggregate_approved_terminal(unit_count=10_000):
     handles = [f"participant-{index:04d}" for index in range(1, 51)]
     assignments = [
         {
@@ -154,21 +155,48 @@ def _aggregate_approved_terminal():
                 "participantHandles": list(handles),
             },
         }
-        for index in range(1, 10_001)
+        for index in range(1, unit_count + 1)
     ]
     terminal = _approved_terminal()
     terminal["participantHandles"] = handles
     terminal["unitAssignments"] = assignments
     terminal["counts"] = {
         "sources": 1,
-        "units": 10_000,
+        "units": unit_count,
         "participants": 50,
-        "accepted": 10_000,
+        "accepted": unit_count,
         "reassigned": 0,
         "excluded": 0,
         "unresolved": 0,
     }
     return terminal
+
+
+def _nested_string_terminal_with_exact_size(target_bytes):
+    """Build bounded exact strings/containers with hand-derived compact size."""
+    quotient = target_bytes // 131
+    for string_count in range(max(1, quotient - 10), quotient + 11):
+        nonempty_group_count = (string_count + 9_999) // 10_000
+        for empty_group_count in range(10):
+            group_count = nonempty_group_count + empty_group_count
+            full_size = (
+                12
+                + 3 * group_count
+                + 131 * string_count
+                - nonempty_group_count
+            )
+            shortening = full_size - target_bytes
+            if 0 <= shortening <= 128:
+                groups = []
+                remaining = string_count
+                for _ in range(nonempty_group_count):
+                    count = min(remaining, 10_000)
+                    groups.append(["a" * 128] * count)
+                    remaining -= count
+                groups[-1][-1] = "a" * (128 - shortening)
+                groups.extend([] for _ in range(empty_group_count))
+                return {"values": groups}
+    raise AssertionError("could not construct the requested compact JSON size")
 
 
 class _EqualitySpoof:
@@ -2833,7 +2861,7 @@ def test_aggregate_bounded_terminal_is_rejected_before_state_or_json(
     monkeypatch,
 ):
     cli = _module()
-    terminal = _aggregate_approved_terminal()
+    terminal = _nested_string_terminal_with_exact_size(16 * 1024 * 1024 + 1)
     json_calls = []
 
     def reject_json(*_args, **_kwargs):
@@ -2853,6 +2881,171 @@ def test_aggregate_bounded_terminal_is_rejected_before_state_or_json(
     with pytest.raises((TypeError, ValueError)):
         cli._bind_state_terminal(state, terminal)
 
+    assert state.calls == 0
+    assert json_calls == []
+
+
+@pytest.mark.parametrize(
+    ("unit_count", "expected_canonical_bytes"),
+    ((4_000, 4_289_542), (10_000, 10_721_545)),
+)
+def test_product_valid_aggregate_terminal_normalizes_and_binds_to_state(
+    unit_count,
+    expected_canonical_bytes,
+):
+    cli = _module()
+    terminal = _aggregate_approved_terminal(unit_count)
+    authoritative = copy.deepcopy(terminal)
+
+    class State:
+        calls = 0
+
+        def _authoritative_terminal_result(self, outcome, proposal_digest):
+            self.calls += 1
+            assert outcome == "approved"
+            assert proposal_digest == _PROPOSAL_DIGEST
+            return authoritative
+
+    assert len(cli._canonical_terminal_bytes(terminal)) == expected_canonical_bytes
+    state = State()
+    assert cli._bind_state_terminal(state, terminal) is authoritative
+    assert state.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("offset", "accepted"),
+    ((-1, True), (0, True), (1, False)),
+)
+def test_terminal_canonical_budget_uses_the_existing_16_mib_boundary(
+    offset,
+    accepted,
+    monkeypatch,
+):
+    cli = _module()
+    target_bytes = 16 * 1024 * 1024 + offset
+    terminal = _nested_string_terminal_with_exact_size(target_bytes)
+
+    if accepted:
+        assert len(cli._canonical_terminal_bytes(terminal)) == target_bytes
+        return
+
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-OVER-LIMIT-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+    with pytest.raises(ValueError, match="fixed JSON budget"):
+        cli._canonical_terminal_bytes(terminal)
+    assert json_calls == []
+
+
+def test_terminal_preflight_rejects_high_node_payload_before_json(monkeypatch):
+    cli = _module()
+    terminal = {"values": [[0] * 10_000 for _ in range(126)]}
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-HIGH-NODE-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+    with pytest.raises(ValueError, match="fixed node budget"):
+        cli._canonical_terminal_bytes(terminal)
+    assert json_calls == []
+
+
+def test_terminal_preflight_rejects_pathological_depth_before_json(monkeypatch):
+    cli = _module()
+    terminal = {"values": []}
+    nested = terminal["values"]
+    for _ in range(65):
+        child = []
+        nested.append(child)
+        nested = child
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-DEEP-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+    with pytest.raises(ValueError, match="fixed depth budget"):
+        cli._canonical_terminal_bytes(terminal)
+    assert json_calls == []
+
+
+@pytest.mark.parametrize("sign", (1, -1))
+def test_huge_terminal_integer_rejection_has_bounded_allocation_and_no_callbacks(
+    sign,
+    monkeypatch,
+):
+    cli = _module()
+    magnitude = 1 << (9 * 1024 * 1024 * 8)
+    huge_integer = magnitude if sign > 0 else -magnitude
+    del magnitude
+    terminal = _approved_terminal()
+    terminal["counts"]["sources"] = huge_integer
+    json_calls = []
+    digest_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-HUGE-INTEGER-JSON-CALLBACK")
+
+    def reject_digest(*_args, **_kwargs):
+        digest_calls.append("digest")
+        raise AssertionError("PRIVATE-HUGE-INTEGER-EQUALITY-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+    monkeypatch.setattr(cli.hmac, "compare_digest", reject_digest)
+
+    class State:
+        calls = 0
+
+        def _authoritative_terminal_result(self, *_args):
+            self.calls += 1
+            return terminal
+
+    state = State()
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+    try:
+        with pytest.raises(ValueError, match="fixed bound"):
+            cli._bind_state_terminal(state, terminal)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 512 * 1024
+    assert state.calls == 0
+    assert json_calls == []
+    assert digest_calls == []
+
+
+def test_terminal_count_bool_remains_rejected_before_state_or_json(monkeypatch):
+    cli = _module()
+    terminal = _approved_terminal()
+    terminal["counts"]["sources"] = True
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-BOOL-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+
+    class State:
+        calls = 0
+
+        def _authoritative_terminal_result(self, *_args):
+            self.calls += 1
+            return terminal
+
+    state = State()
+    with pytest.raises(ValueError, match="non-negative integers"):
+        cli._bind_state_terminal(state, terminal)
     assert state.calls == 0
     assert json_calls == []
 
@@ -4335,14 +4528,25 @@ def test_proposal_review_terminal_budget_rejects_before_output_serialization(
     )
 
     payload = _captured_envelope(capsysbinary, "proposal.review", "failed")
-    assert exit_code == 1
+    assert exit_code == (1 if case == "one-huge-value" else 2)
     assert payload["result"] == {}
-    assert payload["errors"] == [
-        {
-            "code": "internal-error",
-            "message": "The local toolkit could not complete the check.",
-        }
-    ]
+    assert payload["errors"] == (
+        [
+            {
+                "code": "internal-error",
+                "message": "The local toolkit could not complete the check.",
+            }
+        ]
+        if case == "one-huge-value"
+        else [
+            {
+                "code": "proposal-output-too-large",
+                "message": (
+                    "The local proposal review result exceeded its safe limit."
+                ),
+            }
+        ]
+    )
     assert "private-" not in json.dumps(payload)
 
 
