@@ -180,6 +180,45 @@ def _inspect(snapshot, *, limits=None):
     return inspect_workbook(snapshot, limits=limits or InspectionLimits())
 
 
+def test_workbook_original_parse_emits_exact_bounded_private_roster_facts():
+    import ctv_inspection_workbook as workbook_adapter
+
+    private_values = (
+        "PRIVATE SYNTHETIC PERSON",
+        "PRIVATE-ID-079123456789",
+        "FA-PRIVATE-001",
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(("name", "identity", "faCode", "So tien"))
+    sheet.append((*private_values, 100))
+    snapshot = _save(workbook)
+    captured = []
+
+    with_side_channel = workbook_adapter.inspect_workbook(
+        snapshot,
+        limits=InspectionLimits(),
+        _private_roster_sink=lambda worksheet_index, facts: captured.append(
+            (worksheet_index, facts)
+        ),
+    )
+
+    assert with_side_channel == _inspect(snapshot)
+    assert len(captured) == 1
+    worksheet_index, facts = captured[0]
+    assert worksheet_index == 1
+    assert type(facts) is workbook_adapter.PrivateRosterCandidateFacts
+    assert facts.blocking_issue_codes == ()
+    assert facts.package_issue_codes == ()
+    assert len(facts.rows) == 1
+    assert facts.rows[0].row_index == 2
+    assert facts.rows[0].name == private_values[0]
+    assert facts.rows[0].identity == private_values[1]
+    assert dict(facts.rows[0].values)["faCode"] == private_values[2]
+    assert all(value not in repr(facts) for value in private_values)
+    assert all(value not in repr(facts.rows[0]) for value in private_values)
+
+
 def _rewrite_package(snapshot, *, replacements=None, additions=None, drop=()):
     replacements = replacements or {}
     additions = additions or {}

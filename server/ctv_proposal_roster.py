@@ -14,6 +14,7 @@ from ctv_inspection_classifier import roster_header_categories_from_private_text
 from ctv_inspection_model import DEFAULT_INSPECTION_LIMITS, InspectionResult
 from ctv_inspection_workbook import (
     PackageWorkbookError,
+    PrivateRosterCandidateFacts,
     worksheet_nonblank_row_indexes,
 )
 
@@ -22,6 +23,7 @@ _MAX_ROWS = 10_000
 _MAX_CELLS = 100_000
 _MAX_CELL_TEXT = 256
 _MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
+_MAX_CAPTURED_CHARACTERS = 16 * 1024 * 1024
 _UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
 _EVIDENCE_ID = re.compile(r"^evidence-[0-9]{4,}$")
 _ROSTER_ISSUE_ORDER = (
@@ -283,6 +285,168 @@ def _fixed_snapshot_failure(unit, code: str = "roster-unreadable") -> RosterCand
     return _candidate(unit, blocking_issue_codes=(code,))
 
 
+def _candidate_from_private_facts(unit, facts) -> RosterCandidate:
+    if type(facts) is not PrivateRosterCandidateFacts:
+        return _fixed_snapshot_failure(unit)
+    try:
+        facts.__post_init__()
+        if facts.worksheet_index != unit.unit_index:
+            return _fixed_snapshot_failure(unit)
+        return _candidate(
+            unit,
+            rows=tuple(
+                RosterCandidateRow(
+                    row_index=row.row_index,
+                    name=row.name,
+                    identity=row.identity,
+                    values=row.values,
+                )
+                for row in facts.rows
+            ),
+            blocking_issue_codes=facts.blocking_issue_codes,
+            package_issue_codes=facts.package_issue_codes,
+            canonical_to_source_columns=facts.canonical_to_source_columns,
+        )
+    except Exception:
+        return _fixed_snapshot_failure(unit)
+
+
+class RosterCandidateEvidence:
+    """Bounded caller-owned private facts captured by the original parse."""
+
+    def __init__(
+        self,
+        *,
+        max_worksheets: int = 10_000,
+        max_rows: int = _MAX_ROWS,
+        max_values: int = _MAX_CELLS,
+        max_characters: int = _MAX_CAPTURED_CHARACTERS,
+    ) -> None:
+        for value in (max_worksheets, max_rows, max_values, max_characters):
+            if type(value) is not int:
+                raise TypeError("roster candidate evidence limits must be integers")
+            if value <= 0:
+                raise ValueError("roster candidate evidence limits must be positive")
+        self._limits = (max_worksheets, max_rows, max_values, max_characters)
+        self._facts = {}
+        self._seen = set()
+        self._rows = 0
+        self._values = 0
+        self._characters = 0
+        self._cleared = False
+        self.complete = True
+
+    def capture(self, evidence_id, worksheet_index, facts) -> None:
+        if self._cleared:
+            raise ValueError("roster candidate evidence is cleared")
+        if type(evidence_id) is not str or _EVIDENCE_ID.fullmatch(evidence_id) is None:
+            raise TypeError("evidence_id must be a valid opaque ID")
+        if type(worksheet_index) is not int or not 1 <= worksheet_index <= 100:
+            raise TypeError("worksheet_index must be a bounded exact integer")
+        if type(facts) is not PrivateRosterCandidateFacts:
+            raise TypeError("roster facts must be exact private records")
+        facts.__post_init__()
+        if facts.worksheet_index != worksheet_index:
+            raise ValueError("roster facts must match their worksheet")
+        key = (evidence_id, worksheet_index)
+        if key in self._seen:
+            raise ValueError("roster facts already captured")
+        self._seen.add(key)
+        rows = len(facts.rows)
+        values = sum(len(row.values) for row in facts.rows)
+        characters = sum(
+            len(value)
+            for row in facts.rows
+            for _field_name, value in row.values
+        ) + sum(len(value) for _field_name, value in facts.canonical_to_source_columns)
+        max_worksheets, max_rows, max_values, max_characters = self._limits
+        if (
+            len(self._seen) > max_worksheets
+            or self._rows + rows > max_rows
+            or self._values + values > max_values
+            or self._characters + characters > max_characters
+        ):
+            self.complete = False
+            return
+        self._facts[key] = facts
+        self._rows += rows
+        self._values += values
+        self._characters += characters
+
+    def candidates_for(self, inspection: InspectionResult) -> tuple[RosterCandidate, ...]:
+        if self._cleared:
+            raise ValueError("roster candidate evidence is cleared")
+        if type(inspection) is not InspectionResult:
+            raise TypeError("inspection must be an inspection result")
+        units = tuple(
+            sorted(
+                (
+                    unit
+                    for unit in inspection.units
+                    if unit.unit_kind == "worksheet"
+                    and unit.suggested_role == "payment-roster"
+                ),
+                key=_numeric_unit_key,
+            )
+        )
+        candidates = []
+        for unit in units:
+            facts = self._facts.get((unit.evidence_id, unit.unit_index))
+            if facts is None:
+                candidates.append(
+                    _fixed_snapshot_failure(
+                        unit,
+                        "roster-over-limit" if not self.complete else "roster-unreadable",
+                    )
+                )
+            else:
+                candidates.append(_candidate_from_private_facts(unit, facts))
+        return validate_roster_candidates(inspection, tuple(candidates))
+
+    def clear(self) -> None:
+        self._facts.clear()
+        self._seen.clear()
+        self._rows = 0
+        self._values = 0
+        self._characters = 0
+        self._cleared = True
+        self.complete = False
+
+
+def validate_roster_candidates(
+    inspection: InspectionResult,
+    candidates: tuple[RosterCandidate, ...],
+) -> tuple[RosterCandidate, ...]:
+    if type(inspection) is not InspectionResult:
+        raise TypeError("inspection must be an inspection result")
+    if type(candidates) is not tuple or any(
+        type(candidate) is not RosterCandidate for candidate in candidates
+    ):
+        raise TypeError("preloaded candidates must be exact roster candidates")
+    units = tuple(
+        sorted(
+            (
+                unit
+                for unit in inspection.units
+                if unit.unit_kind == "worksheet"
+                and unit.suggested_role == "payment-roster"
+            ),
+            key=_numeric_unit_key,
+        )
+    )
+    if len(candidates) != len(units):
+        raise ValueError("preloaded candidates must cover every roster unit")
+    for candidate, unit in zip(candidates, units):
+        candidate.__post_init__()
+        if (
+            candidate.unit_id != unit.unit_id
+            or candidate.evidence_id != unit.evidence_id
+            or candidate.worksheet_index != unit.unit_index
+        ):
+            raise ValueError("preloaded candidate must match its inspection unit")
+    return candidates
+
+
 def _parse_candidate(unit, snapshot: bytes) -> RosterCandidate:
     try:
         physically_nonblank_rows = frozenset(
@@ -452,7 +616,7 @@ def load_roster_candidates(
             candidates.append(_fixed_snapshot_failure(unit, "roster-over-limit"))
             continue
         candidates.append(_parse_candidate(unit, snapshot))
-    return tuple(candidates)
+    return validate_roster_candidates(inspection, tuple(candidates))
 
 
 def choose_automatic_roster(

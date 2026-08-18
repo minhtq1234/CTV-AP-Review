@@ -245,16 +245,16 @@ python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py proposal review 
 ```
 
 The review command retains one read-only observation from inspection through
-final revalidation. During the original inspection pass, one bounded
-memory-only collector receives the private text already acquired locally and
-reuses only opaque exact-duplicate IDs already computed by inventory; it does
-not reopen, re-render, OCR, hash, or parse a source a second time. A uniquely
-valid roster is selected automatically in the normal case. Versioned
-deterministic checks then organize evidence into participant, shared, case, and
-duplicate-exclusion groups. The temporary `127.0.0.1` screen shows only the
-exception clusters plus collapsed organized groups for optional spot checks,
+final revalidation. During the original inspection pass, bounded memory-only
+collectors receive the private text and typed roster-candidate facts already
+acquired locally, and reuse only opaque exact-duplicate IDs already computed by
+inventory; they do not reopen, re-render, OCR, hash, or parse a source a second
+time. A uniquely valid roster is selected automatically in the normal case.
+Versioned deterministic checks then organize evidence into participant, shared,
+case, and duplicate-exclusion groups. The temporary `127.0.0.1` screen shows
+only the exception clusters plus collapsed organized groups for optional spot checks,
 followed by one whole-proposal approval. The user may instead return a draft or
-cancel. The collector and review session are cleared on every terminal or
+cancel. The collectors and review session are cleared on every terminal or
 failure path before the CLI emits one JSON envelope. The command writes no
 source, output, report, cache, draft, or package file and makes no external
 network request.
@@ -273,8 +273,8 @@ larger than 16 MiB.
 
 CLI JSON contains only opaque observation, participant, evidence, and unit IDs;
 fixed decisions, roles, scopes, issue/error codes; bounded counts; and the local
-approval digest/status where applicable. The private matching collector is
-memory-only and has no public serialization. Names, identity values, roster
+approval digest/status where applicable. The private matching collectors are
+memory-only and have no public serialization. Names, identity values, roster
 cells, paths, filenames, previews, raw OCR/text, tokens, ports, private notes,
 and parser diagnostics stay local and are never returned to WP. WP receives the
 same bounded fixed JSON envelope by calling the local script; no CTV executable,

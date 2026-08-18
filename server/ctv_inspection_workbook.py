@@ -37,6 +37,32 @@ _CONTENT_TYPES_PART = "[Content_Types].xml"
 _WORKBOOK_PART = "xl/workbook.xml"
 _WORKBOOK_RELS_PART = "xl/_rels/workbook.xml.rels"
 _OLE_COMPOUND_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_PRIVATE_ROSTER_MAX_ROWS = 10_000
+_PRIVATE_ROSTER_MAX_CELLS = 100_000
+_PRIVATE_ROSTER_FIELDS = (
+    "name",
+    "identity",
+    "faCode",
+    "taxId",
+    "birthDate",
+    "bankAccount",
+    "serviceFee",
+    "product",
+)
+_PRIVATE_ROSTER_FIELD_SET = frozenset(_PRIVATE_ROSTER_FIELDS)
+_PRIVATE_ROSTER_BLOCKING_ISSUES = (
+    "roster-header-missing",
+    "roster-row-invalid",
+    "roster-identity-duplicate",
+    "roster-over-limit",
+    "roster-unreadable",
+)
+_PRIVATE_ROSTER_PACKAGE_ISSUES = (
+    "roster-fa-code-blank",
+    "roster-fa-code-conflict",
+    "roster-fa-code-missing",
+    "roster-header-duplicate",
+)
 
 
 class _OutputLimitExceeded(RuntimeError):
@@ -181,10 +207,121 @@ class PackageWorkbookError(RuntimeError):
         super().__init__(code)
 
 
+class PrivateRosterSinkFailure(RuntimeError):
+    """Fixed internal boundary for a caller-owned private roster sink."""
+
+    def __init__(self) -> None:
+        super().__init__("inspection-private-roster-sink-failed")
+
+
 @dataclass(frozen=True)
 class WorksheetValues:
     worksheet_index: int
     rows: tuple[tuple[object, ...], ...] = field(repr=False)
+
+
+def _exact_private_roster_pairs(value, name: str) -> tuple[tuple[str, str], ...]:
+    if type(value) is not tuple or any(
+        type(pair) is not tuple or len(pair) != 2 for pair in value
+    ):
+        raise TypeError(f"{name} must contain exact pairs")
+    if any(type(key) is not str or type(item) is not str for key, item in value):
+        raise TypeError(f"{name} pairs must contain exact strings")
+    keys = tuple(key for key, _item in value)
+    if (
+        any(key not in _PRIVATE_ROSTER_FIELD_SET for key in keys)
+        or len(keys) != len(set(keys))
+        or keys != tuple(sorted(keys))
+    ):
+        raise ValueError(f"{name} must use unique canonical fields")
+    if any(len(item) > 256 for _key, item in value):
+        raise ValueError(f"{name} values must stay within the cell limit")
+    return value
+
+
+def _exact_private_roster_issues(value, allowed, name: str) -> None:
+    if type(value) is not tuple or any(type(code) is not str for code in value):
+        raise TypeError(f"{name} must contain exact strings")
+    positions = {code: index for index, code in enumerate(allowed)}
+    if (
+        any(code not in positions for code in value)
+        or len(value) != len(set(value))
+        or value != tuple(sorted(value, key=positions.__getitem__))
+    ):
+        raise ValueError(f"{name} must use approved ordered codes")
+
+
+@dataclass(frozen=True)
+class PrivateRosterCandidateRow:
+    row_index: int
+    name: str = field(repr=False)
+    identity: str = field(repr=False)
+    values: tuple[tuple[str, str], ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.row_index) is not int:
+            raise TypeError("private roster row index must be an exact integer")
+        if not 1 <= self.row_index <= _PRIVATE_ROSTER_MAX_ROWS:
+            raise ValueError("private roster row index exceeds its bound")
+        if type(self.name) is not str or type(self.identity) is not str:
+            raise TypeError("private roster identity fields must be exact strings")
+        if not self.name or not self.identity:
+            raise ValueError("private roster identity fields must be present")
+        pairs = _exact_private_roster_pairs(self.values, "private roster values")
+        private_values = dict(pairs)
+        if (
+            private_values.get("name") != self.name
+            or private_values.get("identity") != self.identity
+        ):
+            raise ValueError("private roster identity fields must agree")
+
+
+@dataclass(frozen=True)
+class PrivateRosterCandidateFacts:
+    worksheet_index: int
+    rows: tuple[PrivateRosterCandidateRow, ...] = field(repr=False)
+    blocking_issue_codes: tuple[str, ...]
+    package_issue_codes: tuple[str, ...]
+    canonical_to_source_columns: tuple[tuple[str, str], ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.worksheet_index) is not int:
+            raise TypeError("worksheet index must be an exact integer")
+        if not 1 <= self.worksheet_index <= 100:
+            raise ValueError("worksheet index exceeds its bound")
+        if type(self.rows) is not tuple or any(
+            type(row) is not PrivateRosterCandidateRow for row in self.rows
+        ):
+            raise TypeError("private roster rows must be exact records")
+        for row in self.rows:
+            row.__post_init__()
+        row_indexes = tuple(row.row_index for row in self.rows)
+        if (
+            len(self.rows) > _PRIVATE_ROSTER_MAX_ROWS
+            or len(row_indexes) != len(set(row_indexes))
+            or row_indexes != tuple(sorted(row_indexes))
+        ):
+            raise ValueError("private roster rows must be unique and ordered")
+        _exact_private_roster_issues(
+            self.blocking_issue_codes,
+            _PRIVATE_ROSTER_BLOCKING_ISSUES,
+            "private roster blocking issues",
+        )
+        _exact_private_roster_issues(
+            self.package_issue_codes,
+            _PRIVATE_ROSTER_PACKAGE_ISSUES,
+            "private roster package issues",
+        )
+        columns = _exact_private_roster_pairs(
+            self.canonical_to_source_columns,
+            "private roster source columns",
+        )
+        fields = tuple(name for name, _column in columns)
+        if any(
+            tuple(name for name, _value in row.values) != fields
+            for row in self.rows
+        ):
+            raise ValueError("private roster row fields must match source columns")
 
 
 class _UnreadableWorkbookError(ValueError):
@@ -1338,6 +1475,41 @@ def _private_scalar_text(value: object, character_limit: int):
     return text[:character_limit], False
 
 
+def _private_roster_scalar_text(value: object, character_limit: int) -> str:
+    if value is None or type(value) not in {str, int, float}:
+        return ""
+    try:
+        text = str(value).strip()
+    except Exception:
+        return ""
+    if len(text) > character_limit:
+        return ""
+    return text
+
+
+def _private_roster_facts(
+    worksheet_index: int,
+    *,
+    rows=(),
+    blocking_issues=(),
+    package_issues=(),
+    columns=(),
+) -> PrivateRosterCandidateFacts:
+    blocking = set(blocking_issues)
+    package = set(package_issues)
+    return PrivateRosterCandidateFacts(
+        worksheet_index=worksheet_index,
+        rows=tuple(rows),
+        blocking_issue_codes=tuple(
+            code for code in _PRIVATE_ROSTER_BLOCKING_ISSUES if code in blocking
+        ),
+        package_issue_codes=tuple(
+            code for code in _PRIVATE_ROSTER_PACKAGE_ISSUES if code in package
+        ),
+        canonical_to_source_columns=tuple(columns),
+    )
+
+
 def _canonical_signals(signal_set) -> tuple[str, ...]:
     return tuple(code for code in SIGNAL_ORDER if code in signal_set)
 
@@ -1426,6 +1598,10 @@ def _inspect_worksheet(
                 ),
             ),
             0,
+            _private_roster_facts(
+                unit_index,
+                blocking_issues=("roster-over-limit",),
+            ),
         )
     quota = cell_bound
     consumed = 0
@@ -1436,20 +1612,39 @@ def _inspect_worksheet(
     qualifying_data_rows = 0
     row_pattern = False
     scalar_over_limit = False
+    candidate_header = None
+    candidate_rows = []
+    candidate_issues = set()
+    candidate_package_issues = set()
 
     if quota:
-        for row in worksheet.iter_rows():
+        for row_index, row in enumerate(worksheet.iter_rows(), start=1):
             if consumed >= quota:
                 break
             populated_columns = set()
             row_signals = set()
             row_header_categories: dict[int, tuple[str, ...]] = {}
+            candidate_values = []
+            candidate_formula = False
+            candidate_nonblank = False
             for column_index, cell in enumerate(row, start=1):
                 if consumed >= quota:
                     break
                 consumed += 1
+                raw_value = cell.value
+                if raw_value is not None:
+                    candidate_nonblank = True
+                try:
+                    candidate_formula = candidate_formula or cell.data_type == "f"
+                except Exception:
+                    candidate_formula = True
+                candidate_values.append(
+                    ""
+                    if candidate_formula and getattr(cell, "data_type", None) == "f"
+                    else _private_roster_scalar_text(raw_value, character_limit)
+                )
                 private_text, truncated = _private_scalar_text(
-                    cell.value,
+                    raw_value,
                     character_limit,
                 )
                 if truncated:
@@ -1476,7 +1671,55 @@ def _inspect_worksheet(
                     private_text = ""
                     row_signals.update(cell_signals)
             if scalar_over_limit:
+                candidate_issues.add("roster-over-limit")
                 break
+            canonical_columns = {
+                field_name: [
+                    column_index - 1
+                    for column_index, categories in row_header_categories.items()
+                    if field_name in categories
+                ]
+                for field_name in _PRIVATE_ROSTER_FIELDS
+            }
+            if (
+                candidate_header is None
+                and canonical_columns["name"]
+                and canonical_columns["identity"]
+            ):
+                candidate_header = {
+                    field_name: (positions[0], candidate_values[positions[0]])
+                    for field_name, positions in canonical_columns.items()
+                    if positions
+                }
+                if any(len(positions) > 1 for positions in canonical_columns.values()):
+                    candidate_package_issues.add("roster-header-duplicate")
+                if "faCode" not in candidate_header:
+                    candidate_package_issues.add("roster-fa-code-missing")
+            elif candidate_header is not None and candidate_nonblank:
+                if row_index > _PRIVATE_ROSTER_MAX_ROWS or candidate_formula:
+                    candidate_issues.add("roster-row-invalid")
+                else:
+                    row_values = {
+                        field_name: (
+                            candidate_values[column_index]
+                            if column_index < len(candidate_values)
+                            else ""
+                        )
+                        for field_name, (column_index, _label) in candidate_header.items()
+                    }
+                    name = row_values.get("name", "")
+                    identity = row_values.get("identity", "")
+                    if not name or not identity:
+                        candidate_issues.add("roster-row-invalid")
+                    else:
+                        candidate_rows.append(
+                            PrivateRosterCandidateRow(
+                                row_index=row_index,
+                                name=name,
+                                identity=identity,
+                                values=tuple(sorted(row_values.items())),
+                            )
+                        )
             payment_columns = {
                 column_index
                 for column_index, categories in row_header_categories.items()
@@ -1518,7 +1761,41 @@ def _inspect_worksheet(
                 ),
             ),
             consumed,
+            _private_roster_facts(
+                unit_index,
+                blocking_issues=("roster-over-limit",),
+            ),
         )
+
+    if candidate_header is None:
+        candidate_issues.add("roster-header-missing")
+    if not candidate_rows:
+        candidate_issues.add("roster-row-invalid")
+    identities = tuple(row.identity for row in candidate_rows)
+    if len(identities) != len(set(identities)):
+        candidate_issues.add("roster-identity-duplicate")
+    fa_codes = {dict(row.values).get("faCode", "") for row in candidate_rows}
+    if not fa_codes or "" in fa_codes:
+        candidate_package_issues.add("roster-fa-code-blank")
+    if len(fa_codes - {""}) > 1:
+        candidate_package_issues.add("roster-fa-code-conflict")
+    source_columns = (
+        tuple(
+            (field_name, label)
+            for field_name, (_column_index, label) in sorted(
+                candidate_header.items()
+            )
+        )
+        if candidate_header is not None
+        else ()
+    )
+    roster_facts = _private_roster_facts(
+        unit_index,
+        rows=candidate_rows,
+        blocking_issues=candidate_issues,
+        package_issues=candidate_package_issues,
+        columns=source_columns,
+    )
 
     structural_signals = signals_from_private_text(
         "",
@@ -1545,6 +1822,7 @@ def _inspect_worksheet(
             ),
         ),
         consumed,
+        roster_facts,
     )
 
 
@@ -1553,12 +1831,15 @@ def inspect_workbook(
     *,
     limits: InspectionLimits,
     remaining_units: int | None = None,
+    _private_roster_sink=None,
 ) -> InspectionAdapterResult:
     """Inspect each actual worksheet from one immutable in-memory snapshot."""
     if type(snapshot) is not bytes:
         raise TypeError("inspection snapshot must be bytes")
     if type(limits) is not InspectionLimits:
         raise TypeError("inspection limits must be valid")
+    if _private_roster_sink is not None and not callable(_private_roster_sink):
+        raise TypeError("private roster sink must be callable")
     if remaining_units is None:
         remaining_units = limits.max_units
     if (
@@ -1615,7 +1896,7 @@ def inspect_workbook(
             except Exception:
                 worksheet_hidden = False
             try:
-                unit, consumed = _inspect_worksheet(
+                unit, consumed, roster_facts = _inspect_worksheet(
                     worksheet,
                     unit_index,
                     embedded_media=embedded_media,
@@ -1639,8 +1920,17 @@ def inspect_workbook(
                     ),
                 )
                 consumed = remaining_cells
+                roster_facts = _private_roster_facts(
+                    unit_index,
+                    blocking_issues=("roster-over-limit",),
+                )
             remaining_cells -= consumed
             units.append(unit)
+            if _private_roster_sink is not None:
+                try:
+                    _private_roster_sink(unit_index, roster_facts)
+                except Exception:
+                    raise PrivateRosterSinkFailure() from None
         return InspectionAdapterResult(
             "inspected",
             worksheet_count,
@@ -1651,6 +1941,7 @@ def inspect_workbook(
         InspectionUnitCountExceededError,
         WorkbookParserBoundaryExceededError,
         WorkbookWorksheetCountExceededError,
+        PrivateRosterSinkFailure,
     ):
         raise
     except Exception:

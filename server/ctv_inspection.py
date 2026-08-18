@@ -25,6 +25,7 @@ from ctv_inspection_model import (
     InspectionUnitEvidence,
 )
 from ctv_inspection_workbook import (
+    PrivateRosterSinkFailure,
     WorkbookParserBoundaryExceededError,
     WorkbookWorksheetCountExceededError,
     inspect_workbook,
@@ -145,6 +146,7 @@ def _inspect_observed_source(
     ocr_runner,
     remaining_units: int,
     _private_text_sink=None,
+    _private_roster_sink=None,
 ) -> tuple[InspectionSource, tuple[InspectionUnitEvidence, ...]]:
     inventory_issues = source.issue_codes
     if "symlink" in inventory_issues or "special-file" in inventory_issues:
@@ -178,6 +180,10 @@ def _inspect_observed_source(
             _private_text_sink(
                 source.evidence_id, unit_kind, unit_index, private_text
             )
+
+    def capture_roster_facts(unit_index, facts) -> None:
+        if _private_roster_sink is not None:
+            _private_roster_sink(source.evidence_id, unit_index, facts)
 
     source_cap = {
         "pdf": limits.max_pdf_source_bytes,
@@ -228,11 +234,13 @@ def _inspect_observed_source(
                 adapter_arguments["_private_text_sink"] = capture_unit_text
             adapter_result = inspect_pdf(snapshot, **adapter_arguments)
         elif source.detected_type == "xlsx":
-            adapter_result = inspect_workbook(
-                snapshot,
-                limits=limits,
-                remaining_units=remaining_units,
-            )
+            adapter_arguments = {
+                "limits": limits,
+                "remaining_units": remaining_units,
+            }
+            if _private_roster_sink is not None:
+                adapter_arguments["_private_roster_sink"] = capture_roster_facts
+            adapter_result = inspect_workbook(snapshot, **adapter_arguments)
         else:
             if remaining_units < 1:
                 raise InspectionUnitCountExceededError()
@@ -282,6 +290,7 @@ def _inspection_result(
     ocr_session,
     snapshot_source=None,
     _private_text_sink=None,
+    _private_roster_sink=None,
 ) -> InspectionResult | str:
     if snapshot_source is None:
         snapshot_source = observation.snapshot
@@ -317,6 +326,7 @@ def _inspection_result(
             ocr_runner=bound_ocr,
             remaining_units=limits.max_units - len(units),
             _private_text_sink=_private_text_sink,
+            _private_roster_sink=_private_roster_sink,
         )
         for evidence in unit_evidence:
             if len(units) >= limits.max_units:
@@ -422,6 +432,7 @@ def inspect_observation(
     limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
     _snapshot_source=None,
     _private_text_sink: Callable[[str, str, int, str], None] | None = None,
+    _private_roster_sink: Callable[..., None] | None = None,
 ) -> InspectionResult:
     """Inspect one caller-owned live observation without closing it."""
     if type(observation) is not InventoryObservation:
@@ -430,6 +441,8 @@ def inspect_observation(
         raise TypeError("snapshot source must be callable")
     if _private_text_sink is not None and not callable(_private_text_sink):
         raise TypeError("private text sink must be callable")
+    if _private_roster_sink is not None and not callable(_private_roster_sink):
+        raise TypeError("private roster sink must be callable")
     limits = _bounded_limits(limits)
     ocr_session = open_local_ocr()
     result = _UNKNOWN_INVENTORY_FAILURE
@@ -442,8 +455,9 @@ def inspect_observation(
             ocr_session=ocr_session,
             snapshot_source=_snapshot_source,
             _private_text_sink=_private_text_sink,
+            _private_roster_sink=_private_roster_sink,
         )
-    except PrivateTextSinkFailure:
+    except (PrivateTextSinkFailure, PrivateRosterSinkFailure):
         internal_failure = True
     except InventoryError as error:
         failure_code = _mapped_inventory_error_code(error)

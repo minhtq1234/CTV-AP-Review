@@ -9,6 +9,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -278,6 +279,10 @@ _INTERNAL_PREPARED_CHECK_CODES = (
     "production-projection-valid",
     "validation-report-consistent",
 )
+
+
+class _ReviewTerminalMismatch(ValueError):
+    pass
 _PUBLIC_PREPARED_CHECK_CODES = (
     "manifest-valid",
     "assignments-valid",
@@ -597,6 +602,7 @@ def proposal_review_source(source_root: Path, *, review_driver=None):
     from ctv_grouping_evidence import GroupingEvidence
     from ctv_inventory import open_inventory_observation
     from ctv_proposal import ProposalState
+    from ctv_proposal_roster import RosterCandidateEvidence
 
     if review_driver is None:
         from ctv_proposal_review import run_local_review
@@ -607,6 +613,9 @@ def proposal_review_source(source_root: Path, *, review_driver=None):
 
     with open_inventory_observation(source_root) as observation:
         grouping_evidence = GroupingEvidence()
+        roster_evidence = RosterCandidateEvidence()
+        state = None
+        roster_candidates = ()
         try:
             for item in observation.result.items:
                 if item.duplicate_group_id is not None:
@@ -617,14 +626,21 @@ def proposal_review_source(source_root: Path, *, review_driver=None):
             inspection = inspect_observation(
                 observation,
                 _private_text_sink=grouping_evidence.capture,
+                _private_roster_sink=roster_evidence.capture,
             )
+            roster_candidates = roster_evidence.candidates_for(inspection)
             state = ProposalState.from_inspection(
                 observation,
                 inspection,
                 _grouping_evidence=grouping_evidence,
+                _roster_candidates=roster_candidates,
             )
-            result = review_driver(state)
+            result = _bind_state_terminal(state, review_driver(state))
         finally:
+            if state is not None:
+                state._clear_private_review_facts()
+            roster_candidates = ()
+            roster_evidence.clear()
             grouping_evidence.clear()
     return result
 
@@ -760,9 +776,15 @@ def _require_nonnegative_counts(
 
 
 def _require_safe_codes(value, name: str) -> list[str]:
-    if type(value) is not list or any(
-        type(code) is not str or _SAFE_CODE.fullmatch(code) is None
-        for code in value
+    if (
+        type(value) is not list
+        or len(value) > 10_000
+        or any(
+            type(code) is not str or _SAFE_CODE.fullmatch(code) is None
+            for code in value
+        )
+        or len(value) != len(set(value))
+        or value != sorted(value)
     ):
         raise ValueError(f"{name} must contain fixed codes")
     return list(value)
@@ -883,7 +905,7 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
                     "participantHandles": list(target_handles),
                 },
             }
-        elif decision == "excluded":
+        elif type(decision) is str and decision == "excluded":
             item = _require_exact_dict(
                 value,
                 frozenset({"unitId", "decision", "reason"}),
@@ -1075,6 +1097,38 @@ def _normalize_review_terminal(result: dict) -> dict[str, object]:
     raise ValueError("review outcome must be terminal")
 
 
+def _canonical_terminal_bytes(value: dict) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _bind_state_terminal(state, result) -> dict[str, object]:
+    normalized = _normalize_proposal_terminal(result)
+    outcome = normalized["outcome"]
+    proposal_digest = (
+        normalized["proposalDigest"] if outcome == "approved" else None
+    )
+    try:
+        authoritative = state._authoritative_terminal_result(
+            outcome,
+            proposal_digest,
+        )
+    except ValueError:
+        raise _ReviewTerminalMismatch() from None
+    if type(authoritative) is not dict:
+        raise _ReviewTerminalMismatch()
+    if not hmac.compare_digest(
+        _canonical_terminal_bytes(normalized),
+        _canonical_terminal_bytes(authoritative),
+    ):
+        raise _ReviewTerminalMismatch()
+    return authoritative
+
+
 def _normalize_prepared_result(result) -> dict[str, object]:
     to_dict = getattr(result, "to_dict", None)
     if not callable(to_dict):
@@ -1230,6 +1284,7 @@ def _package_result(
         )
         from ctv_package_writer import PackageWriterError, prepare_package
         from ctv_proposal import ProposalState
+        from ctv_proposal_roster import RosterCandidateEvidence
         from ctv_proposal_review import ReviewError, run_local_review
 
         inspection_error_type = InspectionError
@@ -1249,6 +1304,10 @@ def _package_result(
             with open_inventory_observation(source_root) as observation:
                 output.require_disjoint(observation.directory_identity_chain())
                 grouping_evidence = GroupingEvidence()
+                roster_evidence = RosterCandidateEvidence()
+                roster_candidates = ()
+                state = None
+                approved = None
                 try:
                     for item in observation.result.items:
                         if item.duplicate_group_id is not None:
@@ -1259,13 +1318,25 @@ def _package_result(
                     inspection = inspect_observation(
                         observation,
                         _private_text_sink=grouping_evidence.capture,
+                        _private_roster_sink=roster_evidence.capture,
                     )
+                    roster_candidates = roster_evidence.candidates_for(inspection)
                     state = ProposalState.from_inspection(
                         observation,
                         inspection,
                         _grouping_evidence=grouping_evidence,
+                        _roster_candidates=roster_candidates,
                     )
-                    terminal = _normalize_proposal_terminal(review_driver(state))
+                    try:
+                        terminal = _bind_state_terminal(
+                            state,
+                            review_driver(state),
+                        )
+                    except _ReviewTerminalMismatch:
+                        return (
+                            _package_controlled_failure("package-approval-invalid"),
+                            2,
+                        )
                     outcome = terminal.get("outcome")
                     if outcome in {"draft", "cancelled"}:
                         return (
@@ -1295,6 +1366,11 @@ def _package_result(
                         observation, inspection, approved, output
                     )
                 finally:
+                    approved = None
+                    if state is not None:
+                        state._clear_private_review_facts()
+                    roster_candidates = ()
+                    roster_evidence.clear()
                     grouping_evidence.clear()
         return (
             succeeded(

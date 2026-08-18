@@ -549,3 +549,78 @@ def test_private_roster_values_are_absent_from_candidate_row_and_selection_repr(
     assert all(value not in repr(candidates[0]) for value in _PRIVATE)
     assert all(value not in repr(candidates[0].rows[0]) for value in _PRIVATE)
     assert all(value not in repr(selection) for value in _PRIVATE)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_status", "expected_issue"),
+    (
+        ("missing-row", "invalid", "roster-row-invalid"),
+        ("formula-row", "invalid", "roster-row-invalid"),
+        ("duplicate-identity", "invalid", "roster-identity-duplicate"),
+        ("over-limit", "missing", None),
+        ("malformed", "missing", None),
+    ),
+)
+def test_original_parse_preloaded_roster_controls_remain_fail_closed(
+    case,
+    expected_status,
+    expected_issue,
+    tmp_path,
+):
+    import ctv_inventory
+    from ctv_inspection import inspect_observation
+    from ctv_inspection_model import InspectionLimits
+    from ctv_proposal_roster import RosterCandidateEvidence
+
+    source = tmp_path / f"synthetic-{case}"
+    source.mkdir()
+    if case == "missing-row":
+        snapshot = _workbook_bytes(headers=("name", "identity", "faCode", "So tien"))
+        limits = InspectionLimits()
+    elif case == "formula-row":
+        snapshot = _workbook_bytes(
+            headers=("name", "identity", "faCode", "So tien"),
+            rows=((_PRIVATE[0], _PRIVATE[1], _PRIVATE[2], 100),),
+            formula_only_row=True,
+        )
+        limits = InspectionLimits()
+    elif case == "duplicate-identity":
+        snapshot = _workbook_bytes(
+            headers=("name", "identity", "faCode", "So tien"),
+            rows=(
+                (_PRIVATE[0], _PRIVATE[1], _PRIVATE[2], 100),
+                ("Other Person", _PRIVATE[1], _PRIVATE[2], 200),
+            ),
+        )
+        limits = InspectionLimits()
+    elif case == "over-limit":
+        snapshot = _workbook_bytes(
+            headers=("name", "identity", "faCode", "So tien"),
+            rows=((_PRIVATE[0], _PRIVATE[1], _PRIVATE[2], 100),),
+        )
+        limits = InspectionLimits(max_cells_per_workbook=4)
+    else:
+        snapshot = b"PK\x03\x04malformed-private-workbook"
+        limits = InspectionLimits()
+    (source / "roster.xlsx").write_bytes(snapshot)
+    evidence = RosterCandidateEvidence()
+
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        inspection = inspect_observation(
+            observation,
+            limits=limits,
+            _private_roster_sink=evidence.capture,
+        )
+        candidates = evidence.candidates_for(inspection)
+        selection = choose_automatic_roster(candidates)
+
+    assert selection.status == expected_status
+    assert selection.status != "selected"
+    if expected_issue is not None:
+        assert expected_issue in candidates[0].blocking_issue_codes
+    assert all(value not in repr(evidence) for value in _PRIVATE)
+    assert all(value not in repr(candidates) for value in _PRIVATE)
+    evidence.clear()
+    assert evidence.complete is False
+    with pytest.raises(ValueError, match="roster candidate evidence is cleared"):
+        evidence.candidates_for(inspection)

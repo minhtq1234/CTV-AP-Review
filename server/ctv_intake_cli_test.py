@@ -1,4 +1,5 @@
 import ast
+import copy
 import importlib
 from io import BytesIO
 import json
@@ -124,6 +125,28 @@ class _EqualitySpoof:
         return True
 
 
+class _HostileTerminalValue:
+    marker = "PRIVATE-HOSTILE-TERMINAL-079123456789"
+
+    def __init__(self):
+        self.callbacks = 0
+
+    def __eq__(self, _other):
+        self.callbacks += 1
+        raise AssertionError(self.marker)
+
+    def __hash__(self):
+        self.callbacks += 1
+        raise AssertionError(self.marker)
+
+    def __str__(self):
+        self.callbacks += 1
+        return self.marker
+
+    def __repr__(self):
+        return self.marker
+
+
 class _TrackingGroupingEvidence:
     instances = []
 
@@ -226,6 +249,7 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
     import ctv_inventory
     import ctv_package_transaction
     import ctv_proposal
+    import ctv_proposal_roster
 
     events = [] if events is None else events
     inspection = object()
@@ -283,6 +307,20 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
             events.append("consume")
             return approved
 
+        def _authoritative_terminal_result(self, outcome, proposal_digest=None):
+            if outcome == "approved" and proposal_digest == _PROPOSAL_DIGEST:
+                return _approved_terminal()
+            if outcome == "cancelled" and proposal_digest is None:
+                return {
+                    "version": "1.0",
+                    "outcome": "cancelled",
+                    "readyToPrepare": False,
+                }
+            raise ValueError("fake state has no matching terminal")
+
+        def _clear_private_review_facts(self):
+            return None
+
     monkeypatch.setattr(
         cli,
         "verify_contract",
@@ -323,7 +361,31 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
         TrackingGroupingEvidence,
     )
 
-    def inspect(observation, *, _private_text_sink):
+    class TrackingRosterCandidateEvidence:
+        instances = []
+
+        def __init__(self):
+            self.cleared = False
+            type(self).instances.append(self)
+
+        def capture(self, *_args):
+            assert self.cleared is False
+
+        def candidates_for(self, inspected):
+            assert inspected is inspection
+            assert self.cleared is False
+            return ()
+
+        def clear(self):
+            self.cleared = True
+
+    monkeypatch.setattr(
+        ctv_proposal_roster,
+        "RosterCandidateEvidence",
+        TrackingRosterCandidateEvidence,
+    )
+
+    def inspect(observation, *, _private_text_sink, _private_roster_sink):
         events.append("inspect")
         _private_text_sink(
             "evidence-0001",
@@ -338,10 +400,12 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
         inspected,
         *,
         _grouping_evidence,
+        _roster_candidates,
     ):
         assert inspected is inspection
         assert _grouping_evidence is TrackingGroupingEvidence.instances[0]
         assert _grouping_evidence.cleared is False
+        assert _roster_candidates == ()
         events.append("state")
         return State()
 
@@ -516,6 +580,7 @@ def _synthetic_exception_first_folder(
     *,
     pdf_pages: int = 1,
     roster_copies: int = 1,
+    participant_count: int = 1,
 ) -> Path:
     source = tmp_path / "synthetic exception first source"
     source.mkdir()
@@ -548,19 +613,20 @@ def _synthetic_exception_first_folder(
                 "So tien",
             )
         )
-        worksheet.append(
-            (
-                "Synthetic Grouped Person",
-                "SYNTHETIC-ID-0001",
-                "FA-SYNTHETIC-GROUPED",
-                "SYNTHETIC-TAX-0001",
-                "1990-01-01",
-                "SYNTHETIC-BANK-0001",
-                "100",
-                "Synthetic Product",
-                "100",
+        for participant_number in range(1, participant_count + 1):
+            worksheet.append(
+                (
+                    f"Synthetic Grouped Person {participant_number}",
+                    f"SYNTHETIC-ID-{participant_number:04d}",
+                    "FA-SYNTHETIC-GROUPED",
+                    f"SYNTHETIC-TAX-{participant_number:04d}",
+                    "1990-01-01",
+                    f"SYNTHETIC-BANK-{participant_number:04d}",
+                    "100",
+                    "Synthetic Product",
+                    "100",
+                )
             )
-        )
         workbook.save(source / f"roster-{index}.xlsx")
         workbook.close()
     return source
@@ -1908,6 +1974,7 @@ def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
     import ctv_inspection
     import ctv_inventory
     import ctv_proposal
+    import ctv_proposal_roster
 
     events = []
     inspection = object()
@@ -1949,9 +2016,32 @@ def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
 
     TrackingGroupingEvidence.instances = []
 
+    class TrackingRosterCandidateEvidence:
+        instances = []
+
+        def __init__(self):
+            self.cleared = False
+            type(self).instances.append(self)
+
+        def capture(self, *_args):
+            assert self.cleared is False
+
+        def candidates_for(self, actual_inspection):
+            assert actual_inspection is inspection
+            assert self.cleared is False
+            return ()
+
+        def clear(self):
+            self.cleared = True
+
     inspection_calls = []
 
-    def inspect_once(observation, *, _private_text_sink):
+    def inspect_once(
+        observation,
+        *,
+        _private_text_sink,
+        _private_roster_sink,
+    ):
         inspection_calls.append(observation)
         assert len(inspection_calls) == 1, "inspection must remain one pass"
         _private_text_sink(
@@ -1993,15 +2083,25 @@ def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
                 "issueCodes": [],
             }
 
+        def _authoritative_terminal_result(self, outcome, proposal_digest=None):
+            assert outcome == "draft"
+            assert proposal_digest is None
+            return self.draft_result()
+
+        def _clear_private_review_facts(self):
+            return None
+
     def state_from_inspection(
         observation,
         actual_inspection,
         *,
         _grouping_evidence,
+        _roster_candidates,
     ):
         assert actual_inspection is inspection
         assert _grouping_evidence is TrackingGroupingEvidence.instances[0]
         assert _grouping_evidence.cleared is False
+        assert _roster_candidates == ()
         events.append("state")
         return State()
 
@@ -2020,6 +2120,11 @@ def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
         ctv_grouping_evidence,
         "GroupingEvidence",
         TrackingGroupingEvidence,
+    )
+    monkeypatch.setattr(
+        ctv_proposal_roster,
+        "RosterCandidateEvidence",
+        TrackingRosterCandidateEvidence,
     )
     monkeypatch.setattr(
         ctv_inventory,
@@ -2052,6 +2157,8 @@ def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
     assert TrackingGroupingEvidence.instances[0].cleared is True
     assert TrackingGroupingEvidence.instances[0].captures == []
     assert TrackingGroupingEvidence.instances[0].duplicates == []
+    assert len(TrackingRosterCandidateEvidence.instances) == 1
+    assert TrackingRosterCandidateEvidence.instances[0].cleared is True
     assert len(inspection_calls) == 1
     assert events == [
         "source-enter",
@@ -2200,6 +2307,336 @@ def test_exception_first_real_no_exception_package_publishes_after_approval(
     assert "SYNTHETIC-ID-0001" not in serialized
     assert str(source) not in serialized
     assert str(output) not in serialized
+
+
+@pytest.mark.parametrize("operation", ("proposal", "package"))
+@pytest.mark.parametrize("poison", ("snapshot", "workbook-parser"))
+def test_production_preprocessing_snapshots_and_parses_each_evidence_once(
+    operation,
+    poison,
+    tmp_path,
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    import ctv_inspection_workbook
+    import ctv_inventory
+    import ctv_proposal_roster
+
+    source = _synthetic_exception_first_folder(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+    original_snapshot = ctv_inventory.InventoryObservation.snapshot
+    original_inspection_loader = ctv_inspection_workbook.openpyxl.load_workbook
+    original_roster_loader = ctv_proposal_roster.load_workbook
+    snapshot_calls = {}
+    parser_calls = []
+    observed_at_review = []
+    retained_states = []
+
+    def one_preprocessing_snapshot(self, evidence_id, *, max_bytes):
+        snapshot_calls[evidence_id] = snapshot_calls.get(evidence_id, 0) + 1
+        if poison == "snapshot" and snapshot_calls[evidence_id] > 1:
+            raise AssertionError("preprocessing acquired one evidence twice")
+        return original_snapshot(self, evidence_id, max_bytes=max_bytes)
+
+    def one_preprocessing_workbook_parse(*args, **kwargs):
+        parser_calls.append(len(parser_calls) + 1)
+        if poison == "workbook-parser" and len(parser_calls) > 1:
+            raise AssertionError("preprocessing parsed one workbook twice")
+        return original_inspection_loader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ctv_inventory.InventoryObservation,
+        "snapshot",
+        one_preprocessing_snapshot,
+    )
+    monkeypatch.setattr(
+        ctv_inspection_workbook.openpyxl,
+        "load_workbook",
+        one_preprocessing_workbook_parse,
+    )
+    monkeypatch.setattr(
+        ctv_proposal_roster,
+        "load_workbook",
+        one_preprocessing_workbook_parse,
+    )
+
+    def review(state):
+        retained_states.append(state)
+        local = state.local_review_snapshot()
+        observed_at_review.append(
+            (dict(snapshot_calls), tuple(parser_calls), local["roster"]["status"])
+        )
+        assert local["roster"]["status"] == "selected"
+        assert len(snapshot_calls) == 2
+        assert set(snapshot_calls.values()) == {1}
+        assert parser_calls == [1]
+
+        # Package rendering intentionally reacquires approved source artifacts.
+        # Restore the acquisition boundary only after preprocessing is proven.
+        monkeypatch.setattr(
+            ctv_inventory.InventoryObservation,
+            "snapshot",
+            original_snapshot,
+        )
+        monkeypatch.setattr(
+            ctv_inspection_workbook.openpyxl,
+            "load_workbook",
+            original_inspection_loader,
+        )
+        monkeypatch.setattr(
+            ctv_proposal_roster,
+            "load_workbook",
+            original_roster_loader,
+        )
+        if operation == "proposal":
+            return state.draft_result()
+        return state.approve(local["summary"]["proposalDigest"])
+
+    argv = (
+        ["proposal", "review", "--source-root", str(source), "--json"]
+        if operation == "proposal"
+        else [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ]
+    )
+    exit_code = cli.main(
+        argv,
+        proposal_review_driver=review if operation == "proposal" else None,
+        package_review_driver=review if operation == "package" else None,
+    )
+
+    payload = _captured_envelope(
+        capsysbinary,
+        "proposal.review" if operation == "proposal" else "package.prepare",
+        "succeeded",
+    )
+    assert exit_code == 0
+    assert len(observed_at_review) == 1
+    assert payload["result"]["outcome"] == (
+        "draft" if operation == "proposal" else "prepared"
+    )
+    assert retained_states[0]._roster_candidates_by_id == {}
+    assert retained_states[0]._roster_rows_private == ()
+    assert "Synthetic Grouped Person" not in repr(retained_states[0])
+
+
+def _forge_approved_terminal(terminal, mutation):
+    forged = copy.deepcopy(terminal)
+    assignments = forged["unitAssignments"]
+    roster = next(item for item in assignments if item.get("role") == "payment-roster")
+    other = next(item for item in assignments if item["unitId"] != roster["unitId"])
+    handles = forged["participantHandles"]
+    if mutation == "case-with-participant":
+        roster["target"] = {
+            "scope": "case",
+            "participantHandles": [handles[0]],
+        }
+    elif mutation == "identity-role-with-case-scope":
+        other["role"] = "identity-front"
+        other["target"] = {"scope": "case", "participantHandles": []}
+    elif mutation == "duplicate-issue-codes":
+        forged["issueCodes"] = [
+            "private-fact-incomplete",
+            "private-fact-incomplete",
+        ]
+    elif mutation == "unbounded-issue-codes":
+        forged["issueCodes"] = ["private-fact-incomplete"] * 10_001
+    elif mutation == "arbitrary-private-looking-issue-code":
+        forged["issueCodes"] = ["private-marker-079123456789"]
+    elif mutation == "participant-order":
+        forged["participantHandles"] = list(reversed(handles))
+    elif mutation == "roster-id":
+        forged["rosterUnitId"] = other["unitId"]
+    elif mutation == "assignment-order":
+        forged["unitAssignments"] = list(reversed(assignments))
+    elif mutation == "assignment-facts":
+        other["role"] = "other-supporting-evidence"
+    else:
+        raise AssertionError(f"unknown terminal mutation: {mutation}")
+    return forged
+
+
+@pytest.mark.parametrize("operation", ("proposal", "package"))
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "case-with-participant",
+        "identity-role-with-case-scope",
+        "duplicate-issue-codes",
+        "unbounded-issue-codes",
+        "arbitrary-private-looking-issue-code",
+        "participant-order",
+        "roster-id",
+        "assignment-order",
+        "assignment-facts",
+    ),
+)
+def test_callback_terminal_must_equal_the_state_owned_canonical_result(
+    operation,
+    mutation,
+    tmp_path,
+    capsysbinary,
+):
+    cli = _module()
+    source = _synthetic_exception_first_folder(tmp_path, participant_count=2)
+    output = tmp_path / "output"
+    output.mkdir()
+    writer_calls = []
+
+    def return_forged_approval(state):
+        local = state.local_review_snapshot()
+        assert local["review"]["exceptions"] == []
+        terminal = state.approve(local["summary"]["proposalDigest"])
+        return _forge_approved_terminal(terminal, mutation)
+
+    def writer(*args):
+        writer_calls.append(args)
+        return SimpleNamespace(to_dict=lambda: copy.deepcopy(_PREPARED_RESULT))
+
+    argv = (
+        ["proposal", "review", "--source-root", str(source), "--json"]
+        if operation == "proposal"
+        else [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ]
+    )
+    exit_code = cli.main(
+        argv,
+        proposal_review_driver=(
+            return_forged_approval if operation == "proposal" else None
+        ),
+        package_review_driver=(
+            return_forged_approval if operation == "package" else None
+        ),
+        package_prepare_driver=writer if operation == "package" else None,
+    )
+
+    payload = _captured_envelope(
+        capsysbinary,
+        "proposal.review" if operation == "proposal" else "package.prepare",
+        "failed",
+    )
+    if operation == "proposal" or mutation in {
+        "duplicate-issue-codes",
+        "unbounded-issue-codes",
+    }:
+        assert exit_code == 1
+        expected_code = "internal-error"
+    else:
+        assert exit_code == 2
+        expected_code = "package-approval-invalid"
+    assert payload["errors"][0]["code"] == expected_code
+    assert writer_calls == []
+    assert list(output.iterdir()) == []
+    assert "private-marker-079123456789" not in json.dumps(payload)
+
+
+def _replace_terminal_value(terminal, field, hostile):
+    assignments = terminal["unitAssignments"]
+    roster = next(item for item in assignments if item.get("role") == "payment-roster")
+    if field == "outcome":
+        terminal["outcome"] = hostile
+    elif field == "observation-id":
+        terminal["observationId"] = hostile
+    elif field == "roster-id":
+        terminal["rosterUnitId"] = hostile
+    elif field == "participant-handle":
+        terminal["participantHandles"][0] = hostile
+    elif field == "unit-id":
+        roster["unitId"] = hostile
+    elif field == "decision":
+        roster["decision"] = hostile
+    elif field == "role":
+        roster["role"] = hostile
+    elif field == "scope":
+        roster["target"]["scope"] = hostile
+    elif field == "target-participant":
+        roster["target"]["participantHandles"] = [hostile]
+    elif field == "issue-code":
+        terminal["issueCodes"] = [hostile]
+    elif field == "approval-status":
+        terminal["approval"]["status"] = hostile
+    elif field == "approval-digest":
+        terminal["approval"]["approvedProposalDigest"] = hostile
+    else:
+        raise AssertionError(f"unknown hostile terminal field: {field}")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "outcome",
+        "observation-id",
+        "roster-id",
+        "participant-handle",
+        "unit-id",
+        "decision",
+        "role",
+        "scope",
+        "target-participant",
+        "issue-code",
+        "approval-status",
+        "approval-digest",
+    ),
+)
+def test_hostile_terminal_values_are_type_rejected_before_callbacks(
+    field,
+    tmp_path,
+    capsysbinary,
+):
+    cli = _module()
+    source = _synthetic_exception_first_folder(tmp_path, participant_count=2)
+    output = tmp_path / "output"
+    output.mkdir()
+    hostile = _HostileTerminalValue()
+    writer_calls = []
+
+    def hostile_approval(state):
+        local = state.local_review_snapshot()
+        terminal = state.approve(local["summary"]["proposalDigest"])
+        _replace_terminal_value(terminal, field, hostile)
+        return terminal
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ],
+        package_review_driver=hostile_approval,
+        package_prepare_driver=lambda *args: writer_calls.append(args),
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert hostile.callbacks == 0
+    assert writer_calls == []
+    assert list(output.iterdir()) == []
+    assert hostile.marker not in json.dumps(payload)
 
 
 def test_exception_first_ambiguous_roster_stays_one_roster_exception(
@@ -2872,6 +3309,7 @@ def test_package_draft_and_cancel_write_nothing(
     import ctv_grouping_evidence
     import ctv_inspection
     import ctv_proposal
+    import ctv_proposal_roster
 
     source = tmp_path / "source"
     source.mkdir()
@@ -2898,6 +3336,27 @@ def test_package_draft_and_cancel_write_nothing(
             events.append("consume")
             raise AssertionError("draft/cancel must not consume approval")
 
+        def _authoritative_terminal_result(self, actual_outcome, proposal_digest=None):
+            assert actual_outcome == outcome
+            assert proposal_digest is None
+            return dict(terminal)
+
+        def _clear_private_review_facts(self):
+            return None
+
+    class RosterEvidence:
+        def __init__(self):
+            self.cleared = False
+
+        def capture(self, *_args):
+            assert self.cleared is False
+
+        def candidates_for(self, _inspection):
+            return ()
+
+        def clear(self):
+            self.cleared = True
+
     monkeypatch.setattr(
         cli,
         "verify_contract",
@@ -2906,12 +3365,17 @@ def test_package_draft_and_cancel_write_nothing(
     monkeypatch.setattr(
         ctv_inspection,
         "inspect_observation",
-        lambda _observation, *, _private_text_sink: object(),
+        lambda _observation, *, _private_text_sink, _private_roster_sink: object(),
+    )
+    monkeypatch.setattr(
+        ctv_proposal_roster,
+        "RosterCandidateEvidence",
+        RosterEvidence,
     )
     monkeypatch.setattr(
         ctv_proposal.ProposalState,
         "from_inspection",
-        lambda _observation, _inspection, *, _grouping_evidence: State(),
+        lambda _observation, _inspection, *, _grouping_evidence, _roster_candidates: State(),
     )
     writer_calls = []
 
@@ -3440,7 +3904,7 @@ def test_nonpackage_forms_do_not_import_package_writer_modules(
         assert b"private-poisoned-package-import" not in result.stderr
 
 
-def test_proposal_review_output_over_16_mib_is_replaced_before_one_stdout_write(
+def test_proposal_review_unbounded_duplicate_issue_codes_are_rejected_before_output(
     monkeypatch, capsysbinary
 ):
     cli = _module()
@@ -3477,12 +3941,12 @@ def test_proposal_review_output_over_16_mib_is_replaced_before_one_stdout_write(
     )
 
     payload = _captured_envelope(capsysbinary, "proposal.review", "failed")
-    assert exit_code == 2
+    assert exit_code == 1
     assert payload["result"] == {}
     assert payload["errors"] == [
         {
-            "code": "proposal-output-too-large",
-            "message": "The local proposal review result exceeded its safe limit.",
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
         }
     ]
 

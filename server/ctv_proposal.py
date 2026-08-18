@@ -21,6 +21,7 @@ from ctv_proposal_roster import (
     RosterSelection,
     choose_automatic_roster,
     load_roster_candidates,
+    validate_roster_candidates,
 )
 
 
@@ -212,6 +213,7 @@ class ProposalState:
         inspection,
         snapshot_source=None,
         grouping_evidence=None,
+        roster_candidates=None,
     ):
         self._observation = observation
         self._inspection = inspection
@@ -255,7 +257,11 @@ class ProposalState:
             }
             for source in inspection.sources
         )
-        candidates = load_roster_candidates(inspection, self._snapshot_source)
+        candidates = (
+            load_roster_candidates(inspection, self._snapshot_source)
+            if roster_candidates is None
+            else validate_roster_candidates(inspection, roster_candidates)
+        )
         self._roster_candidates_by_id = {
             candidate.unit_id: candidate for candidate in candidates
         }
@@ -284,6 +290,7 @@ class ProposalState:
         *,
         _snapshot_source=None,
         _grouping_evidence=None,
+        _roster_candidates=None,
     ):
         if type(observation) is not InventoryObservation:
             raise TypeError("observation must be a live inventory observation")
@@ -298,11 +305,14 @@ class ProposalState:
             and type(_grouping_evidence) is not GroupingEvidence
         ):
             raise TypeError("grouping evidence must be exact GroupingEvidence")
+        if _roster_candidates is not None and type(_roster_candidates) is not tuple:
+            raise TypeError("preloaded roster candidates must be an exact tuple")
         return cls(
             observation,
             inspection,
             _snapshot_source,
             _grouping_evidence,
+            _roster_candidates,
         )
 
     def _prepare_grouped_roster_transition(
@@ -1715,13 +1725,7 @@ class ProposalState:
     def cancelled_result(self):
         return {"version": _VERSION, "outcome": "cancelled", "readyToPrepare": False}
 
-    def approve(self, expected_digest):
-        if type(expected_digest) is not str or not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
-            raise ValueError("expected proposal digest must be a SHA-256 digest")
-        summary = self.approval_summary()
-        if not self._ready() or not hmac.compare_digest(expected_digest, summary["proposalDigest"]):
-            raise ValueError("proposal is not ready for approval")
-        self._approved_package_digest = summary["proposalDigest"]
+    def _approved_result(self, summary):
         assignments, dispositions = self._public_assignments()
         return {
             "version": _VERSION, "outcome": "approved", "observationId": self._inspection.observation_id,
@@ -1731,6 +1735,54 @@ class ProposalState:
             "issueCodes": self._issue_codes(),
             "approval": {"status": "user-approved", "approvedProposalDigest": summary["proposalDigest"]},
         }
+
+    def approve(self, expected_digest):
+        if type(expected_digest) is not str or not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("expected proposal digest must be a SHA-256 digest")
+        summary = self.approval_summary()
+        if not self._ready() or not hmac.compare_digest(expected_digest, summary["proposalDigest"]):
+            raise ValueError("proposal is not ready for approval")
+        self._approved_package_digest = summary["proposalDigest"]
+        return self._approved_result(summary)
+
+    def _authoritative_terminal_result(self, outcome, proposal_digest=None):
+        """Return the exact state-owned terminal after a callback has completed."""
+        if type(outcome) is not str:
+            raise ValueError("terminal outcome must be an exact string")
+        if outcome == "cancelled":
+            if proposal_digest is not None:
+                raise ValueError("cancelled terminal must not carry an approval digest")
+            return self.cancelled_result()
+        if outcome == "draft":
+            if proposal_digest is not None:
+                raise ValueError("draft terminal must not carry an approval digest")
+            return self.draft_result()
+        if outcome != "approved":
+            raise ValueError("terminal outcome must be fixed")
+        if (
+            type(proposal_digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", proposal_digest) is None
+            or self._approved_package_digest is None
+            or not hmac.compare_digest(
+                proposal_digest,
+                self._approved_package_digest,
+            )
+        ):
+            raise ValueError("approved terminal is not owned by this state")
+        summary = self.approval_summary()
+        if not hmac.compare_digest(proposal_digest, summary["proposalDigest"]):
+            raise ValueError("approved terminal no longer matches proposal state")
+        return self._approved_result(summary)
+
+    def _clear_private_review_facts(self):
+        """Drop caller-owned roster/grouping references after local review."""
+        self._roster_candidates_by_id.clear()
+        self._roster_rows_private = ()
+        self._roster_columns_private = ()
+        self._participant_display = ()
+        self._snapshot_source = None
+        self._observation = None
+        self._grouping_evidence = None
 
     def _package_ready(self):
         if not self._ready() or self._roster_unit_id is None or self._roster_package_issues:
