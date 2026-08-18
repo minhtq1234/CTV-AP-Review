@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
+import re
 from typing import Literal
 
 from openpyxl import load_workbook
@@ -21,12 +22,20 @@ _MAX_ROWS = 10_000
 _MAX_CELLS = 100_000
 _MAX_CELL_TEXT = 256
 _MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
+_UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
+_EVIDENCE_ID = re.compile(r"^evidence-[0-9]{4,}$")
 _ROSTER_ISSUE_ORDER = (
     "roster-header-missing",
     "roster-row-invalid",
     "roster-identity-duplicate",
     "roster-over-limit",
     "roster-unreadable",
+)
+_PACKAGE_ISSUE_ORDER = (
+    "roster-fa-code-blank",
+    "roster-fa-code-conflict",
+    "roster-fa-code-missing",
+    "roster-header-duplicate",
 )
 _CANONICAL_ROSTER_FIELDS = (
     "name",
@@ -38,6 +47,49 @@ _CANONICAL_ROSTER_FIELDS = (
     "serviceFee",
     "product",
 )
+_CANONICAL_ROSTER_FIELD_SET = frozenset(_CANONICAL_ROSTER_FIELDS)
+_SELECTION_ISSUE_BY_STATUS = {
+    "selected": (),
+    "missing": ("roster-missing",),
+    "ambiguous": ("roster-ambiguous",),
+    "invalid": ("roster-invalid",),
+}
+
+
+def _exact_private_pairs(value, field_name: str) -> tuple[tuple[str, str], ...]:
+    if type(value) is not tuple:
+        raise TypeError(f"{field_name} must be an exact tuple")
+    if any(type(pair) is not tuple or len(pair) != 2 for pair in value):
+        raise TypeError(f"{field_name} must contain exact pairs")
+    if any(
+        type(key) is not str or type(private_value) is not str
+        for key, private_value in value
+    ):
+        raise TypeError(f"{field_name} pairs must contain exact strings")
+    keys = tuple(key for key, _private_value in value)
+    if (
+        any(key not in _CANONICAL_ROSTER_FIELD_SET for key in keys)
+        or len(keys) != len(set(keys))
+        or keys != tuple(sorted(keys))
+    ):
+        raise ValueError(f"{field_name} must use unique canonical fields")
+    if any(len(private_value) > _MAX_CELL_TEXT for _key, private_value in value):
+        raise ValueError(f"{field_name} values must stay within the cell limit")
+    return value
+
+
+def _exact_issue_codes(value, allowed: tuple[str, ...], field_name: str) -> None:
+    if type(value) is not tuple:
+        raise TypeError(f"{field_name} must be an exact tuple")
+    if any(type(code) is not str for code in value):
+        raise TypeError(f"{field_name} must contain exact strings")
+    positions = {code: index for index, code in enumerate(allowed)}
+    if (
+        any(code not in positions for code in value)
+        or len(value) != len(set(value))
+        or value != tuple(sorted(value, key=positions.__getitem__))
+    ):
+        raise ValueError(f"{field_name} must use approved ordered codes")
 
 
 @dataclass(frozen=True)
@@ -46,6 +98,28 @@ class RosterCandidateRow:
     name: str = field(repr=False)
     identity: str = field(repr=False)
     values: tuple[tuple[str, str], ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.row_index) is not int:
+            raise TypeError("row_index must be an exact integer")
+        if not 1 <= self.row_index <= _MAX_ROWS:
+            raise ValueError("row_index must be within the roster row limit")
+        if type(self.name) is not str or type(self.identity) is not str:
+            raise TypeError("private roster identity fields must be exact strings")
+        if (
+            not self.name
+            or not self.identity
+            or len(self.name) > _MAX_CELL_TEXT
+            or len(self.identity) > _MAX_CELL_TEXT
+        ):
+            raise ValueError("private roster identity fields must be bounded")
+        pairs = _exact_private_pairs(self.values, "values")
+        private_values = dict(pairs)
+        if (
+            private_values.get("name") != self.name
+            or private_values.get("identity") != self.identity
+        ):
+            raise ValueError("private roster fields must agree")
 
 
 @dataclass(frozen=True)
@@ -59,6 +133,61 @@ class RosterCandidate:
     canonical_to_source_columns: tuple[tuple[str, str], ...] = field(repr=False)
     score: tuple[int, int, int]
 
+    def __post_init__(self) -> None:
+        if type(self.unit_id) is not str or not _UNIT_ID.fullmatch(self.unit_id):
+            raise TypeError("unit_id must be a valid opaque ID")
+        if (
+            type(self.evidence_id) is not str
+            or not _EVIDENCE_ID.fullmatch(self.evidence_id)
+        ):
+            raise TypeError("evidence_id must be a valid opaque ID")
+        if type(self.worksheet_index) is not int:
+            raise TypeError("worksheet_index must be an exact integer")
+        if not 1 <= self.worksheet_index <= 100:
+            raise ValueError("worksheet_index must be within the workbook limit")
+        if type(self.rows) is not tuple:
+            raise TypeError("rows must be an exact tuple")
+        if any(type(row) is not RosterCandidateRow for row in self.rows):
+            raise TypeError("rows must contain exact roster candidate rows")
+        for row in self.rows:
+            row.__post_init__()
+        row_indexes = tuple(row.row_index for row in self.rows)
+        if (
+            len(self.rows) > _MAX_ROWS
+            or len(row_indexes) != len(set(row_indexes))
+            or row_indexes != tuple(sorted(row_indexes))
+        ):
+            raise ValueError("rows must be unique and ordered within the row limit")
+        _exact_issue_codes(
+            self.blocking_issue_codes,
+            _ROSTER_ISSUE_ORDER,
+            "blocking_issue_codes",
+        )
+        _exact_issue_codes(
+            self.package_issue_codes,
+            _PACKAGE_ISSUE_ORDER,
+            "package_issue_codes",
+        )
+        columns = _exact_private_pairs(
+            self.canonical_to_source_columns,
+            "canonical_to_source_columns",
+        )
+        column_fields = tuple(field_name for field_name, _source_name in columns)
+        for row in self.rows:
+            if tuple(field_name for field_name, _value in row.values) != column_fields:
+                raise ValueError("roster row fields must match source columns")
+        if type(self.score) is not tuple or len(self.score) != 3:
+            raise TypeError("score must be an exact three-item tuple")
+        if any(type(value) is not int for value in self.score):
+            raise TypeError("score must contain exact integers")
+        expected_score = (
+            int(not self.blocking_issue_codes),
+            int(not self.package_issue_codes),
+            len(self.rows),
+        )
+        if self.score != expected_score:
+            raise ValueError("score must agree with candidate eligibility facts")
+
 
 @dataclass(frozen=True)
 class RosterSelection:
@@ -66,6 +195,51 @@ class RosterSelection:
     roster_unit_id: str | None
     candidate_unit_ids: tuple[str, ...]
     issue_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not str:
+            raise TypeError("status must be an exact string")
+        if self.status not in _SELECTION_ISSUE_BY_STATUS:
+            raise ValueError("status must be an approved roster selection status")
+        if self.roster_unit_id is not None and (
+            type(self.roster_unit_id) is not str
+            or not _UNIT_ID.fullmatch(self.roster_unit_id)
+        ):
+            raise TypeError("roster_unit_id must be a valid opaque ID or null")
+        if type(self.candidate_unit_ids) is not tuple:
+            raise TypeError("candidate_unit_ids must be an exact tuple")
+        if any(type(unit_id) is not str for unit_id in self.candidate_unit_ids):
+            raise TypeError("candidate_unit_ids must contain exact strings")
+        if any(not _UNIT_ID.fullmatch(unit_id) for unit_id in self.candidate_unit_ids):
+            raise ValueError("candidate_unit_ids must contain valid opaque IDs")
+        numeric_ids = tuple(
+            int(unit_id.rsplit("-", 1)[1]) for unit_id in self.candidate_unit_ids
+        )
+        if (
+            len(self.candidate_unit_ids) != len(set(self.candidate_unit_ids))
+            or numeric_ids != tuple(sorted(numeric_ids))
+        ):
+            raise ValueError("candidate_unit_ids must be unique and ordered")
+        if type(self.issue_codes) is not tuple:
+            raise TypeError("issue_codes must be an exact tuple")
+        if any(type(code) is not str for code in self.issue_codes):
+            raise TypeError("issue_codes must contain exact strings")
+        if self.issue_codes != _SELECTION_ISSUE_BY_STATUS[self.status]:
+            raise ValueError("issue_codes must agree with selection status")
+        if self.status == "selected":
+            if (
+                self.roster_unit_id is None
+                or self.roster_unit_id not in self.candidate_unit_ids
+            ):
+                raise ValueError("selected roster must identify one candidate")
+        elif self.roster_unit_id is not None:
+            raise ValueError("nonselected roster status must not identify a roster")
+        if self.status == "missing" and self.candidate_unit_ids:
+            raise ValueError("missing roster status must have no candidates")
+        if self.status == "ambiguous" and len(self.candidate_unit_ids) < 2:
+            raise ValueError("ambiguous roster status requires multiple candidates")
+        if self.status == "invalid" and not self.candidate_unit_ids:
+            raise ValueError("invalid roster status requires candidates")
 
 
 def _private_cell_text(value: object) -> str:
@@ -273,6 +447,9 @@ def load_roster_candidates(
         snapshot = snapshot_cache[unit.evidence_id]
         if type(snapshot) is not bytes:
             candidates.append(_fixed_snapshot_failure(unit))
+            continue
+        if len(snapshot) > _MAX_WORKBOOK_BYTES:
+            candidates.append(_fixed_snapshot_failure(unit, "roster-over-limit"))
             continue
         candidates.append(_parse_candidate(unit, snapshot))
     return tuple(candidates)
