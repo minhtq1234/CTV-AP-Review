@@ -116,6 +116,61 @@ def _approved_terminal():
     }
 
 
+def _approved_terminal_with_assignment():
+    terminal = _approved_terminal()
+    terminal["participantHandles"] = ["participant-0001"]
+    terminal["unitAssignments"] = [
+        {
+            "unitId": "unit-0001",
+            "decision": "accepted",
+            "role": "service-contract",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0001"],
+            },
+        }
+    ]
+    terminal["counts"] = {
+        "sources": 1,
+        "units": 1,
+        "participants": 1,
+        "accepted": 1,
+        "reassigned": 0,
+        "excluded": 0,
+        "unresolved": 0,
+    }
+    return terminal
+
+
+def _aggregate_approved_terminal():
+    handles = [f"participant-{index:04d}" for index in range(1, 51)]
+    assignments = [
+        {
+            "unitId": f"unit-{index:04d}",
+            "decision": "accepted",
+            "role": "service-contract",
+            "target": {
+                "scope": "shared",
+                "participantHandles": list(handles),
+            },
+        }
+        for index in range(1, 10_001)
+    ]
+    terminal = _approved_terminal()
+    terminal["participantHandles"] = handles
+    terminal["unitAssignments"] = assignments
+    terminal["counts"] = {
+        "sources": 1,
+        "units": 10_000,
+        "participants": 50,
+        "accepted": 10_000,
+        "reassigned": 0,
+        "excluded": 0,
+        "unresolved": 0,
+    }
+    return terminal
+
+
 class _EqualitySpoof:
     def __init__(self):
         self.comparisons = 0
@@ -145,6 +200,24 @@ class _HostileTerminalValue:
 
     def __repr__(self):
         return self.marker
+
+
+class _LongValueBoundaryPoison:
+    def __init__(self, real_boundary):
+        self.real_boundary = real_boundary
+        self.callbacks = 0
+
+    def fullmatch(self, value):
+        if type(value) is str and len(value) > 128:
+            self.callbacks += 1
+            raise AssertionError("PRIVATE-LONG-REGEX-CALLBACK")
+        return self.real_boundary.fullmatch(value)
+
+    def __contains__(self, value):
+        if type(value) is str and len(value) > 128:
+            self.callbacks += 1
+            raise AssertionError("PRIVATE-LONG-MEMBERSHIP-CALLBACK")
+        return value in self.real_boundary
 
 
 class _TrackingGroupingEvidence:
@@ -2639,6 +2712,198 @@ def test_hostile_terminal_values_are_type_rejected_before_callbacks(
     assert hostile.marker not in json.dumps(payload)
 
 
+def _replace_huge_terminal_value(terminal, field, huge):
+    assignment = terminal["unitAssignments"][0]
+    if field == "issue-code":
+        terminal["issueCodes"] = [huge]
+    elif field == "observation-id":
+        terminal["observationId"] = "observation-" + huge
+    elif field == "roster-id":
+        terminal["rosterUnitId"] = "unit-" + huge
+    elif field == "participant-id":
+        terminal["participantHandles"][0] = "participant-" + huge
+    elif field == "assignment-unit-id":
+        assignment["unitId"] = "unit-" + huge
+    elif field == "evidence-id":
+        terminal["sourceDispositions"] = [
+            {
+                "evidenceId": "evidence-" + huge,
+                "decision": "excluded",
+                "reason": "irrelevant",
+            }
+        ]
+        terminal["counts"]["excluded"] = 1
+    elif field == "proposal-digest":
+        terminal["proposalDigest"] = huge
+        terminal["approval"]["approvedProposalDigest"] = huge
+    elif field == "role":
+        assignment["role"] = huge
+    elif field == "scope":
+        assignment["target"]["scope"] = huge
+    elif field == "reason":
+        terminal["unitAssignments"] = [
+            {
+                "unitId": assignment["unitId"],
+                "decision": "excluded",
+                "reason": huge,
+            }
+        ]
+        terminal["counts"]["accepted"] = 0
+        terminal["counts"]["excluded"] = 1
+    elif field == "decision":
+        assignment["decision"] = huge
+    elif field == "approval-status":
+        terminal["approval"]["status"] = huge
+    elif field == "outcome":
+        terminal["outcome"] = huge
+    elif field == "version":
+        terminal["version"] = huge
+    elif field == "group-id":
+        assignment["groupId"] = "group-" + huge
+    elif field == "exception-id":
+        terminal["exceptionId"] = "exception-" + huge
+    else:
+        raise AssertionError(f"unknown huge terminal field: {field}")
+
+
+@pytest.mark.parametrize(
+    ("field", "boundary_name"),
+    (
+        ("issue-code", "_SAFE_CODE"),
+        ("observation-id", "_OBSERVATION_ID"),
+        ("roster-id", "_UNIT_ID"),
+        ("participant-id", "_PARTICIPANT_HANDLE"),
+        ("assignment-unit-id", "_UNIT_ID"),
+        ("evidence-id", "_EVIDENCE_ID"),
+        ("proposal-digest", "_SHA256"),
+        ("role", "_PROPOSAL_ROLES"),
+        ("scope", "_PROPOSAL_SCOPES"),
+        ("reason", "_PROPOSAL_EXCLUSION_REASONS"),
+        ("decision", None),
+        ("approval-status", None),
+        ("outcome", None),
+        ("version", None),
+        ("group-id", None),
+        ("exception-id", None),
+    ),
+)
+def test_huge_proposal_terminal_strings_are_rejected_before_boundaries(
+    field,
+    boundary_name,
+    monkeypatch,
+):
+    cli = _module()
+    terminal = _approved_terminal_with_assignment()
+    huge = (
+        "private-" + "a" * (17 * 1024 * 1024)
+        if field == "issue-code"
+        else "9" * 4_096
+    )
+    _replace_huge_terminal_value(terminal, field, huge)
+    poison = None
+    if boundary_name is not None:
+        poison = _LongValueBoundaryPoison(getattr(cli, boundary_name))
+        monkeypatch.setattr(cli, boundary_name, poison)
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-CANONICAL-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+
+    class State:
+        calls = 0
+
+        def _authoritative_terminal_result(self, *_args):
+            self.calls += 1
+            return terminal
+
+    state = State()
+    with pytest.raises((TypeError, ValueError)):
+        cli._bind_state_terminal(state, terminal)
+
+    assert state.calls == 0
+    assert json_calls == []
+    if poison is not None:
+        assert poison.callbacks == 0
+
+
+def test_aggregate_bounded_terminal_is_rejected_before_state_or_json(
+    monkeypatch,
+):
+    cli = _module()
+    terminal = _aggregate_approved_terminal()
+    json_calls = []
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-AGGREGATE-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+
+    class State:
+        calls = 0
+
+        def _authoritative_terminal_result(self, *_args):
+            self.calls += 1
+            return terminal
+
+    state = State()
+    with pytest.raises((TypeError, ValueError)):
+        cli._bind_state_terminal(state, terminal)
+
+    assert state.calls == 0
+    assert json_calls == []
+
+
+def test_huge_package_callback_is_rejected_before_json_writer_or_private_output(
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    events, _inspection, _approved = _install_package_lifecycle(monkeypatch, cli)
+    terminal = _approved_terminal()
+    private_code = "private-" + "a" * (17 * 1024 * 1024)
+    terminal["issueCodes"] = [private_code]
+    json_calls = []
+    writer_calls = []
+    actual_json_dumps = cli.json.dumps
+
+    def reject_json(*_args, **_kwargs):
+        json_calls.append("json")
+        raise AssertionError("PRIVATE-PACKAGE-JSON-CALLBACK")
+
+    monkeypatch.setattr(cli.json, "dumps", reject_json)
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda _state: terminal,
+        package_prepare_driver=lambda *_args: writer_calls.append(_args),
+    )
+    monkeypatch.setattr(cli.json, "dumps", actual_json_dumps)
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert json_calls == []
+    assert writer_calls == []
+    assert events[-3:] == ["grouping-clear", "source-exit", "output-exit"]
+    assert "private-" not in json.dumps(payload)
+
+
 def test_exception_first_ambiguous_roster_stays_one_roster_exception(
     tmp_path,
 ):
@@ -3066,6 +3331,79 @@ def test_prepared_result_rejects_equality_spoofing_each_check_code_without_compa
         )
 
     assert spoof.comparisons == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "boundary_name"),
+    (
+        ("package-id", "_PACKAGE_ID"),
+        ("package-directory", "_PACKAGE_DIRECTORY"),
+        ("manifest-digest", "_SHA256"),
+        ("declared-digest", "_SHA256"),
+        ("published-digest", "_SHA256"),
+        ("contract-version", None),
+        ("validation-outcome", None),
+        ("check-code", None),
+        ("warning-code", None),
+    ),
+)
+def test_huge_prepared_terminal_strings_are_rejected_before_boundaries(
+    field,
+    boundary_name,
+    monkeypatch,
+):
+    cli = _module()
+    result = copy.deepcopy(_PREPARED_RESULT)
+    huge = (
+        "private-" + "a" * (17 * 1024 * 1024)
+        if field in {"check-code", "warning-code"}
+        else "9" * 4_096
+    )
+    if field == "package-id":
+        result["packageId"] = "package-" + huge
+    elif field == "package-directory":
+        result["packageDirectoryName"] = "ctv-package-" + huge
+    elif field == "manifest-digest":
+        result["manifestSha256"] = huge
+    elif field == "declared-digest":
+        result["declaredArtifactSetSha256"] = huge
+    elif field == "published-digest":
+        result["publishedTreeSha256"] = huge
+    elif field == "contract-version":
+        result["contractVersion"] = huge
+    elif field == "validation-outcome":
+        result["validation"]["outcome"] = huge
+    elif field == "check-code":
+        result["validation"]["checkCodes"][0] = huge
+    elif field == "warning-code":
+        result["validation"]["warningCodes"] = [huge]
+    else:
+        raise AssertionError(f"unknown prepared field: {field}")
+
+    poison = None
+    if boundary_name is not None:
+        poison = _LongValueBoundaryPoison(getattr(cli, boundary_name))
+        monkeypatch.setattr(cli, boundary_name, poison)
+    equality_spoof = None
+    if field == "check-code":
+        expected = list(cli._INTERNAL_PREPARED_CHECK_CODES)
+        equality_spoof = _EqualitySpoof()
+        expected[0] = equality_spoof
+        monkeypatch.setattr(
+            cli,
+            "_INTERNAL_PREPARED_CHECK_CODES",
+            tuple(expected),
+        )
+
+    with pytest.raises((TypeError, ValueError)):
+        cli._normalize_prepared_result(
+            SimpleNamespace(to_dict=lambda: result)
+        )
+
+    if poison is not None:
+        assert poison.callbacks == 0
+    if equality_spoof is not None:
+        assert equality_spoof.comparisons == 0
 
 
 @pytest.mark.parametrize(
@@ -3949,6 +4287,63 @@ def test_proposal_review_unbounded_duplicate_issue_codes_are_rejected_before_out
             "message": "The local toolkit could not complete the check.",
         }
     ]
+
+
+@pytest.mark.parametrize("case", ("one-huge-value", "aggregate-values"))
+def test_proposal_review_terminal_budget_rejects_before_output_serialization(
+    case,
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    if case == "one-huge-value":
+        terminal = {
+            "version": "1.0",
+            "outcome": "draft",
+            "observationId": "observation-" + "0" * 64,
+            "readyToPrepare": False,
+            "counts": {
+                "sources": 1,
+                "units": 1,
+                "participants": 0,
+                "accepted": 0,
+                "reassigned": 0,
+                "excluded": 0,
+                "unresolved": 1,
+            },
+            "issueCodes": [
+                "private-" + "a" * (17 * 1024 * 1024)
+            ],
+        }
+    else:
+        terminal = _aggregate_approved_terminal()
+    monkeypatch.setattr(
+        cli,
+        "proposal_review_source",
+        lambda _root, *, review_driver=None: terminal,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "synthetic-source",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "failed")
+    assert exit_code == 1
+    assert payload["result"] == {}
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert "private-" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("module_filename", INSPECTION_MODULE_FILENAMES)

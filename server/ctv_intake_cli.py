@@ -93,6 +93,13 @@ _INSPECTION_ERROR_MESSAGE = "The source folder could not be inspected safely."
 _INSPECTION_MAX_JSON_BYTES = 16 * 1024 * 1024
 _PROPOSAL_MAX_JSON_BYTES = 16 * 1024 * 1024
 _PACKAGE_MAX_JSON_BYTES = 16 * 1024 * 1024
+_TERMINAL_MAX_CONTAINER_ITEMS = 10_000
+_TERMINAL_MAX_NODES = 250_000
+_TERMINAL_MAX_STRING_CHARACTERS = 128
+_TERMINAL_MAX_STRING_BYTES = 4 * 1024 * 1024
+_TERMINAL_MAX_JSON_BYTES = 8 * 1024 * 1024
+_TERMINAL_MAX_INTEGER = 100_000
+_MAX_NUMERIC_ID_DIGITS = 10
 _INSPECT_INTERNAL_FAILURE = object()
 _PROPOSAL_INTERNAL_FAILURE = object()
 _PACKAGE_INTERNAL_FAILURE = object()
@@ -749,6 +756,77 @@ def _package_controlled_failure(code: str):
     )
 
 
+def _terminal_string_json_size(value: str) -> tuple[int, int]:
+    if type(value) is not str:
+        raise TypeError("terminal strings must use exact built-in strings")
+    if len(value) > _TERMINAL_MAX_STRING_CHARACTERS:
+        raise ValueError("terminal string exceeds its fixed bound")
+    content_bytes = 0
+    for character in value:
+        codepoint = ord(character)
+        if character == '"' or character == "\\":
+            content_bytes += 2
+        elif codepoint < 0x20:
+            content_bytes += 6
+        else:
+            content_bytes += len(character.encode("utf-8"))
+    return content_bytes + 2, content_bytes
+
+
+def _preflight_terminal_budget(value) -> None:
+    """Bound exact terminal primitives before comparison or serialization."""
+    if type(value) is not dict:
+        raise TypeError("terminal must be an exact dictionary")
+    stack = [value]
+    seen_containers = set()
+    nodes = 0
+    string_bytes = 0
+    json_bytes = 0
+    while stack:
+        item = stack.pop()
+        nodes += 1
+        if nodes > _TERMINAL_MAX_NODES:
+            raise ValueError("terminal exceeds its fixed node budget")
+        if type(item) is dict:
+            if len(item) > _TERMINAL_MAX_CONTAINER_ITEMS:
+                raise ValueError("terminal dictionary exceeds its item budget")
+            container_id = id(item)
+            if container_id in seen_containers:
+                raise ValueError("terminal containers must not be reused")
+            seen_containers.add(container_id)
+            json_bytes += 2 + max(0, len(item) - 1) + len(item)
+            for key, nested in item.items():
+                stack.append(nested)
+                stack.append(key)
+        elif type(item) is list:
+            if len(item) > _TERMINAL_MAX_CONTAINER_ITEMS:
+                raise ValueError("terminal list exceeds its item budget")
+            container_id = id(item)
+            if container_id in seen_containers:
+                raise ValueError("terminal containers must not be reused")
+            seen_containers.add(container_id)
+            json_bytes += 2 + max(0, len(item) - 1)
+            stack.extend(item)
+        elif type(item) is str:
+            item_json_bytes, item_string_bytes = _terminal_string_json_size(item)
+            json_bytes += item_json_bytes
+            string_bytes += item_string_bytes
+        elif type(item) is bool:
+            json_bytes += 4 if item else 5
+        elif type(item) is int:
+            if abs(item) > _TERMINAL_MAX_INTEGER:
+                raise ValueError("terminal integer exceeds its fixed bound")
+            json_bytes += len(str(item))
+        elif item is None:
+            json_bytes += 4
+        else:
+            raise ValueError("terminal contains an unsupported exact type")
+        if string_bytes > _TERMINAL_MAX_STRING_BYTES:
+            raise ValueError("terminal exceeds its fixed string budget")
+        if json_bytes > _TERMINAL_MAX_JSON_BYTES:
+            raise ValueError("terminal exceeds its fixed JSON budget")
+
+
 def _require_exact_dict(value, keys: frozenset[str], name: str) -> dict:
     if (
         type(value) is not dict
@@ -780,7 +858,9 @@ def _require_safe_codes(value, name: str) -> list[str]:
         type(value) is not list
         or len(value) > 10_000
         or any(
-            type(code) is not str or _SAFE_CODE.fullmatch(code) is None
+            type(code) is not str
+            or len(code) > _TERMINAL_MAX_STRING_CHARACTERS
+            or _SAFE_CODE.fullmatch(code) is None
             for code in value
         )
         or len(value) != len(set(value))
@@ -790,15 +870,23 @@ def _require_safe_codes(value, name: str) -> list[str]:
     return list(value)
 
 
-def _require_opaque_id(value, pattern: re.Pattern, name: str) -> str:
-    if type(value) is not str or pattern.fullmatch(value) is None:
+def _require_opaque_id(
+    value,
+    pattern: re.Pattern,
+    name: str,
+    max_length: int,
+) -> str:
+    if (
+        type(value) is not str
+        or len(value) > max_length
+        or pattern.fullmatch(value) is None
+    ):
         raise ValueError(f"{name} must be a valid opaque ID")
     return value
 
 
 def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
-    if type(result) is not dict:
-        raise TypeError("proposal terminal must be a dictionary")
+    _preflight_terminal_budget(result)
     if any(type(key) is not str for key in result):
         raise ValueError("proposal terminal must use exact string keys")
     outcome = result.get("outcome")
@@ -834,13 +922,23 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
     ):
         raise ValueError("approved result is invalid")
     observation_id = _require_opaque_id(
-        terminal["observationId"], _OBSERVATION_ID, "observationId"
+        terminal["observationId"],
+        _OBSERVATION_ID,
+        "observationId",
+        len("observation-") + 64,
     )
     proposal_digest = terminal["proposalDigest"]
-    if type(proposal_digest) is not str or _SHA256.fullmatch(proposal_digest) is None:
+    if (
+        type(proposal_digest) is not str
+        or len(proposal_digest) != 64
+        or _SHA256.fullmatch(proposal_digest) is None
+    ):
         raise ValueError("proposalDigest must be a SHA-256 digest")
     roster_unit_id = _require_opaque_id(
-        terminal["rosterUnitId"], _UNIT_ID, "rosterUnitId"
+        terminal["rosterUnitId"],
+        _UNIT_ID,
+        "rosterUnitId",
+        len("unit-") + _MAX_NUMERIC_ID_DIGITS,
     )
 
     handles = terminal["participantHandles"]
@@ -849,6 +947,7 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
         or len(handles) > 10_000
         or any(
             type(handle) is not str
+            or len(handle) > len("participant-") + _MAX_NUMERIC_ID_DIGITS
             or _PARTICIPANT_HANDLE.fullmatch(handle) is None
             for handle in handles
         )
@@ -887,6 +986,8 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
                 or type(target_handles) is not list
                 or any(
                     type(handle) is not str
+                    or len(handle)
+                    > len("participant-") + _MAX_NUMERIC_ID_DIGITS
                     or _PARTICIPANT_HANDLE.fullmatch(handle) is None
                     or handle not in handles
                     for handle in target_handles
@@ -896,7 +997,10 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
                 raise ValueError("assignment target is invalid")
             normalized = {
                 "unitId": _require_opaque_id(
-                    item["unitId"], _UNIT_ID, "unitId"
+                    item["unitId"],
+                    _UNIT_ID,
+                    "unitId",
+                    len("unit-") + _MAX_NUMERIC_ID_DIGITS,
                 ),
                 "decision": decision,
                 "role": role,
@@ -916,7 +1020,10 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
                 raise ValueError("unit exclusion reason is invalid")
             normalized = {
                 "unitId": _require_opaque_id(
-                    item["unitId"], _UNIT_ID, "unitId"
+                    item["unitId"],
+                    _UNIT_ID,
+                    "unitId",
+                    len("unit-") + _MAX_NUMERIC_ID_DIGITS,
                 ),
                 "decision": "excluded",
                 "reason": reason,
@@ -948,7 +1055,10 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
         ):
             raise ValueError("source disposition is invalid")
         evidence_id = _require_opaque_id(
-            item["evidenceId"], _EVIDENCE_ID, "evidenceId"
+            item["evidenceId"],
+            _EVIDENCE_ID,
+            "evidenceId",
+            len("evidence-") + _MAX_NUMERIC_ID_DIGITS,
         )
         if evidence_id in seen_sources:
             raise ValueError("sourceDispositions must use unique evidence IDs")
@@ -999,6 +1109,7 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
         type(approval["status"]) is not str
         or approval["status"] != "user-approved"
         or type(approved_digest) is not str
+        or len(approved_digest) != 64
         or not hmac.compare_digest(approved_digest, proposal_digest)
     ):
         raise ValueError("approval is invalid")
@@ -1023,8 +1134,7 @@ def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
 
 
 def _normalize_review_terminal(result: dict) -> dict[str, object]:
-    if type(result) is not dict:
-        raise TypeError("review terminal must be a dictionary")
+    _preflight_terminal_budget(result)
     if any(type(key) is not str for key in result):
         raise ValueError("review terminal must use exact string keys")
     outcome = result.get("outcome")
@@ -1098,6 +1208,7 @@ def _normalize_review_terminal(result: dict) -> dict[str, object]:
 
 
 def _canonical_terminal_bytes(value: dict) -> bytes:
+    _preflight_terminal_budget(value)
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -1133,8 +1244,10 @@ def _normalize_prepared_result(result) -> dict[str, object]:
     to_dict = getattr(result, "to_dict", None)
     if not callable(to_dict):
         raise TypeError("package result must provide a public dictionary")
+    raw_public = to_dict()
+    _preflight_terminal_budget(raw_public)
     public = _require_exact_dict(
-        to_dict(),
+        raw_public,
         frozenset(
             {
                 "packageId",
@@ -1154,8 +1267,10 @@ def _normalize_prepared_result(result) -> dict[str, object]:
     package_directory = public["packageDirectoryName"]
     if (
         type(package_id) is not str
+        or len(package_id) != len("package-") + 64
         or _PACKAGE_ID.fullmatch(package_id) is None
         or type(package_directory) is not str
+        or len(package_directory) != len("ctv-package-") + 24
         or _PACKAGE_DIRECTORY.fullmatch(package_directory) is None
         or package_directory.removeprefix("ctv-package-")
         != package_id.removeprefix("package-")[:24]
@@ -1167,7 +1282,11 @@ def _normalize_prepared_result(result) -> dict[str, object]:
         "publishedTreeSha256",
     ):
         digest = public[name]
-        if type(digest) is not str or _SHA256.fullmatch(digest) is None:
+        if (
+            type(digest) is not str
+            or len(digest) != 64
+            or _SHA256.fullmatch(digest) is None
+        ):
             raise ValueError("prepared package digest is invalid")
     contract_version = public["contractVersion"]
     if (
