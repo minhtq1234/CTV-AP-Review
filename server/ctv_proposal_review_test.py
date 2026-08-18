@@ -17,6 +17,7 @@ from ctv_proposal_review import ReviewError, run_local_review
 
 
 PRIVATE_NAME = "PRIVATE-ROSTER-079123456789"
+PRIVATE_SECOND_NAME = "PRIVATE-SECOND-078987654321"
 PRIVATE_PATH_PART = "private-source-079123456789"
 
 
@@ -41,6 +42,19 @@ def _ambiguous_workbook_bytes():
         sheet.append(
             (participant, f"CTV-{index + 1:03d}", f"FA-PRIVATE-{index + 1:03d}", 100)
         )
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return stream.getvalue()
+
+
+def _two_participant_workbook_bytes():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "payment roster private"
+    sheet.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    sheet.append((PRIVATE_NAME, "CTV-001", "FA-PRIVATE-001", 100))
+    sheet.append((PRIVATE_SECOND_NAME, "CTV-002", "FA-PRIVATE-001", 100))
     stream = BytesIO()
     workbook.save(stream)
     workbook.close()
@@ -99,6 +113,31 @@ def _ambiguous_state(tmp_path):
     source = tmp_path / f"{PRIVATE_PATH_PART}-ambiguous"
     source.mkdir()
     (source / "private-rosters.xlsx").write_bytes(_ambiguous_workbook_bytes())
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    facts = GroupingEvidence()
+    inspection = inspect_observation(
+        observation,
+        _private_text_sink=facts.capture,
+    )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=facts,
+    )
+    return context, state
+
+
+def _effective_resolution_state(tmp_path):
+    source = tmp_path / f"{PRIVATE_PATH_PART}-effective"
+    source.mkdir()
+    (source / "private-roster.xlsx").write_bytes(
+        _two_participant_workbook_bytes()
+    )
+    (source / "private-unknown.pdf").write_bytes(
+        _pdf_bytes("MYSTERY LOCAL EVIDENCE WITHOUT A SUPPORTED DOCUMENT ROLE")
+    )
+    (source / "private-note.txt").write_text("local private supporting note")
     context = open_inventory_observation(source)
     observation = context.__enter__()
     facts = GroupingEvidence()
@@ -239,7 +278,11 @@ def test_group_state_bootstrap_is_one_time_authenticated_and_exactly_projected(t
         }
         assert snapshot_calls == 1
         assert set(local_state["review"]) == {
-            "exceptions", "organizedGroups", "coverage", "issueCodes"
+            "exceptions",
+            "organizedGroups",
+            "resolvedExclusions",
+            "coverage",
+            "issueCodes",
         }
         assert "groups" not in local_state["review"]
         assert "unitDecisions" not in local_state["review"]
@@ -399,6 +442,195 @@ def test_ambiguous_roster_choice_uses_exact_exception_action_atomically(tmp_path
 
     try:
         assert _run_visible(state, drive)["outcome"] == "draft"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_roster_candidate_summaries_authorize_trusted_candidate_preview(tmp_path):
+    context, state = _ambiguous_state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        client = _json(body)
+        csrf = client["csrfToken"]
+        assert client["roster"]["candidateSummaries"] == [
+            {
+                "rosterUnitId": "unit-0001",
+                "participantCount": 1,
+                "eligible": True,
+                "issueCodes": [],
+            },
+            {
+                "rosterUnitId": "unit-0002",
+                "participantCount": 1,
+                "eligible": True,
+                "issueCodes": [],
+            },
+        ]
+        assert PRIVATE_NAME not in repr(client["roster"]["candidateSummaries"])
+        candidate_id = client["roster"]["candidateSummaries"][1][
+            "rosterUnitId"
+        ]
+        status, headers, preview = _request(
+            parsed,
+            "GET",
+            f"/api/preview?unitId={candidate_id}",
+            cookie=cookie,
+        )
+        assert status == 200
+        assert _header(headers, "Content-Type") == "application/json; charset=utf-8"
+        assert _json(preview)["rows"][0][:2] == ["Ho ten", "Ma so nhan vien"]
+
+        status, _headers, body = _post(
+            parsed, "/api/draft", cookie, csrf, {}
+        )
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        assert _run_visible(state, drive)["outcome"] == "draft"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_effective_resolution_api_matches_the_consumed_package_snapshot(tmp_path):
+    context, state = _effective_resolution_state(tmp_path)
+    captured = {}
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200, body
+        latest = _json(body)
+        csrf = latest["csrfToken"]
+        unknown_group = next(
+            group
+            for group in latest["review"]["organizedGroups"]
+            if group["unitKind"] == "pdf-page" and group["role"] == "unknown"
+        )
+        unit_exception = next(
+            item
+            for item in latest["review"]["exceptions"]
+            if item["kind"] == "unit-cluster"
+            and unknown_group["groupId"] in item["groupIds"]
+        )
+        source_exception = next(
+            item
+            for item in latest["review"]["exceptions"]
+            if item["kind"] == "source"
+        )
+        status, _headers, body = _post(
+            parsed,
+            "/api/exception",
+            cookie,
+            csrf,
+            {
+                "exceptionId": unit_exception["exceptionId"],
+                "action": "assign",
+                "role": "acceptance-record",
+                "target": {
+                    "scope": "individual",
+                    "participantHandles": ["participant-0002"],
+                },
+                "applyToSimilar": False,
+            },
+        )
+        assert status == 200, body
+        latest = _json(body)
+        status, _headers, body = _post(
+            parsed,
+            "/api/exception",
+            cookie,
+            csrf,
+            {
+                "exceptionId": source_exception["exceptionId"],
+                "action": "exclude",
+                "reason": "irrelevant",
+                "applyToSimilar": False,
+            },
+        )
+        assert status == 200
+        latest = _json(body)
+        for exception in list(latest["review"]["exceptions"]):
+            assert exception["recommendedAction"] == "assign"
+            status, _headers, body = _post(
+                parsed,
+                "/api/exception",
+                cookie,
+                csrf,
+                {
+                    "exceptionId": exception["exceptionId"],
+                    "action": "accept-recommendation",
+                    "applyToSimilar": False,
+                },
+            )
+            assert status == 200, body
+            latest = _json(body)
+        captured.update(latest)
+        assert latest["review"]["exceptions"] == []
+        assert latest["review"]["coverage"]["unaccountedUnits"] == 0
+        assert latest["summary"]["readyToPrepare"] is True
+        resolved_group = next(
+            group
+            for group in latest["review"]["organizedGroups"]
+            if group["memberUnitIds"] == ["unit-0002"]
+        )
+        assert resolved_group["effectiveResolution"] == {
+            "action": "assign",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+        }
+        assert latest["review"]["resolvedExclusions"] == [
+            {
+                "exceptionId": source_exception["exceptionId"],
+                "kind": "source",
+                "evidenceId": source_exception["evidenceId"],
+                "issueCode": "source-unsupported",
+                "reason": "irrelevant",
+            }
+        ]
+        assert PRIVATE_NAME not in repr(latest["review"])
+        assert PRIVATE_SECOND_NAME not in repr(latest["review"])
+
+        status, _headers, body = _post(
+            parsed,
+            "/api/approve",
+            cookie,
+            csrf,
+            {"expectedProposalDigest": latest["summary"]["proposalDigest"]},
+        )
+        assert status == 200
+        return True
+
+    try:
+        approved_result = _run_visible(state, drive)
+        digest = approved_result["proposalDigest"]
+        snapshot = state.consume_approved_package_snapshot(digest)
+        unit = next(
+            item for item in snapshot.unit_decisions if item.unit_id == "unit-0002"
+        )
+        source = next(
+            item
+            for item in snapshot.source_dispositions
+            if item.evidence_id
+            == captured["review"]["resolvedExclusions"][0]["evidenceId"]
+        )
+        assert (unit.role, unit.scope, unit.participant_handles) == (
+            "acceptance-record",
+            "individual",
+            ("participant-0002",),
+        )
+        assert (source.decision, source.reason) == ("excluded", "irrelevant")
     finally:
         context.__exit__(None, None, None)
 

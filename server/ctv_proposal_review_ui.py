@@ -47,6 +47,7 @@ UI_HTML = """<!doctype html>
       <p class="eyebrow">Final check</p>
       <h2 id="coverage-heading" tabindex="-1">Coverage and approval</h2>
       <dl id="coverage-summary"></dl>
+      <div id="resolved-exclusions" aria-label="Resolved source exclusions"></div>
       <div id="batch-announcement" class="sr-status" role="status" aria-live="polite"></div>
       <div id="message" role="status" aria-live="polite"></div>
       <button id="approve-button" type="button" disabled>Approve complete proposal</button>
@@ -146,10 +147,12 @@ h3 { margin-bottom: 8px; font-size: 16px; }
 #organized-groups details { border: 1px solid var(--line); border-radius: 8px; background: white; }
 #organized-groups summary { padding: 11px 12px; cursor: pointer; font-weight: 700; }
 .group-body { padding: 0 12px 12px; }
-.group-facts, #coverage-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 0 0 12px; }
-.group-facts div, #coverage-summary div { display: contents; }
-.group-facts dt, #coverage-summary dt { color: var(--muted); }
-.group-facts dd, #coverage-summary dd { margin: 0; font-weight: 700; text-align: right; }
+.group-facts, #coverage-summary, .exclusion-facts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 0 0 12px; }
+.group-facts div, #coverage-summary div, .exclusion-facts div { display: contents; }
+.group-facts dt, #coverage-summary dt, .exclusion-facts dt { color: var(--muted); }
+.group-facts dd, #coverage-summary dd, .exclusion-facts dd { margin: 0; font-weight: 700; text-align: right; }
+#resolved-exclusions h3 { margin-top: 14px; }
+#resolved-exclusions article { padding-top: 10px; border-top: 1px solid var(--line); }
 .group-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #message, .sr-status { min-height: 20px; margin: 10px 0; color: var(--warn); font-size: 12px; }
 #approve-button { width: 100%; min-height: 44px; }
@@ -172,7 +175,7 @@ const localReview = {
   csrfToken: "",
   participants: [],
   roster: null,
-  review: { exceptions: [], organizedGroups: [], coverage: {}, issueCodes: [] },
+  review: { exceptions: [], organizedGroups: [], resolvedExclusions: [], coverage: {}, issueCodes: [] },
   summary: null,
   activeExceptionId: null,
   previewObjectUrl: null,
@@ -392,7 +395,9 @@ function applyState(payload, transition = {}) {
   } else if (!exceptions.some((item) => item.exceptionId === localReview.activeExceptionId)) {
     localReview.activeExceptionId = null;
   }
-  if (transition.lastResolvedExceptionId) {
+  if (transition.clearUndo) {
+    localReview.lastResolvedExceptionId = null;
+  } else if (transition.lastResolvedExceptionId) {
     localReview.lastResolvedExceptionId = transition.lastResolvedExceptionId;
   }
   renderAll();
@@ -544,6 +549,26 @@ function updateAssignmentParticipants() {
     if (caseScope) input.checked = false;
     input.disabled = caseScope;
   });
+  updateAssignmentSubmit();
+}
+
+function updateAssignmentSubmit() {
+  const role = detailControls["assign-role"];
+  const scope = detailControls["assign-scope"];
+  const button = detailControls["assign-submit"];
+  const fieldset = detailControls["assign-participants"];
+  if (!role || !scope || !button || !fieldset) return;
+  const handles = Array.from(
+    fieldset.querySelectorAll("input:checked"),
+    (input) => input.value
+  );
+  const validRole = Boolean(role.value && ROLE_SCOPES[role.value]);
+  const validScope = validRole
+    && (ROLE_SCOPES[role.value] || []).includes(scope.value);
+  const validTarget = (scope.value === "case" && handles.length === 0)
+    || (scope.value === "individual" && handles.length === 1)
+    || (scope.value === "shared" && handles.length >= 2);
+  button.disabled = !(validRole && validScope && validTarget);
 }
 
 function updateAssignmentRole(group) {
@@ -551,13 +576,14 @@ function updateAssignmentRole(group) {
   const scope = detailControls["assign-scope"];
   if (!role || !scope) return;
   const target = group ? group.target : { scope: "case", participantHandles: [] };
-  const supported = ROLE_SCOPES[role.value] || ["case"];
+  const supported = ROLE_SCOPES[role.value] || [];
   const selected = supported.includes(scope.value)
     ? scope.value
     : supported.includes(target.scope)
       ? target.scope
-      : supported[0];
+      : supported[0] || "";
   populateSelect(scope, supported, selected);
+  scope.disabled = !supported.length;
   updateAssignmentParticipants();
 }
 
@@ -567,22 +593,39 @@ function appendAssignPanel(detail, exception, group) {
   panel.appendChild(textElement("h4", "Assign to the right packet"));
   const kind = group ? group.unitKind : "pdf-page";
   const roles = ROLE_OPTIONS[kind] || ROLE_OPTIONS["pdf-page"];
-  const selectedRole = group && roles.includes(group.role) ? group.role : roles[0];
+  const selectedRole = group && roles.includes(group.role) ? group.role : "";
   const role = appendLabeledSelect(panel, "assign-role", "Document role", roles, selectedRole);
+  if (!selectedRole) {
+    const existing = Array.from(role.children);
+    clearNode(role);
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose a document role";
+    placeholder.disabled = true;
+    role.appendChild(placeholder);
+    existing.forEach((option) => role.appendChild(option));
+    role.value = "";
+  }
   const target = group ? group.target : { scope: "case", participantHandles: [] };
   const scope = appendLabeledSelect(
     panel,
     "assign-scope",
     "Assignment scope",
-    ROLE_SCOPES[selectedRole] || ["case"],
-    target.scope
+    ROLE_SCOPES[selectedRole] || [],
+    selectedRole ? target.scope : ""
   );
   const fieldset = participantInputs(panel, target.participantHandles || []);
   detailControls["assign-participants"] = fieldset;
+  const submit = actionButton("assign", ACTION_LABELS.assign, () => submitExceptionAction("assign"));
+  detailControls["assign-submit"] = submit;
   role.addEventListener("change", () => updateAssignmentRole(group));
   scope.addEventListener("change", updateAssignmentParticipants);
+  Array.from(fieldset.querySelectorAll("input")).forEach((input) => {
+    input.addEventListener("change", updateAssignmentSubmit);
+  });
   updateAssignmentRole(group);
-  panel.appendChild(actionButton("assign", ACTION_LABELS.assign, () => submitExceptionAction("assign")));
+  panel.appendChild(submit);
+  updateAssignmentSubmit();
   detail.appendChild(panel);
 }
 
@@ -618,18 +661,54 @@ function appendRosterPanel(detail) {
   const panel = document.createElement("div");
   panel.className = "action-panel";
   panel.appendChild(textElement("h4", "Choose the authoritative roster"));
-  const candidates = localReview.roster ? localReview.roster.candidateUnitIds : [];
-  const select = appendLabeledSelect(
-    panel,
-    "roster-candidate",
-    "Roster candidate",
-    candidates,
-    candidates[0]
-  );
-  Array.from(select.children).forEach((option, index) => {
-    option.textContent = `Roster candidate ${index + 1}`;
+  const candidates = localReview.roster ? localReview.roster.candidateSummaries : [];
+  const select = appendLabeledSelect(panel, "roster-candidate", "Roster candidate", [], "");
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a roster candidate";
+  placeholder.disabled = true;
+  select.appendChild(placeholder);
+  (candidates || []).forEach((candidate, index) => {
+    const option = document.createElement("option");
+    option.value = candidate.rosterUnitId;
+    option.disabled = !candidate.eligible;
+    const participantWord = candidate.participantCount === 1 ? "participant" : "participants";
+    const issues = candidate.issueCodes.length
+      ? ` · ${candidate.issueCodes.map(fixedLabel).join(", ")}`
+      : " · eligible";
+    option.textContent = `Roster candidate ${index + 1} · ${candidate.participantCount} ${participantWord}${issues}`;
+    select.appendChild(option);
   });
-  panel.appendChild(actionButton("choose-roster", ACTION_LABELS["choose-roster"], () => submitExceptionAction("choose-roster")));
+  select.value = "";
+  const submit = actionButton(
+    "choose-roster",
+    ACTION_LABELS["choose-roster"],
+    () => submitExceptionAction("choose-roster")
+  );
+  submit.disabled = true;
+  detailControls["roster-submit"] = submit;
+  const surface = textElement("div", "Select an eligible roster to load its local preview.", "preview-surface");
+  surface.setAttribute("aria-label", "Selected roster preview");
+  detailControls["roster-preview-surface"] = surface;
+  select.addEventListener("change", async () => {
+    const candidate = (candidates || []).find(
+      (item) => item.rosterUnitId === select.value
+    );
+    submit.disabled = !(candidate && candidate.eligible);
+    if (candidate && candidate.eligible) {
+      await loadPreview(
+        candidate.rosterUnitId,
+        surface,
+        `roster:${candidate.rosterUnitId}`
+      );
+    } else {
+      releasePreviewObjectUrl();
+      clearNode(surface);
+      surface.appendChild(textElement("p", "Select an eligible roster to load its local preview."));
+    }
+  });
+  panel.appendChild(submit);
+  panel.appendChild(surface);
   detail.appendChild(panel);
 }
 
@@ -644,7 +723,12 @@ function renderDetail() {
     }
     return;
   }
-  const heading = textElement("h3", issueLabel(exception.issueCode));
+  const heading = registerDetailControl(
+    "exception-detail-heading",
+    textElement("h3", issueLabel(exception.issueCode))
+  );
+  heading.setAttribute("tabindex", "-1");
+  heading.setAttribute("aria-live", "polite");
   detail.appendChild(heading);
   detail.appendChild(textElement("p", exceptionLocation(exception), "detail-meta"));
   if (exception.recommendedAction && exception.recommendedAction !== "choose-roster") {
@@ -723,6 +807,9 @@ async function submitExceptionAction(action) {
     if (action === "accept-recommendation") {
       payload.applyToSimilar = batchValue(exception, action);
     } else if (action === "assign") {
+      if (!detailControls["assign-role"].value) {
+        throw new Error("assignment-selection-invalid");
+      }
       payload.role = detailControls["assign-role"].value;
       payload.target = assignmentTarget();
       payload.applyToSimilar = batchValue(exception, action);
@@ -732,13 +819,24 @@ async function submitExceptionAction(action) {
     } else if (action === "split") {
       payload.splitBeforeUnitId = detailControls["split-before-unit"].value;
     } else if (action === "choose-roster") {
-      payload.rosterUnitId = detailControls["roster-candidate"].value;
+      const rosterUnitId = detailControls["roster-candidate"].value;
+      const candidate = (localReview.roster.candidateSummaries || []).find(
+        (item) => item.rosterUnitId === rosterUnitId
+      );
+      if (!candidate || !candidate.eligible) {
+        throw new Error("roster-selection-invalid");
+      }
+      payload.rosterUnitId = rosterUnitId;
     }
     const scopeCount = payload.applyToSimilar
       ? batchCountFor(exception, action)
       : 1;
     const next = await api("/api/exception", payload);
-    applyState(next, { focusIndex, lastResolvedExceptionId: exceptionId });
+    applyState(next, {
+      focusIndex,
+      clearUndo: action === "choose-roster",
+      lastResolvedExceptionId: action === "choose-roster" ? null : exceptionId,
+    });
     byId("batch-announcement").textContent = scopeCount > 1
       ? `Applied the decision to ${scopeCount} exception clusters.`
       : "Applied the decision to one exception cluster.";
@@ -798,9 +896,11 @@ async function selectException(exceptionId) {
   );
   if (!exception || localReview.terminal) return;
   releasePreviewObjectUrl();
+  byId("batch-announcement").textContent = "";
   localReview.activeExceptionId = exceptionId;
   renderExceptions();
   renderDetail();
+  detailControls["exception-detail-heading"].focus();
   if (exception.memberUnitIds && exception.memberUnitIds.length) {
     await loadPreview(
       exception.memberUnitIds[0],
@@ -820,14 +920,25 @@ function renderOrganizedGroups() {
     const range = group.firstUnitIndex === group.lastUnitIndex
       ? `item ${group.firstUnitIndex}`
       : `items ${group.firstUnitIndex}–${group.lastUnitIndex}`;
-    summary.textContent = `Group ${index + 1} · ${fixedLabel(group.role || "excluded duplicate")} · ${group.memberUnitIds.length} items`;
+    const effective = group.effectiveResolution || null;
+    const role = effective && effective.action === "assign"
+      ? effective.role
+      : group.role;
+    const target = effective && effective.action === "assign"
+      ? effective.target
+      : group.target;
+    const decision = effective && effective.action === "exclude"
+      ? `excluded · ${fixedLabel(effective.reason)}`
+      : fixedLabel(role || "excluded duplicate");
+    summary.textContent = `Group ${index + 1} · ${decision} · ${group.memberUnitIds.length} items`;
     details.appendChild(summary);
     const body = document.createElement("div");
     body.className = "group-body";
     const facts = document.createElement("dl");
     facts.className = "group-facts";
     appendDefinition(facts, "Source range", `Source ${numericLabel(group.evidenceId, "item")} · ${range}`);
-    appendDefinition(facts, "Target", targetLabel(group.target));
+    appendDefinition(facts, "Decision", decision);
+    appendDefinition(facts, "Target", effective && effective.action === "exclude" ? "Excluded" : targetLabel(target));
     appendDefinition(facts, "State", fixedLabel(group.state));
     appendDefinition(facts, "Checks", group.checkCodes.length ? group.checkCodes.map(fixedLabel).join(", ") : "User review required");
     body.appendChild(facts);
@@ -868,8 +979,18 @@ async function selectGroupPreview(groupId) {
   const detail = byId("exception-detail");
   clearNode(detail);
   clearDetailControls();
+  const effective = group.effectiveResolution || null;
+  const role = effective && effective.action === "assign"
+    ? effective.role
+    : group.role;
+  const target = effective && effective.action === "assign"
+    ? effective.target
+    : group.target;
+  const decision = effective && effective.action === "exclude"
+    ? `excluded · ${fixedLabel(effective.reason)}`
+    : `${fixedLabel(role || "excluded duplicate")} · ${targetLabel(target)}`;
   detail.appendChild(textElement("h3", `Spot check group ${numericLabel(group.groupId, "item")}`));
-  detail.appendChild(textElement("p", `${fixedLabel(group.role || "excluded duplicate")} · ${targetLabel(group.target)}`, "detail-meta"));
+  detail.appendChild(textElement("p", decision, "detail-meta"));
   const surface = textElement("div", "Loading local preview…", "preview-surface");
   surface.setAttribute("aria-label", "Organized evidence preview");
   detail.appendChild(surface);
@@ -886,7 +1007,7 @@ async function reopenGroup(groupId) {
     const newIndex = next.review.exceptions.findIndex(
       (item) => !beforeIds.has(item.exceptionId)
     );
-    applyState(next, { focusIndex: newIndex >= 0 ? newIndex : 0 });
+    applyState(next, { focusIndex: newIndex >= 0 ? newIndex : 0, clearUndo: true });
     showMessage("The group is back in the exception queue.");
   } catch (_error) {
     showMessage("The group could not be reopened. Review state was unchanged.");
@@ -921,10 +1042,33 @@ function renderCoverage() {
   appendDefinition(list, "Exception clusters", coverage.exceptionClusters);
   appendDefinition(list, "Evidence in exceptions", coverage.exceptionUnits);
   appendDefinition(list, "Unaccounted", coverage.unaccountedUnits);
-  const ready = summary.readyToPrepare === true
+  const effectiveFactsComplete = Array.isArray(localReview.review.resolvedExclusions)
+    && localReview.review.organizedGroups.every(
+      (group) => group.state !== "user-resolved" || Boolean(group.effectiveResolution)
+    );
+  const ready = effectiveFactsComplete
+    && summary.readyToPrepare === true
     && localReview.review.exceptions.length === 0
     && coverage.unaccountedUnits === 0;
   byId("approve-button").disabled = !ready || localReview.terminal;
+}
+
+function renderResolvedExclusions() {
+  const container = byId("resolved-exclusions");
+  clearNode(container);
+  const exclusions = localReview.review.resolvedExclusions || [];
+  if (!exclusions.length) return;
+  container.appendChild(textElement("h3", "Resolved source exclusions"));
+  exclusions.forEach((item) => {
+    const article = document.createElement("article");
+    const facts = document.createElement("dl");
+    facts.className = "exclusion-facts";
+    appendDefinition(facts, "Source", `Source ${numericLabel(item.evidenceId, "item")}`);
+    appendDefinition(facts, "Issue", fixedLabel(item.issueCode));
+    appendDefinition(facts, "Decision", `Excluded · ${fixedLabel(item.reason)}`);
+    article.appendChild(facts);
+    container.appendChild(article);
+  });
 }
 
 function renderUndo() {
@@ -936,6 +1080,7 @@ function renderAll() {
   renderExceptions();
   renderDetail();
   renderOrganizedGroups();
+  renderResolvedExclusions();
   renderCoverage();
   renderUndo();
 }

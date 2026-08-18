@@ -898,10 +898,55 @@ def test_grouped_select_roster_recomputes_the_complete_review(tmp_path):
             "status": "selected",
             "rosterUnitId": roster_units[1],
             "candidateUnitIds": roster_units,
+            "candidateSummaries": [
+                {
+                    "rosterUnitId": roster_unit_id,
+                    "participantCount": 2,
+                    "eligible": True,
+                    "issueCodes": [],
+                }
+                for roster_unit_id in roster_units
+            ],
             "participantHandles": ["participant-0001", "participant-0002"],
             "issueCodes": [],
         }
         assert local["review"]["coverage"]["unaccountedUnits"] == 0
+
+
+def test_local_roster_projection_exposes_bounded_candidate_eligibility_facts(
+    tmp_path,
+):
+    source = _source_with_valid_and_invalid_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        facts = GroupingEvidence()
+        inspection = inspect_observation(
+            observation, _private_text_sink=facts.capture
+        )
+        state = ProposalState.from_inspection(
+            observation, inspection, _grouping_evidence=facts
+        )
+
+        roster = state.local_review_snapshot()["roster"]
+
+        assert roster["candidateSummaries"] == [
+            {
+                "rosterUnitId": "unit-0001",
+                "participantCount": 1,
+                "eligible": True,
+                "issueCodes": [],
+            },
+            {
+                "rosterUnitId": "unit-0002",
+                "participantCount": 0,
+                "eligible": False,
+                "issueCodes": [
+                    "roster-row-invalid",
+                    "roster-fa-code-blank",
+                ],
+            },
+        ]
+        assert "Alice" not in repr(roster["candidateSummaries"])
+        assert "CTV-001" not in repr(roster["candidateSummaries"])
 
 
 def test_grouped_select_roster_failure_rolls_back_every_visible_state(tmp_path):
@@ -1133,6 +1178,144 @@ def test_unknown_role_exception_does_not_advertise_an_unexecutable_recommendatio
             "decision": "reassigned",
             "role": "acceptance-record",
             "target": {"scope": "case", "participantHandles": []},
+        }
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_local_review_effective_facts_equal_the_approved_package_snapshot(
+    tmp_path,
+):
+    context, state = _grouping_state(
+        tmp_path,
+        (("unknown",),),
+        source_only=(("unreadable", "pdf", ("document-unreadable",)),),
+    )
+    try:
+        initial = state.local_review_snapshot()["review"]
+        unit_exception = next(
+            item for item in initial["exceptions"] if item["kind"] == "unit-cluster"
+        )
+        source_exception = next(
+            item for item in initial["exceptions"] if item["kind"] == "source"
+        )
+        state.resolve_exception(
+            {
+                "exceptionId": unit_exception["exceptionId"],
+                "action": "assign",
+                "role": "acceptance-record",
+                "target": {
+                    "scope": "individual",
+                    "participantHandles": ["participant-0002"],
+                },
+                "applyToSimilar": False,
+            }
+        )
+        state.resolve_exception(
+            {
+                "exceptionId": source_exception["exceptionId"],
+                "action": "exclude",
+                "reason": "irrelevant",
+                "applyToSimilar": False,
+            }
+        )
+
+        local = state.local_review_snapshot()
+        resolved_group = next(
+            group
+            for group in local["review"]["groups"]
+            if group["memberUnitIds"] == ["unit-0002"]
+        )
+        assert resolved_group["state"] == "user-resolved"
+        assert resolved_group["effectiveResolution"] == {
+            "action": "assign",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+        }
+        assert local["review"]["resolvedExclusions"] == [
+            {
+                "exceptionId": source_exception["exceptionId"],
+                "kind": "source",
+                "evidenceId": "evidence-0003",
+                "issueCode": "source-unreadable",
+                "reason": "irrelevant",
+            }
+        ]
+        assert local["review"]["coverage"] == {
+            "groups": 2,
+            "automaticallyOrganizedUnits": 1,
+            "exceptionClusters": 0,
+            "exceptionUnits": 0,
+            "unaccountedUnits": 0,
+        }
+        assert local["summary"]["counts"] == {
+            "sources": 3,
+            "units": 2,
+            "participants": 2,
+            "accepted": 1,
+            "reassigned": 1,
+            "excluded": 1,
+            "unresolved": 0,
+        }
+        assert local["summary"]["readyToPrepare"] is True
+        assert "Alice" not in repr(local["review"])
+        assert "CTV-001" not in repr(local["review"])
+        digest_group = next(
+            group
+            for group in state._digest_input()["groupReview"]["groups"]
+            if group["memberUnitIds"] == ["unit-0002"]
+        )
+        assert "effectiveResolution" not in digest_group
+
+        digest = local["summary"]["proposalDigest"]
+        state.approve(digest)
+        approved = state.consume_approved_package_snapshot(digest)
+        unit = next(
+            item for item in approved.unit_decisions if item.unit_id == "unit-0002"
+        )
+        source = next(
+            item
+            for item in approved.source_dispositions
+            if item.evidence_id == "evidence-0003"
+        )
+        assert (unit.role, unit.scope, unit.participant_handles) == (
+            "acceptance-record",
+            "individual",
+            ("participant-0002",),
+        )
+        assert (source.decision, source.reason) == ("excluded", "irrelevant")
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_local_review_projects_the_exact_effective_group_exclusion(tmp_path):
+    context, state = _grouping_state(tmp_path, (("unknown",),))
+    try:
+        exception = next(
+            item
+            for item in state.local_review_snapshot()["review"]["exceptions"]
+            if item["kind"] == "unit-cluster"
+        )
+        state.resolve_exception(
+            {
+                "exceptionId": exception["exceptionId"],
+                "action": "exclude",
+                "reason": "irrelevant",
+                "applyToSimilar": False,
+            }
+        )
+
+        resolved = next(
+            group
+            for group in state.local_review_snapshot()["review"]["groups"]
+            if group["memberUnitIds"] == ["unit-0002"]
+        )
+        assert resolved["effectiveResolution"] == {
+            "action": "exclude",
+            "reason": "irrelevant",
         }
     finally:
         context.__exit__(None, None, None)

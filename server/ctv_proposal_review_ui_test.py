@@ -52,6 +52,7 @@ def test_static_ui_is_exception_first_in_the_fixed_reading_order():
         "coverage-and-approval",
         "coverage-heading",
         "coverage-summary",
+        "resolved-exclusions",
         "approve-button",
     }
     assert required <= set(parser.ids)
@@ -195,6 +196,7 @@ const elementTypes = {
   "organized-groups": "div",
   "coverage-heading": "h2",
   "coverage-summary": "dl",
+  "resolved-exclusions": "div",
   "approve-button": "button",
   "progress-status": "span",
   "unresolved-status": "span",
@@ -309,12 +311,17 @@ function stateWith(exceptions, ready = false) {
       status: "selected",
       rosterUnitId: "unit-0500",
       candidateUnitIds: ["unit-0500", "unit-0501"],
+      candidateSummaries: [
+        { rosterUnitId: "unit-0500", participantCount: 2, eligible: true, issueCodes: [] },
+        { rosterUnitId: "unit-0501", participantCount: 2, eligible: true, issueCodes: [] },
+      ],
       participantHandles: ["participant-0001", "participant-0002"],
       issueCodes: [],
     },
     review: {
       exceptions: structuredClone(exceptions),
       organizedGroups: structuredClone(groups),
+      resolvedExclusions: [],
       coverage: {
         groups: 25,
         automaticallyOrganizedUnits: ready ? 536 : 531,
@@ -448,7 +455,19 @@ def test_executable_dom_scales_by_exceptions_and_collapsed_groups():
   if (text.includes("unit-0536")) throw new Error("opaque atomic unit list leaked into summaries");
   if (!elements["approve-button"].disabled) throw new Error("approval enabled with exceptions");
 
-  await vm.runInContext(`(async () => { await selectException("exception-0001"); })()`, context);
+  elements["batch-announcement"].textContent = "stale batch scope";
+  const firstCard = cards[0];
+  firstCard.focus();
+  await firstCard.trigger("click");
+  const detailHeading = descendants(elements["exception-detail"]).find(
+    (node) => node.id === "exception-detail-heading"
+  );
+  if (!detailHeading || document.activeElement !== detailHeading || !detailHeading.parentNode) {
+    throw new Error("selection did not focus the live replacement detail heading");
+  }
+  if (elements["batch-announcement"].textContent !== "") {
+    throw new Error("selection did not clear stale batch scope text");
+  }
   if (previewRequests.length !== 1 || !previewRequests[0].endsWith("unit-0001")) {
     throw new Error(`selection did not fetch one trusted preview: ${JSON.stringify(previewRequests)}`);
   }
@@ -504,6 +523,172 @@ def test_executable_dom_preserves_explicit_assignment_scope_selection():
   ) {
     throw new Error(`whole-case assignment payload was not exact: ${JSON.stringify(actual)}`);
   }
+})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+'''
+    _run_js(harness)
+
+
+def test_executable_dom_requires_an_explicit_role_when_recommendation_is_missing():
+    harness = _DOM_HARNESS + r'''
+(async () => {
+  const unknownException = {
+    exceptionId: "exception-0200", kind: "unit-cluster", issueCode: "role-uncertain",
+    allowedActions: ["assign", "exclude", "split"], similarityKey: "similarity-unknown",
+    groupIds: ["group-0001"], memberUnitIds: ["unit-0001", "unit-0002", "unit-0003"],
+  };
+  const unknownState = stateWith([unknownException]);
+  unknownState.review.organizedGroups[0].role = "unknown";
+  unknownState.review.organizedGroups[0].target = { scope: "case", participantHandles: [] };
+  await vm.runInContext(`(async () => {
+    applyState(${JSON.stringify(unknownState)});
+    await selectException("exception-0200");
+  })()`, context);
+  const role = withId("assign-role");
+  const scope = withId("assign-scope");
+  const submit = withAction("assign");
+  if (role.value !== "" || !submit.disabled) {
+    throw new Error("unknown role invented a default assignment");
+  }
+  await submit.trigger("click");
+  if (requests.length !== 0) throw new Error("empty role submitted an assignment request");
+
+  role.value = "acceptance-record";
+  await role.trigger("change");
+  scope.value = "individual";
+  await scope.trigger("change");
+  const participants = descendants(elements["exception-detail"]).filter(
+    (node) => node.getAttribute("data-participant-handle")
+  );
+  if (!submit.disabled) throw new Error("participant-free individual assignment was enabled");
+  participants[1].checked = true;
+  await participants[1].trigger("change");
+  if (submit.disabled) throw new Error("complete explicit assignment stayed disabled");
+  await submit.trigger("click");
+  const actual = requests[0];
+  if (
+    actual.route !== "/api/exception"
+    || actual.payload.role !== "acceptance-record"
+    || actual.payload.target.scope !== "individual"
+    || JSON.stringify(actual.payload.target.participantHandles) !== JSON.stringify(["participant-0002"])
+  ) {
+    throw new Error(`explicit assignment payload was not valid: ${JSON.stringify(actual)}`);
+  }
+})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+'''
+    _run_js(harness)
+
+
+def test_executable_dom_renders_effective_approval_facts_and_source_exclusions():
+    harness = _DOM_HARNESS + r'''
+(async () => {
+  const finalState = stateWith([], true);
+  finalState.review.organizedGroups[0] = {
+    ...finalState.review.organizedGroups[0],
+    role: "unknown",
+    target: { scope: "case", participantHandles: [] },
+    state: "user-resolved",
+    effectiveResolution: {
+      action: "assign",
+      role: "acceptance-record",
+      target: { scope: "individual", participantHandles: ["participant-0002"] },
+    },
+  };
+  finalState.review.resolvedExclusions = [{
+    exceptionId: "exception-0300", kind: "source", evidenceId: "evidence-0025",
+    issueCode: "source-unsupported", reason: "irrelevant",
+  }];
+  finalState.summary.counts.reassigned = 1;
+  finalState.summary.counts.excluded = 1;
+  await vm.runInContext(`(async () => { applyState(${JSON.stringify(finalState)}); })()`, context);
+
+  const groupText = descendants(elements["organized-groups"])
+    .map((node) => node.textContent).join(" ");
+  const exclusionText = descendants(elements["resolved-exclusions"])
+    .map((node) => node.textContent).join(" ");
+  if (!groupText.includes("acceptance record") || !groupText.includes("PRIVATE BETA")) {
+    throw new Error(`effective assignment was not rendered: ${groupText}`);
+  }
+  if (groupText.includes("Not assigned")) {
+    throw new Error("original assignment was shown instead of the effective assignment");
+  }
+  if (
+    !exclusionText.includes("Source 25")
+    || !exclusionText.includes("source unsupported")
+    || !exclusionText.includes("irrelevant")
+  ) {
+    throw new Error(`resolved source exclusion was not rendered: ${exclusionText}`);
+  }
+  if (elements["approve-button"].disabled) {
+    throw new Error("approval stayed disabled after effective facts were visible");
+  }
+  const preview = descendants(elements["organized-groups"]).find(
+    (node) => node.getAttribute("data-action") === "preview-group"
+  );
+  await preview.trigger("click");
+  const detailText = descendants(elements["exception-detail"])
+    .map((node) => node.textContent).join(" ");
+  if (!detailText.includes("acceptance record") || !detailText.includes("PRIVATE BETA")) {
+    throw new Error(`spot check reverted to original facts: ${detailText}`);
+  }
+})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+'''
+    _run_js(harness)
+
+
+def test_executable_dom_roster_choice_requires_explicit_eligible_previewed_candidate():
+    harness = _DOM_HARNESS + r'''
+(async () => {
+  const rosterException = {
+    exceptionId: "exception-0100", kind: "roster", issueCode: "roster-ambiguous",
+    recommendedAction: "choose-roster", allowedActions: ["choose-roster"],
+    similarityKey: "similarity-roster",
+  };
+  const rosterState = stateWith([rosterException]);
+  rosterState.roster.status = "ambiguous";
+  rosterState.roster.rosterUnitId = null;
+  rosterState.roster.candidateSummaries = [
+    { rosterUnitId: "unit-0500", participantCount: 2, eligible: true, issueCodes: [] },
+    { rosterUnitId: "unit-0501", participantCount: 0, eligible: false, issueCodes: ["roster-row-invalid"] },
+  ];
+  await vm.runInContext(`(async () => {
+    applyState(${JSON.stringify(rosterState)});
+    await selectException("exception-0100");
+  })()`, context);
+  const select = withId("roster-candidate");
+  const submit = withAction("choose-roster");
+  const optionText = descendants(select).map((node) => node.textContent).join(" ");
+  if (select.value !== "" || !submit.disabled) {
+    throw new Error("roster choice did not start at a disabled placeholder");
+  }
+  if (!optionText.includes("2 participants") || !optionText.includes("roster row invalid")) {
+    throw new Error(`bounded candidate facts were not rendered: ${optionText}`);
+  }
+  select.value = "unit-0501";
+  await select.trigger("change");
+  if (!submit.disabled) throw new Error("ineligible roster candidate enabled submit");
+  select.value = "unit-0500";
+  await select.trigger("change");
+  if (submit.disabled) throw new Error("eligible explicit roster candidate stayed disabled");
+  if (previewRequests.length !== 1 || !previewRequests[0].endsWith("unit-0500")) {
+    throw new Error(`eligible roster selection did not fetch one trusted preview: ${JSON.stringify(previewRequests)}`);
+  }
+  await submit.trigger("click");
+  const request = requests[0];
+  if (
+    request.route !== "/api/exception"
+    || JSON.stringify(request.payload) !== JSON.stringify({
+      exceptionId: "exception-0100", action: "choose-roster",
+      applyToSimilar: false, rosterUnitId: "unit-0500",
+    })
+  ) {
+    throw new Error(`roster payload was not exact: ${JSON.stringify(request)}`);
+  }
+  if (!elements["undo-button"].disabled) {
+    throw new Error("choose-roster exposed unsupported undo");
+  }
+  const beforeUndo = requests.length;
+  await elements["undo-button"].trigger("click");
+  if (requests.length !== beforeUndo) throw new Error("choose-roster issued an undo request");
 })().catch((error) => { console.error(error.message); process.exitCode = 1; });
 '''
     _run_js(harness)
@@ -577,6 +762,7 @@ def test_executable_dom_serializes_only_state_permitted_action_fields():
   })()`, context);
   if (withId("apply-to-similar")) throw new Error("batch control exists for roster action");
   withId("roster-candidate").value = "unit-0501";
+  await withId("roster-candidate").trigger("change");
   await withAction("choose-roster").trigger("click");
 
   const expected = [
@@ -612,6 +798,28 @@ def test_executable_dom_serializes_only_state_permitted_action_fields():
   if (JSON.stringify(canonical(requests)) !== JSON.stringify(canonical(expected))) {
     throw new Error(`unexpected exact payloads: ${JSON.stringify(requests)}`);
   }
+})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+'''
+    _run_js(harness)
+
+
+def test_executable_dom_reopen_clears_prior_server_undo_capability():
+    harness = _DOM_HARNESS + r'''
+(async () => {
+  await vm.runInContext(`(async () => {
+    applyState(__fixture);
+    await selectException("exception-0001");
+  })()`, context);
+  await withAction("exclude").trigger("click");
+  if (elements["undo-button"].disabled) throw new Error("resolvable exception did not enable undo");
+  const reopen = descendants(elements["organized-groups"]).find(
+    (node) => node.getAttribute("data-group-id") === "group-0003"
+  );
+  await reopen.trigger("click");
+  if (!elements["undo-button"].disabled) throw new Error("reopen left a stale undo enabled");
+  const beforeUndo = requests.length;
+  await elements["undo-button"].trigger("click");
+  if (requests.length !== beforeUndo) throw new Error("reopen allowed a stale undo network call");
 })().catch((error) => { console.error(error.message); process.exitCode = 1; });
 '''
     _run_js(harness)

@@ -477,14 +477,18 @@ class ProposalState:
             "participantHandles": list(target["participantHandles"]),
         }
 
-    def _group_projection(self, group):
-        resolved = any(
-            item["kind"] == "unit-cluster"
-            and group["groupId"] in item["groupIds"]
-            and item["exceptionId"] in self._exception_resolutions
-            for item in self._review_exceptions
+    def _group_projection(self, group, *, include_effective_resolution=False):
+        resolved_item = next(
+            (
+                item
+                for item in self._review_exceptions
+                if item["kind"] == "unit-cluster"
+                and group["groupId"] in item["groupIds"]
+                and item["exceptionId"] in self._exception_resolutions
+            ),
+            None,
         )
-        return {
+        value = {
             "groupId": group["groupId"],
             "evidenceId": group["evidenceId"],
             "unitKind": group["unitKind"],
@@ -493,10 +497,46 @@ class ProposalState:
             "lastUnitIndex": group["lastUnitIndex"],
             "role": group["role"],
             "target": self._target_projection(group["target"]),
-            "state": "user-resolved" if resolved else group["state"],
+            "state": "user-resolved" if resolved_item else group["state"],
             "checkCodes": list(group["checkCodes"]),
             "issueCodes": list(group["issueCodes"]),
         }
+        if resolved_item is not None and include_effective_resolution:
+            resolution = self._exception_resolutions[
+                resolved_item["exceptionId"]
+            ]
+            effective = {"action": resolution["action"]}
+            if resolution["action"] == "assign":
+                effective["role"] = resolution["role"]
+                effective["target"] = self._target_projection(
+                    resolution["target"]
+                )
+            else:
+                effective["reason"] = resolution["reason"]
+            value["effectiveResolution"] = effective
+        return value
+
+    def _roster_candidate_summaries(self):
+        values = []
+        for unit_id in self._roster_selection.candidate_unit_ids:
+            candidate = self._roster_candidates_by_id[unit_id]
+            issue_codes = list(
+                dict.fromkeys(
+                    (
+                        *candidate.blocking_issue_codes,
+                        *candidate.package_issue_codes,
+                    )
+                )
+            )
+            values.append(
+                {
+                    "rosterUnitId": unit_id,
+                    "participantCount": len(candidate.rows),
+                    "eligible": bool(candidate.rows) and not issue_codes,
+                    "issueCodes": issue_codes,
+                }
+            )
+        return values
 
     @staticmethod
     def _exception_projection(item):
@@ -544,12 +584,34 @@ class ProposalState:
         }
 
     def local_review_snapshot(self):
-        groups = [self._group_projection(group) for group in self._review_groups]
+        groups = [
+            self._group_projection(
+                group, include_effective_resolution=True
+            )
+            for group in self._review_groups
+        ]
         exceptions = [
             self._exception_projection(item)
             for item in self._review_exceptions
             if item["exceptionId"] not in self._exception_resolutions
         ]
+        resolved_exclusions = []
+        for item in self._review_exceptions:
+            resolution = self._exception_resolutions.get(item["exceptionId"])
+            if (
+                item["kind"] == "source"
+                and resolution is not None
+                and resolution["action"] == "exclude"
+            ):
+                resolved_exclusions.append(
+                    {
+                        "exceptionId": item["exceptionId"],
+                        "kind": "source",
+                        "evidenceId": item["evidenceId"],
+                        "issueCode": item["issueCode"],
+                        "reason": resolution["reason"],
+                    }
+                )
         summary = self.approval_summary()
         return {
             "roster": {
@@ -558,12 +620,14 @@ class ProposalState:
                 "candidateUnitIds": list(
                     self._roster_selection.candidate_unit_ids
                 ),
+                "candidateSummaries": self._roster_candidate_summaries(),
                 "participantHandles": list(self._participant_handles),
                 "issueCodes": list(self._roster_issues),
             },
             "review": {
                 "groups": groups,
                 "exceptions": exceptions,
+                "resolvedExclusions": resolved_exclusions,
                 "coverage": self._review_coverage(),
                 "issueCodes": sorted(
                     {item["issueCode"] for item in exceptions}

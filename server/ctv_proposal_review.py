@@ -338,6 +338,7 @@ class _ReviewHandler(BaseHTTPRequestHandler):
             "review": {
                 "exceptions": local_review["exceptions"],
                 "organizedGroups": local_review["groups"],
+                "resolvedExclusions": local_review["resolvedExclusions"],
                 "coverage": local_review["coverage"],
                 "issueCodes": local_review["issueCodes"],
             },
@@ -411,7 +412,8 @@ class _ReviewHandler(BaseHTTPRequestHandler):
             self._reject(400, "invalid-request")
             return
         state = self.session.state
-        local_review = state.local_review_snapshot()["review"]
+        local = state.local_review_snapshot()
+        local_review = local["review"]
         current_member_ids = {
             member_unit_id
             for record in (
@@ -420,6 +422,10 @@ class _ReviewHandler(BaseHTTPRequestHandler):
             )
             for member_unit_id in record.get("memberUnitIds", ())
         }
+        current_member_ids.update(
+            candidate["rosterUnitId"]
+            for candidate in local["roster"]["candidateSummaries"]
+        )
         if unit_id not in current_member_ids:
             self._reject(404, "preview-not-found")
             return
