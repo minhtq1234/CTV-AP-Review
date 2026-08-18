@@ -986,27 +986,136 @@ def test_source_not_applicable_can_be_approved_and_consumed_coherently(tmp_path)
         state.approve(digest)
         snapshot = state.consume_approved_package_snapshot(digest)
 
-        assert snapshot.source_dispositions[0].acquisition_status == "not-applicable"
+        assert snapshot.source_dispositions[0].acquisition_status == "opaque"
         assert snapshot.source_dispositions[0].reason == "intentionally-omitted"
     finally:
         context.__exit__(None, None, None)
 
 
-def test_exact_mapping_rejects_str_subclass_keys_without_calling_equality(tmp_path):
+@pytest.mark.parametrize(
+    "entrypoint",
+    (
+        "resolve-accept",
+        "resolve-split",
+        "resolve-merge",
+        "undo-exception",
+        "reopen-group",
+        "select-roster",
+    ),
+)
+def test_exact_mapping_rejects_hostile_keys_without_hash_or_equality_calls(
+    tmp_path, entrypoint
+):
     class HostileKey(str):
         equality_calls = 0
-        __hash__ = str.__hash__
+        hash_calls = 0
+
+        def __hash__(self):
+            type(self).hash_calls += 1
+            return super().__hash__()
 
         def __eq__(self, other):
             type(self).equality_calls += 1
             return super().__eq__(other)
 
-    context, _observation, state = _state(tmp_path)
+    context, state = _grouping_state(
+        tmp_path, (("unknown", "unknown", "unknown"),)
+    )
     try:
-        roster_id = state.approval_summary()["rosterUnitId"]
+        exception_id = state.local_review_snapshot()["review"]["exceptions"][0][
+            "exceptionId"
+        ]
+        group_id = state.local_review_snapshot()["review"]["groups"][1][
+            "groupId"
+        ]
+        if entrypoint == "resolve-accept":
+            mapping = {
+                HostileKey("action"): "accept-recommendation",
+                "exceptionId": exception_id,
+                "applyToSimilar": False,
+            }
+            invoke = state.resolve_exception
+        elif entrypoint == "resolve-split":
+            mapping = {
+                HostileKey("action"): "split",
+                "exceptionId": exception_id,
+                "splitBeforeUnitId": "unit-0003",
+                "applyToSimilar": False,
+            }
+            invoke = state.resolve_exception
+        elif entrypoint == "resolve-merge":
+            mapping = {
+                HostileKey("action"): "merge-next",
+                "exceptionId": exception_id,
+                "applyToSimilar": False,
+            }
+            invoke = state.resolve_exception
+        elif entrypoint == "undo-exception":
+            mapping = {HostileKey("exceptionId"): exception_id}
+            invoke = state.undo_exception
+        elif entrypoint == "reopen-group":
+            mapping = {HostileKey("groupId"): group_id}
+            invoke = state.reopen_group
+        else:
+            mapping = {
+                HostileKey("rosterUnitId"): state.approval_summary()[
+                    "rosterUnitId"
+                ]
+            }
+            invoke = state.select_roster
+        HostileKey.equality_calls = 0
+        HostileKey.hash_calls = 0
+
         with pytest.raises(ValueError):
-            state.select_roster({HostileKey("rosterUnitId"): roster_id})
+            invoke(mapping)
+
         assert HostileKey.equality_calls == 0
+        assert HostileKey.hash_calls == 0
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_unknown_role_exception_does_not_advertise_an_unexecutable_recommendation(
+    tmp_path,
+):
+    context, state = _grouping_state(tmp_path, (("unknown",),))
+    try:
+        local = state.local_review_snapshot()
+        exception = local["review"]["exceptions"][0]
+        before_digest = state.approval_summary()["proposalDigest"]
+        before_review = _review_bytes(state)
+
+        assert exception["issueCode"] == "role-uncertain"
+        assert "recommendedAction" not in exception
+        assert exception["allowedActions"] == ["assign", "exclude", "split"]
+        with pytest.raises(ValueError):
+            state.resolve_exception(
+                {
+                    "exceptionId": exception["exceptionId"],
+                    "action": "accept-recommendation",
+                    "applyToSimilar": False,
+                }
+            )
+        assert state.approval_summary()["proposalDigest"] == before_digest
+        assert _review_bytes(state) == before_review
+
+        state.resolve_exception(
+            {
+                "exceptionId": exception["exceptionId"],
+                "action": "assign",
+                "role": "acceptance-record",
+                "target": {"scope": "case", "participantHandles": []},
+                "applyToSimilar": False,
+            }
+        )
+        approved = state.approve(state.approval_summary()["proposalDigest"])
+
+        assert approved["unitAssignments"][-1] == {
+            "unitId": "unit-0002",
+            "decision": "reassigned",
+            "role": "acceptance-record",
+            "target": {"scope": "case", "participantHandles": []},
+        }
     finally:
         context.__exit__(None, None, None)
 

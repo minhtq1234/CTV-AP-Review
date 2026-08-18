@@ -14,7 +14,12 @@ from ctv_grouping_evidence import GroupingEvidence
 from ctv_inspection import inspect_observation
 from ctv_inventory import open_inventory_observation
 from ctv_package_assignment import build_assignments
-from ctv_inspection_model import InspectionLimits
+from ctv_inspection_model import (
+    InspectionLimits,
+    InspectionResult,
+    InspectionSource,
+    InspectionTotals,
+)
 from ctv_proposal import ProposalState
 from intake_contract_v2 import (
     AssignmentsDocumentV2,
@@ -69,7 +74,7 @@ def _approved_state(tmp_path, **source_kwargs):
     return context, state, digest
 
 
-def _approved_grouped_state(tmp_path):
+def _approved_grouped_state(tmp_path, *, source_not_applicable=False):
     source = _source(tmp_path)
     context = open_inventory_observation(source)
     observation = context.__enter__()
@@ -78,6 +83,35 @@ def _approved_grouped_state(tmp_path):
         observation,
         _private_text_sink=facts.capture,
     )
+    if source_not_applicable:
+        evidence_number = max(
+            int(source.evidence_id.rsplit("-", 1)[1])
+            for source in inspection.sources
+        ) + 1
+        inspection = InspectionResult(
+            inspection_version=inspection.inspection_version,
+            inspection_status=inspection.inspection_status,
+            observation_id=inspection.observation_id,
+            totals=InspectionTotals(
+                sources=inspection.totals.sources + 1,
+                units=inspection.totals.units,
+                classified=inspection.totals.classified,
+                unknown=inspection.totals.unknown,
+                needs_user_review=inspection.totals.needs_user_review,
+                issues=inspection.totals.issues,
+            ),
+            sources=inspection.sources
+            + (
+                InspectionSource(
+                    evidence_id=f"evidence-{evidence_number:04d}",
+                    detected_type="pdf",
+                    inspection_status="inspected",
+                    unit_count=0,
+                    issue_codes=(),
+                ),
+            ),
+            units=inspection.units,
+        )
     roster = next(unit for unit in inspection.units if unit.unit_kind == "worksheet")
     if not facts.complete_for(
         roster.evidence_id,
@@ -104,6 +138,19 @@ def _approved_grouped_state(tmp_path):
             "applyToSimilar": False,
         }
     )
+    if source_not_applicable:
+        source_exception = next(
+            item
+            for item in state.local_review_snapshot()["review"]["exceptions"]
+            if item["kind"] == "source"
+        )
+        state.resolve_exception(
+            {
+                "exceptionId": source_exception["exceptionId"],
+                "action": "accept-recommendation",
+                "applyToSimilar": False,
+            }
+        )
     state.resolve_exception(
         {
             "exceptionId": "exception-0002",
@@ -414,6 +461,64 @@ def test_grouped_approved_expansion_preserves_the_v2_assignment_contract(tmp_pat
         assert all(
             decision.proposal_version == "1.0" for decision in result.decisions
         )
+        assert all(value not in repr(document) for value in _PRIVATE)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_source_not_applicable_reaches_the_unchanged_v2_assignment_contract(
+    tmp_path,
+):
+    context, state, digest = _approved_grouped_state(
+        tmp_path, source_not_applicable=True
+    )
+    try:
+        assert state.approval_summary()["readyToPrepare"] is True
+        state.approve(digest)
+        snapshot = state.consume_approved_package_snapshot(digest)
+        locators = {
+            unit.unit_id: (
+                RosterLocatorV2(
+                    kind="roster",
+                    artifactId="artifact-roster",
+                    worksheetIndex=1,
+                )
+                if unit.unit_kind == "worksheet"
+                else PdfPageLocatorV2(
+                    kind="pdf-page",
+                    artifactId="artifact-inputpdf",
+                    targetPage=1,
+                )
+            )
+            for unit in snapshot.unit_decisions
+        }
+
+        result = build_assignments(
+            snapshot,
+            package_id="package-" + "d" * 64,
+            locators=locators,
+        )
+        document = result.document.model_dump(by_alias=True)
+
+        assert type(result.document) is AssignmentsDocumentV2
+        assert [unit["unitId"] for unit in document["units"]] == [
+            item.unit_id for item in snapshot.unit_decisions
+        ]
+        assert len({unit["unitId"] for unit in document["units"]}) == len(
+            snapshot.unit_decisions
+        )
+        assert len(document["exclusions"]) == 1
+        assert set(document["exclusions"][0]) == {
+            "recordType",
+            "recordId",
+            "decisionId",
+            "reason",
+        }
+        assert document["exclusions"][0]["recordType"] == "source"
+        assert document["exclusions"][0]["reason"] == "excluded-by-user"
+        assert snapshot.source_dispositions[0].reason == "intentionally-omitted"
+        assert snapshot.source_dispositions[0].acquisition_status == "opaque"
+        assert snapshot.source_dispositions[0].coverage_state == "excluded-by-user"
         assert all(value not in repr(document) for value in _PRIVATE)
     finally:
         context.__exit__(None, None, None)

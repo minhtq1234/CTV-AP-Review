@@ -62,8 +62,10 @@ _FIXED_GROUP_ISSUES = (
     "source-issue-present", "unit-issue-present",
 )
 _ACQUISITION_STATUS_BY_INSPECTION_STATUS = {
-    "inspected": "not-applicable",
-    "not-applicable": "not-applicable",
+    # The frozen reason retains intentional omission; v2 encodes that user
+    # exclusion through its existing opaque acquisition representation.
+    "inspected": "opaque",
+    "not-applicable": "opaque",
     "opaque": "opaque",
     "unsupported": "unsupported",
     "unreadable": "unreadable",
@@ -123,12 +125,18 @@ class ApprovedProposalSnapshot:
     canonical_to_source_columns: tuple[tuple[str, str], ...] = field(repr=False)
 
 
-def _mapping(value, keys):
+def _exact_mapping_keys(value):
     if (
         type(value) is not dict
         or any(type(key) is not str for key in value)
-        or set(value) != set(keys)
     ):
+        raise ValueError("proposal request must use its exact object shape")
+    return value
+
+
+def _mapping(value, keys):
+    value = _exact_mapping_keys(value)
+    if set(value) != set(keys):
         raise ValueError("proposal request must use its exact object shape")
     return value
 
@@ -496,10 +504,11 @@ class ProposalState:
             "exceptionId": item["exceptionId"],
             "kind": item["kind"],
             "issueCode": item["issueCode"],
-            "recommendedAction": item["recommendedAction"],
             "allowedActions": list(item["allowedActions"]),
             "similarityKey": item["similarityKey"],
         }
+        if item.get("recommendationExecutable", True):
+            value["recommendedAction"] = item["recommendedAction"]
         if item["kind"] == "source":
             value["evidenceId"] = item["evidenceId"]
         elif item["kind"] == "unit-cluster":
@@ -847,6 +856,17 @@ class ProposalState:
             if can_merge:
                 actions += ("merge-next",)
             item["allowedActions"] = actions
+            item["recommendationExecutable"] = (
+                item["recommendedAction"] == "assign"
+                and group["role"] != "unknown"
+                and all(
+                    group["role"] in _ROLES_BY_KIND[self._units_by_id[unit_id].unit_kind]
+                    for unit_id in item["memberUnitIds"]
+                )
+            ) or (
+                item["recommendedAction"] == "exclude"
+                and item.get("recommendedReason") in _EXCLUSION_REASONS
+            )
             item["similarityKey"] = _review_similarity_key(
                 item["issueCode"],
                 item["recommendedAction"],
@@ -1043,8 +1063,7 @@ class ProposalState:
         self._commit_grouped_roster_transition(transition)
 
     def resolve_exception(self, mapping):
-        if type(mapping) is not dict:
-            raise ValueError("proposal request must use its exact object shape")
+        _exact_mapping_keys(mapping)
         action = _enum(mapping.get("action"), _EXCEPTION_ACTIONS, "action")
         required = {
             "accept-recommendation": {"exceptionId", "action", "applyToSimilar"},
@@ -1071,6 +1090,10 @@ class ProposalState:
         )
         if item is None or exception_id in self._exception_resolutions:
             raise ValueError("exceptionId must identify a current unresolved exception")
+        if action == "accept-recommendation" and not item.get(
+            "recommendationExecutable", True
+        ):
+            raise ValueError("exception has no executable recommendation")
         if action == "choose-roster":
             if apply_to_similar:
                 raise ValueError("choose-roster cannot apply to similar exceptions")
