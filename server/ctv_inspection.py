@@ -434,6 +434,7 @@ def inspect_observation(
     ocr_session = open_local_ocr()
     result = _UNKNOWN_INVENTORY_FAILURE
     failure_code = None
+    internal_failure = False
     try:
         result = _inspection_result(
             observation,
@@ -443,7 +444,7 @@ def inspect_observation(
             _private_text_sink=_private_text_sink,
         )
     except PrivateTextSinkFailure:
-        failure_code = "inspection-internal-error"
+        internal_failure = True
     except InventoryError as error:
         failure_code = _mapped_inventory_error_code(error)
     except PdfPageCountExceededError:
@@ -458,9 +459,9 @@ def inspect_observation(
         failure_code = "inspection-unit-count-exceeded"
     finally:
         ocr_session = None
+    if internal_failure:
+        _raise_internal_failure()
     if failure_code is not None:
-        if failure_code == "inspection-internal-error":
-            _raise_internal_failure()
         _raise_controlled_failure(failure_code)
     if type(result) is str:
         _raise_controlled_failure(result)
