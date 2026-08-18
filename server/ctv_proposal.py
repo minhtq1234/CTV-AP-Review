@@ -444,7 +444,7 @@ class ProposalState:
                     "firstUnitIndex": first.unit_index,
                     "lastUnitIndex": last.unit_index,
                     "role": "unknown",
-                    "target": {"scope": "case", "participantHandles": ()},
+                    "target": None,
                     "state": "exception",
                     "checkCodes": (
                         "source-range-contiguous",
@@ -556,6 +556,8 @@ class ProposalState:
 
     @staticmethod
     def _target_projection(target):
+        if target is None:
+            return None
         return {
             "scope": target["scope"],
             "participantHandles": list(target["participantHandles"]),

@@ -128,6 +128,29 @@ def _ambiguous_state(tmp_path):
     return context, state
 
 
+def _missing_roster_state(tmp_path):
+    source = tmp_path / f"{PRIVATE_PATH_PART}-missing-roster"
+    source.mkdir()
+    (source / "private-evidence.pdf").write_bytes(
+        _pdf_bytes(
+            "BIEN BAN NGHIEM THU THOI GIAN NGHIEM THU BEN A BEN B CHU KY"
+        )
+    )
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    facts = GroupingEvidence()
+    inspection = inspect_observation(
+        observation,
+        _private_text_sink=facts.capture,
+    )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=facts,
+    )
+    return context, state
+
+
 def _effective_resolution_state(tmp_path):
     source = tmp_path / f"{PRIVATE_PATH_PART}-effective"
     source.mkdir()
@@ -326,6 +349,70 @@ def test_group_state_bootstrap_is_one_time_authenticated_and_exactly_projected(t
         assert PRIVATE_NAME not in repr(result)
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", captured["port"]), timeout=0.2)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_missing_roster_api_projects_unassigned_fallback_and_returns_draft(tmp_path):
+    context, state = _missing_roster_state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        first = _json(body)
+        assert first["participants"] == []
+        assert first["roster"] == {
+            "status": "missing",
+            "rosterUnitId": None,
+            "candidateUnitIds": [],
+            "candidateSummaries": [],
+            "participantHandles": [],
+            "issueCodes": ["roster-missing"],
+        }
+        assert first["review"]["exceptions"] == [
+            {
+                "exceptionId": "exception-0001",
+                "kind": "roster",
+                "issueCode": "roster-missing",
+                "allowedActions": [],
+                "similarityKey": first["review"]["exceptions"][0][
+                    "similarityKey"
+                ],
+            }
+        ]
+        assert first["review"]["coverage"] == {
+            "groups": 1,
+            "automaticallyOrganizedUnits": 0,
+            "exceptionClusters": 1,
+            "exceptionUnits": 1,
+            "unaccountedUnits": 0,
+        }
+        assert first["review"]["organizedGroups"][0]["target"] is None
+        assert first["summary"]["readyToPrepare"] is False
+
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        second = _json(body)
+        assert second["summary"]["proposalDigest"] == first["summary"][
+            "proposalDigest"
+        ]
+        assert PRIVATE_PATH_PART not in body.decode("utf-8")
+
+        status, _headers, body = _post(
+            parsed, "/api/draft", cookie, first["csrfToken"], {}
+        )
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        result = _run_visible(state, drive)
+        assert result["outcome"] == "draft"
     finally:
         context.__exit__(None, None, None)
 

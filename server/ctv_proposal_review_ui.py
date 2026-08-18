@@ -39,7 +39,7 @@ UI_HTML = """<!doctype html>
     <section id="organized-evidence" aria-labelledby="organized-heading">
       <p class="eyebrow">Optional spot check</p>
       <h2 id="organized-heading">Automatically organized evidence</h2>
-      <p class="section-copy">These groups need no individual decision. Open a group only when you want to inspect it.</p>
+      <p id="organized-copy" class="section-copy">These groups need no individual decision. Open a group only when you want to inspect it.</p>
       <div id="organized-groups"></div>
     </section>
 
@@ -344,7 +344,7 @@ function participantLabel(handle) {
 }
 
 function targetLabel(target) {
-  if (!target) return "Not assigned";
+  if (!target) return "Unassigned — roster required";
   if (target.scope === "case") return "Whole case";
   if (!target.participantHandles.length) return fixedLabel(target.scope);
   return target.participantHandles.map(participantLabel).join(", ");
@@ -731,7 +731,13 @@ function renderDetail() {
   heading.setAttribute("aria-live", "polite");
   detail.appendChild(heading);
   detail.appendChild(textElement("p", exceptionLocation(exception), "detail-meta"));
-  if (exception.recommendedAction && exception.recommendedAction !== "choose-roster") {
+  if (exception.issueCode === "roster-missing" && !exception.allowedActions.length) {
+    detail.appendChild(textElement(
+      "p",
+      "Correct or add the roster source, then Return draft and relaunch this review to rerun organization.",
+      "detail-meta"
+    ));
+  } else if (exception.recommendedAction && exception.recommendedAction !== "choose-roster") {
     const panel = document.createElement("div");
     panel.className = "action-panel";
     panel.appendChild(textElement("p", `Recommended: ${ACTION_LABELS[exception.recommendedAction] || fixedLabel(exception.recommendedAction)}`));
@@ -741,7 +747,7 @@ function renderDetail() {
       () => submitExceptionAction("accept-recommendation")
     ));
     detail.appendChild(panel);
-  } else if (!exception.recommendedAction) {
+  } else if (!exception.recommendedAction && exception.allowedActions.length) {
     detail.appendChild(textElement("p", "No automatic recommendation. Choose one explicit action below.", "detail-meta"));
   }
   renderBatchControl(detail, exception);
@@ -968,6 +974,20 @@ function renderOrganizedGroups() {
   });
 }
 
+function renderGroupSectionContext() {
+  const status = localReview.roster ? localReview.roster.status : "missing";
+  if (status === "selected") {
+    byId("organized-heading").textContent = "Automatically organized evidence";
+    byId("organized-copy").textContent = "These groups need no individual decision. Open a group only when you want to inspect it.";
+  } else if (status === "ambiguous") {
+    byId("organized-heading").textContent = "Evidence awaiting roster";
+    byId("organized-copy").textContent = "These groups are not automatically organized. Choose the authoritative roster to organize them safely.";
+  } else {
+    byId("organized-heading").textContent = "Evidence awaiting roster";
+    byId("organized-copy").textContent = "These groups are not automatically organized. Correct or add the roster source, return draft, and relaunch to rerun organization.";
+  }
+}
+
 async function selectGroupPreview(groupId) {
   const group = localReview.review.organizedGroups.find(
     (item) => item.groupId === groupId
@@ -1079,6 +1099,7 @@ function renderAll() {
   renderTopStatus();
   renderExceptions();
   renderDetail();
+  renderGroupSectionContext();
   renderOrganizedGroups();
   renderResolvedExclusions();
   renderCoverage();

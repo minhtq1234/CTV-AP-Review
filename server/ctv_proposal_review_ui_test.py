@@ -193,6 +193,8 @@ const elementTypes = {
   "exception-heading": "h2",
   "exception-list": "div",
   "exception-detail": "section",
+  "organized-heading": "h2",
+  "organized-copy": "p",
   "organized-groups": "div",
   "coverage-heading": "h2",
   "coverage-summary": "dl",
@@ -689,6 +691,99 @@ def test_executable_dom_roster_choice_requires_explicit_eligible_previewed_candi
   const beforeUndo = requests.length;
   await elements["undo-button"].trigger("click");
   if (requests.length !== beforeUndo) throw new Error("choose-roster issued an undo request");
+})().catch((error) => { console.error(error.message); process.exitCode = 1; });
+'''
+    _run_js(harness)
+
+
+def test_executable_dom_missing_roster_requires_source_correction_and_draft():
+    harness = _DOM_HARNESS + r'''
+(async () => {
+  const rosterException = {
+    exceptionId: "exception-0100", kind: "roster", issueCode: "roster-missing",
+    allowedActions: [], similarityKey: "similarity-roster-missing",
+  };
+  const missingState = stateWith([rosterException]);
+  missingState.participants = [];
+  missingState.roster = {
+    status: "missing", rosterUnitId: null, candidateUnitIds: [],
+    candidateSummaries: [], participantHandles: [], issueCodes: ["roster-missing"],
+  };
+  const memberIds = Array.from(
+    { length: 536 },
+    (_unused, index) => `unit-${String(index + 1).padStart(4, "0")}`
+  );
+  missingState.review.organizedGroups = Array.from({ length: 8 }, (_unused, index) => {
+    const start = index * 67;
+    const members = memberIds.slice(start, start + 67);
+    return group(index + 1, {
+      memberUnitIds: members,
+      firstUnitIndex: start + 1,
+      lastUnitIndex: start + members.length,
+      role: "unknown",
+      target: null,
+      state: "exception",
+      checkCodes: ["source-range-contiguous", "coverage-exact"],
+      issueCodes: ["roster-missing"],
+    });
+  });
+  missingState.review.coverage = {
+    groups: 8, automaticallyOrganizedUnits: 0, exceptionClusters: 1,
+    exceptionUnits: 536, unaccountedUnits: 0,
+  };
+  missingState.review.issueCodes = ["roster-missing"];
+  missingState.summary.counts = {
+    sources: 12, units: 536, participants: 0, accepted: 0,
+    reassigned: 0, excluded: 0, unresolved: 536,
+  };
+  missingState.summary.readyToPrepare = false;
+
+  await vm.runInContext(`(async () => {
+    applyState(${JSON.stringify(missingState)});
+    await selectException("exception-0100");
+  })()`, context);
+
+  const heading = elements["organized-heading"].textContent;
+  const copy = elements["organized-copy"].textContent;
+  const detailText = descendants(elements["exception-detail"])
+    .map((node) => node.textContent).join(" ");
+  const groupText = descendants(elements["organized-groups"])
+    .map((node) => node.textContent).join(" ");
+  if (heading !== "Evidence awaiting roster") {
+    throw new Error(`missing roster heading was not blocked: ${heading}`);
+  }
+  if (
+    !copy.includes("not automatically organized")
+    || copy.includes("need no individual decision")
+  ) {
+    throw new Error(`missing roster group copy was not truthful: ${copy}`);
+  }
+  if (
+    !detailText.includes("Correct or add the roster source")
+    || !detailText.includes("Return draft")
+    || !detailText.includes("relaunch")
+    || detailText.includes("Choose one explicit action")
+  ) {
+    throw new Error(`missing roster recovery was not actionable: ${detailText}`);
+  }
+  if (withAction("choose-roster") || withAction("assign") || withAction("exclude")) {
+    throw new Error("missing roster rendered action controls without an eligible action");
+  }
+  if (!groupText.includes("Unassigned — roster required") || groupText.includes("Whole case")) {
+    throw new Error(`fallback target was misleading: ${groupText}`);
+  }
+  const details = elements["organized-groups"].querySelectorAll("details");
+  if (details.length !== 8 || descendants(elements["organized-groups"]).length >= 536) {
+    throw new Error("missing roster rendered atomic rows instead of bounded groups");
+  }
+  if (elements["draft-button"].disabled || !elements["approve-button"].disabled) {
+    throw new Error("missing roster terminal controls were unsafe");
+  }
+  await elements["draft-button"].trigger("click");
+  const terminalRequest = requests.at(-1);
+  if (terminalRequest.route !== "/api/draft" || JSON.stringify(terminalRequest.payload) !== "{}") {
+    throw new Error(`draft request was not preserved: ${JSON.stringify(terminalRequest)}`);
+  }
 })().catch((error) => { console.error(error.message); process.exitCode = 1; });
 '''
     _run_js(harness)

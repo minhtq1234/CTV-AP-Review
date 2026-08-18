@@ -291,9 +291,168 @@ def _review_driver(
                 "resolvedExclusions",
             }
             assert current["summary"]["counts"]["units"] == generated_unit_count
-            assert current["review"]["coverage"]["unaccountedUnits"] == 0
-            assert len(current["review"]["exceptions"]) == 2
-            assert len(current["review"]["organizedGroups"]) < generated_unit_count
+            assert current["roster"] == {
+                "status": "selected",
+                "rosterUnitId": "unit-0001",
+                "candidateUnitIds": ["unit-0001"],
+                "candidateSummaries": [
+                    {
+                        "rosterUnitId": "unit-0001",
+                        "participantCount": 2,
+                        "eligible": True,
+                        "issueCodes": [],
+                    }
+                ],
+                "participantHandles": ["participant-0001", "participant-0002"],
+                "issueCodes": [],
+            }
+            assert current["review"]["coverage"] == {
+                "groups": 7,
+                "automaticallyOrganizedUnits": 8,
+                "exceptionClusters": 2,
+                "exceptionUnits": 2,
+                "unaccountedUnits": 0,
+            }
+            assert current["review"]["issueCodes"] == [
+                "source-unsupported",
+                "unit-issue-present",
+            ]
+            assert current["review"]["exceptions"] == [
+                {
+                    "exceptionId": "exception-0001",
+                    "kind": "unit-cluster",
+                    "issueCode": "unit-issue-present",
+                    "allowedActions": ["assign", "exclude"],
+                    "similarityKey": current["review"]["exceptions"][0][
+                        "similarityKey"
+                    ],
+                    "groupIds": ["group-0005"],
+                    "memberUnitIds": ["unit-0008", "unit-0009"],
+                },
+                {
+                    "exceptionId": "exception-0002",
+                    "kind": "source",
+                    "issueCode": "source-unsupported",
+                    "recommendedAction": "exclude",
+                    "allowedActions": ["exclude"],
+                    "similarityKey": current["review"]["exceptions"][1][
+                        "similarityKey"
+                    ],
+                    "evidenceId": "evidence-0007",
+                },
+            ]
+            assert [
+                {
+                    key: group[key]
+                    for key in (
+                        "groupId",
+                        "evidenceId",
+                        "unitKind",
+                        "memberUnitIds",
+                        "firstUnitIndex",
+                        "lastUnitIndex",
+                        "role",
+                        "target",
+                        "state",
+                        "issueCodes",
+                    )
+                }
+                for group in current["review"]["organizedGroups"]
+            ] == [
+                {
+                    "groupId": "group-0001",
+                    "evidenceId": "evidence-0001",
+                    "unitKind": "worksheet",
+                    "memberUnitIds": ["unit-0001"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 1,
+                    "role": "payment-roster",
+                    "target": {"scope": "case", "participantHandles": []},
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+                {
+                    "groupId": "group-0002",
+                    "evidenceId": "evidence-0002",
+                    "unitKind": "pdf-page",
+                    "memberUnitIds": ["unit-0002", "unit-0003"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 2,
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+                {
+                    "groupId": "group-0003",
+                    "evidenceId": "evidence-0002",
+                    "unitKind": "pdf-page",
+                    "memberUnitIds": ["unit-0004", "unit-0005"],
+                    "firstUnitIndex": 3,
+                    "lastUnitIndex": 4,
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0002"],
+                    },
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+                {
+                    "groupId": "group-0004",
+                    "evidenceId": "evidence-0003",
+                    "unitKind": "pdf-page",
+                    "memberUnitIds": ["unit-0006"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 1,
+                    "role": "service-contract",
+                    "target": {"scope": "case", "participantHandles": []},
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+                {
+                    "groupId": "group-0007",
+                    "evidenceId": "evidence-0004",
+                    "unitKind": "pdf-page",
+                    "memberUnitIds": ["unit-0007"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 1,
+                    "role": "",
+                    "target": {"scope": "case", "participantHandles": []},
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+                {
+                    "groupId": "group-0005",
+                    "evidenceId": "evidence-0005",
+                    "unitKind": "pdf-page",
+                    "memberUnitIds": ["unit-0008", "unit-0009"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 2,
+                    "role": "unknown",
+                    "target": {"scope": "case", "participantHandles": []},
+                    "state": "exception",
+                    "issueCodes": ["unit-issue-present"],
+                },
+                {
+                    "groupId": "group-0006",
+                    "evidenceId": "evidence-0006",
+                    "unitKind": "image",
+                    "memberUnitIds": ["unit-0010"],
+                    "firstUnitIndex": 1,
+                    "lastUnitIndex": 1,
+                    "role": "identity-front",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                    "state": "automatically-organized",
+                    "issueCodes": [],
+                },
+            ]
             assert "unitDecisions" not in current["review"]
             assert "units" not in current
             if expect_empty_output:
@@ -327,10 +486,10 @@ def _review_driver(
                     request = {
                         "exceptionId": exception["exceptionId"],
                         "action": "assign",
-                        "role": "other-supporting-evidence",
+                        "role": "acceptance-record",
                         "target": {
-                            "scope": "case",
-                            "participantHandles": [],
+                            "scope": "individual",
+                            "participantHandles": ["participant-0002"],
                         },
                         "applyToSimilar": False,
                     }
@@ -345,6 +504,28 @@ def _review_driver(
             assert current["review"]["exceptions"] == []
             assert current["review"]["coverage"]["exceptionClusters"] == 0
             assert current["review"]["coverage"]["unaccountedUnits"] == 0
+            resolved_group = next(
+                group
+                for group in current["review"]["organizedGroups"]
+                if group["groupId"] == "group-0005"
+            )
+            assert resolved_group["effectiveResolution"] == {
+                "action": "assign",
+                "role": "acceptance-record",
+                "target": {
+                    "scope": "individual",
+                    "participantHandles": ["participant-0002"],
+                },
+            }
+            assert current["review"]["resolvedExclusions"] == [
+                {
+                    "exceptionId": "exception-0002",
+                    "kind": "source",
+                    "evidenceId": "evidence-0007",
+                    "issueCode": "source-unsupported",
+                    "reason": "irrelevant",
+                }
+            ]
             if expect_empty_output:
                 assert not any(output.iterdir())
 
@@ -356,16 +537,26 @@ def _review_driver(
             )
             assert status == 200
             refreshed = _json(payload)
+            assert refreshed["review"] == current["review"]
             assert refreshed["review"]["exceptions"] == []
             assert any(
                 group.get("effectiveResolution", {}).get("role")
-                == "other-supporting-evidence"
+                == "acceptance-record"
                 for group in refreshed["review"]["organizedGroups"]
             )
             assert len(refreshed["review"]["resolvedExclusions"]) == 1
 
             summary = _post(parsed, "/api/summary", cookie, csrf, {})
             assert summary["readyToPrepare"] is True
+            assert summary["counts"] == {
+                "sources": 7,
+                "units": 10,
+                "participants": 2,
+                "accepted": 7,
+                "reassigned": 2,
+                "excluded": 2,
+                "unresolved": 0,
+            }
             approved = _post(
                 parsed,
                 "/api/approve",
@@ -374,6 +565,112 @@ def _review_driver(
                 {"expectedProposalDigest": summary["proposalDigest"]},
             )
             assert approved["outcome"] == "approved"
+            assert approved["counts"] == summary["counts"]
+            assert approved["participantHandles"] == [
+                "participant-0001",
+                "participant-0002",
+            ]
+            assert approved["issueCodes"] == [
+                "source-unsupported",
+                "unit-issue-present",
+            ]
+            assert [
+                {
+                    key: item[key]
+                    for key in item
+                    if key != "unitId"
+                }
+                | {"unitId": item["unitId"]}
+                for item in approved["unitAssignments"]
+            ] == [
+                {
+                    "unitId": "unit-0001",
+                    "decision": "accepted",
+                    "role": "payment-roster",
+                    "target": {"scope": "case", "participantHandles": []},
+                },
+                {
+                    "unitId": "unit-0002",
+                    "decision": "accepted",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                },
+                {
+                    "unitId": "unit-0003",
+                    "decision": "accepted",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                },
+                {
+                    "unitId": "unit-0004",
+                    "decision": "accepted",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0002"],
+                    },
+                },
+                {
+                    "unitId": "unit-0005",
+                    "decision": "accepted",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0002"],
+                    },
+                },
+                {
+                    "unitId": "unit-0006",
+                    "decision": "accepted",
+                    "role": "service-contract",
+                    "target": {"scope": "case", "participantHandles": []},
+                },
+                {
+                    "unitId": "unit-0007",
+                    "decision": "excluded",
+                    "reason": "duplicate",
+                },
+                {
+                    "unitId": "unit-0008",
+                    "decision": "reassigned",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0002"],
+                    },
+                },
+                {
+                    "unitId": "unit-0009",
+                    "decision": "reassigned",
+                    "role": "acceptance-record",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0002"],
+                    },
+                },
+                {
+                    "unitId": "unit-0010",
+                    "decision": "accepted",
+                    "role": "identity-front",
+                    "target": {
+                        "scope": "individual",
+                        "participantHandles": ["participant-0001"],
+                    },
+                },
+            ]
+            assert approved["sourceDispositions"] == [
+                {
+                    "evidenceId": "evidence-0007",
+                    "decision": "excluded",
+                    "reason": "irrelevant",
+                }
+            ]
             return True
 
         return run_local_review(state, browser_open=drive)
@@ -440,6 +737,202 @@ def test_generated_exception_first_cli_http_writer_validator_and_collision(
 
     package = output / envelope["result"]["packageDirectoryName"]
     assert package.is_dir()
+    manifest = json.loads((package / "case-manifest.json").read_bytes())
+    assignments_bytes = (package / "assignments.json").read_bytes()
+    assignments = json.loads(assignments_bytes)
+    artifacts = {
+        item["artifactId"]: item for item in manifest["artifacts"]
+    }
+    assert [
+        item["participantHandle"] for item in assignments["participants"]
+    ] == ["participant-0001", "participant-0002"]
+    assert len(
+        {item["rosterRowId"] for item in assignments["participants"]}
+    ) == 2
+
+    def assignment_semantics(item):
+        locator = dict(item["outputLocator"])
+        artifact = artifacts[locator.pop("artifactId")]
+        locator["artifactPath"] = artifact["path"]
+        return {
+            key: item[key]
+            for key in (
+                "unitId",
+                "sourceUnitIndex",
+                "unitKind",
+                "decision",
+                "role",
+                "target",
+            )
+        } | {"outputLocator": locator}
+
+    assert [assignment_semantics(item) for item in assignments["units"]] == [
+        {
+            "unitId": "unit-0001",
+            "sourceUnitIndex": 1,
+            "unitKind": "worksheet",
+            "decision": "accepted",
+            "role": "payment-roster",
+            "target": {"scope": "case", "participantHandles": []},
+            "outputLocator": {
+                "kind": "roster",
+                "worksheetIndex": 1,
+                "artifactPath": "roster.xlsx",
+            },
+        },
+        {
+            "unitId": "unit-0002",
+            "sourceUnitIndex": 1,
+            "unitKind": "pdf-page",
+            "decision": "accepted",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0001"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 2,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0003",
+            "sourceUnitIndex": 2,
+            "unitKind": "pdf-page",
+            "decision": "accepted",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0001"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 3,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0004",
+            "sourceUnitIndex": 3,
+            "unitKind": "pdf-page",
+            "decision": "accepted",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 4,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0005",
+            "sourceUnitIndex": 4,
+            "unitKind": "pdf-page",
+            "decision": "accepted",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 5,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0006",
+            "sourceUnitIndex": 1,
+            "unitKind": "pdf-page",
+            "decision": "accepted",
+            "role": "service-contract",
+            "target": {"scope": "case", "participantHandles": []},
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 1,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0008",
+            "sourceUnitIndex": 1,
+            "unitKind": "pdf-page",
+            "decision": "reassigned",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 6,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0009",
+            "sourceUnitIndex": 2,
+            "unitKind": "pdf-page",
+            "decision": "reassigned",
+            "role": "acceptance-record",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0002"],
+            },
+            "outputLocator": {
+                "kind": "pdf-page",
+                "targetPage": 7,
+                "artifactPath": "input.pdf",
+            },
+        },
+        {
+            "unitId": "unit-0010",
+            "sourceUnitIndex": 1,
+            "unitKind": "image",
+            "decision": "accepted",
+            "role": "identity-front",
+            "target": {
+                "scope": "individual",
+                "participantHandles": ["participant-0001"],
+            },
+            "outputLocator": {
+                "kind": "image",
+                "artifactPath": "evidence/evidence-0001.png",
+            },
+        },
+    ]
+    assert [
+        {
+            "recordType": item["recordType"],
+            "recordId": item["recordId"] if item["recordType"] == "unit" else None,
+            "reason": item["reason"],
+            "decisionType": next(
+                decision["type"]
+                for decision in manifest["decisions"]
+                if decision["decisionId"] == item["decisionId"]
+            ),
+        }
+        for item in assignments["exclusions"]
+    ] == [
+        {
+            "recordType": "unit",
+            "recordId": "unit-0007",
+            "reason": "excluded-by-user",
+            "decisionType": "exclude-unit",
+        },
+        {
+            "recordType": "source",
+            "recordId": None,
+            "reason": "unsupported",
+            "decisionType": "exclude-source",
+        },
+    ]
+    for private in (*_PRIVATE_MARKERS, str(source), str(output)):
+        assert private.encode("utf-8") not in assignments_bytes
     assert _published_tree_sha256(package) == envelope["result"][
         "publishedTreeSha256"
     ]

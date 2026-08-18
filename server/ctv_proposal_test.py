@@ -329,13 +329,15 @@ def test_missing_roster_fallback_accounts_for_every_large_mixed_unit_without_gue
         assert all(
             group["state"] == "exception"
             and group["role"] == "unknown"
-            and group["target"] == {
-                "scope": "case",
-                "participantHandles": [],
-            }
+            and group["target"] is None
             and group["issueCodes"] == ["roster-missing"]
             for group in groups
         )
+        first_review = _review_bytes(state)
+        first_digest = state.approval_summary()["proposalDigest"]
+        assert _review_bytes(state) == first_review
+        assert state.approval_summary()["proposalDigest"] == first_digest
+        assert "missing-roster-source" not in first_review.decode("ascii")
         assignments, dispositions = state._public_assignments()
         assert len(assignments) == 536
         assert all(item == {"unitId": item["unitId"], "decision": "unresolved"} for item in assignments)
@@ -381,6 +383,10 @@ def test_ambiguous_roster_fallback_is_atomic_and_retires_ids_after_choice(
 
         assert local["roster"]["status"] == "ambiguous"
         assert len(local["review"]["exceptions"]) == 1
+        assert all(
+            group["target"] is None
+            for group in local["review"]["groups"]
+        )
         assert roster_exception["kind"] == "roster"
         assert roster_exception["issueCode"] == "roster-ambiguous"
         assert local["review"]["coverage"] == {
@@ -435,6 +441,11 @@ def test_ambiguous_roster_fallback_is_atomic_and_retires_ids_after_choice(
         assert selected["review"]["coverage"]["unaccountedUnits"] == 0
         assert old_group_ids.isdisjoint(
             group["groupId"] for group in selected["review"]["groups"]
+        )
+        assert all(
+            group["target"] is not None
+            and group["target"]["scope"] in {"case", "shared", "individual"}
+            for group in selected["review"]["groups"]
         )
         assert all(
             item["exceptionId"] != roster_exception["exceptionId"]
