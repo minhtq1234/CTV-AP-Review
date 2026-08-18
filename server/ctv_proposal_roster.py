@@ -391,6 +391,9 @@ class RosterCandidateEvidence:
         )
         candidates = []
         for unit in units:
+            if not self.complete:
+                candidates.append(_fixed_snapshot_failure(unit, "roster-over-limit"))
+                continue
             facts = self._facts.get((unit.evidence_id, unit.unit_index))
             if facts is None:
                 candidates.append(

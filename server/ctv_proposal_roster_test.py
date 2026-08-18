@@ -13,8 +13,13 @@ from ctv_inspection_model import (
     InspectionTotals,
     InspectionUnit,
 )
+from ctv_inspection_workbook import (
+    PrivateRosterCandidateFacts,
+    PrivateRosterCandidateRow,
+)
 from ctv_proposal_roster import (
     RosterCandidate,
+    RosterCandidateEvidence,
     RosterCandidateRow,
     RosterSelection,
     choose_automatic_roster,
@@ -65,6 +70,33 @@ def _candidate(**overrides):
     }
     values.update(overrides)
     return RosterCandidate(**values)
+
+
+def _private_roster_facts(label, *, row_count=1, blocking_issue_codes=()):
+    rows = tuple(
+        PrivateRosterCandidateRow(
+            row_index=index + 2,
+            name=f"PRIVATE-AGGREGATE-{label}-NAME-{index:04d}",
+            identity=f"PRIVATE-AGGREGATE-{label}-ID-{index:04d}",
+            values=(
+                ("faCode", f"PRIVATE-AGGREGATE-{label}-FA"),
+                ("identity", f"PRIVATE-AGGREGATE-{label}-ID-{index:04d}"),
+                ("name", f"PRIVATE-AGGREGATE-{label}-NAME-{index:04d}"),
+            ),
+        )
+        for index in range(row_count)
+    )
+    return PrivateRosterCandidateFacts(
+        worksheet_index=1,
+        rows=rows,
+        blocking_issue_codes=blocking_issue_codes,
+        package_issue_codes=(),
+        canonical_to_source_columns=(
+            ("faCode", "faCode"),
+            ("identity", "identity"),
+            ("name", "name"),
+        ),
+    )
 
 
 def _workbook_bytes(*, headers=None, rows=(), formula_only_row=False):
@@ -370,6 +402,105 @@ def test_no_payment_roster_candidate_is_missing():
     assert selection.roster_unit_id is None
     assert selection.candidate_unit_ids == ()
     assert selection.issue_codes == ("roster-missing",)
+
+
+@pytest.mark.parametrize(
+    "capture_order",
+    ((0, 1), (1, 0)),
+    ids=("first-roster-retained", "second-roster-retained"),
+)
+def test_aggregate_capture_omission_cap_blocks_every_roster_in_both_orders(
+    capture_order,
+    monkeypatch,
+):
+    inspection, _snapshots = _inspection_for_snapshots((b"unused", b"unused"))
+    evidence = RosterCandidateEvidence()
+    facts = (
+        _private_roster_facts("FIRST", row_count=5_001),
+        _private_roster_facts("SECOND", row_count=5_001),
+    )
+
+    monkeypatch.setattr(
+        "ctv_proposal_roster.load_workbook",
+        lambda *_args, **_kwargs: pytest.fail("roster source was reparsed"),
+    )
+    monkeypatch.setattr(
+        "ctv_proposal_roster.worksheet_nonblank_row_indexes",
+        lambda *_args, **_kwargs: pytest.fail("roster source was rescanned"),
+    )
+    for index in capture_order:
+        evidence.capture(f"evidence-{index + 1:04d}", 1, facts[index])
+
+    assert evidence.complete is False
+    first = evidence.candidates_for(inspection)
+    second = evidence.candidates_for(inspection)
+    assert first == second
+    assert tuple(candidate.blocking_issue_codes for candidate in first) == (
+        ("roster-over-limit",),
+        ("roster-over-limit",),
+    )
+    first_selection = choose_automatic_roster(first)
+    second_selection = choose_automatic_roster(second)
+    assert first_selection == second_selection
+    assert first_selection.status == "invalid"
+    assert first_selection.roster_unit_id is None
+    assert first_selection.issue_codes == ("roster-invalid",)
+    assert "PRIVATE-AGGREGATE" not in repr(evidence)
+    assert "PRIVATE-AGGREGATE" not in repr(first)
+    assert "PRIVATE-AGGREGATE" not in repr(first_selection)
+
+
+def test_complete_capture_with_one_valid_roster_still_selects_without_reparse(
+    monkeypatch,
+):
+    inspection, _snapshots = _inspection_for_snapshots((b"unused",))
+    evidence = RosterCandidateEvidence()
+    evidence.capture(
+        "evidence-0001",
+        1,
+        _private_roster_facts("COMPLETE"),
+    )
+    monkeypatch.setattr(
+        "ctv_proposal_roster.load_workbook",
+        lambda *_args, **_kwargs: pytest.fail("roster source was reparsed"),
+    )
+
+    candidates = evidence.candidates_for(inspection)
+    selection = choose_automatic_roster(candidates)
+
+    assert evidence.complete is True
+    assert selection.status == "selected"
+    assert selection.roster_unit_id == "unit-0001"
+    assert selection.issue_codes == ()
+    assert "PRIVATE-AGGREGATE" not in repr(candidates)
+
+
+@pytest.mark.parametrize(
+    "blocking_issue",
+    ("roster-row-invalid", "roster-over-limit"),
+)
+def test_complete_candidate_specific_failures_remain_ineligible(
+    blocking_issue,
+):
+    inspection, _snapshots = _inspection_for_snapshots((b"unused",))
+    evidence = RosterCandidateEvidence()
+    evidence.capture(
+        "evidence-0001",
+        1,
+        _private_roster_facts(
+            "BLOCKED",
+            row_count=0,
+            blocking_issue_codes=(blocking_issue,),
+        ),
+    )
+
+    candidates = evidence.candidates_for(inspection)
+    selection = choose_automatic_roster(candidates)
+
+    assert evidence.complete is True
+    assert candidates[0].blocking_issue_codes == (blocking_issue,)
+    assert selection.status == "invalid"
+    assert selection.roster_unit_id is None
 
 
 @pytest.mark.parametrize(
