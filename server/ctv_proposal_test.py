@@ -13,9 +13,14 @@ def _roster_bytes(rows=(("Alice", "CTV-001"), ("Bao", "CTV-002"))):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Payment roster"
-    sheet.append(("Ho ten", "Ma so nhan vien", "So tien"))
+    sheet.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
     for row in rows:
-        sheet.append((*row, 100) if len(row) == 2 else row)
+        if len(row) == 2:
+            sheet.append((*row, "FA-SYNTHETIC-001", 100))
+        elif len(row) == 3 and any(value is not None for value in row):
+            sheet.append((row[0], row[1], "FA-SYNTHETIC-001", row[2]))
+        else:
+            sheet.append(row)
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -39,13 +44,13 @@ def _source_with_two_rosters(tmp_path):
     workbook = Workbook()
     first = workbook.active
     first.title = "First roster"
-    first.append(("Ho ten", "Ma so nhan vien", "So tien"))
-    first.append(("Alice", "CTV-001", 100))
-    first.append(("Bao", "CTV-002", 100))
+    first.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    first.append(("Alice", "CTV-001", "FA-SYNTHETIC-001", 100))
+    first.append(("Bao", "CTV-002", "FA-SYNTHETIC-001", 100))
     second = workbook.create_sheet("Second roster")
-    second.append(("Ho ten", "Ma so nhan vien", "So tien"))
-    second.append(("Carol", "CTV-101", 100))
-    second.append(("Duy", "CTV-102", 100))
+    second.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    second.append(("Carol", "CTV-101", "FA-SYNTHETIC-002", 100))
+    second.append(("Duy", "CTV-102", "FA-SYNTHETIC-002", 100))
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -73,11 +78,12 @@ def test_selected_roster_maps_usable_rows_to_opaque_handles_in_row_order(tmp_pat
     context, observation, state = _state(tmp_path)
     try:
         roster = next(unit for unit in state.units if unit["suggestedRole"] == "payment-roster")
-        state.select_roster({"rosterUnitId": roster["unitId"]})
-        assert state.approval_summary()["participantHandles"] == [
+        summary = state.approval_summary()
+        assert summary["rosterUnitId"] == roster["unitId"]
+        assert summary["participantHandles"] == [
             "participant-0001", "participant-0002"
         ]
-        assert "Alice" not in repr(state.approval_summary())
+        assert "Alice" not in repr(summary)
     finally:
         context.__exit__(None, None, None)
 
@@ -239,6 +245,40 @@ def test_roster_change_invalidates_existing_participant_targeted_assignments(tmp
         })
         state.select_roster({"rosterUnitId": rosters[1]["unitId"]})
         assert state.approval_summary()["counts"]["unresolved"] == len(state.units)
+
+
+def test_equal_strong_rosters_remain_explicitly_resolvable_from_preloaded_candidates(
+    tmp_path,
+):
+    source = _source_with_two_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        calls = []
+        owned_snapshot = observation.snapshot
+
+        def snapshot_source(evidence_id, *, max_bytes):
+            calls.append((evidence_id, max_bytes))
+            return owned_snapshot(evidence_id, max_bytes=max_bytes)
+
+        state = ProposalState.from_inspection(
+            observation,
+            inspect_observation(observation),
+            _snapshot_source=snapshot_source,
+        )
+        rosters = [
+            unit
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+        ]
+
+        assert state.approval_summary()["rosterUnitId"] is None
+        assert state.approval_summary()["issueCodes"] == ["roster-ambiguous"]
+        assert len(calls) == 1
+
+        state.select_roster({"rosterUnitId": rosters[1]["unitId"]})
+
+        assert state.approval_summary()["rosterUnitId"] == rosters[1]["unitId"]
+        assert "roster-ambiguous" not in state.approval_summary()["issueCodes"]
+        assert len(calls) == 1
 
 
 def test_accepted_and_reassigned_enforce_their_distinct_suggested_role_meanings(tmp_path):

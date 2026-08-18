@@ -5,21 +5,17 @@ import hmac
 import json
 import re
 from dataclasses import dataclass, field
-from io import BytesIO
 
-from openpyxl import load_workbook
-
-from ctv_inspection_classifier import roster_header_categories_from_private_text
-from ctv_inspection_model import DEFAULT_INSPECTION_LIMITS, InspectionResult
-from ctv_inspection_workbook import worksheet_nonblank_row_indexes
+from ctv_inspection_model import InspectionResult
 from ctv_inventory import InventoryObservation
+from ctv_proposal_roster import (
+    RosterCandidate,
+    choose_automatic_roster,
+    load_roster_candidates,
+)
 
 
 _VERSION = "1.0"
-_MAX_ROWS = 10_000
-_MAX_CELLS = 100_000
-_MAX_CELL_TEXT = 256
-_MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
 _UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
 _EVIDENCE_ID = re.compile(r"^evidence-[0-9]{4,}$")
 _PARTICIPANT_HANDLE = re.compile(r"^participant-[0-9]{4,}$")
@@ -42,13 +38,6 @@ _EXCLUSION_REASONS = frozenset({
     "duplicate", "irrelevant", "unreadable-replacement-available",
     "intentionally-omitted", "other",
 })
-_ROSTER_ISSUE_ORDER = (
-    "roster-header-missing", "roster-row-invalid", "roster-identity-duplicate",
-    "roster-over-limit", "roster-unreadable",
-)
-_CANONICAL_ROSTER_FIELDS = (
-    "name", "identity", "faCode", "taxId", "birthDate", "bankAccount", "serviceFee", "product",
-)
 _ACQUISITION_STATUS_BY_INSPECTION_STATUS = {
     "opaque": "opaque",
     "unsupported": "unsupported",
@@ -132,17 +121,6 @@ def _canonical_digest(value):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _private_cell_text(value):
-    if value is None:
-        return ""
-    if type(value) not in {str, int, float}:
-        return ""
-    text = str(value).strip()
-    if len(text) > _MAX_CELL_TEXT:
-        return ""
-    return text
-
-
 class ProposalState:
     """Trusted proposal records constructed after strict local API conversion."""
 
@@ -180,6 +158,17 @@ class ProposalState:
             }
             for source in inspection.sources
         )
+        candidates = load_roster_candidates(inspection, self._snapshot_source)
+        self._roster_candidates_by_id = {
+            candidate.unit_id: candidate for candidate in candidates
+        }
+        selection = choose_automatic_roster(candidates)
+        if selection.status == "selected":
+            self._apply_roster_candidate(
+                self._roster_candidates_by_id[selection.roster_unit_id]
+            )
+        else:
+            self._roster_issues = selection.issue_codes
 
     @classmethod
     def from_inspection(cls, observation, inspection, *, _snapshot_source=None):
@@ -197,112 +186,21 @@ class ProposalState:
         self._approved_package_digest = None
 
     def _roster_rows(self, unit):
-        source = self._sources_by_id[unit.evidence_id]
-        if source.detected_type != "xlsx" or source.inspection_status != "inspected":
+        """Return the retained compatibility projection from a preloaded candidate."""
+        candidate = self._roster_candidates_by_id.get(unit.unit_id)
+        if candidate is None:
             return (), ("roster-unreadable",), (), ()
-        try:
-            snapshot = self._snapshot_source(
-                unit.evidence_id, max_bytes=_MAX_WORKBOOK_BYTES
-            )
-            physically_nonblank_rows = frozenset(
-                worksheet_nonblank_row_indexes(
-                    snapshot,
-                    unit.unit_index,
-                    limits=DEFAULT_INSPECTION_LIMITS,
-                )
-            )
-            workbook = load_workbook(
-                BytesIO(snapshot), read_only=True, data_only=True, keep_links=False
-            )
-            try:
-                worksheets = workbook.worksheets
-                if unit.unit_index > len(worksheets):
-                    return (), ("roster-unreadable",), (), ()
-                worksheet = worksheets[unit.unit_index - 1]
-                header = None
-                package_issues = set()
-                rows = []
-                cells = 0
-                issues = set()
-                for row_index, row in enumerate(worksheet.iter_rows(), start=1):
-                    if row_index > _MAX_ROWS:
-                        issues.add("roster-over-limit")
-                        break
-                    values = []
-                    for cell in row:
-                        cells += 1
-                        if cells > _MAX_CELLS:
-                            issues.add("roster-over-limit")
-                            break
-                        values.append(_private_cell_text(cell.value))
-                    if "roster-over-limit" in issues:
-                        break
-                    categories = [roster_header_categories_from_private_text(value) if value else () for value in values]
-                    columns = {
-                        field_name: [index for index, value in enumerate(categories) if field_name in value]
-                        for field_name in _CANONICAL_ROSTER_FIELDS
-                    }
-                    name_columns = columns["name"]
-                    identity_columns = columns["identity"]
-                    if header is None and name_columns and identity_columns:
-                        header = {
-                            field_name: (positions[0], values[positions[0]])
-                            for field_name, positions in columns.items() if positions
-                        }
-                        if any(len(positions) > 1 for positions in columns.values()):
-                            package_issues.add("roster-header-duplicate")
-                        if "faCode" not in header:
-                            package_issues.add("roster-fa-code-missing")
-                        continue
-                    if header is None:
-                        continue
-                    if row_index not in physically_nonblank_rows:
-                        continue
-                    row = {
-                        field_name: values[index] if index < len(values) else ""
-                        for field_name, (index, _column_name) in header.items()
-                    }
-                    name = row.get("name", "")
-                    identity = row.get("identity", "")
-                    if not name and not identity:
-                        issues.add("roster-row-invalid")
-                    elif not name or not identity:
-                        issues.add("roster-row-invalid")
-                    else:
-                        rows.append((row, row_index))
-                if header is None:
-                    issues.add("roster-header-missing")
-                if not rows:
-                    issues.add("roster-row-invalid")
-                if len(rows) != len({row["identity"] for row, _row_index in rows}):
-                    issues.add("roster-identity-duplicate")
-                fa_codes = {row.get("faCode", "") for row, _row_index in rows}
-                if not fa_codes or "" in fa_codes:
-                    package_issues.add("roster-fa-code-blank")
-                if len(fa_codes - {""}) > 1:
-                    package_issues.add("roster-fa-code-conflict")
-                source_columns = tuple(
-                    (field_name, column_name)
-                    for field_name, (_index, column_name) in sorted(header.items())
-                ) if header is not None else ()
-                return (
-                    tuple(rows),
-                    tuple(code for code in _ROSTER_ISSUE_ORDER if code in issues),
-                    tuple(sorted(package_issues)),
-                    source_columns,
-                )
-            finally:
-                workbook.close()
-        except Exception:
-            return (), ("roster-unreadable",), (), ()
+        return (
+            tuple(
+                (dict(row.values), row.row_index) for row in candidate.rows
+            ),
+            candidate.blocking_issue_codes,
+            candidate.package_issue_codes,
+            candidate.canonical_to_source_columns,
+        )
 
-    def select_roster(self, mapping):
-        mapping = _mapping(mapping, {"rosterUnitId"})
-        unit_id = _string(mapping["rosterUnitId"], _UNIT_ID, "rosterUnitId")
-        unit = self._units_by_id.get(unit_id)
-        if unit is None or unit.unit_kind != "worksheet" or unit.suggested_role != "payment-roster":
-            raise ValueError("rosterUnitId must identify an inspected roster worksheet")
-        rows, issues, package_issues, columns = self._roster_rows(unit)
+    def _apply_roster_candidate(self, candidate: RosterCandidate):
+        unit_id = candidate.unit_id
         self._invalidate_approved_package()
         if self._roster_unit_id is not None and self._roster_unit_id != unit_id:
             self._unit_decisions = {
@@ -315,7 +213,8 @@ class ProposalState:
             }
         self._roster_unit_id = unit_id
         self._participant_handles = tuple(
-            f"participant-{index:04d}" for index, _row in enumerate(rows, start=1)
+            f"participant-{index:04d}"
+            for index, _row in enumerate(candidate.rows, start=1)
         )
         self._participant_display = tuple(
             {
@@ -323,14 +222,17 @@ class ProposalState:
                 "name": row["name"],
                 "identityHint": f"***-{row['identity'][-3:]}",
             }
-            for handle, (row, _row_index) in zip(self._participant_handles, rows)
+            for handle, candidate_row in zip(
+                self._participant_handles, candidate.rows
+            )
+            for row in (dict(candidate_row.values),)
         )
-        self._roster_issues = issues
-        self._roster_package_issues = package_issues
+        self._roster_issues = candidate.blocking_issue_codes
+        self._roster_package_issues = candidate.package_issue_codes
         self._roster_rows_private = tuple(
             RosterRowSnapshot(
                 participant_handle=handle,
-                row_index=row_index,
+                row_index=candidate_row.row_index,
                 name=row["name"],
                 identity=row["identity"],
                 fa_code=row.get("faCode", ""),
@@ -340,9 +242,22 @@ class ProposalState:
                 service_fee=row.get("serviceFee", ""),
                 product=row.get("product", ""),
             )
-            for handle, (row, row_index) in zip(self._participant_handles, rows)
+            for handle, candidate_row in zip(
+                self._participant_handles, candidate.rows
+            )
+            for row in (dict(candidate_row.values),)
         )
-        self._roster_columns_private = columns
+        self._roster_columns_private = candidate.canonical_to_source_columns
+
+    def select_roster(self, mapping):
+        mapping = _mapping(mapping, {"rosterUnitId"})
+        unit_id = _string(mapping["rosterUnitId"], _UNIT_ID, "rosterUnitId")
+        candidate = self._roster_candidates_by_id.get(unit_id)
+        if candidate is None:
+            raise ValueError(
+                "rosterUnitId must identify an inspected roster worksheet"
+            )
+        self._apply_roster_candidate(candidate)
 
     def participants_for_local_review(self):
         """Return private roster display fields only to the local review session."""
