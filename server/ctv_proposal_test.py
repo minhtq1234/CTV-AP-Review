@@ -1001,6 +1001,8 @@ def test_source_not_applicable_can_be_approved_and_consumed_coherently(tmp_path)
         "undo-exception",
         "reopen-group",
         "select-roster",
+        "set-unit-decision",
+        "set-source-disposition",
     ),
 )
 def test_exact_mapping_rejects_hostile_keys_without_hash_or_equality_calls(
@@ -1056,17 +1058,33 @@ def test_exact_mapping_rejects_hostile_keys_without_hash_or_equality_calls(
         elif entrypoint == "reopen-group":
             mapping = {HostileKey("groupId"): group_id}
             invoke = state.reopen_group
-        else:
+        elif entrypoint == "select-roster":
             mapping = {
                 HostileKey("rosterUnitId"): state.approval_summary()[
                     "rosterUnitId"
                 ]
             }
             invoke = state.select_roster
+        elif entrypoint == "set-unit-decision":
+            mapping = {
+                HostileKey("decision"): "excluded",
+                "unitId": "unit-0002",
+                "reason": "irrelevant",
+            }
+            invoke = state.set_unit_decision
+        else:
+            mapping = {
+                HostileKey("decision"): "excluded",
+                "evidenceId": "evidence-9999",
+                "reason": "irrelevant",
+            }
+            invoke = state.set_source_disposition
         HostileKey.equality_calls = 0
         HostileKey.hash_calls = 0
 
-        with pytest.raises(ValueError):
+        with pytest.raises(
+            ValueError, match="proposal request must use its exact object shape"
+        ):
             invoke(mapping)
 
         assert HostileKey.equality_calls == 0
@@ -1115,6 +1133,95 @@ def test_unknown_role_exception_does_not_advertise_an_unexecutable_recommendatio
             "decision": "reassigned",
             "role": "acceptance-record",
             "target": {"scope": "case", "participantHandles": []},
+        }
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_recommendation_requires_role_target_scope_compatibility_and_valid_still_executes(
+    tmp_path,
+):
+    context, state = _grouping_state(
+        tmp_path,
+        (("payment-tax-form",), ("service-contract",)),
+        text_by_unit_number={
+            2: "unmatched payment tax form",
+            3: "whole case service contract",
+        },
+        unit_issue_codes_by_unit_number={
+            3: ("classification-conflict",),
+        },
+    )
+    try:
+        local = state.local_review_snapshot()
+        tax_exception = next(
+            item
+            for item in local["review"]["exceptions"]
+            if item["memberUnitIds"] == ["unit-0002"]
+        )
+        valid_exception = next(
+            item
+            for item in local["review"]["exceptions"]
+            if item["memberUnitIds"] == ["unit-0003"]
+        )
+        tax_group = next(
+            item
+            for item in local["review"]["groups"]
+            if item["memberUnitIds"] == ["unit-0002"]
+        )
+        before_digest = state.approval_summary()["proposalDigest"]
+        before_review = _review_bytes(state)
+
+        assert tax_exception["issueCode"] == "participant-no-match"
+        assert tax_group["role"] == "payment-tax-form"
+        assert tax_group["target"] == {
+            "scope": "case",
+            "participantHandles": [],
+        }
+        assert "recommendedAction" not in tax_exception
+        with pytest.raises(ValueError, match="no executable recommendation"):
+            state.resolve_exception(
+                {
+                    "exceptionId": tax_exception["exceptionId"],
+                    "action": "accept-recommendation",
+                    "applyToSimilar": False,
+                }
+            )
+        assert state.approval_summary()["proposalDigest"] == before_digest
+        assert _review_bytes(state) == before_review
+
+        assert valid_exception["recommendedAction"] == "assign"
+        state.resolve_exception(
+            {
+                "exceptionId": valid_exception["exceptionId"],
+                "action": "accept-recommendation",
+                "applyToSimilar": False,
+            }
+        )
+        state.resolve_exception(
+            {
+                "exceptionId": tax_exception["exceptionId"],
+                "action": "assign",
+                "role": "payment-tax-form",
+                "target": {
+                    "scope": "individual",
+                    "participantHandles": ["participant-0001"],
+                },
+                "applyToSimilar": False,
+            }
+        )
+        approved = state.approve(state.approval_summary()["proposalDigest"])
+        assignments = {
+            item["unitId"]: item for item in approved["unitAssignments"]
+        }
+
+        assert assignments["unit-0002"]["target"] == {
+            "scope": "individual",
+            "participantHandles": ["participant-0001"],
+        }
+        assert assignments["unit-0003"]["target"] == {
+            "scope": "case",
+            "participantHandles": [],
         }
     finally:
         context.__exit__(None, None, None)

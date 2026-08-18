@@ -584,6 +584,28 @@ class ProposalState:
             copy.deepcopy(self._review_operations),
         )
 
+    def _validated_assignment_target(
+        self, member_unit_ids, group_id, role, target
+    ):
+        target_value = GroupTarget(
+            target["scope"], target["participantHandles"]
+        )
+        if any(
+            role not in _ROLES_BY_KIND[self._units_by_id[unit_id].unit_kind]
+            for unit_id in member_unit_ids
+        ):
+            raise ValueError("assigned role must support every exception unit")
+        ExpandedDecision(
+            unit_id=member_unit_ids[0],
+            decision="assign",
+            group_id=group_id,
+            state="user-resolved",
+            role=role,
+            target=target_value,
+            reason="",
+        )
+        return target_value
+
     @staticmethod
     def _group_order_key(group):
         return (
@@ -724,17 +746,12 @@ class ProposalState:
             if resolution is None:
                 continue
             if resolution["action"] == "assign":
-                target = GroupTarget(
-                    resolution["target"]["scope"],
-                    resolution["target"]["participantHandles"],
+                target = self._validated_assignment_target(
+                    item["memberUnitIds"],
+                    item["groupIds"][0],
+                    resolution["role"],
+                    resolution["target"],
                 )
-                if any(
-                    resolution["role"] not in _ROLES_BY_KIND[
-                        self._units_by_id[unit_id].unit_kind
-                    ]
-                    for unit_id in item["memberUnitIds"]
-                ):
-                    raise ValueError("assigned role must support every exception unit")
                 for unit_id in item["memberUnitIds"]:
                     expanded_by_id[unit_id] = ExpandedDecision(
                         unit_id=unit_id,
@@ -856,17 +873,23 @@ class ProposalState:
             if can_merge:
                 actions += ("merge-next",)
             item["allowedActions"] = actions
-            item["recommendationExecutable"] = (
-                item["recommendedAction"] == "assign"
-                and group["role"] != "unknown"
-                and all(
-                    group["role"] in _ROLES_BY_KIND[self._units_by_id[unit_id].unit_kind]
-                    for unit_id in item["memberUnitIds"]
+            if item["recommendedAction"] == "assign":
+                try:
+                    self._validated_assignment_target(
+                        item["memberUnitIds"],
+                        item["groupIds"][0],
+                        group["role"],
+                        group["target"],
+                    )
+                except (TypeError, ValueError):
+                    item["recommendationExecutable"] = False
+                else:
+                    item["recommendationExecutable"] = True
+            else:
+                item["recommendationExecutable"] = (
+                    item["recommendedAction"] == "exclude"
+                    and item.get("recommendedReason") in _EXCLUSION_REASONS
                 )
-            ) or (
-                item["recommendedAction"] == "exclude"
-                and item.get("recommendedReason") in _EXCLUSION_REASONS
-            )
             item["similarityKey"] = _review_similarity_key(
                 item["issueCode"],
                 item["recommendedAction"],
@@ -1441,8 +1464,7 @@ class ProposalState:
         return {"scope": scope, "participantHandles": tuple(handles)}
 
     def set_unit_decision(self, mapping):
-        if type(mapping) is not dict:
-            raise ValueError("proposal request must use its exact object shape")
+        _exact_mapping_keys(mapping)
         decision = _enum(mapping.get("decision"), _UNIT_DECISIONS, "decision")
         required = {
             "accepted": {"unitId", "decision", "role", "target"},
@@ -1473,8 +1495,7 @@ class ProposalState:
         self._invalidate_approved_package()
 
     def set_source_disposition(self, mapping):
-        if type(mapping) is not dict:
-            raise ValueError("proposal request must use its exact object shape")
+        _exact_mapping_keys(mapping)
         decision = _enum(mapping.get("decision"), _SOURCE_DECISIONS, "decision")
         required = {"excluded": {"evidenceId", "decision", "reason"}, "unresolved": {"evidenceId", "decision"}}[decision]
         _mapping(mapping, required)
