@@ -353,22 +353,39 @@ reviewer, or submit anything to CTV or ACC. Human CTV review remains required.
 
 #### Local acceptance and WP handoff
 
-The executable generated acceptance gate is:
+The executable generated acceptance gates are:
 
 ```bash
+python3 -m pytest server/ctv_exception_review_acceptance_test.py -q
 python3 -m pytest server/ctv_package_acceptance_test.py -q
 ```
 
-It creates only synthetic local inputs: a two-page PDF, an automatically
-selected two-person roster, an included image, an included worksheet, an
-excluded worksheet, and an excluded unsupported source. The test receives the
-real production-created grouped state, resolves its exception clusters through
-the authenticated exception API, gives one final approval, publishes through
-the real writer, validates through the standalone v2 validator, and repeats the
-same preparation to prove deterministic collision without overwrite. It also checks
-the exact allowlisted layout and modes, PDF order, values-only workbooks,
-assignment cross-references, excluded-byte absence, canonical privacy-safe CLI
-JSON, source immutability, and absence of hidden staging after handled outcomes.
+They create only synthetic local inputs. The exception-first gate uses a unique
+two-person roster, participant and shared PDFs, an exact duplicate, a real image,
+one ambiguous page cluster, and an unsupported source. It proves that the first
+screen reports exact unit coverage with zero unaccounted units, exposes only two
+exception clusters plus collapsed groups, and never exposes the legacy flat unit
+decision list. The package gate retains the detailed artifact and assignment
+coverage. Together they use the real production-created grouped state,
+authenticated exception API, one whole-proposal approval, writer, standalone v2
+validator, and deterministic collision boundary. They also check source
+immutability, privacy-safe canonical CLI JSON, and absence of hidden staging
+after handled outcomes.
+
+Before a WP handoff, run one draft-only pilot against the explicitly selected
+real source and a new empty output parent. Stop with **Return draft** or
+**Cancel** at the first exception-first screen; do not approve on the user's
+behalf. Record only source/unit/group/exception counts, unaccounted units, and
+time to first review state. Confirm that user actions scale with exception
+clusters plus one final approval, no flat unit list appears, and the output
+parent remains empty. A later approved pilot still requires the human reviewer
+to resolve every exception and perform the final approval before standalone
+validation and digest comparison.
+
+If the pilot reports `roster-missing`, every atomic unit remains covered by
+bounded exception-state source ranges, but the review is intentionally not
+actionable or approvable. Correct the source roster and relaunch; do not invent
+a participant, assignment, or roster candidate.
 
 For an installed-user workflow, WP supplies the explicit script, source, and
 existing output-parent paths and starts the exact `package prepare` command

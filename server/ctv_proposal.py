@@ -279,8 +279,7 @@ class ProposalState:
         else:
             self._roster_issues = selection.issue_codes
             if grouping_evidence is not None:
-                self._review_exceptions = [self._roster_exception(selection)]
-                self._next_exception_number = 2
+                self._install_roster_fallback(selection)
 
     @classmethod
     def from_inspection(
@@ -426,19 +425,94 @@ class ProposalState:
         self._next_exception_number = transition["nextExceptionNumber"]
         self._invalidate_approved_package()
 
+    def _install_roster_fallback(self, selection):
+        issue_code = selection.issue_codes[0]
+        groups = []
+        current = []
+
+        def append_current():
+            if not current:
+                return
+            first = current[0]
+            last = current[-1]
+            groups.append(
+                {
+                    "groupId": f"group-{len(groups) + 1:04d}",
+                    "evidenceId": first.evidence_id,
+                    "unitKind": first.unit_kind,
+                    "memberUnitIds": tuple(unit.unit_id for unit in current),
+                    "firstUnitIndex": first.unit_index,
+                    "lastUnitIndex": last.unit_index,
+                    "role": "unknown",
+                    "target": {"scope": "case", "participantHandles": ()},
+                    "state": "exception",
+                    "checkCodes": (
+                        "source-range-contiguous",
+                        "coverage-exact",
+                    ),
+                    "issueCodes": (issue_code,),
+                }
+            )
+            current.clear()
+
+        for unit in sorted(
+            self._inspection.units,
+            key=lambda item: (
+                _numeric_opaque_id(item.evidence_id),
+                item.unit_index,
+                _numeric_opaque_id(item.unit_id),
+            ),
+        ):
+            if current and not (
+                current[-1].evidence_id == unit.evidence_id
+                and current[-1].unit_kind == unit.unit_kind
+                and current[-1].unit_index + 1 == unit.unit_index
+            ):
+                append_current()
+            current.append(unit)
+        append_current()
+
+        covered = tuple(
+            unit_id
+            for group in groups
+            for unit_id in group["memberUnitIds"]
+        )
+        if (
+            len(covered) != len(set(covered))
+            or set(covered) != set(self._units_by_id)
+        ):
+            raise ValueError("roster fallback coverage must equal inspection units")
+
+        self._review_groups = groups
+        self._review_exceptions = [self._roster_exception(selection)]
+        self._exception_resolutions = {}
+        self._unit_decisions = {
+            unit_id: {"decision": "unresolved"}
+            for unit_id in self._units_by_id
+        }
+        self._source_dispositions = {}
+        self._next_group_number = len(groups) + 1
+        self._next_exception_number = 2
+
     @staticmethod
     def _roster_exception(selection):
         issue_code = selection.issue_codes[0]
+        actionable = (
+            selection.status == "ambiguous"
+            and bool(selection.candidate_unit_ids)
+        )
+        allowed_actions = ("choose-roster",) if actionable else ()
         return {
             "exceptionId": "exception-0001",
             "kind": "roster",
             "issueCode": issue_code,
             "recommendedAction": "choose-roster",
-            "allowedActions": ("choose-roster",),
+            "allowedActions": allowed_actions,
+            "recommendationExecutable": actionable,
             "similarityKey": _review_similarity_key(
                 issue_code,
                 "choose-roster",
-                ("choose-roster",),
+                allowed_actions,
                 "unknown",
                 "case",
             ),
@@ -577,6 +651,7 @@ class ProposalState:
             for group in self._review_groups
             for unit_id in group["memberUnitIds"]
         }
+        roster_blocked = any(item["kind"] == "roster" for item in unresolved)
         return {
             "groups": len(self._review_groups),
             "automaticallyOrganizedUnits": sum(
@@ -589,7 +664,7 @@ class ProposalState:
                 len(item["memberUnitIds"])
                 for item in unresolved
                 if item["kind"] == "unit-cluster"
-            ),
+            ) + (len(covered_ids) if roster_blocked else 0),
             "unaccountedUnits": len(self._units_by_id) - len(covered_ids),
         }
 

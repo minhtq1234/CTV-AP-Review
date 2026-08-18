@@ -216,6 +216,232 @@ def _grouping_state(
     return context, state
 
 
+def _missing_roster_grouping_state(tmp_path, *, unit_count=536):
+    source = tmp_path / "missing-roster-source"
+    source.mkdir()
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    remaining = unit_count - 301
+    worksheet_splits = tuple(
+        min(100, remaining - offset)
+        for offset in range(0, remaining, 100)
+    )
+    source_specs = (
+        ("pdf", "pdf-page", "embedded-text", 300),
+        ("image", "image", "image-structure", 1),
+        *(
+            ("xlsx", "worksheet", "worksheet-structure", count)
+            for count in worksheet_splits
+        ),
+    )
+    sources = []
+    units = []
+    unit_number = 1
+    for evidence_number, (
+        detected_type,
+        unit_kind,
+        inspection_method,
+        count,
+    ) in enumerate(source_specs, start=1):
+        evidence_id = f"evidence-{evidence_number:04d}"
+        sources.append(
+            InspectionSource(
+                evidence_id=evidence_id,
+                detected_type=detected_type,
+                inspection_status="inspected",
+                unit_count=count,
+                issue_codes=(),
+            )
+        )
+        for unit_index in range(1, count + 1):
+            units.append(
+                InspectionUnit(
+                    unit_id=f"unit-{unit_number:04d}",
+                    evidence_id=evidence_id,
+                    unit_kind=unit_kind,
+                    unit_index=unit_index,
+                    suggested_role="unknown",
+                    confidence_band="none",
+                    needs_user_review=True,
+                    inspection_method=inspection_method,
+                    signal_codes=(),
+                    issue_codes=(),
+                )
+            )
+            unit_number += 1
+    inspection = InspectionResult(
+        inspection_version="1.0",
+        inspection_status="complete",
+        observation_id=observation.observation_id,
+        totals=InspectionTotals(
+            sources=len(sources),
+            units=len(units),
+            classified=0,
+            unknown=len(units),
+            needs_user_review=len(units),
+            issues=0,
+        ),
+        sources=tuple(sources),
+        units=tuple(units),
+    )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=GroupingEvidence(),
+        _roster_candidates=(),
+    )
+    return context, state
+
+
+def test_missing_roster_fallback_accounts_for_every_large_mixed_unit_without_guessing(
+    tmp_path,
+):
+    context, state = _missing_roster_grouping_state(tmp_path)
+    try:
+        local = state.local_review_snapshot()
+        exceptions = local["review"]["exceptions"]
+        groups = local["review"]["groups"]
+
+        assert local["roster"]["status"] == "missing"
+        assert exceptions == [
+            {
+                "exceptionId": "exception-0001",
+                "kind": "roster",
+                "issueCode": "roster-missing",
+                "allowedActions": [],
+                "similarityKey": exceptions[0]["similarityKey"],
+            }
+        ]
+        assert local["review"]["coverage"] == {
+            "groups": 5,
+            "automaticallyOrganizedUnits": 0,
+            "exceptionClusters": 1,
+            "exceptionUnits": 536,
+            "unaccountedUnits": 0,
+        }
+        assert [len(group["memberUnitIds"]) for group in groups] == [
+            300,
+            1,
+            100,
+            100,
+            35,
+        ]
+        assert all(
+            group["state"] == "exception"
+            and group["role"] == "unknown"
+            and group["target"] == {
+                "scope": "case",
+                "participantHandles": [],
+            }
+            and group["issueCodes"] == ["roster-missing"]
+            for group in groups
+        )
+        assignments, dispositions = state._public_assignments()
+        assert len(assignments) == 536
+        assert all(item == {"unitId": item["unitId"], "decision": "unresolved"} for item in assignments)
+        assert dispositions == []
+        summary = state.approval_summary()
+        assert summary["readyToPrepare"] is False
+        assert summary["counts"]["unresolved"] == 536
+        with pytest.raises(ValueError, match="not ready"):
+            state.approve(summary["proposalDigest"])
+        with pytest.raises(ValueError, match="snapshot is unavailable"):
+            state.consume_approved_package_snapshot(summary["proposalDigest"])
+        with pytest.raises(ValueError, match="eligible roster candidate"):
+            state.resolve_exception(
+                {
+                    "exceptionId": "exception-0001",
+                    "action": "choose-roster",
+                    "rosterUnitId": "unit-0001",
+                    "applyToSimilar": False,
+                }
+            )
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_ambiguous_roster_fallback_is_atomic_and_retires_ids_after_choice(
+    tmp_path,
+    monkeypatch,
+):
+    source = _source_with_two_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        inspection = inspect_observation(observation)
+        state = ProposalState.from_inspection(
+            observation,
+            inspection,
+            _grouping_evidence=GroupingEvidence(),
+        )
+        before = _review_bytes(state)
+        local = state.local_review_snapshot()
+        old_group_ids = {
+            group["groupId"] for group in local["review"]["groups"]
+        }
+        roster_exception = local["review"]["exceptions"][0]
+
+        assert local["roster"]["status"] == "ambiguous"
+        assert len(local["review"]["exceptions"]) == 1
+        assert roster_exception["kind"] == "roster"
+        assert roster_exception["issueCode"] == "roster-ambiguous"
+        assert local["review"]["coverage"] == {
+            "groups": 1,
+            "automaticallyOrganizedUnits": 0,
+            "exceptionClusters": 1,
+            "exceptionUnits": 2,
+            "unaccountedUnits": 0,
+        }
+
+        with pytest.raises(ValueError, match="eligible roster candidate"):
+            state.resolve_exception(
+                {
+                    "exceptionId": roster_exception["exceptionId"],
+                    "action": "choose-roster",
+                    "rosterUnitId": "unit-9999",
+                    "applyToSimilar": False,
+                }
+            )
+        assert _review_bytes(state) == before
+
+        original_builder = ctv_proposal.build_grouping_plan
+        monkeypatch.setattr(
+            ctv_proposal,
+            "build_grouping_plan",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ValueError("synthetic grouping failure")
+            ),
+        )
+        with pytest.raises(ValueError, match="synthetic grouping failure"):
+            state.resolve_exception(
+                {
+                    "exceptionId": roster_exception["exceptionId"],
+                    "action": "choose-roster",
+                    "rosterUnitId": local["roster"]["candidateUnitIds"][0],
+                    "applyToSimilar": False,
+                }
+            )
+        assert _review_bytes(state) == before
+        monkeypatch.setattr(ctv_proposal, "build_grouping_plan", original_builder)
+
+        state.resolve_exception(
+            {
+                "exceptionId": roster_exception["exceptionId"],
+                "action": "choose-roster",
+                "rosterUnitId": local["roster"]["candidateUnitIds"][1],
+                "applyToSimilar": False,
+            }
+        )
+        selected = state.local_review_snapshot()
+        assert selected["roster"]["status"] == "selected"
+        assert selected["review"]["coverage"]["unaccountedUnits"] == 0
+        assert old_group_ids.isdisjoint(
+            group["groupId"] for group in selected["review"]["groups"]
+        )
+        assert all(
+            item["exceptionId"] != roster_exception["exceptionId"]
+            for item in selected["review"]["exceptions"]
+        )
+
+
 def test_automatic_groups_leave_only_exact_exception_clusters_unresolved(tmp_path):
     context, state = _grouping_state(
         tmp_path,
