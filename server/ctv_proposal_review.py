@@ -40,7 +40,6 @@ _CSP = (
     "form-action 'none'; frame-ancestors 'none'"
 )
 _POST_ROUTES = frozenset({
-    "/api/roster",
     "/api/exception",
     "/api/exception/undo",
     "/api/group/reopen",
@@ -545,9 +544,6 @@ class _ReviewHandler(BaseHTTPRequestHandler):
         if route == "/api/heartbeat":
             _exact_empty(mapping)
             return {"status": "active"}, False
-        if route == "/api/roster":
-            state.select_roster(mapping)
-            return self._client_state(), False
         if route == "/api/exception":
             state.resolve_exception(mapping)
             return self._client_state(), False

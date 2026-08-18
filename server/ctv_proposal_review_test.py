@@ -32,6 +32,21 @@ def _workbook_bytes():
     return stream.getvalue()
 
 
+def _ambiguous_workbook_bytes():
+    workbook = Workbook()
+    for index, participant in enumerate(("FIRST-PRIVATE", "SECOND-PRIVATE")):
+        sheet = workbook.active if index == 0 else workbook.create_sheet()
+        sheet.title = f"payment roster {index + 1}"
+        sheet.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+        sheet.append(
+            (participant, f"CTV-{index + 1:03d}", f"FA-PRIVATE-{index + 1:03d}", 100)
+        )
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return stream.getvalue()
+
+
 def _pdf_bytes(
     text="HOP DONG DICH VU BEN A BEN B NOI DUNG CHI TIET CHU KY CAC BEN",
     *,
@@ -78,6 +93,25 @@ def _state(tmp_path):
         _grouping_evidence=facts,
     )
     return source, context, state
+
+
+def _ambiguous_state(tmp_path):
+    source = tmp_path / f"{PRIVATE_PATH_PART}-ambiguous"
+    source.mkdir()
+    (source / "private-rosters.xlsx").write_bytes(_ambiguous_workbook_bytes())
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    facts = GroupingEvidence()
+    inspection = inspect_observation(
+        observation,
+        _private_text_sink=facts.capture,
+    )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=facts,
+    )
+    return context, state
 
 
 def _request(parsed, method, target, *, cookie=None, csrf=None, body=None, headers=None):
@@ -249,6 +283,122 @@ def test_group_state_bootstrap_is_one_time_authenticated_and_exactly_projected(t
         assert PRIVATE_NAME not in repr(result)
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", captured["port"]), timeout=0.2)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_grouped_roster_route_is_not_found_and_cannot_stale_review_ids(tmp_path):
+    _source, context, state = _state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        before = _json(body)
+        csrf = before["csrfToken"]
+        before_digest = before["summary"]["proposalDigest"]
+        before_group_ids = [
+            group["groupId"] for group in before["review"]["organizedGroups"]
+        ]
+        before_exception_ids = [
+            item["exceptionId"] for item in before["review"]["exceptions"]
+        ]
+
+        status, _headers, body = _post(
+            parsed,
+            "/api/roster",
+            cookie,
+            csrf,
+            {"rosterUnitId": before["roster"]["rosterUnitId"]},
+        )
+        assert status == 404
+        assert _json(body) == {"error": "route-not-found"}
+
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        after = _json(body)
+        assert after["summary"]["proposalDigest"] == before_digest
+        assert [
+            group["groupId"] for group in after["review"]["organizedGroups"]
+        ] == before_group_ids
+        assert [
+            item["exceptionId"] for item in after["review"]["exceptions"]
+        ] == before_exception_ids
+
+        status, _headers, body = _post(parsed, "/api/draft", cookie, csrf, {})
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        assert _run_visible(state, drive)["outcome"] == "draft"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_ambiguous_roster_choice_uses_exact_exception_action_atomically(tmp_path):
+    context, state = _ambiguous_state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        before = _json(body)
+        csrf = before["csrfToken"]
+        assert before["roster"]["status"] == "ambiguous"
+        assert len(before["roster"]["candidateUnitIds"]) == 2
+        assert len(before["review"]["exceptions"]) == 1
+        roster_exception = before["review"]["exceptions"][0]
+        assert set(roster_exception) == {
+            "exceptionId",
+            "kind",
+            "issueCode",
+            "recommendedAction",
+            "allowedActions",
+            "similarityKey",
+        }
+        assert roster_exception["kind"] == "roster"
+        assert roster_exception["recommendedAction"] == "choose-roster"
+        assert roster_exception["allowedActions"] == ["choose-roster"]
+        chosen = before["roster"]["candidateUnitIds"][1]
+
+        status, _headers, body = _post(
+            parsed,
+            "/api/exception",
+            cookie,
+            csrf,
+            {
+                "exceptionId": roster_exception["exceptionId"],
+                "action": "choose-roster",
+                "rosterUnitId": chosen,
+                "applyToSimilar": False,
+            },
+        )
+        assert status == 200
+        after = _json(body)
+        assert after["roster"]["status"] == "selected"
+        assert after["roster"]["rosterUnitId"] == chosen
+        assert roster_exception["exceptionId"] not in {
+            item["exceptionId"] for item in after["review"]["exceptions"]
+        }
+        assert after["review"]["coverage"]["unaccountedUnits"] == 0
+        assert after["summary"]["proposalDigest"] != before["summary"][
+            "proposalDigest"
+        ]
+
+        status, _headers, body = _post(parsed, "/api/draft", cookie, csrf, {})
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        assert _run_visible(state, drive)["outcome"] == "draft"
     finally:
         context.__exit__(None, None, None)
 
