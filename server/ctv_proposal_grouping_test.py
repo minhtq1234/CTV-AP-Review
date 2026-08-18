@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import hashlib
 import json
+import sys
 
 import pytest
 
+import ctv_proposal_grouping as grouping_module
 from ctv_grouping_evidence import GroupingEvidence
 from ctv_inspection_model import (
     InspectionResult,
@@ -80,7 +83,7 @@ def _exception(**overrides):
         "issue_code": "participant-no-match",
         "recommended_action": "assign",
         "allowed_actions": ("assign", "exclude"),
-        "similarity_key": "similarity-0123456789abcdef",
+        "similarity_key": "similarity-a0c6b28b57669bc1",
     }
     values.update(overrides)
     return ExceptionCluster(**values)
@@ -93,7 +96,7 @@ def _source_exception(**overrides):
         "issue_code": "source-unreadable",
         "recommended_action": "exclude",
         "allowed_actions": ("exclude",),
-        "similarity_key": "similarity-0123456789abcdef",
+        "similarity_key": "similarity-8af016f0fcf7d9a6",
     }
     values.update(overrides)
     return SourceException(**values)
@@ -392,6 +395,14 @@ def test_grouping_model_expanded_decisions_enforce_closed_shapes():
             "target": None,
             "reason": "",
         },
+        {
+            "decision": "unresolved",
+            "group_id": None,
+            "state": "exception",
+            "role": "",
+            "target": None,
+            "reason": "",
+        },
     )
     for overrides in invalid:
         with pytest.raises(ValueError):
@@ -510,6 +521,159 @@ def test_grouping_model_bounds_each_exception_cluster_projection():
         _exception(
             group_ids=tuple(f"group-{index:04d}" for index in range(1, 10_002)),
         )
+
+
+def test_plan_rejects_private_derived_or_noncanonical_similarity_keys():
+    failed_group = _group(
+        state="exception",
+        check_codes=("roster-selected", "coverage-exact"),
+        issue_codes=("participant-no-match",),
+    )
+    private_fingerprint = "similarity-" + hashlib.sha256(
+        _PRIVATE_NAME.encode("utf-8")
+    ).hexdigest()[:16]
+
+    with pytest.raises(ValueError, match="similarity key must match fixed fields") as error:
+        GroupingPlan(
+            roster_unit_id="unit-0001",
+            groups=(failed_group,),
+            exceptions=(_exception(similarity_key=private_fingerprint),),
+            source_exceptions=(),
+            expected_unit_ids=("unit-0001",),
+        )
+
+    assert _PRIVATE_NAME not in str(error.value)
+
+    with pytest.raises(ValueError, match="similarity key must match fixed fields") as error:
+        GroupingPlan(
+            roster_unit_id="unit-0001",
+            groups=(_group(),),
+            exceptions=(),
+            source_exceptions=(
+                _source_exception(
+                    similarity_key="similarity-0123456789abcdef",
+                ),
+            ),
+            expected_unit_ids=("unit-0001",),
+        )
+
+    assert _PRIVATE_NAME not in str(error.value)
+
+
+def test_plan_binds_exception_numbers_to_canonical_source_and_unit_order():
+    failed_group = _group(
+        group_id="group-0002",
+        evidence_id="evidence-0003",
+        member_unit_ids=("unit-0002",),
+        state="exception",
+        check_codes=("roster-selected", "coverage-exact"),
+        issue_codes=("participant-no-match",),
+    )
+
+    with pytest.raises(ValueError, match="exceptions must follow canonical source/unit order"):
+        GroupingPlan(
+            roster_unit_id="unit-0001",
+            groups=(
+                _group(),
+                failed_group,
+            ),
+            exceptions=(
+                _exception(
+                    exception_id="exception-0001",
+                    group_ids=("group-0002",),
+                    member_unit_ids=("unit-0002",),
+                ),
+            ),
+            source_exceptions=(
+                _source_exception(
+                    exception_id="exception-0002",
+                    evidence_id="evidence-0002",
+                ),
+            ),
+            expected_unit_ids=("unit-0001", "unit-0002"),
+        )
+
+
+def test_plan_rejects_aggregate_group_projection_before_nested_revalidation(
+    monkeypatch,
+):
+    expected = tuple(f"unit-{index:04d}" for index in range(1, 10_001))
+    first_members = expected[:5_001]
+    second_members = expected[4_999:]
+    groups = (
+        _group(
+            group_id="group-0001",
+            member_unit_ids=first_members,
+            first_unit_index=1,
+            last_unit_index=len(first_members),
+        ),
+        _group(
+            group_id="group-0002",
+            evidence_id="evidence-0002",
+            member_unit_ids=second_members,
+            first_unit_index=1,
+            last_unit_index=len(second_members),
+        ),
+    )
+    revalidations = 0
+
+    def prohibited_revalidation(_self):
+        nonlocal revalidations
+        revalidations += 1
+        raise AssertionError("nested group revalidation ran before aggregate bound")
+
+    monkeypatch.setattr(ReviewGroup, "__post_init__", prohibited_revalidation)
+
+    with pytest.raises(ValueError, match="group coverage must equal inspection units"):
+        GroupingPlan(
+            roster_unit_id="unit-0001",
+            groups=groups,
+            exceptions=(),
+            source_exceptions=(),
+            expected_unit_ids=expected,
+        )
+
+    assert revalidations == 0
+
+
+def test_plan_rejects_aggregate_exception_projection_before_nested_revalidation(
+    monkeypatch,
+):
+    expected = tuple(f"unit-{index:04d}" for index in range(1, 10_001))
+    failed_group = _group(
+        member_unit_ids=expected,
+        first_unit_index=1,
+        last_unit_index=10_000,
+        state="exception",
+        check_codes=("roster-selected", "coverage-exact"),
+        issue_codes=("participant-no-match",),
+    )
+    exceptions = (
+        _exception(member_unit_ids=expected[:5_001]),
+        _exception(
+            exception_id="exception-0002",
+            member_unit_ids=expected[4_999:],
+        ),
+    )
+    revalidations = 0
+
+    def prohibited_revalidation(_self):
+        nonlocal revalidations
+        revalidations += 1
+        raise AssertionError("nested exception revalidation ran before aggregate bound")
+
+    monkeypatch.setattr(ExceptionCluster, "__post_init__", prohibited_revalidation)
+
+    with pytest.raises(ValueError, match="exception projection exceeds inspection units"):
+        GroupingPlan(
+            roster_unit_id="unit-0001",
+            groups=(failed_group,),
+            exceptions=exceptions,
+            source_exceptions=(),
+            expected_unit_ids=expected,
+        )
+
+    assert revalidations == 0
 
 
 def test_plan_rejects_missing_unit_coverage():
@@ -1108,3 +1272,192 @@ def test_fixed_eligibility_checks_block_source_unit_and_role_uncertainty():
         ("unit-0003",),
         ("unit-0004",),
     )
+
+
+@pytest.mark.parametrize(
+    "barrier_text,barrier_issue",
+    [
+        (None, "private-fact-incomplete"),
+        (_PRIVATE_NAME, "participant-name-only"),
+        (
+            f"{_PRIVATE_NAME} {_OTHER_PRIVATE_IDENTITY}",
+            "participant-identity-conflict",
+        ),
+    ],
+    ids=("incomplete", "one-sided", "conflicting"),
+)
+def test_participant_barrier_keeps_trailing_target_unresolved(
+    barrier_text,
+    barrier_issue,
+):
+    inspection = _inspection(
+        (
+            _unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),
+            _unit(2, 2, 1, "acceptance-record"),
+            _unit(3, 2, 2, "acceptance-record"),
+            _unit(4, 2, 3, "acceptance-record"),
+        )
+    )
+    roster = _roster(
+        _row(2, _PRIVATE_NAME, _PRIVATE_IDENTITY),
+        _row(3, _OTHER_PRIVATE_NAME, _OTHER_PRIVATE_IDENTITY),
+    )
+    private_text = {
+        "unit-0001": "payment roster",
+        "unit-0002": f"{_PRIVATE_NAME} {_PRIVATE_IDENTITY} acceptance",
+        "unit-0004": "complete trailing acceptance page",
+    }
+    if barrier_text is not None:
+        private_text["unit-0003"] = barrier_text
+    facts = _facts(inspection, private_text)
+
+    plan = build_grouping_plan(inspection, roster, facts)
+
+    by_member = {group.member_unit_ids: group for group in plan.groups}
+    assert by_member[("unit-0002",)].target == GroupTarget(
+        "individual", ("participant-0001",)
+    )
+    assert by_member[("unit-0003",)].issue_codes == (barrier_issue,)
+    assert by_member[("unit-0004",)].state == "exception"
+    assert by_member[("unit-0004",)].issue_codes == ("target-unresolved",)
+    assert tuple(item.member_unit_ids for item in plan.exceptions[-2:]) == (
+        ("unit-0003",),
+        ("unit-0004",),
+    )
+
+
+def test_shared_document_anchor_resets_participant_segment_to_case_scope():
+    inspection = _inspection(
+        (
+            _unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),
+            _unit(2, 2, 1, "acceptance-record"),
+            _unit(3, 2, 2, "shared-supporting-evidence"),
+            _unit(4, 2, 3, "service-contract"),
+        )
+    )
+    roster = _roster()
+    facts = _facts(
+        inspection,
+        {
+            "unit-0001": "payment roster",
+            "unit-0002": f"{_PRIVATE_NAME} {_PRIVATE_IDENTITY} acceptance",
+            "unit-0003": "whole case policy",
+            "unit-0004": "whole case contract after policy",
+        },
+    )
+
+    plan = build_grouping_plan(inspection, roster, facts)
+
+    by_member = {group.member_unit_ids: group for group in plan.groups}
+    assert by_member[("unit-0002",)].target == GroupTarget(
+        "individual", ("participant-0001",)
+    )
+    assert by_member[("unit-0003",)].target == GroupTarget("case", ())
+    assert by_member[("unit-0003",)].state == "automatically-organized"
+    assert by_member[("unit-0004",)].target == GroupTarget("case", ())
+    assert by_member[("unit-0004",)].state == "automatically-organized"
+
+
+def test_matching_operation_count_stays_linear_at_roster_and_unit_bounds(
+    monkeypatch,
+):
+    participant_count = 9_999
+    rows = tuple(
+        _row(
+            index + 2,
+            f"Synthetic Person {index:05d}",
+            f"{79_000_000_000 + index:012d}",
+        )
+        for index in range(participant_count)
+    )
+    units = (
+        _unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),
+        *(
+            _unit(index + 2, 2, index + 1, "service-contract")
+            for index in range(participant_count)
+        ),
+    )
+    inspection = _inspection(units)
+    roster = _roster(*rows)
+    private_text = {"unit-0001": "payment roster"}
+    private_text.update(
+        {
+            f"unit-{index + 2:04d}": (
+                f"Synthetic Person {index:05d} "
+                f"{79_000_000_000 + index:012d} contract"
+            )
+            for index in range(participant_count)
+        }
+    )
+    facts = _facts(inspection, private_text)
+    original = grouping_module._contains_words
+    contains_calls = 0
+    operation_budget = 8 * (participant_count + len(units))
+
+    def budgeted_contains(words, pattern):
+        nonlocal contains_calls
+        contains_calls += 1
+        if contains_calls > operation_budget:
+            raise AssertionError("participant matching exceeded linear operation budget")
+        return original(words, pattern)
+
+    monkeypatch.setattr(grouping_module, "_contains_words", budgeted_contains)
+
+    plan = build_grouping_plan(inspection, roster, facts)
+
+    assert contains_calls <= operation_budget
+    assert len(plan.covered_unit_ids) == 10_000
+
+
+def test_role_gap_operation_count_stays_linear_at_unit_bound():
+    source_units = (
+        _unit(2, 2, 1, "service-contract"),
+        *(
+            _unit(index + 2, 2, index + 1, "unknown")
+            for index in range(1, 9_998)
+        ),
+        _unit(10_000, 2, 9_999, "acceptance-record"),
+    )
+    inspection = _inspection(
+        (
+            _unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),
+            *source_units,
+        )
+    )
+    roster = _roster()
+    private_text = {
+        "unit-0001": "payment roster",
+        "unit-0002": f"{_PRIVATE_NAME} {_PRIVATE_IDENTITY} contract",
+        "unit-10000": "acceptance ending",
+    }
+    private_text.update(
+        {
+            unit.unit_id: "unknown continuation"
+            for unit in source_units[1:-1]
+        }
+    )
+    facts = _facts(inspection, private_text)
+    line_events = 0
+    operation_budget = 400 * len(inspection.units)
+    module_path = grouping_module.__file__
+
+    def trace(frame, event, _argument):
+        nonlocal line_events
+        if event == "line" and frame.f_code.co_filename == module_path:
+            line_events += 1
+            if line_events > operation_budget:
+                raise AssertionError("role gap processing exceeded linear operation budget")
+        return trace
+
+    previous_trace = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        plan = build_grouping_plan(inspection, roster, facts)
+    finally:
+        sys.settrace(previous_trace)
+
+    assert line_events <= operation_budget
+    assert plan.exceptions[-1].member_unit_ids == tuple(
+        unit.unit_id for unit in source_units[1:-1]
+    )
+    assert plan.exceptions[-1].issue_code == "role-gap-conflict"

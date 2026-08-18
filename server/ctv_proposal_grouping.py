@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import hashlib
 import json
@@ -88,6 +89,7 @@ _UNIT_ISSUE_ORDER = (
     "participant-no-match",
     "participant-multiple-match",
     "participant-identity-conflict",
+    "target-unresolved",
     "role-uncertain",
     "role-gap-conflict",
     "role-scope-unsupported",
@@ -402,7 +404,8 @@ class ExpandedDecision:
             ):
                 raise ValueError("exclude decision fields must use the closed shape")
         elif (
-            state != "exception"
+            self.group_id is None
+            or state != "exception"
             or role
             or self.target is not None
             or reason
@@ -440,6 +443,14 @@ class GroupingPlan:
             raise ValueError("exception count exceeds hard limit")
         if len(expected) > _MAX_UNITS or len(exclusions) > _MAX_UNITS:
             raise ValueError("unit count exceeds hard limit")
+        expected_numeric = tuple(map(_numeric_id, expected))
+        if (
+            len(expected) != len(set(expected))
+            or expected_numeric != tuple(sorted(expected_numeric))
+        ):
+            raise ValueError("expected unit IDs must be unique and ordered")
+        if roster_unit_id not in expected:
+            raise ValueError("roster_unit_id must identify an expected unit")
         if any(type(group) is not ReviewGroup for group in groups):
             raise TypeError("groups must contain exact ReviewGroup records")
         if any(type(item) is not ExceptionCluster for item in exceptions):
@@ -448,6 +459,32 @@ class GroupingPlan:
             raise TypeError("source_exceptions must contain exact SourceException records")
         if any(type(item) is not ExpandedDecision for item in exclusions):
             raise TypeError("automatic_exclusions must contain exact ExpandedDecision records")
+
+        group_member_total = 0
+        for group in groups:
+            if type(group.member_unit_ids) is not tuple:
+                raise TypeError("member_unit_ids must be an exact tuple")
+            group_member_total += len(group.member_unit_ids)
+            if group_member_total > len(expected):
+                raise ValueError("group coverage must equal inspection units")
+        if group_member_total + len(exclusions) != len(expected):
+            raise ValueError("group coverage must equal inspection units")
+
+        exception_member_total = 0
+        exception_group_total = 0
+        for cluster in exceptions:
+            if type(cluster.member_unit_ids) is not tuple:
+                raise TypeError("member_unit_ids must be an exact tuple")
+            if type(cluster.group_ids) is not tuple:
+                raise TypeError("group_ids must be an exact tuple")
+            exception_member_total += len(cluster.member_unit_ids)
+            exception_group_total += len(cluster.group_ids)
+            if (
+                exception_member_total > len(expected)
+                or exception_group_total > len(groups)
+            ):
+                raise ValueError("exception projection exceeds inspection units")
+
         for record in (*groups, *exceptions, *source_exceptions, *exclusions):
             record.__post_init__()
         expected_group_ids = tuple(
@@ -461,23 +498,6 @@ class GroupingPlan:
         )
         if group_order != tuple(sorted(group_order)):
             raise ValueError("groups must follow canonical source/unit order")
-        expected_numeric = tuple(map(_numeric_id, expected))
-        if (
-            len(expected) != len(set(expected))
-            or expected_numeric != tuple(sorted(expected_numeric))
-        ):
-            raise ValueError("expected unit IDs must be unique and ordered")
-        if roster_unit_id not in expected:
-            raise ValueError("roster_unit_id must identify an expected unit")
-        exception_ids = tuple(
-            item.exception_id for item in (*exceptions, *source_exceptions)
-        )
-        exception_numbers = tuple(sorted(map(_numeric_id, exception_ids)))
-        if (
-            len(exception_ids) != len(set(exception_ids))
-            or exception_numbers != tuple(range(1, len(exception_ids) + 1))
-        ):
-            raise ValueError("exceptions must use unique canonical IDs")
         groups_by_id = {group.group_id: group for group in groups}
         clustered_group_ids = []
         for cluster in exceptions:
@@ -498,6 +518,18 @@ class GroupingPlan:
                 )
             ):
                 raise ValueError("exception clusters must match failed groups")
+            similarity_keys = {
+                _similarity_key(
+                    cluster.issue_code,
+                    cluster.recommended_action,
+                    cluster.allowed_actions,
+                    groups_by_id[group_id].role,
+                    groups_by_id[group_id].target.scope,
+                )
+                for group_id in cluster.group_ids
+            }
+            if similarity_keys != {cluster.similarity_key}:
+                raise ValueError("similarity key must match fixed fields")
         failed_group_ids = tuple(
             group.group_id for group in groups if group.state == "exception"
         )
@@ -517,14 +549,21 @@ class GroupingPlan:
             sorted(_numeric_id(item.unit_id) for item in exclusions)
         ):
             raise ValueError("automatic exclusions must be ordered")
-        coverage = [
-            member for group in groups for member in group.member_unit_ids
-        ] + [item.unit_id for item in exclusions]
-        if (
-            len(coverage) != len(set(coverage))
-            or set(coverage) != set(expected)
-        ):
+
+        expected_set = set(expected)
+        seen_units: set[str] = set()
+        for group in groups:
+            for member in group.member_unit_ids:
+                if member not in expected_set or member in seen_units:
+                    raise ValueError("group coverage must equal inspection units")
+                seen_units.add(member)
+        for item in exclusions:
+            if item.unit_id not in expected_set or item.unit_id in seen_units:
+                raise ValueError("group coverage must equal inspection units")
+            seen_units.add(item.unit_id)
+        if len(seen_units) != len(expected_set):
             raise ValueError("group coverage must equal inspection units")
+
         source_ids = tuple(item.evidence_id for item in source_exceptions)
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("source exceptions must identify unique sources")
@@ -532,6 +571,54 @@ class GroupingPlan:
             sorted(map(_numeric_id, source_ids))
         ):
             raise ValueError("source exceptions must be ordered")
+        for item in source_exceptions:
+            if item.similarity_key != _similarity_key(
+                item.issue_code,
+                item.recommended_action,
+                item.allowed_actions,
+                "unknown",
+                "case",
+            ):
+                raise ValueError("similarity key must match fixed fields")
+
+        positioned_exceptions = [
+            (
+                (
+                    _numeric_id(groups_by_id[item.group_ids[0]].evidence_id),
+                    _numeric_id(item.member_unit_ids[0]),
+                ),
+                item,
+            )
+            for item in exceptions
+        ]
+        positioned_sources = [
+            ((_numeric_id(item.evidence_id), 0), item)
+            for item in source_exceptions
+        ]
+        canonical_records = tuple(
+            item
+            for _position, item in sorted(
+                (*positioned_exceptions, *positioned_sources),
+                key=lambda pair: pair[0],
+            )
+        )
+        expected_exception_ids = tuple(
+            f"exception-{index:04d}"
+            for index in range(1, len(canonical_records) + 1)
+        )
+        canonical_unit_exceptions = tuple(
+            item for item in canonical_records if type(item) is ExceptionCluster
+        )
+        canonical_source_exceptions = tuple(
+            item for item in canonical_records if type(item) is SourceException
+        )
+        if (
+            tuple(item.exception_id for item in canonical_records)
+            != expected_exception_ids
+            or exceptions != canonical_unit_exceptions
+            or source_exceptions != canonical_source_exceptions
+        ):
+            raise ValueError("exceptions must follow canonical source/unit order")
 
     @property
     def covered_unit_ids(self) -> tuple[str, ...]:
@@ -690,21 +777,105 @@ def _contains_words(words: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
     return any(words[index : index + width] == pattern for index in range(len(words) - width + 1))
 
 
+def _limited_handles(
+    existing: tuple[str, ...],
+    additional: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not additional:
+        return existing
+    if not existing:
+        return additional[:2]
+    return tuple(
+        sorted(set((*existing, *additional)), key=_numeric_id)[:2]
+    )
+
+
+class _ParticipantIndex:
+    __slots__ = (
+        "_transitions",
+        "_failures",
+        "_name_outputs",
+        "_identity_outputs",
+    )
+
+    def __init__(
+        self,
+        patterns: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...],
+    ) -> None:
+        transitions: list[dict[str, int]] = [{}]
+        failures = [0]
+        name_outputs: list[tuple[str, ...]] = [()]
+        identity_outputs: list[tuple[str, ...]] = [()]
+
+        for handle, name_words, identity_words in patterns:
+            for words, output_kind in (
+                (name_words, "name"),
+                (identity_words, "identity"),
+            ):
+                state = 0
+                for word in words:
+                    next_state = transitions[state].get(word)
+                    if next_state is None:
+                        next_state = len(transitions)
+                        transitions[state][word] = next_state
+                        transitions.append({})
+                        failures.append(0)
+                        name_outputs.append(())
+                        identity_outputs.append(())
+                    state = next_state
+                if output_kind == "name":
+                    name_outputs[state] = _limited_handles(
+                        name_outputs[state], (handle,)
+                    )
+                else:
+                    identity_outputs[state] = _limited_handles(
+                        identity_outputs[state], (handle,)
+                    )
+
+        pending = deque(transitions[0].values())
+        while pending:
+            state = pending.popleft()
+            for word, next_state in transitions[state].items():
+                pending.append(next_state)
+                fallback = failures[state]
+                while fallback and word not in transitions[fallback]:
+                    fallback = failures[fallback]
+                failures[next_state] = transitions[fallback].get(word, 0)
+                inherited = failures[next_state]
+                name_outputs[next_state] = _limited_handles(
+                    name_outputs[next_state], name_outputs[inherited]
+                )
+                identity_outputs[next_state] = _limited_handles(
+                    identity_outputs[next_state], identity_outputs[inherited]
+                )
+
+        self._transitions = transitions
+        self._failures = failures
+        self._name_outputs = name_outputs
+        self._identity_outputs = identity_outputs
+
+    def matches(self, normalized_text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        state = 0
+        name_handles: tuple[str, ...] = ()
+        identity_handles: tuple[str, ...] = ()
+        for word in normalized_text.split():
+            while state and word not in self._transitions[state]:
+                state = self._failures[state]
+            state = self._transitions[state].get(word, 0)
+            name_handles = _limited_handles(
+                name_handles, self._name_outputs[state]
+            )
+            identity_handles = _limited_handles(
+                identity_handles, self._identity_outputs[state]
+            )
+        return name_handles, identity_handles
+
+
 def _participant_fact(
     normalized_text: str,
-    roster_patterns: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...],
+    participant_index: _ParticipantIndex,
 ) -> tuple[str | None, str | None]:
-    words = tuple(normalized_text.split())
-    name_handles = tuple(
-        handle
-        for handle, name_words, _identity_words in roster_patterns
-        if _contains_words(words, name_words)
-    )
-    identity_handles = tuple(
-        handle
-        for handle, _name_words, identity_words in roster_patterns
-        if _contains_words(words, identity_words)
-    )
+    name_handles, identity_handles = participant_index.matches(normalized_text)
     if not name_handles and not identity_handles:
         return None, None
     if len(name_handles) == 1 and len(identity_handles) == 1:
@@ -730,7 +901,7 @@ def _source_drafts(
     source,
     source_units: tuple,
     roster: RosterCandidate,
-    roster_patterns: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...],
+    participant_index: _ParticipantIndex,
     evidence: GroupingEvidence,
 ) -> tuple[_UnitDraft, ...]:
     source_has_issues = bool(source.issue_codes)
@@ -746,7 +917,7 @@ def _source_drafts(
                 evidence.text_for(
                     unit.evidence_id, unit.unit_kind, unit.unit_index
                 ),
-                roster_patterns,
+                participant_index,
             )
         role = (
             unit.suggested_role
@@ -779,21 +950,39 @@ def _source_drafts(
             )
         )
 
+    target_state = "case"
     current_handle = None
     for seed in seeds:
         if seed.unit.unit_id == roster.unit_id:
-            current_handle = None
-            seed.target = GroupTarget("case", ())
-        elif not seed.complete or seed.participant_issue is not None:
+            target_state = "case"
             current_handle = None
             seed.target = GroupTarget("case", ())
         elif seed.participant_handle is not None:
+            target_state = "participant"
             current_handle = seed.participant_handle
             seed.participant_established = True
             seed.target = GroupTarget("individual", (current_handle,))
-        elif current_handle is not None:
+        elif (
+            seed.complete
+            and seed.participant_issue is None
+            and seed.role in {"payment-roster", "shared-supporting-evidence"}
+        ):
+            target_state = "case"
+            current_handle = None
+            seed.target = GroupTarget("case", ())
+        elif not seed.complete or seed.participant_issue is not None:
+            if target_state != "case":
+                target_state = "target-unresolved"
+            current_handle = None
+            seed.target = GroupTarget("case", ())
+        elif target_state == "participant":
+            assert current_handle is not None
             seed.participant_established = True
             seed.target = GroupTarget("individual", (current_handle,))
+        elif target_state == "target-unresolved":
+            seed.target = GroupTarget("case", ())
+            if seed.issue_code is None:
+                seed.issue_code = "target-unresolved"
         else:
             seed.target = GroupTarget("case", ())
 
@@ -805,66 +994,73 @@ def _source_drafts(
                 seed.issue_code = "packet-structure-incoherent"
 
     participant_anchors = tuple(
-        index for index, seed in enumerate(seeds) if seed.participant_handle is not None
+        index
+        for index, seed in enumerate(seeds)
+        if seed.participant_handle is not None
     )
     role_anchors = tuple(
         index
         for index, seed in enumerate(seeds)
         if seed.role != "unknown" and seed.issue_code is None
     )
-    for index, seed in enumerate(seeds):
+    index = 0
+    while index < len(seeds):
+        seed = seeds[index]
         if seed.role != "unknown" or seed.issue_code is not None:
+            index += 1
             continue
-        previous = None
-        cursor = index - 1
-        while cursor >= 0:
-            candidate = seeds[cursor]
+
+        run_start = index
+        index += 1
+        while index < len(seeds):
+            candidate = seeds[index]
             if (
-                (
-                    candidate.issue_code is not None
-                    and candidate.issue_code != "role-gap-conflict"
-                )
+                candidate.role != "unknown"
+                or candidate.issue_code is not None
                 or candidate.target != seed.target
                 or candidate.unit.unit_kind != seed.unit.unit_kind
             ):
                 break
-            if candidate.role != "unknown":
-                previous = candidate
-                break
-            cursor -= 1
-        following = None
-        cursor = index + 1
-        while cursor < len(seeds):
-            candidate = seeds[cursor]
-            if (
-                (
-                    candidate.issue_code is not None
-                    and candidate.issue_code != "role-gap-conflict"
-                )
-                or candidate.target != seed.target
-                or candidate.unit.unit_kind != seed.unit.unit_kind
-            ):
-                break
-            if candidate.role != "unknown":
-                following = candidate
-                break
-            cursor += 1
+            index += 1
+        run_end = index
+
+        previous = seeds[run_start - 1] if run_start else None
+        if previous is not None and (
+            previous.issue_code is not None
+            or previous.role == "unknown"
+            or previous.target != seed.target
+            or previous.unit.unit_kind != seed.unit.unit_kind
+        ):
+            previous = None
+        following = seeds[run_end] if run_end < len(seeds) else None
+        if following is not None and (
+            following.issue_code is not None
+            or following.role == "unknown"
+            or following.target != seed.target
+            or following.unit.unit_kind != seed.unit.unit_kind
+        ):
+            following = None
+
         if previous is not None and following is not None:
             if previous.role == following.role:
-                seed.role = previous.role
+                for candidate in seeds[run_start:run_end]:
+                    candidate.role = previous.role
             else:
-                seed.issue_code = "role-gap-conflict"
+                for candidate in seeds[run_start:run_end]:
+                    candidate.issue_code = "role-gap-conflict"
         elif (
             previous is not None
             and following is None
             and not participant_anchors
             and seed.target == GroupTarget("case", ())
             and len(role_anchors) == 1
-            and role_anchors[0] < index
+            and role_anchors[0] < run_start
         ):
-            seed.role = previous.role
+            for candidate in seeds[run_start:run_end]:
+                candidate.role = previous.role
         else:
-            seed.issue_code = "role-uncertain"
+            for candidate in seeds[run_start:run_end]:
+                candidate.issue_code = "role-uncertain"
 
     for seed in seeds:
         assert seed.target is not None
@@ -901,6 +1097,7 @@ _ISOLATED_ISSUES = frozenset(
         "participant-no-match",
         "participant-multiple-match",
         "participant-identity-conflict",
+        "target-unresolved",
     }
 )
 
@@ -944,6 +1141,7 @@ def _exception_checks(draft: _UnitDraft) -> tuple[str, ...]:
         "participant-no-match",
         "participant-multiple-match",
         "participant-identity-conflict",
+        "target-unresolved",
     }:
         checks.add("target-unambiguous")
     if draft.source_issues_clear:
@@ -1084,6 +1282,7 @@ def build_grouping_plan(inspection, roster, evidence) -> GroupingPlan:
     )
     if any(not name_words or not identity_words for _handle, name_words, identity_words in roster_patterns):
         raise ValueError("roster private matching keys must be nonempty")
+    participant_index = _ParticipantIndex(roster_patterns)
 
     groups: list[ReviewGroup] = []
     exceptions: list[ExceptionCluster] = []
@@ -1137,7 +1336,7 @@ def build_grouping_plan(inspection, roster, evidence) -> GroupingPlan:
             source,
             source_units,
             roster,
-            roster_patterns,
+            participant_index,
             evidence,
         )
         for draft_range in _draft_ranges(drafts):
