@@ -317,7 +317,7 @@ class RecordingOcr:
         return self.outcome
 
 
-def _inspect_pdf(snapshot, *, runner=None, limits=None):
+def _inspect_pdf(snapshot, *, runner=None, limits=None, private_text_sink=None):
     from ctv_inspection_media import inspect_pdf
 
     return inspect_pdf(
@@ -325,10 +325,11 @@ def _inspect_pdf(snapshot, *, runner=None, limits=None):
         limits=limits or InspectionLimits(),
         ocr_budget=OcrBudget(),
         ocr_runner=runner or RecordingOcr(),
+        _private_text_sink=private_text_sink,
     )
 
 
-def _inspect_image(snapshot, *, runner=None, limits=None):
+def _inspect_image(snapshot, *, runner=None, limits=None, private_text_sink=None):
     from ctv_inspection_media import inspect_image
 
     return inspect_image(
@@ -336,6 +337,7 @@ def _inspect_image(snapshot, *, runner=None, limits=None):
         limits=limits or InspectionLimits(),
         ocr_budget=OcrBudget(),
         ocr_runner=runner or RecordingOcr(),
+        _private_text_sink=private_text_sink,
     )
 
 
@@ -784,6 +786,44 @@ def test_scanned_pdf_renders_one_150_dpi_png_and_invokes_ocr_once():
     assert result.units[0].inspection_method == "local-ocr"
     assert "identity-front-heading" in result.units[0].signal_codes
     assert "embedded-media-present" in result.units[0].signal_codes
+
+
+def test_pdf_private_text_sink_captures_once_before_private_text_is_cleared():
+    private_marker = "PRIVATE MARKER 079123456789"
+    captured = []
+
+    result = _inspect_pdf(
+        _pdf(
+            "HOP DONG DICH VU BEN A BEN B CHU KY NOI DUNG DU DAI DE PHAN "
+            f"LOAI TAI LIEU ON DINH {private_marker}"
+        ),
+        private_text_sink=lambda unit_kind, unit_index, private_text: captured.append(
+            (unit_kind, unit_index, private_text)
+        ),
+    )
+
+    assert len(captured) == 1
+    assert captured[0][:2] == ("pdf-page", 1)
+    assert private_marker in captured[0][2]
+    assert private_marker not in repr(result)
+
+
+def test_image_private_text_sink_captures_once_before_private_text_is_cleared():
+    private_marker = "PRIVATE MARKER 079123456789"
+    runner = RecordingOcr(OcrOutcome("succeeded", private_marker))
+    captured = []
+
+    result = _inspect_image(
+        _image_bytes(),
+        runner=runner,
+        private_text_sink=lambda unit_kind, unit_index, private_text: captured.append(
+            (unit_kind, unit_index, private_text)
+        ),
+    )
+
+    assert len(runner.calls) == 1
+    assert captured == [("image", 1, private_marker)]
+    assert private_marker not in repr(result)
 
 
 @pytest.mark.parametrize("flate_wrapped", [False, True])

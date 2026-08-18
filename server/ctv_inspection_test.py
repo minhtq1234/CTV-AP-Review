@@ -25,6 +25,7 @@ from PIL import Image
 import pytest
 
 import ctv_inventory
+from ctv_grouping_evidence import GroupingEvidence
 from ctv_inspection import (
     INSPECTION_ERROR_CODES,
     InspectionError,
@@ -189,6 +190,98 @@ def test_inspect_observation_uses_explicit_snapshot_capability(tmp_path, monkeyp
 
         assert result.observation_id == observation.observation_id
         assert calls == [result.sources[0].evidence_id]
+
+
+def test_inspect_observation_private_text_sink_captures_pdf_and_ocr_image_once(
+    tmp_path, monkeypatch
+):
+    import ctv_inspection as inspection
+
+    private_marker = "PRIVATE MARKER 079123456789"
+    source = tmp_path / "private-source"
+    source.mkdir()
+    (source / "a-text.pdf").write_bytes(
+        _pdf(
+            "HOP DONG DICH VU BEN A BEN B CHU KY NOI DUNG DU DAI DE PHAN "
+            f"LOAI TAI LIEU ON DINH {private_marker}"
+        )
+    )
+    (source / "b-image.png").write_bytes(_image())
+    ocr_calls = []
+
+    def synthetic_ocr(_image_bytes, *, session, budget, timeout_seconds):
+        ocr_calls.append((session, budget, timeout_seconds))
+        budget.used_units += 1
+        return OcrOutcome("succeeded", private_marker)
+
+    monkeypatch.setattr(inspection, "open_local_ocr", lambda: object())
+    monkeypatch.setattr(inspection, "run_local_ocr", synthetic_ocr)
+    facts = GroupingEvidence()
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        result = inspect_observation(
+            observation,
+            _private_text_sink=facts.capture,
+        )
+
+    assert len(ocr_calls) == 1
+    assert "PRIVATE MARKER" in facts.text_for("evidence-0001", "pdf-page", 1)
+    assert "PRIVATE MARKER" in facts.text_for("evidence-0002", "image", 1)
+    public = repr(result) + repr(result.to_dict())
+    assert private_marker not in public
+
+
+def test_inspect_observation_keeps_public_result_bytes_unchanged_without_sink(
+    tmp_path, monkeypatch
+):
+    _unavailable_ocr(monkeypatch)
+    source = tmp_path / "private-source"
+    source.mkdir()
+    (source / "a-text.pdf").write_bytes(
+        _pdf(
+            "HOP DONG DICH VU BEN A BEN B CHU KY NOI DUNG DU DAI DE PHAN "
+            "LOAI TAI LIEU ON DINH"
+        )
+    )
+
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        before = _canonical_result(inspect_observation(observation))
+        after = _canonical_result(inspect_observation(observation))
+
+    assert after == before
+
+
+def test_inspect_observation_converts_private_text_sink_failure_to_safe_boundary(
+    tmp_path, monkeypatch
+):
+    _unavailable_ocr(monkeypatch)
+    private_marker = "PRIVATE MARKER 079123456789"
+    raw_exception = f"raw sink failure: {private_marker}"
+    source = tmp_path / "private-source"
+    source.mkdir()
+    (source / "a-text.pdf").write_bytes(
+        _pdf(
+            "HOP DONG DICH VU BEN A BEN B CHU KY NOI DUNG DU DAI DE PHAN "
+            f"LOAI TAI LIEU ON DINH {private_marker}"
+        )
+    )
+
+    def fail_sink(*_args):
+        raise RuntimeError(raw_exception)
+
+    with ctv_inventory.open_inventory_observation(source) as observation:
+        with pytest.raises(RuntimeError) as raised:
+            inspect_observation(observation, _private_text_sink=fail_sink)
+
+    error = raised.value
+    public = "\n".join(
+        (str(error), repr(error), "".join(traceback.format_exception(error)))
+    )
+    assert type(error) is RuntimeError
+    assert str(error) == "inspection-internal-error"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert private_marker not in public
+    assert raw_exception not in public
 
 
 def _unavailable_ocr(monkeypatch) -> None:

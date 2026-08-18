@@ -1,5 +1,6 @@
 """Secure read-only composition of inventory and bounded document inspection."""
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from ctv_inspection_classifier import classify
 from ctv_inspection_media import (
     PdfPageCountExceededError,
     PdfParserBoundaryExceededError,
+    PrivateTextSinkFailure,
     inspect_image,
     inspect_pdf,
 )
@@ -142,6 +144,7 @@ def _inspect_observed_source(
     ocr_budget: OcrBudget,
     ocr_runner,
     remaining_units: int,
+    _private_text_sink=None,
 ) -> tuple[InspectionSource, tuple[InspectionUnitEvidence, ...]]:
     inventory_issues = source.issue_codes
     if "symlink" in inventory_issues or "special-file" in inventory_issues:
@@ -167,6 +170,14 @@ def _inspect_observed_source(
         return _source_only(source, "unsupported", 0, "unsupported-document-type")
     if type(source.size) is not int or source.size < 0:
         return _source_only(source, "unreadable", None, "document-unreadable")
+
+    def capture_unit_text(
+        unit_kind: str, unit_index: int, private_text: str
+    ) -> None:
+        if _private_text_sink is not None:
+            _private_text_sink(
+                source.evidence_id, unit_kind, unit_index, private_text
+            )
 
     source_cap = {
         "pdf": limits.max_pdf_source_bytes,
@@ -207,13 +218,15 @@ def _inspect_observed_source(
                 detected_type=archive_type,
             )
         if source.detected_type == "pdf":
-            adapter_result = inspect_pdf(
-                snapshot,
-                limits=limits,
-                ocr_budget=ocr_budget,
-                ocr_runner=ocr_runner,
-                remaining_units=remaining_units,
-            )
+            adapter_arguments = {
+                "limits": limits,
+                "ocr_budget": ocr_budget,
+                "ocr_runner": ocr_runner,
+                "remaining_units": remaining_units,
+            }
+            if _private_text_sink is not None:
+                adapter_arguments["_private_text_sink"] = capture_unit_text
+            adapter_result = inspect_pdf(snapshot, **adapter_arguments)
         elif source.detected_type == "xlsx":
             adapter_result = inspect_workbook(
                 snapshot,
@@ -223,12 +236,14 @@ def _inspect_observed_source(
         else:
             if remaining_units < 1:
                 raise InspectionUnitCountExceededError()
-            adapter_result = inspect_image(
-                snapshot,
-                limits=limits,
-                ocr_budget=ocr_budget,
-                ocr_runner=ocr_runner,
-            )
+            adapter_arguments = {
+                "limits": limits,
+                "ocr_budget": ocr_budget,
+                "ocr_runner": ocr_runner,
+            }
+            if _private_text_sink is not None:
+                adapter_arguments["_private_text_sink"] = capture_unit_text
+            adapter_result = inspect_image(snapshot, **adapter_arguments)
         snapshot = b""
 
     if (
@@ -266,6 +281,7 @@ def _inspection_result(
     limits: InspectionLimits,
     ocr_session,
     snapshot_source=None,
+    _private_text_sink=None,
 ) -> InspectionResult | str:
     if snapshot_source is None:
         snapshot_source = observation.snapshot
@@ -300,6 +316,7 @@ def _inspection_result(
             ocr_budget=ocr_budget,
             ocr_runner=bound_ocr,
             remaining_units=limits.max_units - len(units),
+            _private_text_sink=_private_text_sink,
         )
         for evidence in unit_evidence:
             if len(units) >= limits.max_units:
@@ -404,12 +421,15 @@ def inspect_observation(
     *,
     limits: InspectionLimits = DEFAULT_INSPECTION_LIMITS,
     _snapshot_source=None,
+    _private_text_sink: Callable[[str, str, int, str], None] | None = None,
 ) -> InspectionResult:
     """Inspect one caller-owned live observation without closing it."""
     if type(observation) is not InventoryObservation:
         raise TypeError("observation must be a live inventory observation")
     if _snapshot_source is not None and not callable(_snapshot_source):
         raise TypeError("snapshot source must be callable")
+    if _private_text_sink is not None and not callable(_private_text_sink):
+        raise TypeError("private text sink must be callable")
     limits = _bounded_limits(limits)
     ocr_session = open_local_ocr()
     result = _UNKNOWN_INVENTORY_FAILURE
@@ -420,7 +440,10 @@ def inspect_observation(
             limits=limits,
             ocr_session=ocr_session,
             snapshot_source=_snapshot_source,
+            _private_text_sink=_private_text_sink,
         )
+    except PrivateTextSinkFailure:
+        failure_code = "inspection-internal-error"
     except InventoryError as error:
         failure_code = _mapped_inventory_error_code(error)
     except PdfPageCountExceededError:
@@ -436,6 +459,8 @@ def inspect_observation(
     finally:
         ocr_session = None
     if failure_code is not None:
+        if failure_code == "inspection-internal-error":
+            _raise_internal_failure()
         _raise_controlled_failure(failure_code)
     if type(result) is str:
         _raise_controlled_failure(result)

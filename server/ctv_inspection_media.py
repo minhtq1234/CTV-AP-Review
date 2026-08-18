@@ -49,6 +49,20 @@ class _OutputLimitExceeded(RuntimeError):
     pass
 
 
+class PrivateTextSinkFailure(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("inspection-private-text-sink-failed")
+
+
+def _capture_private_text(sink, unit_kind: str, unit_index: int, text: str) -> None:
+    if sink is None:
+        return
+    try:
+        sink(unit_kind, unit_index, text)
+    except Exception:
+        raise PrivateTextSinkFailure() from None
+
+
 class _CappedBytesIO(BytesIO):
     def __init__(self, limit: int) -> None:
         super().__init__()
@@ -1177,6 +1191,7 @@ def _ocr_evidence(
     limits: InspectionLimits,
     ocr_budget: OcrBudget,
     ocr_runner,
+    _private_text_sink=None,
 ) -> InspectionUnitEvidence:
     try:
         outcome = ocr_runner(
@@ -1206,6 +1221,10 @@ def _ocr_evidence(
     if not valid_pair:
         status = "failed"
         private_text = ""
+    if status in {"succeeded", "low-confidence"}:
+        _capture_private_text(
+            _private_text_sink, unit_kind, unit_index, private_text
+        )
     signal_codes = _signals(
         private_text if status in {"succeeded", "low-confidence"} else "",
         unit_kind=unit_kind,
@@ -1275,6 +1294,7 @@ def _inspect_pdf_page(
     limits: InspectionLimits,
     ocr_budget: OcrBudget,
     ocr_runner,
+    _private_text_sink=None,
 ) -> InspectionUnitEvidence:
     has_fonts, embedded_media = _prove_pdf_page_bounds(document, page, limits)
     private_text = ""
@@ -1296,6 +1316,9 @@ def _inspect_pdf_page(
             private_text = ""
 
     if _text_is_sufficient(private_text):
+        _capture_private_text(
+            _private_text_sink, "pdf-page", unit_index, private_text
+        )
         signal_codes = _signals(
             private_text,
             unit_kind="pdf-page",
@@ -1351,6 +1374,7 @@ def _inspect_pdf_page(
         limits=limits,
         ocr_budget=ocr_budget,
         ocr_runner=ocr_runner,
+        _private_text_sink=_private_text_sink,
     )
     rendered = b""
     return evidence
@@ -1363,6 +1387,7 @@ def inspect_pdf(
     ocr_budget: OcrBudget,
     ocr_runner,
     remaining_units: int | None = None,
+    _private_text_sink=None,
 ) -> InspectionAdapterResult:
     """Inspect each actual PDF page from one immutable in-memory snapshot."""
     if type(snapshot) is not bytes:
@@ -1415,6 +1440,7 @@ def inspect_pdf(
                         limits=limits,
                         ocr_budget=ocr_budget,
                         ocr_runner=ocr_runner,
+                        _private_text_sink=_private_text_sink,
                     )
                 )
             return InspectionAdapterResult("inspected", page_count, (), tuple(units))
@@ -1423,6 +1449,8 @@ def inspect_pdf(
     except PdfParserBoundaryExceededError:
         raise
     except InspectionUnitCountExceededError:
+        raise
+    except PrivateTextSinkFailure:
         raise
     except Exception:
         return _source_problem("unreadable", "document-unreadable")
@@ -1474,6 +1502,7 @@ def inspect_image(
     limits: InspectionLimits,
     ocr_budget: OcrBudget,
     ocr_runner,
+    _private_text_sink=None,
 ) -> InspectionAdapterResult:
     """Inspect the first frame of one standalone image from immutable bytes."""
     if type(snapshot) is not bytes:
@@ -1500,6 +1529,7 @@ def inspect_image(
         limits=limits,
         ocr_budget=ocr_budget,
         ocr_runner=ocr_runner,
+        _private_text_sink=_private_text_sink,
     )
     normalized = b""
     return InspectionAdapterResult("inspected", 1, (), (unit,))
