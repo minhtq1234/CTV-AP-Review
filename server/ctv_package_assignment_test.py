@@ -10,12 +10,18 @@ import fitz
 from openpyxl import Workbook
 import pytest
 
+from ctv_grouping_evidence import GroupingEvidence
 from ctv_inspection import inspect_observation
 from ctv_inventory import open_inventory_observation
 from ctv_package_assignment import build_assignments
 from ctv_inspection_model import InspectionLimits
 from ctv_proposal import ProposalState
-from intake_contract_v2 import PdfPageLocatorV2, RosterLocatorV2, WorksheetLocatorV2
+from intake_contract_v2 import (
+    AssignmentsDocumentV2,
+    PdfPageLocatorV2,
+    RosterLocatorV2,
+    WorksheetLocatorV2,
+)
 
 
 _PRIVATE = ("Synthetic Person", "079123456781", "FA-SYNTHETIC-001")
@@ -59,6 +65,54 @@ def _approved_state(tmp_path, **source_kwargs):
                 "target": {"scope": "case", "participantHandles": []},
             }
         state.set_unit_decision(mapping)
+    digest = state.approval_summary()["proposalDigest"]
+    return context, state, digest
+
+
+def _approved_grouped_state(tmp_path):
+    source = _source(tmp_path)
+    context = open_inventory_observation(source)
+    observation = context.__enter__()
+    facts = GroupingEvidence()
+    inspection = inspect_observation(
+        observation,
+        _private_text_sink=facts.capture,
+    )
+    roster = next(unit for unit in inspection.units if unit.unit_kind == "worksheet")
+    if not facts.complete_for(
+        roster.evidence_id,
+        roster.unit_kind,
+        roster.unit_index,
+    ):
+        facts.capture(
+            roster.evidence_id,
+            roster.unit_kind,
+            roster.unit_index,
+            "payment roster",
+        )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=facts,
+    )
+    state.resolve_exception(
+        {
+            "exceptionId": "exception-0001",
+            "action": "assign",
+            "role": "service-contract",
+            "target": {"scope": "case", "participantHandles": []},
+            "applyToSimilar": False,
+        }
+    )
+    state.resolve_exception(
+        {
+            "exceptionId": "exception-0002",
+            "action": "assign",
+            "role": "payment-roster",
+            "target": {"scope": "case", "participantHandles": []},
+            "applyToSimilar": False,
+        }
+    )
     digest = state.approval_summary()["proposalDigest"]
     return context, state, digest
 
@@ -307,6 +361,60 @@ def test_build_assignments_is_complete_deterministic_and_private_value_free(tmp_
         wrong[pdf_unit.unit_id] = WorksheetLocatorV2(kind="worksheet", artifactId="artifact-evidence", worksheetIndex=1)
         with pytest.raises(ValueError, match="locator"):
             build_assignments(snapshot, package_id="package-" + "a" * 64, locators=wrong)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_grouped_approved_expansion_preserves_the_v2_assignment_contract(tmp_path):
+    context, state, digest = _approved_grouped_state(tmp_path)
+    try:
+        assert state.approval_summary()["readyToPrepare"] is True
+        approved = state.approve(digest)
+        snapshot = state.consume_approved_package_snapshot(
+            approved["proposalDigest"]
+        )
+        locators = {
+            unit.unit_id: (
+                RosterLocatorV2(
+                    kind="roster",
+                    artifactId="artifact-roster",
+                    worksheetIndex=1,
+                )
+                if unit.unit_kind == "worksheet"
+                else PdfPageLocatorV2(
+                    kind="pdf-page",
+                    artifactId="artifact-inputpdf",
+                    targetPage=1,
+                )
+            )
+            for unit in snapshot.unit_decisions
+        }
+
+        result = build_assignments(
+            snapshot,
+            package_id="package-" + "c" * 64,
+            locators=locators,
+        )
+        document = result.document.model_dump(by_alias=True)
+
+        assert type(result.document) is AssignmentsDocumentV2
+        assert document["schemaVersion"] == "2.0"
+        assert [
+            participant["participantHandle"]
+            for participant in document["participants"]
+        ] == ["participant-0001"]
+        assert [unit["unitId"] for unit in document["units"]] == [
+            item.unit_id for item in snapshot.unit_decisions
+        ]
+        assert {
+            unit["outputLocator"]["kind"] for unit in document["units"]
+        } == {"pdf-page", "roster"}
+        assert document["exclusions"] == []
+        assert all(decision.actor == "user" for decision in result.decisions)
+        assert all(
+            decision.proposal_version == "1.0" for decision in result.decisions
+        )
+        assert all(value not in repr(document) for value in _PRIVATE)
     finally:
         context.__exit__(None, None, None)
 
