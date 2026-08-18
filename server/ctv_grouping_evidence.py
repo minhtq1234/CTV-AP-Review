@@ -56,23 +56,32 @@ class GroupingEvidence:
                 raise ValueError("grouping evidence limits must be positive")
         self._limits = (max_units, max_chars_per_unit, max_total_chars)
         self._texts = {}
+        self._seen_keys = set()
         self._complete_keys = set()
         self._duplicate_groups = {}
         self._used = 0
+        self._sealed = False
         self.complete = True
 
     def capture(self, evidence_id, unit_kind, unit_index, private_text) -> None:
         key = _text_key(evidence_id, unit_kind, unit_index)
         if type(private_text) is not str:
             raise TypeError("private text must be str")
-        if key in self._texts:
+        if key in self._seen_keys:
             raise ValueError("grouping evidence unit text already captured")
+        if self._sealed:
+            self.complete = False
+            return
 
         normalized = _normalized_private_text(private_text)
         max_units, max_chars_per_unit, max_total_chars = self._limits
+        if len(self._seen_keys) >= max_units:
+            self._sealed = True
+            self.complete = False
+            return
+        self._seen_keys.add(key)
         if (
-            len(self._texts) >= max_units
-            or len(normalized) > max_chars_per_unit
+            len(normalized) > max_chars_per_unit
             or self._used + len(normalized) > max_total_chars
         ):
             self.complete = False
@@ -105,7 +114,9 @@ class GroupingEvidence:
 
     def clear(self) -> None:
         self._texts.clear()
+        self._seen_keys.clear()
         self._complete_keys.clear()
         self._duplicate_groups.clear()
         self._used = 0
+        self._sealed = False
         self.complete = False

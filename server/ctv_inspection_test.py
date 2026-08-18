@@ -149,6 +149,18 @@ def _canonical_result(result) -> bytes:
     )
 
 
+def _fixed_observation(*sources):
+    observation = object.__new__(ctv_inventory.InventoryObservation)
+    object.__setattr__(
+        observation,
+        "_InventoryObservation__observation_id",
+        "observation-" + "0" * 64,
+    )
+    object.__setattr__(observation, "_InventoryObservation__result", None)
+    object.__setattr__(observation, "_InventoryObservation__sources", sources)
+    return observation
+
+
 def test_inspect_observation_keeps_caller_owned_observation_open(tmp_path):
     source = tmp_path / "private-source"
     source.mkdir()
@@ -230,24 +242,44 @@ def test_inspect_observation_private_text_sink_captures_pdf_and_ocr_image_once(
     assert private_marker not in public
 
 
-def test_inspect_observation_keeps_public_result_bytes_unchanged_without_sink(
-    tmp_path, monkeypatch
+def test_inspect_observation_keeps_public_result_unchanged_bytes_without_sink(
+    monkeypatch,
 ):
     _unavailable_ocr(monkeypatch)
-    source = tmp_path / "private-source"
-    source.mkdir()
-    (source / "a-text.pdf").write_bytes(
-        _pdf(
-            "HOP DONG DICH VU BEN A BEN B CHU KY NOI DUNG DU DAI DE PHAN "
-            "LOAI TAI LIEU ON DINH"
+    observation = _fixed_observation(
+        ctv_inventory.ObservedInventorySource(
+            "evidence-0001", ".bin", "unknown", 1, "computed", ()
         )
     )
+    expected = (
+        b"{\n"
+        b'  "inspectionStatus": "complete-with-issues",\n'
+        b'  "inspectionVersion": "1.0",\n'
+        b'  "observationId": "observation-0000000000000000000000000000000000000000000000000000000000000000",\n'
+        b'  "sources": [\n'
+        b"    {\n"
+        b'      "detectedType": "unknown",\n'
+        b'      "evidenceId": "evidence-0001",\n'
+        b'      "inspectionStatus": "unsupported",\n'
+        b'      "issueCodes": [\n'
+        b'        "unsupported-document-type"\n'
+        b"      ],\n"
+        b'      "unitCount": 0\n'
+        b"    }\n"
+        b"  ],\n"
+        b'  "totals": {\n'
+        b'    "classified": 0,\n'
+        b'    "issues": 1,\n'
+        b'    "needsUserReview": 0,\n'
+        b'    "sources": 1,\n'
+        b'    "units": 0,\n'
+        b'    "unknown": 0\n'
+        b"  },\n"
+        b'  "units": []\n'
+        b"}\n"
+    )
 
-    with ctv_inventory.open_inventory_observation(source) as observation:
-        before = _canonical_result(inspect_observation(observation))
-        after = _canonical_result(inspect_observation(observation))
-
-    assert after == before
+    assert _canonical_result(inspect_observation(observation)) == expected
 
 
 def test_inspect_observation_converts_private_text_sink_failure_to_safe_boundary(

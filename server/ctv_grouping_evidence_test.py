@@ -63,6 +63,48 @@ def test_grouping_evidence_drops_a_unit_when_the_aggregate_cap_is_exhausted():
     assert facts.complete_for("evidence-0001", "pdf-page", 2) is False
 
 
+def test_grouping_evidence_seals_overlong_units_against_retry_and_unit_overflow():
+    facts = GroupingEvidence(max_units=2, max_chars_per_unit=4)
+    facts.capture("evidence-0001", "pdf-page", 1, "overlong")
+
+    with pytest.raises(ValueError):
+        facts.capture("evidence-0001", "pdf-page", 1, "okay")
+
+    facts.capture("evidence-0001", "pdf-page", 2, "okay")
+    facts.capture("evidence-0001", "pdf-page", 3, "okay")
+
+    assert facts.text_for("evidence-0001", "pdf-page", 1) == ""
+    assert facts.complete_for("evidence-0001", "pdf-page", 1) is False
+    assert facts.text_for("evidence-0001", "pdf-page", 2) == "OKAY"
+    assert facts.complete_for("evidence-0001", "pdf-page", 2) is True
+    assert facts.text_for("evidence-0001", "pdf-page", 3) == ""
+    assert facts.complete_for("evidence-0001", "pdf-page", 3) is False
+
+
+def test_grouping_evidence_seals_aggregate_rejected_units_against_retry():
+    facts = GroupingEvidence(max_total_chars=4)
+    facts.capture("evidence-0001", "pdf-page", 1, "okay")
+    facts.capture("evidence-0001", "pdf-page", 2, "next")
+
+    with pytest.raises(ValueError):
+        facts.capture("evidence-0001", "pdf-page", 2, "")
+
+    assert facts.text_for("evidence-0001", "pdf-page", 2) == ""
+    assert facts.complete_for("evidence-0001", "pdf-page", 2) is False
+
+
+def test_grouping_evidence_clear_releases_bounded_seen_and_sealed_state():
+    facts = GroupingEvidence(max_units=1, max_chars_per_unit=4)
+    facts.capture("evidence-0001", "pdf-page", 1, "overlong")
+    facts.capture("evidence-0001", "pdf-page", 2, "okay")
+
+    facts.clear()
+    facts.capture("evidence-0001", "pdf-page", 1, "okay")
+
+    assert facts.text_for("evidence-0001", "pdf-page", 1) == "OKAY"
+    assert facts.complete_for("evidence-0001", "pdf-page", 1) is True
+
+
 def test_grouping_evidence_rejects_a_second_capture_for_the_same_key():
     facts = GroupingEvidence()
     facts.capture("evidence-0001", "pdf-page", 1, "first")
