@@ -287,7 +287,7 @@ def test_group_state_bootstrap_is_one_time_authenticated_and_exactly_projected(t
         assert "groups" not in local_state["review"]
         assert "unitDecisions" not in local_state["review"]
         assert local_state["review"]["coverage"]["unaccountedUnits"] == 0
-        assert len(local_state["review"]["exceptions"]) == 3
+        assert len(local_state["review"]["exceptions"]) == 2
         assert len(local_state["review"]["organizedGroups"]) == 4
         assert local_state["roster"]["status"] == "selected"
         captured["csrf"] = local_state["csrfToken"]

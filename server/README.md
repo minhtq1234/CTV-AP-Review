@@ -152,7 +152,9 @@ or standalone image. A unit can suggest only `payment-roster`,
 `identity-back`, `shared-supporting-evidence`, `other-supporting-evidence`, or
 `unknown`. Confidence is one of `high`, `medium`, `low`, or `none`. These are
 fixed structural suggestions, not findings: conflicting, ambiguous, low/medium,
-or issue-bearing units set `needsUserReview` and require a person to decide.
+or issue-bearing units set `needsUserReview` and cannot be automatically
+organized unless later deterministic grouping checks resolve the same
+structural facts safely.
 
 `doctor` requires callable PyMuPDF, OpenPyXL, Pydantic, Pillow image decoding,
 and the intake validator. It reports the optional local OCR capability as
@@ -205,14 +207,18 @@ invalid invocation leaves stdout empty.
 
 Inspection is read-only and stateless. It creates no application files, temporary
 files, cache files, output folders, or source changes and makes no network
-requests. Before any preparation handoff, WP must ask a reviewer:
+requests. Before any preparation handoff, WP asks the reviewer to resolve the
+bounded exception queue and spot-check collapsed organized groups as needed:
 
-- Is every suggested role correct, especially every non-high or `unknown` unit?
-- Does each unit belong to one person, multiple people, or the whole case?
+- Are the automatically selected roster and organized participant/shared groups
+  correct for the case?
+- For each exception cluster, what role and participant, shared, case, or
+  exclusion target is correct?
 - Are any pages, worksheets, images, or opaque archives missing or out of scope?
 - Do OCR, encryption, over-limit, unreadable, ambiguity, or conflict issues need
   a safer source or manual review?
-- Has a human explicitly accepted the intended evidence grouping and next step?
+- Has a human given one final approval for the complete, exactly accounted
+  proposal?
 
 Inspection does not establish authenticity, ownership, completeness, package
 readiness, or payment approval. A preparation proposal and any output-root write
@@ -239,12 +245,19 @@ python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py proposal review 
 ```
 
 The review command retains one read-only observation from inspection through
-final revalidation. It opens a temporary browser screen on `127.0.0.1` using an
-OS-assigned port. The user selects the roster, reviews every unit and source-only
-item, and explicitly approves, returns a draft, or cancels. The screen stops and
-clears its memory-only session before the CLI emits one JSON envelope. It binds
-only to loopback, writes no source, output, report, cache, draft, or package file,
-and makes no external network request.
+final revalidation. During the original inspection pass, one bounded
+memory-only collector receives the private text already acquired locally and
+reuses only opaque exact-duplicate IDs already computed by inventory; it does
+not reopen, re-render, OCR, hash, or parse a source a second time. A uniquely
+valid roster is selected automatically in the normal case. Versioned
+deterministic checks then organize evidence into participant, shared, case, and
+duplicate-exclusion groups. The temporary `127.0.0.1` screen shows only the
+exception clusters plus collapsed organized groups for optional spot checks,
+followed by one whole-proposal approval. The user may instead return a draft or
+cancel. The collector and review session are cleared on every terminal or
+failure path before the CLI emits one JSON envelope. The command writes no
+source, output, report, cache, draft, or package file and makes no external
+network request.
 
 The local review lasts no more than two hours and times out after five minutes of
 inactivity. A timeout, browser/server failure, parser or source failure, or any
@@ -260,9 +273,12 @@ larger than 16 MiB.
 
 CLI JSON contains only opaque observation, participant, evidence, and unit IDs;
 fixed decisions, roles, scopes, issue/error codes; bounded counts; and the local
-approval digest/status where applicable. Names, identity values, roster cells,
-paths, filenames, previews, raw OCR/text, tokens, ports, private notes, and parser
-diagnostics stay local and are never returned to WP.
+approval digest/status where applicable. The private matching collector is
+memory-only and has no public serialization. Names, identity values, roster
+cells, paths, filenames, previews, raw OCR/text, tokens, ports, private notes,
+and parser diagnostics stay local and are never returned to WP. WP receives the
+same bounded fixed JSON envelope by calling the local script; no CTV executable,
+runtime, or matching data is bundled into WP.
 
 `proposal review` remains a read-only preview. It does not persist a draft or
 create a package. Use the separate combined command below only when the user has
@@ -290,11 +306,14 @@ python3 /local/path/to/CTV_APReview-v1/server/ctv_intake_cli.py package prepare 
 `--output-root` is an existing local parent directory for newly published
 packages. It must be separate from the source tree. Opening it and proving the
 separation writes nothing. The toolkit then retains one read-only source
-observation, opens the same authenticated loopback review screen, and requires
-the user to select one roster and resolve every unit and source-only item. A
-draft or cancellation writes no staging directory or package and cannot be
-resumed. Approval is consumed once in that same command; only then can the
-transaction build, validate, revalidate, and atomically publish the package.
+observation, performs the same one-pass automatic roster selection and
+deterministic organization, and opens the authenticated loopback review screen.
+The user resolves only exception clusters, may spot-check collapsed organized
+groups, and gives one final approval for the complete proposal. A draft,
+cancellation, browser failure, or review failure writes no staging directory or
+package and cannot be resumed. Any source change invalidates the proposal and
+publishes nothing. Approval is consumed once in that same command; only then can
+the transaction build, validate, revalidate, and atomically publish the package.
 
 A successful prepared result uses operation `package.prepare`, exit `0`, and an
 opaque directory name such as `ctv-package-0123456789abcdef01234567`. The JSON
@@ -340,12 +359,13 @@ The executable generated acceptance gate is:
 python3 -m pytest server/ctv_package_acceptance_test.py -q
 ```
 
-It creates only synthetic local inputs: a two-page PDF, a selected two-person
-roster, an included image, an included worksheet, an excluded worksheet, and an
-excluded unsupported source. The test drives the authenticated loopback HTTP
-review endpoints, approves the fully resolved proposal, publishes through the
-real writer, validates through the standalone v2 validator, and repeats the same
-preparation to prove deterministic collision without overwrite. It also checks
+It creates only synthetic local inputs: a two-page PDF, an automatically
+selected two-person roster, an included image, an included worksheet, an
+excluded worksheet, and an excluded unsupported source. The test receives the
+real production-created grouped state, resolves its exception clusters through
+the authenticated exception API, gives one final approval, publishes through
+the real writer, validates through the standalone v2 validator, and repeats the
+same preparation to prove deterministic collision without overwrite. It also checks
 the exact allowlisted layout and modes, PDF order, values-only workbooks,
 assignment cross-references, excluded-byte absence, canonical privacy-safe CLI
 JSON, source immutability, and absence of hidden staging after handled outcomes.

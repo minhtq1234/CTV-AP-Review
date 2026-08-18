@@ -907,12 +907,17 @@ def _source_drafts(
     source_has_issues = bool(source.issue_codes)
     seeds = []
     for unit in source_units:
-        complete = evidence.complete_for(
+        is_selected_roster = unit.unit_id == roster.unit_id
+        private_fact_complete = evidence.complete_for(
             unit.evidence_id, unit.unit_kind, unit.unit_index
         )
+        selected_roster_without_private_fact = (
+            is_selected_roster and not private_fact_complete
+        )
+        complete = is_selected_roster or private_fact_complete
         participant_handle = None
         participant_issue = None
-        if complete and unit.unit_id != roster.unit_id:
+        if complete and not is_selected_roster:
             participant_handle, participant_issue = _participant_fact(
                 evidence.text_for(
                     unit.evidence_id, unit.unit_kind, unit.unit_index
@@ -921,7 +926,11 @@ def _source_drafts(
             )
         role = (
             unit.suggested_role
-            if unit.suggested_role != "unknown" and unit.confidence_band == "high"
+            if unit.suggested_role != "unknown"
+            and (
+                selected_roster_without_private_fact
+                or unit.confidence_band == "high"
+            )
             else "unknown"
         )
         issue_code = None
@@ -935,7 +944,11 @@ def _source_drafts(
             issue_code = "unit-issue-present"
         elif "multiple-role-signals" in unit.signal_codes:
             issue_code = "role-uncertain"
-        elif unit.suggested_role != "unknown" and unit.confidence_band != "high":
+        elif (
+            not selected_roster_without_private_fact
+            and unit.suggested_role != "unknown"
+            and unit.confidence_band != "high"
+        ):
             issue_code = "role-uncertain"
         seeds.append(
             _UnitSeed(

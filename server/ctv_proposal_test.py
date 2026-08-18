@@ -637,7 +637,7 @@ def test_choose_roster_exception_recomputes_groups_from_preloaded_candidates(
         assert local["roster"]["status"] == "selected"
         assert local["roster"]["rosterUnitId"] == roster_units[1]
         assert local["review"]["coverage"]["unaccountedUnits"] == 0
-        assert state.approval_summary()["counts"]["unresolved"] == 2
+        assert state.approval_summary()["counts"]["unresolved"] == 1
         for exception in list(local["review"]["exceptions"]):
             state.resolve_exception(
                 {

@@ -36,9 +36,9 @@ def _source(tmp_path: Path) -> Path:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Bang ke rieng"
-    worksheet.append(("HO TEN", "CCCD", "SO TIEN"))
-    worksheet.append(("PRIVATE PERSON ONE", "079123456781", 100_000))
-    worksheet.append(("PRIVATE PERSON TWO", "079123456782", 200_000))
+    worksheet.append(("HO TEN", "CCCD", "FACODE", "SO TIEN"))
+    worksheet.append(("PRIVATE PERSON ONE", "079123456781", "FA-001", 100_000))
+    worksheet.append(("PRIVATE PERSON TWO", "079123456782", "FA-001", 200_000))
     workbook.save(source / "bang-ke-rieng-079123456789.xlsx")
     workbook.close()
 
@@ -95,7 +95,7 @@ def _approved_driver(state):
         if unit["unitKind"] == "worksheet"
         and unit["suggestedRole"] == "payment-roster"
     )
-    state.select_roster({"rosterUnitId": roster["unitId"]})
+    assert state.local_review_snapshot()["roster"]["rosterUnitId"] == roster["unitId"]
     handles = state.approval_summary()["participantHandles"]
     assert len(handles) == 2
 

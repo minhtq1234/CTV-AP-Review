@@ -28,7 +28,10 @@ INSPECTION_MODULE_FILENAMES = (
     "ctv_inspection_workbook.py",
 )
 PROPOSAL_MODULE_FILENAMES = (
+    "ctv_grouping_evidence.py",
     "ctv_proposal.py",
+    "ctv_proposal_grouping.py",
+    "ctv_proposal_roster.py",
     "ctv_proposal_review.py",
     "ctv_proposal_review_ui.py",
 )
@@ -84,6 +87,34 @@ _PREPARED_RESULT = {
 }
 
 
+def _approved_terminal():
+    return {
+        "version": "1.0",
+        "outcome": "approved",
+        "observationId": "observation-" + "0" * 64,
+        "proposalDigest": _PROPOSAL_DIGEST,
+        "readyToPrepare": True,
+        "rosterUnitId": "unit-0001",
+        "participantHandles": [],
+        "unitAssignments": [],
+        "sourceDispositions": [],
+        "counts": {
+            "sources": 0,
+            "units": 0,
+            "participants": 0,
+            "accepted": 0,
+            "reassigned": 0,
+            "excluded": 0,
+            "unresolved": 0,
+        },
+        "issueCodes": [],
+        "approval": {
+            "status": "user-approved",
+            "approvedProposalDigest": _PROPOSAL_DIGEST,
+        },
+    }
+
+
 class _EqualitySpoof:
     def __init__(self):
         self.comparisons = 0
@@ -91,6 +122,31 @@ class _EqualitySpoof:
     def __eq__(self, _other):
         self.comparisons += 1
         return True
+
+
+class _TrackingGroupingEvidence:
+    instances = []
+
+    def __init__(self):
+        self.captures = []
+        self.duplicates = []
+        self.cleared = False
+        type(self).instances.append(self)
+
+    def capture(self, evidence_id, unit_kind, unit_index, private_text):
+        assert self.cleared is False
+        self.captures.append(
+            (evidence_id, unit_kind, unit_index, private_text)
+        )
+
+    def capture_source_duplicate(self, evidence_id, duplicate_group_id):
+        assert self.cleared is False
+        self.duplicates.append((evidence_id, duplicate_group_id))
+
+    def clear(self):
+        self.captures.clear()
+        self.duplicates.clear()
+        self.cleared = True
 
 
 def _run(
@@ -166,6 +222,7 @@ def _copy_toolkit(tmp_path: Path) -> Path:
 def _install_package_lifecycle(monkeypatch, cli, *, events=None):
     """Install path-free fakes around the real package lifecycle composition."""
     import ctv_inspection
+    import ctv_grouping_evidence
     import ctv_inventory
     import ctv_package_transaction
     import ctv_proposal
@@ -175,6 +232,15 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
     approved = object()
 
     class Observation:
+        result = SimpleNamespace(
+            items=(
+                SimpleNamespace(
+                    evidence_id="evidence-0001",
+                    duplicate_group_id="duplicate-0001",
+                ),
+            )
+        )
+
         def __enter__(self):
             events.append("source-enter")
             return self
@@ -201,6 +267,17 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
             events.append("disjoint")
 
     class State:
+        def local_review_snapshot(self):
+            return {
+                "roster": {"status": "selected"},
+                "review": {
+                    "coverage": {
+                        "unaccountedUnits": 0,
+                        "automaticallyOrganizedUnits": 2,
+                    }
+                },
+            }
+
         def consume_approved_package_snapshot(self, digest):
             assert digest == _PROPOSAL_DIGEST
             events.append("consume")
@@ -226,15 +303,53 @@ def _install_package_lifecycle(monkeypatch, cli, *, events=None):
         "open_inventory_observation",
         lambda path: events.append(("source-open", path)) or Observation(),
     )
+    class TrackingGroupingEvidence(_TrackingGroupingEvidence):
+        def capture(self, evidence_id, unit_kind, unit_index, private_text):
+            events.append("capture-private")
+            super().capture(evidence_id, unit_kind, unit_index, private_text)
+
+        def capture_source_duplicate(self, evidence_id, duplicate_group_id):
+            events.append("capture-duplicate")
+            super().capture_source_duplicate(evidence_id, duplicate_group_id)
+
+        def clear(self):
+            events.append("grouping-clear")
+            super().clear()
+
+    TrackingGroupingEvidence.instances = []
     monkeypatch.setattr(
-        ctv_inspection,
-        "inspect_observation",
-        lambda observation: events.append("inspect") or inspection,
+        ctv_grouping_evidence,
+        "GroupingEvidence",
+        TrackingGroupingEvidence,
     )
+
+    def inspect(observation, *, _private_text_sink):
+        events.append("inspect")
+        _private_text_sink(
+            "evidence-0001",
+            "pdf-page",
+            1,
+            "PRIVATE-GROUPING-MARKER",
+        )
+        return inspection
+
+    def state_from_inspection(
+        observation,
+        inspected,
+        *,
+        _grouping_evidence,
+    ):
+        assert inspected is inspection
+        assert _grouping_evidence is TrackingGroupingEvidence.instances[0]
+        assert _grouping_evidence.cleared is False
+        events.append("state")
+        return State()
+
+    monkeypatch.setattr(ctv_inspection, "inspect_observation", inspect)
     monkeypatch.setattr(
         ctv_proposal.ProposalState,
         "from_inspection",
-        lambda observation, inspected: events.append("state") or State(),
+        state_from_inspection,
     )
     return events, inspection, approved
 
@@ -393,6 +508,61 @@ def _synthetic_inspection_folder(tmp_path: Path) -> Path:
 
     with Image.new("RGB", (64, 64), "white") as image:
         image.save(source / "ảnh riêng 13-08-2026.png")
+    return source
+
+
+def _synthetic_exception_first_folder(
+    tmp_path: Path,
+    *,
+    pdf_pages: int = 1,
+    roster_copies: int = 1,
+) -> Path:
+    source = tmp_path / "synthetic exception first source"
+    source.mkdir()
+
+    document = fitz.open()
+    for page_number in range(1, pdf_pages + 1):
+        page = document.new_page()
+        page.insert_text(
+            (72, 72),
+            "HOP DONG DICH VU SYNTHETIC "
+            f"PAGE {page_number}\nBEN A\nBEN B\nCHU KY",
+        )
+    document.save(source / "case-contract.pdf")
+    document.close()
+
+    for index in range(1, roster_copies + 1):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = f"Payment roster {index}"
+        worksheet.append(
+            (
+                "name",
+                "identity",
+                "faCode",
+                "taxId",
+                "birthDate",
+                "bankAccount",
+                "serviceFee",
+                "product",
+                "So tien",
+            )
+        )
+        worksheet.append(
+            (
+                "Synthetic Grouped Person",
+                "SYNTHETIC-ID-0001",
+                "FA-SYNTHETIC-GROUPED",
+                "SYNTHETIC-TAX-0001",
+                "1990-01-01",
+                "SYNTHETIC-BANK-0001",
+                "100",
+                "Synthetic Product",
+                "100",
+            )
+        )
+        workbook.save(source / f"roster-{index}.xlsx")
+        workbook.close()
     return source
 
 
@@ -1729,20 +1899,574 @@ def test_exact_proposal_review_argv_dispatches_source_root_lazily(
     }
 
 
-def test_exact_package_prepare_argv_runs_one_retained_approved_lifecycle(
+def test_exception_first_proposal_wires_one_pass_grouping_evidence_and_clears(
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    import ctv_grouping_evidence
+    import ctv_inspection
+    import ctv_inventory
+    import ctv_proposal
+
+    events = []
+    inspection = object()
+
+    class Observation:
+        result = SimpleNamespace(
+            items=(
+                SimpleNamespace(
+                    evidence_id="evidence-0001",
+                    duplicate_group_id="duplicate-0001",
+                ),
+                SimpleNamespace(
+                    evidence_id="evidence-0002",
+                    duplicate_group_id=None,
+                ),
+            )
+        )
+
+        def __enter__(self):
+            events.append("source-enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("source-exit")
+            return False
+
+    class TrackingGroupingEvidence(_TrackingGroupingEvidence):
+        def capture_source_duplicate(self, evidence_id, duplicate_group_id):
+            events.append(("duplicate", evidence_id, duplicate_group_id))
+            super().capture_source_duplicate(evidence_id, duplicate_group_id)
+
+        def capture(self, evidence_id, unit_kind, unit_index, private_text):
+            events.append("private-capture")
+            super().capture(evidence_id, unit_kind, unit_index, private_text)
+
+        def clear(self):
+            events.append("clear")
+            super().clear()
+
+    TrackingGroupingEvidence.instances = []
+
+    inspection_calls = []
+
+    def inspect_once(observation, *, _private_text_sink):
+        inspection_calls.append(observation)
+        assert len(inspection_calls) == 1, "inspection must remain one pass"
+        _private_text_sink(
+            "evidence-0002",
+            "pdf-page",
+            1,
+            "PRIVATE-GROUPING-MARKER",
+        )
+        events.append("inspect")
+        return inspection
+
+    class State:
+        def local_review_snapshot(self):
+            return {
+                "roster": {"status": "selected"},
+                "review": {
+                    "coverage": {
+                        "unaccountedUnits": 0,
+                        "automaticallyOrganizedUnits": 1,
+                    }
+                },
+            }
+
+        def draft_result(self):
+            return {
+                "version": "1.0",
+                "outcome": "draft",
+                "observationId": "observation-" + "0" * 64,
+                "readyToPrepare": False,
+                "counts": {
+                    "sources": 2,
+                    "units": 1,
+                    "participants": 1,
+                    "accepted": 1,
+                    "reassigned": 0,
+                    "excluded": 0,
+                    "unresolved": 0,
+                },
+                "issueCodes": [],
+            }
+
+    def state_from_inspection(
+        observation,
+        actual_inspection,
+        *,
+        _grouping_evidence,
+    ):
+        assert actual_inspection is inspection
+        assert _grouping_evidence is TrackingGroupingEvidence.instances[0]
+        assert _grouping_evidence.cleared is False
+        events.append("state")
+        return State()
+
+    def review(state):
+        local = state.local_review_snapshot()
+        assert local["roster"]["status"] == "selected"
+        assert local["review"]["coverage"]["unaccountedUnits"] == 0
+        assert (
+            local["review"]["coverage"]["automaticallyOrganizedUnits"] > 0
+        )
+        assert TrackingGroupingEvidence.instances[0].cleared is False
+        events.append("review")
+        return state.draft_result()
+
+    monkeypatch.setattr(
+        ctv_grouping_evidence,
+        "GroupingEvidence",
+        TrackingGroupingEvidence,
+    )
+    monkeypatch.setattr(
+        ctv_inventory,
+        "open_inventory_observation",
+        lambda _path: Observation(),
+    )
+    monkeypatch.setattr(ctv_inspection, "inspect_observation", inspect_once)
+    monkeypatch.setattr(
+        ctv_proposal.ProposalState,
+        "from_inspection",
+        state_from_inspection,
+    )
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "synthetic-source",
+            "--json",
+        ],
+        proposal_review_driver=review,
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "succeeded")
+    assert exit_code == 0
+    assert payload["result"]["outcome"] == "draft"
+    assert "PRIVATE-GROUPING-MARKER" not in json.dumps(payload)
+    assert len(TrackingGroupingEvidence.instances) == 1
+    assert TrackingGroupingEvidence.instances[0].cleared is True
+    assert TrackingGroupingEvidence.instances[0].captures == []
+    assert TrackingGroupingEvidence.instances[0].duplicates == []
+    assert len(inspection_calls) == 1
+    assert events == [
+        "source-enter",
+        ("duplicate", "evidence-0001", "duplicate-0001"),
+        "private-capture",
+        "inspect",
+        "state",
+        "review",
+        "clear",
+        "source-exit",
+    ]
+
+
+def test_exception_first_real_no_exception_proposal_needs_only_final_approval(
+    tmp_path,
+    capsysbinary,
+):
+    cli = _module()
+    source = _synthetic_exception_first_folder(tmp_path)
+    observed = []
+
+    def approve_without_item_review(state):
+        local = state.local_review_snapshot()
+        observed.append(local)
+        assert local["roster"]["status"] == "selected"
+        assert local["review"]["exceptions"] == []
+        assert local["review"]["coverage"] == {
+            "groups": 2,
+            "automaticallyOrganizedUnits": 2,
+            "exceptionClusters": 0,
+            "exceptionUnits": 0,
+            "unaccountedUnits": 0,
+        }
+        assert local["summary"]["readyToPrepare"] is True
+        return state.approve(local["summary"]["proposalDigest"])
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            str(source),
+            "--json",
+        ],
+        proposal_review_driver=approve_without_item_review,
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "succeeded")
+    result = payload["result"]
+    assert exit_code == 0
+    assert result["outcome"] == "approved"
+    assert result["readyToPrepare"] is True
+    assert len(observed) == 1
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "Synthetic Grouped Person" not in serialized
+    assert "SYNTHETIC-ID-0001" not in serialized
+    assert str(source) not in serialized
+
+
+def test_grouping_evidence_cap_exhaustion_is_an_exception_not_a_guess(
+    tmp_path,
+    monkeypatch,
+):
+    cli = _module()
+    import ctv_grouping_evidence
+
+    source = _synthetic_exception_first_folder(tmp_path, pdf_pages=2)
+    actual_type = ctv_grouping_evidence.GroupingEvidence
+    collectors = []
+
+    def bounded_collector():
+        value = actual_type(
+            max_units=1,
+            max_chars_per_unit=32 * 1024,
+            max_total_chars=16 * 1024 * 1024,
+        )
+        collectors.append(value)
+        return value
+
+    monkeypatch.setattr(
+        ctv_grouping_evidence,
+        "GroupingEvidence",
+        bounded_collector,
+    )
+
+    def review(state):
+        local = state.local_review_snapshot()
+        assert local["roster"]["status"] == "selected"
+        assert local["review"]["coverage"]["unaccountedUnits"] == 0
+        assert local["review"]["coverage"]["exceptionClusters"] == 1
+        assert local["review"]["coverage"]["exceptionUnits"] == 1
+        assert local["review"]["exceptions"][0]["issueCode"] == (
+            "private-fact-incomplete"
+        )
+        return state.draft_result()
+
+    result = cli.proposal_review_source(source, review_driver=review)
+
+    assert result["outcome"] == "draft"
+    assert len(collectors) == 1
+    assert collectors[0].complete is False
+    assert "Synthetic Grouped Person" not in repr(collectors[0])
+    assert "SYNTHETIC-ID-0001" not in repr(collectors[0])
+
+
+def test_exception_first_real_no_exception_package_publishes_after_approval(
+    tmp_path,
+    capsysbinary,
+):
+    cli = _module()
+    source = _synthetic_exception_first_folder(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+
+    def approve_without_item_review(state):
+        local = state.local_review_snapshot()
+        assert local["roster"]["status"] == "selected"
+        assert local["review"]["exceptions"] == []
+        assert local["review"]["coverage"]["automaticallyOrganizedUnits"] == 2
+        assert local["review"]["coverage"]["unaccountedUnits"] == 0
+        assert local["summary"]["readyToPrepare"] is True
+        return state.approve(local["summary"]["proposalDigest"])
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ],
+        package_review_driver=approve_without_item_review,
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "succeeded")
+    assert exit_code == 0
+    assert payload["result"]["outcome"] == "prepared"
+    assert payload["result"]["readyForCtvReview"] is True
+    assert [path.name for path in output.iterdir()] == [
+        payload["result"]["packageDirectoryName"]
+    ]
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "Synthetic Grouped Person" not in serialized
+    assert "SYNTHETIC-ID-0001" not in serialized
+    assert str(source) not in serialized
+    assert str(output) not in serialized
+
+
+def test_exception_first_ambiguous_roster_stays_one_roster_exception(
+    tmp_path,
+):
+    cli = _module()
+    source = _synthetic_exception_first_folder(tmp_path, roster_copies=2)
+
+    def review(state):
+        local = state.local_review_snapshot()
+        assert local["roster"]["status"] == "ambiguous"
+        assert local["roster"]["issueCodes"] == ["roster-ambiguous"]
+        assert len(local["review"]["exceptions"]) == 1
+        assert local["review"]["exceptions"][0]["kind"] == "roster"
+        assert local["review"]["exceptions"][0]["issueCode"] == (
+            "roster-ambiguous"
+        )
+        return state.cancelled_result()
+
+    result = cli.proposal_review_source(source, review_driver=review)
+
+    assert result == {
+        "version": "1.0",
+        "outcome": "cancelled",
+        "readyToPrepare": False,
+    }
+
+
+@pytest.mark.parametrize("operation", ("proposal", "package"))
+def test_grouping_evidence_is_cleared_when_grouping_construction_fails(
+    operation,
+    tmp_path,
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    import ctv_grouping_evidence
+    import ctv_proposal
+
+    source = _synthetic_exception_first_folder(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+    actual_type = ctv_grouping_evidence.GroupingEvidence
+    collectors = []
+
+    def collector():
+        value = actual_type()
+        collectors.append(value)
+        return value
+
+    monkeypatch.setattr(ctv_grouping_evidence, "GroupingEvidence", collector)
+    monkeypatch.setattr(
+        ctv_proposal,
+        "build_grouping_plan",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("PRIVATE-GROUPING-CONSTRUCTION-DETAIL")
+        ),
+    )
+    argv = (
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            str(source),
+            "--json",
+        ]
+        if operation == "proposal"
+        else [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ]
+    )
+
+    exit_code = cli.main(argv)
+
+    payload = _captured_envelope(
+        capsysbinary,
+        "proposal.review" if operation == "proposal" else "package.prepare",
+        "failed",
+    )
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert "PRIVATE-GROUPING-CONSTRUCTION-DETAIL" not in json.dumps(payload)
+    assert len(collectors) == 1
+    assert collectors[0].complete is False
+    assert list(output.iterdir()) == []
+
+
+def test_exception_first_proposal_rejects_malformed_injected_terminal(
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    monkeypatch.setattr(
+        cli,
+        "proposal_review_source",
+        lambda _root, *, review_driver=None: {
+            "version": "1.0",
+            "outcome": "cancelled",
+            "readyToPrepare": False,
+            "privateMarker": "PRIVATE-INJECTED-TERMINAL",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            "synthetic-source",
+            "--json",
+        ]
+    )
+
+    payload = _captured_envelope(capsysbinary, "proposal.review", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert "PRIVATE-INJECTED-TERMINAL" not in json.dumps(payload)
+
+
+def test_exception_first_package_rejects_malformed_injected_terminal(
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    events, _inspection, _approved = _install_package_lifecycle(
+        monkeypatch, cli
+    )
+    terminal = {
+        **_approved_terminal(),
+        "privateMarker": "PRIVATE-INJECTED-TERMINAL",
+    }
+    writer_calls = []
+
+    exit_code = cli.main(
+        [
+            "package",
+            "prepare",
+            "--source-root",
+            "synthetic-source",
+            "--output-root",
+            "synthetic-output",
+            "--json",
+        ],
+        package_review_driver=lambda _state: terminal,
+        package_prepare_driver=lambda *_args: writer_calls.append(_args),
+    )
+
+    payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
+    assert exit_code == 1
+    assert payload["errors"] == [
+        {
+            "code": "internal-error",
+            "message": "The local toolkit could not complete the check.",
+        }
+    ]
+    assert "PRIVATE-INJECTED-TERMINAL" not in json.dumps(payload)
+    assert writer_calls == []
+    assert events[-3:] == ["grouping-clear", "source-exit", "output-exit"]
+
+
+@pytest.mark.parametrize("operation", ("proposal", "package"))
+def test_grouping_evidence_source_mutation_invalidates_approval_and_publication(
+    operation,
+    tmp_path,
+    monkeypatch,
+    capsysbinary,
+):
+    cli = _module()
+    import ctv_grouping_evidence
+
+    source = _synthetic_exception_first_folder(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+    source_file = source / "case-contract.pdf"
+    actual_type = ctv_grouping_evidence.GroupingEvidence
+    collectors = []
+
+    def collector():
+        value = actual_type()
+        collectors.append(value)
+        return value
+
+    monkeypatch.setattr(ctv_grouping_evidence, "GroupingEvidence", collector)
+
+    def mutate_then_approve(state):
+        local = state.local_review_snapshot()
+        assert local["review"]["exceptions"] == []
+        source_file.write_bytes(source_file.read_bytes() + b"SOURCE-MUTATED")
+        return state.approve(local["summary"]["proposalDigest"])
+
+    argv = (
+        [
+            "proposal",
+            "review",
+            "--source-root",
+            str(source),
+            "--json",
+        ]
+        if operation == "proposal"
+        else [
+            "package",
+            "prepare",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--json",
+        ]
+    )
+
+    exit_code = cli.main(
+        argv,
+        proposal_review_driver=(
+            mutate_then_approve if operation == "proposal" else None
+        ),
+        package_review_driver=(
+            mutate_then_approve if operation == "package" else None
+        ),
+    )
+
+    payload = _captured_envelope(
+        capsysbinary,
+        "proposal.review" if operation == "proposal" else "package.prepare",
+        "failed",
+    )
+    assert exit_code == 2
+    assert [item["code"] for item in payload["errors"]] == [
+        "proposal-source-changed"
+        if operation == "proposal"
+        else "package-source-changed"
+    ]
+    assert len(collectors) == 1
+    assert collectors[0].complete is False
+    assert list(output.iterdir()) == []
+
+
+def test_exception_first_package_prepare_runs_one_retained_approved_lifecycle(
     monkeypatch, capsysbinary
 ):
     cli = _module()
     events, inspection, approved = _install_package_lifecycle(monkeypatch, cli)
 
     def review(state):
+        local = state.local_review_snapshot()
+        assert local["roster"]["status"] == "selected"
+        assert local["review"]["coverage"]["unaccountedUnits"] == 0
+        assert (
+            local["review"]["coverage"]["automaticallyOrganizedUnits"] > 0
+        )
         events.append("review")
-        return {
-            "version": "1.0",
-            "outcome": "approved",
-            "proposalDigest": _PROPOSAL_DIGEST,
-            "readyToPrepare": True,
-        }
+        return _approved_terminal()
 
     def prepare(observation, actual_inspection, actual_approved, output):
         assert actual_inspection is inspection
@@ -1784,11 +2508,14 @@ def test_exact_package_prepare_argv_runs_one_retained_approved_lifecycle(
         "source-enter",
         "source-chain",
         "disjoint",
+        "capture-duplicate",
         "inspect",
+        "capture-private",
         "state",
         "review",
         "consume",
         "prepare",
+        "grouping-clear",
         "source-exit",
         "output-exit",
     ]
@@ -2142,6 +2869,7 @@ def test_package_draft_and_cancel_write_nothing(
     outcome, terminal, monkeypatch, capsysbinary, tmp_path
 ):
     cli = _module()
+    import ctv_grouping_evidence
     import ctv_inspection
     import ctv_proposal
 
@@ -2151,6 +2879,19 @@ def test_package_draft_and_cancel_write_nothing(
     output.mkdir()
     source_before = _external_tree_snapshot(source)
     events = []
+    actual_grouping_type = ctv_grouping_evidence.GroupingEvidence
+    collectors = []
+
+    def grouping_collector():
+        value = actual_grouping_type()
+        collectors.append(value)
+        return value
+
+    monkeypatch.setattr(
+        ctv_grouping_evidence,
+        "GroupingEvidence",
+        grouping_collector,
+    )
 
     class State:
         def consume_approved_package_snapshot(self, _digest):
@@ -2165,12 +2906,12 @@ def test_package_draft_and_cancel_write_nothing(
     monkeypatch.setattr(
         ctv_inspection,
         "inspect_observation",
-        lambda _observation: object(),
+        lambda _observation, *, _private_text_sink: object(),
     )
     monkeypatch.setattr(
         ctv_proposal.ProposalState,
         "from_inspection",
-        lambda _observation, _inspection: State(),
+        lambda _observation, _inspection, *, _grouping_evidence: State(),
     )
     writer_calls = []
 
@@ -2196,6 +2937,8 @@ def test_package_draft_and_cancel_write_nothing(
     assert "consume" not in events
     assert "prepare" not in events
     assert list(output.iterdir()) == []
+    assert len(collectors) == 1
+    assert collectors[0].complete is False
     _assert_external_tree_unchanged(source, source_before)
 
 
@@ -2363,7 +3106,9 @@ def test_package_controlled_failures_are_private_exit_two(
     error_factory, expected_code, monkeypatch, capsysbinary
 ):
     cli = _module()
-    _install_package_lifecycle(monkeypatch, cli)
+    events, _inspection, _approved = _install_package_lifecycle(
+        monkeypatch, cli
+    )
 
     def fail(_state):
         raise error_factory()
@@ -2384,6 +3129,7 @@ def test_package_controlled_failures_are_private_exit_two(
     payload = _captured_envelope(capsysbinary, "package.prepare", "failed")
     assert exit_code == 2
     assert payload["errors"][0]["code"] == expected_code
+    assert events[-3:] == ["grouping-clear", "source-exit", "output-exit"]
     serialized = json.dumps(payload, ensure_ascii=False)
     assert "PRIVATE-SOURCE" not in serialized
     assert "PRIVATE-OUTPUT" not in serialized
@@ -2450,7 +3196,9 @@ def test_package_unexpected_failure_uses_fixed_internal_result(
     monkeypatch, capsysbinary
 ):
     cli = _module()
-    _install_package_lifecycle(monkeypatch, cli)
+    events, _inspection, _approved = _install_package_lifecycle(
+        monkeypatch, cli
+    )
 
     def fail(_state):
         raise RuntimeError("PRIVATE unexpected parser detail")
@@ -2476,6 +3224,7 @@ def test_package_unexpected_failure_uses_fixed_internal_result(
             "message": "The local toolkit could not complete the check.",
         }
     ]
+    assert events[-3:] == ["grouping-clear", "source-exit", "output-exit"]
     assert b"PRIVATE" not in capsysbinary.readouterr().out
 
 
@@ -2505,10 +3254,7 @@ def test_package_oversized_result_is_replaced_before_one_stdout_write(
             "synthetic-output",
             "--json",
         ],
-        package_review_driver=lambda _state: {
-            "outcome": "approved",
-            "proposalDigest": _PROPOSAL_DIGEST,
-        },
+        package_review_driver=lambda _state: _approved_terminal(),
         package_prepare_driver=lambda *_args: SimpleNamespace(
             to_dict=lambda: dict(_PREPARED_RESULT)
         ),
@@ -2548,10 +3294,7 @@ def test_published_package_survives_stdout_failure(monkeypatch):
             "synthetic-output",
             "--json",
         ],
-        package_review_driver=lambda _state: {
-            "outcome": "approved",
-            "proposalDigest": _PROPOSAL_DIGEST,
-        },
+        package_review_driver=lambda _state: _approved_terminal(),
         package_prepare_driver=prepare,
     )
 
@@ -2599,10 +3342,7 @@ def test_published_package_survives_invalid_stdout_write_count(
             "synthetic-output",
             "--json",
         ],
-        package_review_driver=lambda _state: {
-            "outcome": "approved",
-            "proposalDigest": _PROPOSAL_DIGEST,
-        },
+        package_review_driver=lambda _state: _approved_terminal(),
         package_prepare_driver=prepare,
     )
 
@@ -2710,8 +3450,18 @@ def test_proposal_review_output_over_16_mib_is_replaced_before_one_stdout_write(
         lambda _root, *, review_driver=None: {
             "version": "1.0",
             "outcome": "draft",
+            "observationId": "observation-" + "0" * 64,
             "readyToPrepare": False,
-            "oversized": "x" * (16 * 1024 * 1024),
+            "counts": {
+                "sources": 1,
+                "units": 1,
+                "participants": 0,
+                "accepted": 0,
+                "reassigned": 0,
+                "excluded": 0,
+                "unresolved": 1,
+            },
+            "issueCodes": ["review-required"] * 1_000_000,
         },
         raising=False,
     )

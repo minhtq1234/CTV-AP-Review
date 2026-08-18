@@ -184,17 +184,6 @@ def _post(parsed, route: str, cookie: str, csrf: str, body: dict) -> dict:
     return _json(payload)
 
 
-def _decision(unit: dict, role: str, scope: str, handles: list[str]) -> dict:
-    return {
-        "unitId": unit["unitId"],
-        "decision": (
-            "accepted" if unit["suggestedRole"] == role else "reassigned"
-        ),
-        "role": role,
-        "target": {"scope": scope, "participantHandles": handles},
-    }
-
-
 def _http_review_driver(state):
     def drive(browser_url: str) -> bool:
         parsed = urlsplit(browser_url)
@@ -221,95 +210,114 @@ def _http_review_driver(state):
         assert status == 200
         current = _json(payload)
         csrf = current["csrfToken"]
-        roster = next(
-            unit
-            for unit in current["units"]
-            if unit["suggestedRole"] == "payment-roster"
-        )
-        current = _post(
-            parsed,
-            "/api/roster",
-            cookie,
-            csrf,
-            {"rosterUnitId": roster["unitId"]},
-        )
+        assert set(current) == {
+            "csrfToken",
+            "participants",
+            "roster",
+            "review",
+            "summary",
+        }
+        assert current["roster"]["status"] == "selected"
         handles = [
             participant["participantHandle"]
             for participant in current["participants"]
         ]
         assert handles == ["participant-0001", "participant-0002"]
+        assert "units" not in current
+        assert "sources" not in current
+        assert "unitDecisions" not in current["review"]
+        coverage = current["review"]["coverage"]
+        assert coverage == {
+            "groups": 5,
+            "automaticallyOrganizedUnits": 3,
+            "exceptionClusters": 4,
+            "exceptionUnits": 3,
+            "unaccountedUnits": 0,
+        }
 
-        pdf_units = sorted(
-            (unit for unit in current["units"] if unit["unitKind"] == "pdf-page"),
-            key=lambda unit: unit["unitId"],
-        )
-        image = next(
-            unit for unit in current["units"] if unit["unitKind"] == "image"
-        )
-        evidence_worksheets = sorted(
-            (
-                unit
-                for unit in current["units"]
-                if unit["unitKind"] == "worksheet"
-                and unit["unitId"] != roster["unitId"]
-            ),
-            key=lambda unit: unit["unitId"],
-        )
-        assert len(pdf_units) == 2
-        assert len(evidence_worksheets) == 2
-
-        decisions = (
-            _decision(roster, "payment-roster", "case", []),
-            _decision(
-                pdf_units[0],
-                "service-contract",
-                "individual",
-                [handles[0]],
-            ),
-            _decision(
-                pdf_units[1],
-                "service-contract",
-                "shared",
-                handles,
-            ),
-            _decision(image, "identity-front", "individual", [handles[0]]),
-            _decision(
-                evidence_worksheets[0],
-                "other-supporting-evidence",
-                "case",
-                [],
-            ),
-            {
-                "unitId": evidence_worksheets[1]["unitId"],
-                "decision": "excluded",
-                "reason": "irrelevant",
-            },
-        )
-        for decision in decisions:
+        initial_exceptions = tuple(current["review"]["exceptions"])
+        assert len(initial_exceptions) == 4
+        for exception in initial_exceptions:
+            if exception["kind"] == "source":
+                request = {
+                    "exceptionId": exception["exceptionId"],
+                    "action": "exclude",
+                    "reason": "irrelevant",
+                    "applyToSimilar": False,
+                }
+            else:
+                group = next(
+                    item
+                    for item in current["review"]["organizedGroups"]
+                    if item["groupId"] == exception["groupIds"][0]
+                )
+                if group["unitKind"] == "image":
+                    request = {
+                        "exceptionId": exception["exceptionId"],
+                        "action": "assign",
+                        "role": "identity-front",
+                        "target": {
+                            "scope": "individual",
+                            "participantHandles": [handles[0]],
+                        },
+                        "applyToSimilar": False,
+                    }
+                elif (
+                    group["unitKind"] == "worksheet"
+                    and group["firstUnitIndex"] == 1
+                ):
+                    request = {
+                        "exceptionId": exception["exceptionId"],
+                        "action": "assign",
+                        "role": "other-supporting-evidence",
+                        "target": {
+                            "scope": "case",
+                            "participantHandles": [],
+                        },
+                        "applyToSimilar": False,
+                    }
+                elif (
+                    group["unitKind"] == "worksheet"
+                    and group["firstUnitIndex"] == 2
+                ):
+                    request = {
+                        "exceptionId": exception["exceptionId"],
+                        "action": "exclude",
+                        "reason": "irrelevant",
+                        "applyToSimilar": False,
+                    }
+                else:
+                    raise AssertionError("unexpected generated exception")
             current = _post(
-                parsed, "/api/unit", cookie, csrf, decision
+                parsed,
+                "/api/exception",
+                cookie,
+                csrf,
+                request,
             )
 
-        unit_evidence_ids = {
-            unit["evidenceId"] for unit in current["units"]
+        assert current["review"]["exceptions"] == []
+        assert current["review"]["coverage"]["unaccountedUnits"] == 0
+        assert current["review"]["coverage"]["exceptionClusters"] == 0
+        assert len(current["review"]["resolvedExclusions"]) == 1
+        effective = {
+            (group["unitKind"], group["firstUnitIndex"]): group.get(
+                "effectiveResolution"
+            )
+            for group in current["review"]["organizedGroups"]
         }
-        source_only = [
-            source
-            for source in current["sources"]
-            if source["evidenceId"] not in unit_evidence_ids
-        ]
-        assert len(source_only) == 1
-        _post(
-            parsed,
-            "/api/source",
-            cookie,
-            csrf,
-            {
-                "evidenceId": source_only[0]["evidenceId"],
-                "decision": "excluded",
-                "reason": "irrelevant",
+        assert effective[("image", 1)] == {
+            "action": "assign",
+            "role": "identity-front",
+            "target": {
+                "scope": "individual",
+                "participantHandles": [handles[0]],
             },
-        )
+        }
+        assert effective[("worksheet", 2)] == {
+            "action": "exclude",
+            "reason": "irrelevant",
+        }
         summary = _post(parsed, "/api/summary", cookie, csrf, {})
         assert summary["readyToPrepare"] is True
         approved = _post(
@@ -500,8 +508,8 @@ def test_generated_cli_review_writer_validator_and_collision_acceptance(
     with fitz.open(package / "input.pdf") as document:
         assert document.page_count == 2
         page_text = [document[index].get_text() for index in range(2)]
-    assert "PAGE 2" in page_text[0]
-    assert "PAGE 1" in page_text[1]
+    assert "PAGE 1" in page_text[0]
+    assert "PAGE 2" in page_text[1]
 
     roster = load_workbook(package / "roster.xlsx", data_only=False, keep_links=False)
     try:

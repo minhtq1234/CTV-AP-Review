@@ -836,6 +836,93 @@ def test_matching_requires_exact_full_name_and_identity_for_one_roster_row():
     assert plan.exceptions == ()
 
 
+def test_selected_eligible_roster_does_not_require_private_grouping_text():
+    inspection = _inspection(
+        (
+            _unit(
+                1,
+                1,
+                1,
+                "payment-roster",
+                unit_kind="worksheet",
+                confidence="medium",
+            ),
+            _unit(2, 2, 1, "service-contract"),
+        )
+    )
+    roster = _roster()
+    facts = _facts(
+        inspection,
+        {"unit-0002": "whole case service contract"},
+    )
+
+    plan = build_grouping_plan(inspection, roster, facts)
+
+    roster_group = next(
+        group for group in plan.groups if group.member_unit_ids == ("unit-0001",)
+    )
+    assert facts.text_for("evidence-0001", "worksheet", 1) == ""
+    assert facts.complete_for("evidence-0001", "worksheet", 1) is False
+    assert roster_group.role == "payment-roster"
+    assert roster_group.target == GroupTarget("case", ())
+    assert roster_group.state == "automatically-organized"
+    assert roster_group.issue_codes == ()
+    assert all("unit-0001" not in item.member_unit_ids for item in plan.exceptions)
+
+
+@pytest.mark.parametrize(
+    ("unit_kind", "role"),
+    (
+        ("pdf-page", "service-contract"),
+        ("image", "identity-front"),
+        ("worksheet", "other-supporting-evidence"),
+    ),
+)
+def test_missing_private_text_barrier_still_applies_to_every_nonroster_kind(
+    unit_kind,
+    role,
+):
+    inspection = _inspection(
+        (
+            _unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),
+            _unit(2, 2, 1, role, unit_kind=unit_kind),
+        )
+    )
+
+    plan = build_grouping_plan(inspection, _roster(), _facts(inspection, {}))
+
+    assert tuple(
+        (item.member_unit_ids, item.issue_code) for item in plan.exceptions
+    ) == ((('unit-0002',), "private-fact-incomplete"),)
+    assert plan.groups[0].member_unit_ids == ("unit-0001",)
+    assert plan.groups[0].state == "automatically-organized"
+
+
+def test_ineligible_roster_cannot_bypass_missing_private_text_barrier():
+    inspection = _inspection(
+        (_unit(1, 1, 1, "payment-roster", unit_kind="worksheet"),)
+    )
+    invalid = RosterCandidate(
+        unit_id="unit-0001",
+        evidence_id="evidence-0001",
+        worksheet_index=1,
+        rows=(_row(2, _PRIVATE_NAME, _PRIVATE_IDENTITY),),
+        blocking_issue_codes=("roster-row-invalid",),
+        package_issue_codes=(),
+        canonical_to_source_columns=(
+            ("faCode", "faCode"),
+            ("identity", "identity"),
+            ("name", "name"),
+        ),
+        score=(0, 1, 1),
+    )
+
+    with pytest.raises(
+        ValueError, match="uniquely eligible and package-complete"
+    ):
+        build_grouping_plan(inspection, invalid, _facts(inspection, {}))
+
+
 def test_matching_one_sided_zero_conflicting_and_multiple_facts_are_exceptions():
     inspection = _inspection(
         (

@@ -8,6 +8,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import argparse
+import hmac
 import os
 from pathlib import Path
 import re
@@ -236,7 +237,33 @@ _PACKAGE_PIN_ERROR_CODES = frozenset(
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PACKAGE_ID = re.compile(r"^package-[0-9a-f]{64}$")
 _PACKAGE_DIRECTORY = re.compile(r"^ctv-package-[0-9a-f]{24}$")
+_OBSERVATION_ID = re.compile(r"^observation-[0-9a-f]{64}$")
+_UNIT_ID = re.compile(r"^unit-[0-9]{4,}$")
+_EVIDENCE_ID = re.compile(r"^evidence-[0-9]{4,}$")
+_PARTICIPANT_HANDLE = re.compile(r"^participant-[0-9]{4,}$")
 _SAFE_CODE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_PROPOSAL_ROLES = frozenset(
+    {
+        "payment-roster",
+        "service-contract",
+        "acceptance-record",
+        "payment-tax-form",
+        "identity-front",
+        "identity-back",
+        "shared-supporting-evidence",
+        "other-supporting-evidence",
+    }
+)
+_PROPOSAL_SCOPES = frozenset({"individual", "shared", "case"})
+_PROPOSAL_EXCLUSION_REASONS = frozenset(
+    {
+        "duplicate",
+        "irrelevant",
+        "unreadable-replacement-available",
+        "intentionally-omitted",
+        "other",
+    }
+)
 _INTERNAL_PREPARED_CHECK_CODES = (
     "manifest-valid",
     "package-tree-valid",
@@ -567,6 +594,7 @@ def _inspection_result(source_root: Path):
 def proposal_review_source(source_root: Path, *, review_driver=None):
     """Run one review against one retained observation and return after close."""
     from ctv_inspection import inspect_observation
+    from ctv_grouping_evidence import GroupingEvidence
     from ctv_inventory import open_inventory_observation
     from ctv_proposal import ProposalState
 
@@ -578,9 +606,26 @@ def proposal_review_source(source_root: Path, *, review_driver=None):
         raise TypeError("review driver must be callable")
 
     with open_inventory_observation(source_root) as observation:
-        inspection = inspect_observation(observation)
-        state = ProposalState.from_inspection(observation, inspection)
-        result = review_driver(state)
+        grouping_evidence = GroupingEvidence()
+        try:
+            for item in observation.result.items:
+                if item.duplicate_group_id is not None:
+                    grouping_evidence.capture_source_duplicate(
+                        item.evidence_id,
+                        item.duplicate_group_id,
+                    )
+            inspection = inspect_observation(
+                observation,
+                _private_text_sink=grouping_evidence.capture,
+            )
+            state = ProposalState.from_inspection(
+                observation,
+                inspection,
+                _grouping_evidence=grouping_evidence,
+            )
+            result = review_driver(state)
+        finally:
+            grouping_evidence.clear()
     return result
 
 
@@ -613,8 +658,7 @@ def _proposal_result(source_root: Path, *, review_driver=None):
             source_root,
             review_driver=review_driver,
         )
-        if type(result) is not dict:
-            raise TypeError("proposal result must be a dictionary")
+        result = _normalize_proposal_terminal(result)
         outcome = result.get("outcome")
         if type(outcome) is not str or outcome not in _PROPOSAL_SUMMARIES:
             raise ValueError("proposal outcome must be terminal")
@@ -690,7 +734,11 @@ def _package_controlled_failure(code: str):
 
 
 def _require_exact_dict(value, keys: frozenset[str], name: str) -> dict:
-    if type(value) is not dict or frozenset(value) != keys:
+    if (
+        type(value) is not dict
+        or any(type(key) is not str for key in value)
+        or frozenset(value) != keys
+    ):
         raise ValueError(f"{name} must use its exact public shape")
     return value
 
@@ -720,24 +768,262 @@ def _require_safe_codes(value, name: str) -> list[str]:
     return list(value)
 
 
+def _require_opaque_id(value, pattern: re.Pattern, name: str) -> str:
+    if type(value) is not str or pattern.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a valid opaque ID")
+    return value
+
+
+def _normalize_proposal_terminal(result: dict) -> dict[str, object]:
+    if type(result) is not dict:
+        raise TypeError("proposal terminal must be a dictionary")
+    if any(type(key) is not str for key in result):
+        raise ValueError("proposal terminal must use exact string keys")
+    outcome = result.get("outcome")
+    if type(outcome) is str and outcome in {"draft", "cancelled"}:
+        return _normalize_review_terminal(result)
+    if type(outcome) is not str or outcome != "approved":
+        raise ValueError("proposal outcome must be terminal")
+
+    terminal = _require_exact_dict(
+        result,
+        frozenset(
+            {
+                "version",
+                "outcome",
+                "observationId",
+                "proposalDigest",
+                "readyToPrepare",
+                "rosterUnitId",
+                "participantHandles",
+                "unitAssignments",
+                "sourceDispositions",
+                "counts",
+                "issueCodes",
+                "approval",
+            }
+        ),
+        "approved result",
+    )
+    if (
+        type(terminal["version"]) is not str
+        or terminal["version"] != "1.0"
+        or terminal["readyToPrepare"] is not True
+    ):
+        raise ValueError("approved result is invalid")
+    observation_id = _require_opaque_id(
+        terminal["observationId"], _OBSERVATION_ID, "observationId"
+    )
+    proposal_digest = terminal["proposalDigest"]
+    if type(proposal_digest) is not str or _SHA256.fullmatch(proposal_digest) is None:
+        raise ValueError("proposalDigest must be a SHA-256 digest")
+    roster_unit_id = _require_opaque_id(
+        terminal["rosterUnitId"], _UNIT_ID, "rosterUnitId"
+    )
+
+    handles = terminal["participantHandles"]
+    if (
+        type(handles) is not list
+        or len(handles) > 10_000
+        or any(
+            type(handle) is not str
+            or _PARTICIPANT_HANDLE.fullmatch(handle) is None
+            for handle in handles
+        )
+        or len(handles) != len(set(handles))
+    ):
+        raise ValueError("participantHandles must contain bounded opaque IDs")
+
+    assignments = terminal["unitAssignments"]
+    if type(assignments) is not list or len(assignments) > 10_000:
+        raise ValueError("unitAssignments must be a bounded list")
+    normalized_assignments = []
+    seen_units = set()
+    for value in assignments:
+        if type(value) is not dict:
+            raise ValueError("unit assignment must use its exact public shape")
+        decision = value.get("decision")
+        if type(decision) is str and decision in {"accepted", "reassigned"}:
+            item = _require_exact_dict(
+                value,
+                frozenset({"unitId", "decision", "role", "target"}),
+                "unit assignment",
+            )
+            role = item["role"]
+            if type(role) is not str or role not in _PROPOSAL_ROLES:
+                raise ValueError("unit assignment role is invalid")
+            target = _require_exact_dict(
+                item["target"],
+                frozenset({"scope", "participantHandles"}),
+                "assignment target",
+            )
+            scope = target["scope"]
+            target_handles = target["participantHandles"]
+            if (
+                type(scope) is not str
+                or scope not in _PROPOSAL_SCOPES
+                or type(target_handles) is not list
+                or any(
+                    type(handle) is not str
+                    or _PARTICIPANT_HANDLE.fullmatch(handle) is None
+                    or handle not in handles
+                    for handle in target_handles
+                )
+                or len(target_handles) != len(set(target_handles))
+            ):
+                raise ValueError("assignment target is invalid")
+            normalized = {
+                "unitId": _require_opaque_id(
+                    item["unitId"], _UNIT_ID, "unitId"
+                ),
+                "decision": decision,
+                "role": role,
+                "target": {
+                    "scope": scope,
+                    "participantHandles": list(target_handles),
+                },
+            }
+        elif decision == "excluded":
+            item = _require_exact_dict(
+                value,
+                frozenset({"unitId", "decision", "reason"}),
+                "unit exclusion",
+            )
+            reason = item["reason"]
+            if type(reason) is not str or reason not in _PROPOSAL_EXCLUSION_REASONS:
+                raise ValueError("unit exclusion reason is invalid")
+            normalized = {
+                "unitId": _require_opaque_id(
+                    item["unitId"], _UNIT_ID, "unitId"
+                ),
+                "decision": "excluded",
+                "reason": reason,
+            }
+        else:
+            raise ValueError("approved unit decision is invalid")
+        if normalized["unitId"] in seen_units:
+            raise ValueError("unitAssignments must use unique unit IDs")
+        seen_units.add(normalized["unitId"])
+        normalized_assignments.append(normalized)
+
+    dispositions = terminal["sourceDispositions"]
+    if type(dispositions) is not list or len(dispositions) > 10_000:
+        raise ValueError("sourceDispositions must be a bounded list")
+    normalized_dispositions = []
+    seen_sources = set()
+    for value in dispositions:
+        item = _require_exact_dict(
+            value,
+            frozenset({"evidenceId", "decision", "reason"}),
+            "source disposition",
+        )
+        reason = item["reason"]
+        if (
+            type(item["decision"]) is not str
+            or item["decision"] != "excluded"
+            or type(reason) is not str
+            or reason not in _PROPOSAL_EXCLUSION_REASONS
+        ):
+            raise ValueError("source disposition is invalid")
+        evidence_id = _require_opaque_id(
+            item["evidenceId"], _EVIDENCE_ID, "evidenceId"
+        )
+        if evidence_id in seen_sources:
+            raise ValueError("sourceDispositions must use unique evidence IDs")
+        seen_sources.add(evidence_id)
+        normalized_dispositions.append(
+            {
+                "evidenceId": evidence_id,
+                "decision": "excluded",
+                "reason": reason,
+            }
+        )
+
+    counts = _require_nonnegative_counts(
+        terminal["counts"],
+        frozenset(
+            {
+                "sources",
+                "units",
+                "participants",
+                "accepted",
+                "reassigned",
+                "excluded",
+                "unresolved",
+            }
+        ),
+    )
+    if (
+        counts["participants"] != len(handles)
+        or counts["units"] != len(normalized_assignments)
+        or counts["unresolved"] != 0
+        or counts["accepted"]
+        != sum(item["decision"] == "accepted" for item in normalized_assignments)
+        or counts["reassigned"]
+        != sum(item["decision"] == "reassigned" for item in normalized_assignments)
+        or counts["excluded"]
+        != sum(item["decision"] == "excluded" for item in normalized_assignments)
+        + len(normalized_dispositions)
+    ):
+        raise ValueError("approved counts do not match terminal facts")
+
+    approval = _require_exact_dict(
+        terminal["approval"],
+        frozenset({"status", "approvedProposalDigest"}),
+        "approval",
+    )
+    approved_digest = approval["approvedProposalDigest"]
+    if (
+        type(approval["status"]) is not str
+        or approval["status"] != "user-approved"
+        or type(approved_digest) is not str
+        or not hmac.compare_digest(approved_digest, proposal_digest)
+    ):
+        raise ValueError("approval is invalid")
+
+    return {
+        "version": "1.0",
+        "outcome": "approved",
+        "observationId": observation_id,
+        "proposalDigest": proposal_digest,
+        "readyToPrepare": True,
+        "rosterUnitId": roster_unit_id,
+        "participantHandles": list(handles),
+        "unitAssignments": normalized_assignments,
+        "sourceDispositions": normalized_dispositions,
+        "counts": counts,
+        "issueCodes": _require_safe_codes(terminal["issueCodes"], "issueCodes"),
+        "approval": {
+            "status": "user-approved",
+            "approvedProposalDigest": approved_digest,
+        },
+    }
+
+
 def _normalize_review_terminal(result: dict) -> dict[str, object]:
     if type(result) is not dict:
         raise TypeError("review terminal must be a dictionary")
+    if any(type(key) is not str for key in result):
+        raise ValueError("review terminal must use exact string keys")
     outcome = result.get("outcome")
-    if outcome == "cancelled":
+    if type(outcome) is str and outcome == "cancelled":
         terminal = _require_exact_dict(
             result,
             frozenset({"version", "outcome", "readyToPrepare"}),
             "cancelled result",
         )
-        if terminal != {
+        if (
+            type(terminal["version"]) is not str
+            or terminal["version"] != "1.0"
+            or terminal["readyToPrepare"] is not False
+        ):
+            raise ValueError("cancelled result is invalid")
+        return {
             "version": "1.0",
             "outcome": "cancelled",
             "readyToPrepare": False,
-        }:
-            raise ValueError("cancelled result is invalid")
-        return dict(terminal)
-    if outcome == "draft":
+        }
+    if type(outcome) is str and outcome == "draft":
         terminal = _require_exact_dict(
             result,
             frozenset(
@@ -754,7 +1040,8 @@ def _normalize_review_terminal(result: dict) -> dict[str, object]:
         )
         observation_id = terminal["observationId"]
         if (
-            terminal["version"] != "1.0"
+            type(terminal["version"]) is not str
+            or terminal["version"] != "1.0"
             or terminal["readyToPrepare"] is not False
             or type(observation_id) is not str
             or not observation_id.startswith("observation-")
@@ -932,6 +1219,7 @@ def _package_result(
     build_error_type = None
     writer_error_type = None
     try:
+        from ctv_grouping_evidence import GroupingEvidence
         from ctv_inspection import InspectionError, inspect_observation
         from ctv_inventory import open_inventory_observation
         from ctv_package_builder import PackageBuildError
@@ -960,40 +1248,54 @@ def _package_result(
         with OutputParent.open(output_root) as output:
             with open_inventory_observation(source_root) as observation:
                 output.require_disjoint(observation.directory_identity_chain())
-                inspection = inspect_observation(observation)
-                state = ProposalState.from_inspection(observation, inspection)
-                terminal = review_driver(state)
-                if type(terminal) is not dict:
-                    raise TypeError("package review result must be a dictionary")
-                outcome = terminal.get("outcome")
-                if outcome in {"draft", "cancelled"}:
-                    result = _normalize_review_terminal(terminal)
-                    return (
-                        succeeded(
-                            "package.prepare",
-                            (
-                                "Package preparation returned a draft"
-                                if outcome == "draft"
-                                else "Package preparation cancelled"
-                            ),
-                            result,
-                        ),
-                        0,
-                    )
-                if outcome != "approved":
-                    raise ValueError("package review outcome must be terminal")
+                grouping_evidence = GroupingEvidence()
                 try:
-                    approved = state.consume_approved_package_snapshot(
-                        terminal.get("proposalDigest")
+                    for item in observation.result.items:
+                        if item.duplicate_group_id is not None:
+                            grouping_evidence.capture_source_duplicate(
+                                item.evidence_id,
+                                item.duplicate_group_id,
+                            )
+                    inspection = inspect_observation(
+                        observation,
+                        _private_text_sink=grouping_evidence.capture,
                     )
-                except ValueError:
-                    return (
-                        _package_controlled_failure("package-approval-invalid"),
-                        2,
+                    state = ProposalState.from_inspection(
+                        observation,
+                        inspection,
+                        _grouping_evidence=grouping_evidence,
                     )
-                prepared = prepare_driver(
-                    observation, inspection, approved, output
-                )
+                    terminal = _normalize_proposal_terminal(review_driver(state))
+                    outcome = terminal.get("outcome")
+                    if outcome in {"draft", "cancelled"}:
+                        return (
+                            succeeded(
+                                "package.prepare",
+                                (
+                                    "Package preparation returned a draft"
+                                    if outcome == "draft"
+                                    else "Package preparation cancelled"
+                                ),
+                                terminal,
+                            ),
+                            0,
+                        )
+                    if outcome != "approved":
+                        raise ValueError("package review outcome must be terminal")
+                    try:
+                        approved = state.consume_approved_package_snapshot(
+                            terminal.get("proposalDigest")
+                        )
+                    except ValueError:
+                        return (
+                            _package_controlled_failure("package-approval-invalid"),
+                            2,
+                        )
+                    prepared = prepare_driver(
+                        observation, inspection, approved, output
+                    )
+                finally:
+                    grouping_evidence.clear()
         return (
             succeeded(
                 "package.prepare",
