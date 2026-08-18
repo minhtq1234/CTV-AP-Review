@@ -5,6 +5,7 @@ from openpyxl import Workbook
 from PIL import Image
 import pytest
 
+import ctv_proposal
 from ctv_grouping_evidence import GroupingEvidence
 from ctv_proposal import ProposalState
 from ctv_inspection import inspect_observation
@@ -66,6 +67,24 @@ def _source_with_two_rosters(tmp_path):
     return source
 
 
+def _source_with_valid_and_invalid_rosters(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    workbook = Workbook()
+    valid = workbook.active
+    valid.title = "Valid roster"
+    valid.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    valid.append(("Alice", "CTV-001", "FA-SYNTHETIC-001", 100))
+    invalid = workbook.create_sheet("Invalid roster")
+    invalid.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    invalid.append(("Bao", None, "FA-SYNTHETIC-002", 100))
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    (source / "rosters.xlsx").write_bytes(output.getvalue())
+    return source
+
+
 def _state(tmp_path):
     source = _source(tmp_path)
     observation_context = open_inventory_observation(source)
@@ -74,7 +93,16 @@ def _state(tmp_path):
     return observation_context, observation, ProposalState.from_inspection(observation, inspection)
 
 
-def _grouping_state(tmp_path, source_roles, *, source_only=()):
+def _grouping_state(
+    tmp_path,
+    source_roles,
+    *,
+    source_only=(),
+    leading_source_only=(),
+    text_by_unit_number=None,
+    unit_issue_codes_by_unit_number=None,
+    duplicate_group_by_evidence_number=None,
+):
     source = tmp_path / "generated-source"
     source.mkdir()
     (source / "roster.xlsx").write_bytes(_roster_bytes())
@@ -91,8 +119,21 @@ def _grouping_state(tmp_path, source_roles, *, source_only=()):
         roster_unit.unit_index,
         "payment roster",
     )
+    for status, detected_type, issue_codes in leading_source_only:
+        evidence_number = len(sources) + 1
+        sources.append(
+            InspectionSource(
+                evidence_id=f"evidence-{evidence_number:04d}",
+                detected_type=detected_type,
+                inspection_status=status,
+                unit_count=None
+                if status in {"unreadable", "encrypted", "over-limit"}
+                else 0,
+                issue_codes=issue_codes,
+            )
+        )
     unit_number = 2
-    for evidence_number, roles in enumerate(source_roles, start=2):
+    for evidence_number, roles in enumerate(source_roles, start=len(sources) + 1):
         evidence_id = f"evidence-{evidence_number:04d}"
         sources.append(
             InspectionSource(
@@ -104,6 +145,9 @@ def _grouping_state(tmp_path, source_roles, *, source_only=()):
             )
         )
         for unit_index, role in enumerate(roles, start=1):
+            issue_codes = (unit_issue_codes_by_unit_number or {}).get(
+                unit_number, ()
+            )
             unit = InspectionUnit(
                 unit_id=f"unit-{unit_number:04d}",
                 evidence_id=evidence_id,
@@ -111,19 +155,22 @@ def _grouping_state(tmp_path, source_roles, *, source_only=()):
                 unit_index=unit_index,
                 suggested_role=role,
                 confidence_band="none" if role == "unknown" else "high",
-                needs_user_review=role == "unknown",
+                needs_user_review=role == "unknown" or bool(issue_codes),
                 inspection_method="embedded-text",
                 signal_codes=(),
-                issue_codes=(),
+                issue_codes=issue_codes,
             )
             units.append(unit)
             facts.capture(
                 evidence_id,
                 "pdf-page",
                 unit_index,
-                "unclassified continuation"
-                if role == "unknown"
-                else f"whole case {role} continuation",
+                (text_by_unit_number or {}).get(
+                    unit_number,
+                    "unclassified continuation"
+                    if role == "unknown"
+                    else f"whole case {role} continuation",
+                ),
             )
             unit_number += 1
     for status, detected_type, issue_codes in source_only:
@@ -137,7 +184,15 @@ def _grouping_state(tmp_path, source_roles, *, source_only=()):
                 issue_codes=issue_codes,
             )
         )
-    issue_count = sum(len(source.issue_codes) for source in sources)
+    for evidence_number, duplicate_group_id in (
+        duplicate_group_by_evidence_number or {}
+    ).items():
+        facts.capture_source_duplicate(
+            f"evidence-{evidence_number:04d}", duplicate_group_id
+        )
+    issue_count = sum(len(source.issue_codes) for source in sources) + sum(
+        len(unit.issue_codes) for unit in units
+    )
     inspection = InspectionResult(
         inspection_version="1.0",
         inspection_status="complete-with-issues" if issue_count else "complete",
@@ -417,9 +472,15 @@ def test_resolve_exception_split_changes_only_contiguous_group_review_and_digest
             "exceptionUnits": 3,
             "unaccountedUnits": 0,
         }
-        assert {
-            item["similarityKey"] for item in local["review"]["exceptions"]
-        } == {"similarity-df5727804e07e13b"}
+        assert len(
+            {item["similarityKey"] for item in local["review"]["exceptions"]}
+        ) == 2
+        assert "merge-next" in local["review"]["exceptions"][0][
+            "allowedActions"
+        ]
+        assert "merge-next" not in local["review"]["exceptions"][1][
+            "allowedActions"
+        ]
         assert state.approval_summary()["counts"]["unresolved"] == 3
     finally:
         context.__exit__(None, None, None)
@@ -516,9 +577,12 @@ def test_split_then_merge_next_is_atomic_and_undo_restores_split_state(tmp_path)
         split_digest = state.approval_summary()["proposalDigest"]
         split_review = _review_bytes(state)
 
+        merge_exception_id = state.local_review_snapshot()["review"][
+            "exceptions"
+        ][0]["exceptionId"]
         state.resolve_exception(
             {
-                "exceptionId": "exception-0001",
+                "exceptionId": merge_exception_id,
                 "action": "merge-next",
                 "applyToSimilar": False,
             }
@@ -528,7 +592,7 @@ def test_split_then_merge_next_is_atomic_and_undo_restores_split_state(tmp_path)
             for group in state.local_review_snapshot()["review"]["groups"]
         ] == [["unit-0001"], ["unit-0002", "unit-0003", "unit-0004"]]
 
-        state.undo_exception({"exceptionId": "exception-0001"})
+        state.undo_exception({"exceptionId": merge_exception_id})
         assert state.approval_summary()["proposalDigest"] == split_digest
         assert _review_bytes(state) == split_review
     finally:
@@ -574,20 +638,377 @@ def test_choose_roster_exception_recomputes_groups_from_preloaded_candidates(
         assert local["roster"]["rosterUnitId"] == roster_units[1]
         assert local["review"]["coverage"]["unaccountedUnits"] == 0
         assert state.approval_summary()["counts"]["unresolved"] == 2
-        state.resolve_exception(
-            {
-                "exceptionId": "exception-0001",
-                "action": "assign",
-                "role": "payment-roster",
-                "target": {"scope": "case", "participantHandles": []},
-                "applyToSimilar": True,
-            }
-        )
+        for exception in list(local["review"]["exceptions"]):
+            state.resolve_exception(
+                {
+                    "exceptionId": exception["exceptionId"],
+                    "action": "assign",
+                    "role": "payment-roster",
+                    "target": {"scope": "case", "participantHandles": []},
+                    "applyToSimilar": False,
+                }
+            )
         assert state.approval_summary()["readyToPrepare"] is True
         assert all(
             private not in repr(local)
             for private in ("Alice", "CTV-001", "Carol", "CTV-101")
         )
+
+
+def test_accept_recommendation_applies_each_similar_groups_own_participant_target(
+    tmp_path,
+):
+    context, state = _grouping_state(
+        tmp_path,
+        (("acceptance-record",), ("acceptance-record",)),
+        text_by_unit_number={
+            2: "Alice CTV-001 acceptance",
+            3: "Bao CTV-002 acceptance",
+        },
+        unit_issue_codes_by_unit_number={
+            2: ("classification-conflict",),
+            3: ("classification-conflict",),
+        },
+    )
+    try:
+        exceptions = state.local_review_snapshot()["review"]["exceptions"]
+        assert len(exceptions) == 2
+        assert exceptions[0]["similarityKey"] == exceptions[1]["similarityKey"]
+
+        state.resolve_exception(
+            {
+                "exceptionId": exceptions[0]["exceptionId"],
+                "action": "accept-recommendation",
+                "applyToSimilar": True,
+            }
+        )
+        assignments = {
+            item["unitId"]: item
+            for item in state.approve(
+                state.approval_summary()["proposalDigest"]
+            )["unitAssignments"]
+        }
+
+        assert assignments["unit-0002"]["target"]["participantHandles"] == [
+            "participant-0001"
+        ]
+        assert assignments["unit-0003"]["target"]["participantHandles"] == [
+            "participant-0002"
+        ]
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_split_and_merge_retire_ids_without_recycling_stale_targets(tmp_path):
+    context, state = _grouping_state(
+        tmp_path,
+        (("unknown", "unknown", "unknown"),),
+    )
+    try:
+        initial = state.local_review_snapshot()["review"]
+        stale_exception_id = initial["exceptions"][0]["exceptionId"]
+        stale_group_id = initial["groups"][1]["groupId"]
+        state.resolve_exception(
+            {
+                "exceptionId": stale_exception_id,
+                "action": "split",
+                "splitBeforeUnitId": "unit-0003",
+                "applyToSimilar": False,
+            }
+        )
+
+        split = state.local_review_snapshot()["review"]
+        assert stale_exception_id not in {
+            item["exceptionId"] for item in split["exceptions"]
+        }
+        assert stale_group_id not in {item["groupId"] for item in split["groups"]}
+        split_digest = state.approval_summary()["proposalDigest"]
+        split_bytes = _review_bytes(state)
+        with pytest.raises(ValueError):
+            state.resolve_exception(
+                {
+                    "exceptionId": stale_exception_id,
+                    "action": "exclude",
+                    "reason": "irrelevant",
+                    "applyToSimilar": False,
+                }
+            )
+        with pytest.raises(ValueError):
+            state.reopen_group({"groupId": stale_group_id})
+        assert state.approval_summary()["proposalDigest"] == split_digest
+        assert _review_bytes(state) == split_bytes
+
+        merge_exception_id = split["exceptions"][0]["exceptionId"]
+        merge_group_id = split["groups"][1]["groupId"]
+        state.resolve_exception(
+            {
+                "exceptionId": merge_exception_id,
+                "action": "merge-next",
+                "applyToSimilar": False,
+            }
+        )
+        merged = state.local_review_snapshot()["review"]
+        assert merge_exception_id not in {
+            item["exceptionId"] for item in merged["exceptions"]
+        }
+        assert merge_group_id not in {
+            item["groupId"] for item in merged["groups"]
+        }
+        merged_digest = state.approval_summary()["proposalDigest"]
+        merged_bytes = _review_bytes(state)
+        with pytest.raises(ValueError):
+            state.resolve_exception(
+                {
+                    "exceptionId": merge_exception_id,
+                    "action": "exclude",
+                    "reason": "irrelevant",
+                    "applyToSimilar": False,
+                }
+            )
+        with pytest.raises(ValueError):
+            state.reopen_group({"groupId": merge_group_id})
+        assert state.approval_summary()["proposalDigest"] == merged_digest
+        assert _review_bytes(state) == merged_bytes
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_source_and_unit_exceptions_publish_in_interleaved_canonical_id_order(
+    tmp_path,
+):
+    context, state = _grouping_state(
+        tmp_path,
+        (("unknown",),),
+        leading_source_only=(("unreadable", "pdf", ("document-unreadable",)),),
+    )
+    try:
+        exceptions = state.local_review_snapshot()["review"]["exceptions"]
+
+        assert [item["exceptionId"] for item in exceptions] == [
+            "exception-0001",
+            "exception-0002",
+        ]
+        assert [item["kind"] for item in exceptions] == ["source", "unit-cluster"]
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_reopen_group_converts_an_automatic_assignment_to_unresolved(tmp_path):
+    context, state = _grouping_state(tmp_path, (("service-contract",),))
+    try:
+        review = state.local_review_snapshot()["review"]
+        automatic = next(
+            group for group in review["groups"] if group["memberUnitIds"] == ["unit-0002"]
+        )
+
+        state.reopen_group({"groupId": automatic["groupId"]})
+
+        reopened = state.local_review_snapshot()["review"]
+        assert reopened["exceptions"][0]["kind"] == "unit-cluster"
+        assert state.approval_summary()["counts"]["unresolved"] == 1
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_reopen_group_materializes_automatic_duplicate_exclusion(tmp_path):
+    context, state = _grouping_state(
+        tmp_path,
+        (("service-contract",), ("service-contract",)),
+        duplicate_group_by_evidence_number={
+            2: "duplicate-0007",
+            3: "duplicate-0007",
+        },
+    )
+    try:
+        review = state.local_review_snapshot()["review"]
+        duplicate = next(
+            group for group in review["groups"] if group["memberUnitIds"] == ["unit-0003"]
+        )
+        assert state.approval_summary()["counts"]["excluded"] == 1
+
+        state.reopen_group({"groupId": duplicate["groupId"]})
+
+        reopened = state.local_review_snapshot()["review"]
+        assert any(
+            item.get("groupIds") == [duplicate["groupId"]]
+            for item in reopened["exceptions"]
+        )
+        assert reopened["coverage"]["exceptionUnits"] == 1
+        assert state.approval_summary()["counts"]["excluded"] == 0
+        assert state.approval_summary()["counts"]["unresolved"] == 1
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_original_adjacent_compatible_exceptions_offer_merge_next(tmp_path):
+    context, state = _grouping_state(
+        tmp_path,
+        (("acceptance-record", "acceptance-record"),),
+        text_by_unit_number={
+            2: "Alice CTV-001 acceptance",
+            3: "Bao CTV-002 acceptance",
+        },
+        unit_issue_codes_by_unit_number={
+            2: ("classification-conflict",),
+            3: ("classification-conflict",),
+        },
+    )
+    try:
+        exceptions = state.local_review_snapshot()["review"]["exceptions"]
+        assert len(exceptions) == 2
+        assert "merge-next" in exceptions[0]["allowedActions"]
+
+        state.resolve_exception(
+            {
+                "exceptionId": exceptions[0]["exceptionId"],
+                "action": "merge-next",
+                "applyToSimilar": False,
+            }
+        )
+
+        assert state.local_review_snapshot()["review"]["coverage"] == {
+            "groups": 2,
+            "automaticallyOrganizedUnits": 1,
+            "exceptionClusters": 1,
+            "exceptionUnits": 2,
+            "unaccountedUnits": 0,
+        }
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_grouped_select_roster_recomputes_the_complete_review(tmp_path):
+    source = _source_with_two_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        facts = GroupingEvidence()
+        inspection = inspect_observation(observation, _private_text_sink=facts.capture)
+        state = ProposalState.from_inspection(
+            observation, inspection, _grouping_evidence=facts
+        )
+        roster_units = [
+            unit["unitId"]
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+        ]
+
+        state.select_roster({"rosterUnitId": roster_units[1]})
+
+        local = state.local_review_snapshot()
+        assert local["roster"] == {
+            "status": "selected",
+            "rosterUnitId": roster_units[1],
+            "candidateUnitIds": roster_units,
+            "participantHandles": ["participant-0001", "participant-0002"],
+            "issueCodes": [],
+        }
+        assert local["review"]["coverage"]["unaccountedUnits"] == 0
+
+
+def test_grouped_select_roster_failure_rolls_back_every_visible_state(tmp_path):
+    source = _source_with_valid_and_invalid_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        facts = GroupingEvidence()
+        inspection = inspect_observation(observation, _private_text_sink=facts.capture)
+        state = ProposalState.from_inspection(
+            observation, inspection, _grouping_evidence=facts
+        )
+        invalid_roster_id = next(
+            unit["unitId"]
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+            and unit["unitId"] != state.approval_summary()["rosterUnitId"]
+        )
+        before_digest = state.approval_summary()["proposalDigest"]
+        before_review = _review_bytes(state)
+        before_participants = state.participants_for_local_review()
+
+        with pytest.raises(ValueError):
+            state.select_roster({"rosterUnitId": invalid_roster_id})
+
+        assert state.approval_summary()["proposalDigest"] == before_digest
+        assert _review_bytes(state) == before_review
+        assert state.participants_for_local_review() == before_participants
+
+
+def test_grouped_select_roster_build_failure_is_atomic(tmp_path, monkeypatch):
+    source = _source_with_two_rosters(tmp_path)
+    with open_inventory_observation(source) as observation:
+        facts = GroupingEvidence()
+        inspection = inspect_observation(observation, _private_text_sink=facts.capture)
+        state = ProposalState.from_inspection(
+            observation, inspection, _grouping_evidence=facts
+        )
+        roster_units = [
+            unit["unitId"]
+            for unit in state.units
+            if unit["suggestedRole"] == "payment-roster"
+        ]
+        before_digest = state.approval_summary()["proposalDigest"]
+        before_review = _review_bytes(state)
+        before_participants = state.participants_for_local_review()
+        real_builder = ctv_proposal.build_grouping_plan
+
+        def fail_for_selected_candidate(inspection_value, candidate, evidence):
+            if candidate.unit_id == roster_units[1]:
+                raise ValueError("synthetic-group-build-failure")
+            return real_builder(inspection_value, candidate, evidence)
+
+        monkeypatch.setattr(
+            ctv_proposal, "build_grouping_plan", fail_for_selected_candidate
+        )
+
+        with pytest.raises(ValueError, match="synthetic-group-build-failure"):
+            state.select_roster({"rosterUnitId": roster_units[1]})
+
+        assert state.approval_summary()["proposalDigest"] == before_digest
+        assert _review_bytes(state) == before_review
+        assert state.participants_for_local_review() == before_participants
+
+
+def test_source_not_applicable_can_be_approved_and_consumed_coherently(tmp_path):
+    context, state = _grouping_state(
+        tmp_path,
+        (("service-contract",),),
+        source_only=(("inspected", "pdf", ()),),
+    )
+    try:
+        exception = state.local_review_snapshot()["review"]["exceptions"][0]
+        assert exception["issueCode"] == "source-not-applicable"
+        state.resolve_exception(
+            {
+                "exceptionId": exception["exceptionId"],
+                "action": "accept-recommendation",
+                "applyToSimilar": False,
+            }
+        )
+        digest = state.approval_summary()["proposalDigest"]
+
+        state.approve(digest)
+        snapshot = state.consume_approved_package_snapshot(digest)
+
+        assert snapshot.source_dispositions[0].acquisition_status == "not-applicable"
+        assert snapshot.source_dispositions[0].reason == "intentionally-omitted"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_exact_mapping_rejects_str_subclass_keys_without_calling_equality(tmp_path):
+    class HostileKey(str):
+        equality_calls = 0
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            type(self).equality_calls += 1
+            return super().__eq__(other)
+
+    context, _observation, state = _state(tmp_path)
+    try:
+        roster_id = state.approval_summary()["rosterUnitId"]
+        with pytest.raises(ValueError):
+            state.select_roster({HostileKey("rosterUnitId"): roster_id})
+        assert HostileKey.equality_calls == 0
+    finally:
+        context.__exit__(None, None, None)
 
 
 def test_caller_owned_observation_is_inspected_without_being_closed(tmp_path):

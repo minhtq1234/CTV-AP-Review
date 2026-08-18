@@ -62,6 +62,8 @@ _FIXED_GROUP_ISSUES = (
     "source-issue-present", "unit-issue-present",
 )
 _ACQUISITION_STATUS_BY_INSPECTION_STATUS = {
+    "inspected": "not-applicable",
+    "not-applicable": "not-applicable",
     "opaque": "opaque",
     "unsupported": "unsupported",
     "unreadable": "unreadable",
@@ -122,7 +124,11 @@ class ApprovedProposalSnapshot:
 
 
 def _mapping(value, keys):
-    if type(value) is not dict or set(value) != set(keys):
+    if (
+        type(value) is not dict
+        or any(type(key) is not str for key in value)
+        or set(value) != set(keys)
+    ):
         raise ValueError("proposal request must use its exact object shape")
     return value
 
@@ -223,6 +229,8 @@ class ProposalState:
         self._exception_resolutions = {}
         self._review_operations = []
         self._undo_states = {}
+        self._next_group_number = 1
+        self._next_exception_number = 1
         self.units = tuple(
             {
                 "unitId": unit.unit_id, "evidenceId": unit.evidence_id,
@@ -246,15 +254,19 @@ class ProposalState:
         selection = choose_automatic_roster(candidates)
         self._roster_selection = selection
         if selection.status == "selected":
-            self._apply_roster_candidate(
-                self._roster_candidates_by_id[selection.roster_unit_id]
-            )
+            candidate = self._roster_candidates_by_id[selection.roster_unit_id]
             if grouping_evidence is not None:
-                self._rebuild_grouping_plan()
+                transition = self._prepare_grouped_roster_transition(
+                    candidate, selection, retire_existing_ids=False
+                )
+                self._commit_grouped_roster_transition(transition)
+            else:
+                self._apply_roster_candidate(candidate)
         else:
             self._roster_issues = selection.issue_codes
             if grouping_evidence is not None:
                 self._review_exceptions = [self._roster_exception(selection)]
+                self._next_exception_number = 2
 
     @classmethod
     def from_inspection(
@@ -285,18 +297,9 @@ class ProposalState:
             _grouping_evidence,
         )
 
-    def _rebuild_grouping_plan(self):
-        if self._grouping_evidence is None or self._roster_unit_id is None:
-            self._grouping_plan = None
-            self._review_groups = []
-            self._review_exceptions = []
-            self._exception_resolutions = {}
-            self._review_operations = []
-            self._undo_states = {}
-            self._unit_decisions = {}
-            self._source_dispositions = {}
-            return
-        candidate = self._roster_candidates_by_id[self._roster_unit_id]
+    def _prepare_grouped_roster_transition(
+        self, candidate, selection, *, retire_existing_ids
+    ):
         plan = build_grouping_plan(
             self._inspection,
             candidate,
@@ -304,25 +307,105 @@ class ProposalState:
         )
         expanded = plan.expand()
         _require_exact_unit_coverage(expanded, self._units_by_id)
-        self._grouping_plan = plan
-        self._review_groups = [
+
+        groups = [
             self._review_group_from_plan(group) for group in plan.groups
         ]
-        self._review_exceptions = [
+        exceptions = [
             self._review_exception_from_plan(item, source=False)
             for item in plan.exceptions
         ] + [
             self._review_exception_from_plan(item, source=True)
             for item in plan.source_exceptions
         ]
-        self._exception_resolutions = {}
+        exceptions.sort(key=lambda item: _numeric_opaque_id(item["exceptionId"]))
+
+        next_group_number = self._next_group_number
+        next_exception_number = self._next_exception_number
+        if retire_existing_ids:
+            group_id_map = {}
+            for group in groups:
+                old_id = group["groupId"]
+                group["groupId"] = f"group-{next_group_number:04d}"
+                next_group_number += 1
+                group_id_map[old_id] = group["groupId"]
+            for item in exceptions:
+                item["exceptionId"] = f"exception-{next_exception_number:04d}"
+                next_exception_number += 1
+                if item["kind"] == "unit-cluster":
+                    item["groupIds"] = tuple(
+                        group_id_map[group_id] for group_id in item["groupIds"]
+                    )
+        else:
+            if groups:
+                next_group_number = max(
+                    next_group_number,
+                    max(_numeric_opaque_id(group["groupId"]) for group in groups) + 1,
+                )
+            if exceptions:
+                next_exception_number = max(
+                    next_exception_number,
+                    max(
+                        _numeric_opaque_id(item["exceptionId"])
+                        for item in exceptions
+                    )
+                    + 1,
+                )
+
+        for exclusion in plan.automatic_exclusions:
+            unit = self._units_by_id[exclusion.unit_id]
+            groups.append(
+                {
+                    "groupId": f"group-{next_group_number:04d}",
+                    "evidenceId": unit.evidence_id,
+                    "unitKind": unit.unit_kind,
+                    "memberUnitIds": (unit.unit_id,),
+                    "firstUnitIndex": unit.unit_index,
+                    "lastUnitIndex": unit.unit_index,
+                    "role": "",
+                    "target": {"scope": "case", "participantHandles": ()},
+                    "state": "automatically-organized",
+                    "checkCodes": ("coverage-exact",),
+                    "issueCodes": (),
+                    "automaticExclusion": True,
+                }
+            )
+            next_group_number += 1
+
+        groups, exceptions, resolutions = self._canonicalize_review(
+            groups, exceptions, {}
+        )
+        expanded, source_dispositions = self._expanded_review(
+            groups, exceptions, resolutions, plan=plan
+        )
+        return {
+            "roster": self._roster_candidate_state(candidate),
+            "selection": selection,
+            "plan": plan,
+            "groups": groups,
+            "exceptions": exceptions,
+            "resolutions": resolutions,
+            "expanded": expanded,
+            "sourceDispositions": source_dispositions,
+            "nextGroupNumber": next_group_number,
+            "nextExceptionNumber": next_exception_number,
+        }
+
+    def _commit_grouped_roster_transition(self, transition):
+        self._commit_roster_state(transition["roster"])
+        self._roster_selection = transition["selection"]
+        self._grouping_plan = transition["plan"]
+        self._review_groups = transition["groups"]
+        self._review_exceptions = transition["exceptions"]
+        self._exception_resolutions = transition["resolutions"]
         self._review_operations = []
         self._undo_states = {}
-        self._unit_decisions = _proposal_decisions(expanded, self._units_by_id)
-        self._source_dispositions = {
-            item.evidence_id: {"decision": "unresolved"}
-            for item in plan.source_exceptions
-        }
+        self._unit_decisions = _proposal_decisions(
+            transition["expanded"], self._units_by_id
+        )
+        self._source_dispositions = transition["sourceDispositions"]
+        self._next_group_number = transition["nextGroupNumber"]
+        self._next_exception_number = transition["nextExceptionNumber"]
         self._invalidate_approved_package()
 
     @staticmethod
@@ -435,23 +518,12 @@ class ProposalState:
             for group in self._review_groups
             for unit_id in group["memberUnitIds"]
         }
-        if self._grouping_plan is not None:
-            covered_ids.update(
-                item.unit_id for item in self._grouping_plan.automatic_exclusions
-            )
         return {
             "groups": len(self._review_groups),
-            "automaticallyOrganizedUnits": (
-                (
-                    len(self._grouping_plan.automatic_exclusions)
-                    if self._grouping_plan is not None
-                    else 0
-                )
-                + sum(
-                    len(group["memberUnitIds"])
-                    for group in self._review_groups
-                    if group["state"] == "automatically-organized"
-                )
+            "automaticallyOrganizedUnits": sum(
+                len(group["memberUnitIds"])
+                for group in self._review_groups
+                if group["state"] == "automatically-organized"
             ),
             "exceptionClusters": len(unresolved),
             "exceptionUnits": sum(
@@ -503,14 +575,37 @@ class ProposalState:
             copy.deepcopy(self._review_operations),
         )
 
-    def _expanded_review(self, groups, exceptions, resolutions):
-        if self._grouping_plan is None:
+    @staticmethod
+    def _group_order_key(group):
+        return (
+            _numeric_opaque_id(group["evidenceId"]),
+            _numeric_opaque_id(group["memberUnitIds"][0]),
+        )
+
+    @staticmethod
+    def _exception_order_key(item, groups_by_id):
+        if item["kind"] == "source":
+            return (_numeric_opaque_id(item["evidenceId"]), 0)
+        group = groups_by_id[item["groupIds"][0]]
+        return (
+            _numeric_opaque_id(group["evidenceId"]),
+            _numeric_opaque_id(item["memberUnitIds"][0]),
+        )
+
+    def _expanded_review(self, groups, exceptions, resolutions, *, plan=None):
+        plan = self._grouping_plan if plan is None else plan
+        if plan is None:
             raise ValueError("group review is unavailable until roster selection")
-        if len({group["groupId"] for group in groups}) != len(groups):
+        if (
+            any(
+                type(group.get("groupId")) is not str
+                or _GROUP_ID.fullmatch(group["groupId"]) is None
+                for group in groups
+            )
+            or len({group["groupId"] for group in groups}) != len(groups)
+        ):
             raise ValueError("group review IDs must be unique")
-        if [group["groupId"] for group in groups] != [
-            f"group-{index:04d}" for index in range(1, len(groups) + 1)
-        ]:
+        if groups != sorted(groups, key=self._group_order_key):
             raise ValueError("group review must use canonical group order")
         covered = []
         groups_by_id = {}
@@ -534,16 +629,27 @@ class ProposalState:
                 raise ValueError("group review must remain same-source and contiguous")
             covered.extend(members)
         covered.extend(
-            item.unit_id for item in self._grouping_plan.automatic_exclusions
+            item.unit_id
+            for item in plan.automatic_exclusions
+            if item.unit_id not in covered
         )
         if len(covered) != len(set(covered)) or set(covered) != set(self._units_by_id):
             raise ValueError("group review coverage must equal inspection units")
 
         exception_ids = [item["exceptionId"] for item in exceptions]
-        if len(exception_ids) != len(set(exception_ids)) or exception_ids != [
-            f"exception-{index:04d}"
-            for index in range(1, len(exceptions) + 1)
-        ]:
+        if (
+            any(
+                type(exception_id) is not str
+                or _EXCEPTION_ID.fullmatch(exception_id) is None
+                for exception_id in exception_ids
+            )
+            or len(exception_ids) != len(set(exception_ids))
+            or exceptions
+            != sorted(
+                exceptions,
+                key=lambda item: self._exception_order_key(item, groups_by_id),
+            )
+        ):
             raise ValueError("exceptions must use canonical review order")
         if any(exception_id not in exception_ids for exception_id in resolutions):
             raise ValueError("resolutions must reference current exceptions")
@@ -577,7 +683,7 @@ class ProposalState:
         ):
             raise ValueError("exception coverage must match exception groups")
         expected_source_ids = {
-            item.evidence_id for item in self._grouping_plan.source_exceptions
+            item.evidence_id for item in plan.source_exceptions
         }
         if len(source_evidence_ids) != len(set(source_evidence_ids)) or set(
             source_evidence_ids
@@ -585,7 +691,7 @@ class ProposalState:
             raise ValueError("source exception coverage must remain exact")
 
         expanded_by_id = {
-            item.unit_id: item for item in self._grouping_plan.expand()
+            item.unit_id: item for item in plan.expand()
         }
         source_dispositions = {
             evidence_id: {"decision": "unresolved"}
@@ -656,7 +762,19 @@ class ProposalState:
         _require_exact_unit_coverage(expanded, self._units_by_id)
         return expanded, source_dispositions
 
-    def _commit_review(self, groups, exceptions, resolutions, operations):
+    def _commit_review(
+        self,
+        groups,
+        exceptions,
+        resolutions,
+        operations,
+        *,
+        next_group_number=None,
+        next_exception_number=None,
+    ):
+        groups, exceptions, resolutions = self._canonicalize_review(
+            groups, exceptions, resolutions
+        )
         expanded, source_dispositions = self._expanded_review(
             groups, exceptions, resolutions
         )
@@ -666,10 +784,19 @@ class ProposalState:
         self._review_operations = operations
         self._unit_decisions = _proposal_decisions(expanded, self._units_by_id)
         self._source_dispositions = source_dispositions
+        if next_group_number is not None:
+            self._next_group_number = next_group_number
+        if next_exception_number is not None:
+            self._next_exception_number = next_exception_number
         self._invalidate_approved_package()
 
     @staticmethod
-    def _recommended_source_reason(item):
+    def _recommended_exclusion_reason(item):
+        if item["kind"] == "unit-cluster":
+            reason = item.get("recommendedReason")
+            if reason is None:
+                raise ValueError("unit recommendation does not exclude")
+            return reason
         return {
             "source-exact-duplicate": "duplicate",
             "source-unreadable": "unreadable-replacement-available",
@@ -680,46 +807,54 @@ class ProposalState:
             "source-not-applicable": "intentionally-omitted",
         }[item["issueCode"]]
 
-    @staticmethod
-    def _canonicalize_review(groups, exceptions, resolutions):
-        groups.sort(
-            key=lambda group: (
-                _numeric_opaque_id(group["evidenceId"]),
-                _numeric_opaque_id(group["memberUnitIds"][0]),
-            )
-        )
-        group_id_map = {}
-        for index, group in enumerate(groups, start=1):
-            old_id = group["groupId"]
-            new_id = f"group-{index:04d}"
-            group_id_map[old_id] = new_id
-            group["groupId"] = new_id
-        for item in exceptions:
-            if item["kind"] == "unit-cluster":
-                item["groupIds"] = tuple(
-                    group_id_map[group_id] for group_id in item["groupIds"]
-                )
-        group_by_id = {group["groupId"]: group for group in groups}
+    def _canonicalize_review(self, groups, exceptions, resolutions):
+        groups.sort(key=self._group_order_key)
+        groups_by_id = {group["groupId"]: group for group in groups}
         exceptions.sort(
-            key=lambda item: (
-                _numeric_opaque_id(
-                    item["evidenceId"]
-                    if item["kind"] == "source"
-                    else group_by_id[item["groupIds"][0]]["evidenceId"]
-                ),
-                0
-                if item["kind"] == "source"
-                else _numeric_opaque_id(item["memberUnitIds"][0]),
-            )
+            key=lambda item: self._exception_order_key(item, groups_by_id)
         )
-        new_resolutions = {}
-        for index, item in enumerate(exceptions, start=1):
-            old_id = item["exceptionId"]
-            new_id = f"exception-{index:04d}"
-            item["exceptionId"] = new_id
-            if old_id in resolutions:
-                new_resolutions[new_id] = resolutions[old_id]
-        return groups, exceptions, new_resolutions
+        unresolved_by_group = {
+            item["groupIds"][0]: item
+            for item in exceptions
+            if item["kind"] == "unit-cluster"
+            and len(item["groupIds"]) == 1
+            and item["exceptionId"] not in resolutions
+        }
+        group_indexes = {
+            group["groupId"]: index for index, group in enumerate(groups)
+        }
+        for item in exceptions:
+            if item["kind"] != "unit-cluster" or len(item["groupIds"]) != 1:
+                continue
+            actions = tuple(
+                action for action in item["allowedActions"] if action != "merge-next"
+            )
+            group = groups_by_id[item["groupIds"][0]]
+            group_index = group_indexes[group["groupId"]]
+            can_merge = False
+            if (
+                item["exceptionId"] not in resolutions
+                and group_index + 1 < len(groups)
+            ):
+                next_group = groups[group_index + 1]
+                can_merge = (
+                    next_group["groupId"] in unresolved_by_group
+                    and group["evidenceId"] == next_group["evidenceId"]
+                    and group["unitKind"] == next_group["unitKind"]
+                    and group["lastUnitIndex"] + 1
+                    == next_group["firstUnitIndex"]
+                )
+            if can_merge:
+                actions += ("merge-next",)
+            item["allowedActions"] = actions
+            item["similarityKey"] = _review_similarity_key(
+                item["issueCode"],
+                item["recommendedAction"],
+                actions,
+                group["role"],
+                group["target"]["scope"],
+            )
+        return groups, exceptions, resolutions
 
     def _split_exception(self, item, split_before, groups, exceptions, resolutions):
         if item["kind"] != "unit-cluster" or len(item["groupIds"]) != 1:
@@ -737,16 +872,19 @@ class ProposalState:
         member_parts = (members[:split_index], members[split_index:])
         new_groups = []
         new_exceptions = []
+        next_group_number = self._next_group_number
+        next_exception_number = self._next_exception_number
         allowed_actions = tuple(
             action
-            for action in ("assign", "exclude", "split", "merge-next")
-            if action in item["allowedActions"] or action == "merge-next"
+            for action in ("assign", "exclude", "split")
+            if action in item["allowedActions"]
         )
-        for suffix, part in zip(("left", "right"), member_parts):
+        for part in member_parts:
             first = self._units_by_id[part[0]]
             last = self._units_by_id[part[-1]]
             new_group = copy.deepcopy(group)
-            new_group["groupId"] = f"temporary-{suffix}-{group_index}"
+            new_group["groupId"] = f"group-{next_group_number:04d}"
+            next_group_number += 1
             new_group["memberUnitIds"] = tuple(part)
             new_group["firstUnitIndex"] = first.unit_index
             new_group["lastUnitIndex"] = last.unit_index
@@ -758,7 +896,7 @@ class ProposalState:
                         for key, value in item.items()
                         if key not in {"exceptionId", "groupIds", "memberUnitIds"}
                     },
-                    "exceptionId": f"temporary-{suffix}-{group_index}",
+                    "exceptionId": f"exception-{next_exception_number:04d}",
                     "groupIds": (new_group["groupId"],),
                     "memberUnitIds": tuple(part),
                     "allowedActions": allowed_actions,
@@ -771,12 +909,22 @@ class ProposalState:
                     ),
                 }
             )
+            next_exception_number += 1
         groups[group_index:group_index + 1] = new_groups
         exceptions[:] = [
             value for value in exceptions if value["exceptionId"] != item["exceptionId"]
         ] + new_exceptions
         resolutions.pop(item["exceptionId"], None)
-        return self._canonicalize_review(groups, exceptions, resolutions)
+        groups, exceptions, resolutions = self._canonicalize_review(
+            groups, exceptions, resolutions
+        )
+        return (
+            groups,
+            exceptions,
+            resolutions,
+            next_group_number,
+            next_exception_number,
+        )
 
     def _merge_next_exception(self, item, groups, exceptions, resolutions):
         if item["kind"] != "unit-cluster" or len(item["groupIds"]) != 1:
@@ -822,7 +970,7 @@ class ProposalState:
         allowed_actions = ("assign", "exclude", "split", "merge-next")
         merged_group = {
             **copy.deepcopy(group),
-            "groupId": f"temporary-merge-{group_index}",
+            "groupId": f"group-{self._next_group_number:04d}",
             "memberUnitIds": members,
             "lastUnitIndex": next_group["lastUnitIndex"],
             "role": role,
@@ -838,7 +986,7 @@ class ProposalState:
             ),
         }
         merged_exception = {
-            "exceptionId": f"temporary-merge-{group_index}",
+            "exceptionId": f"exception-{self._next_exception_number:04d}",
             "kind": "unit-cluster",
             "groupIds": (merged_group["groupId"],),
             "memberUnitIds": members,
@@ -860,7 +1008,16 @@ class ProposalState:
         ] + [merged_exception]
         for exception_id in removed_ids:
             resolutions.pop(exception_id, None)
-        return self._canonicalize_review(groups, exceptions, resolutions)
+        groups, exceptions, resolutions = self._canonicalize_review(
+            groups, exceptions, resolutions
+        )
+        return (
+            groups,
+            exceptions,
+            resolutions,
+            self._next_group_number + 1,
+            self._next_exception_number + 1,
+        )
 
     def _choose_grouped_roster(self, item, roster_unit_id):
         if item["kind"] != "roster":
@@ -874,18 +1031,16 @@ class ProposalState:
             or not candidate.rows
         ):
             raise ValueError("rosterUnitId must identify an eligible roster candidate")
-        plan = build_grouping_plan(
-            self._inspection, candidate, self._grouping_evidence
-        )
-        _require_exact_unit_coverage(plan.expand(), self._units_by_id)
-        self._apply_roster_candidate(candidate)
-        self._roster_selection = RosterSelection(
+        selection = RosterSelection(
             status="selected",
             roster_unit_id=roster_unit_id,
             candidate_unit_ids=self._roster_selection.candidate_unit_ids,
             issue_codes=(),
         )
-        self._rebuild_grouping_plan()
+        transition = self._prepare_grouped_roster_transition(
+            candidate, selection, retire_existing_ids=True
+        )
+        self._commit_grouped_roster_transition(transition)
 
     def resolve_exception(self, mapping):
         if type(mapping) is not dict:
@@ -938,6 +1093,8 @@ class ProposalState:
 
         previous = self._transition_state()
         groups, exceptions, resolutions, operations = self._transition_state()
+        next_group_number = None
+        next_exception_number = None
         candidate_item = next(
             value for value in exceptions if value["exceptionId"] == exception_id
         )
@@ -954,36 +1111,39 @@ class ProposalState:
                 and effective_action in value["allowedActions"]
             )
         if effective_action == "assign":
-            if action == "accept-recommendation":
-                group = next(
-                    group
-                    for group in groups
-                    if group["groupId"] == candidate_item["groupIds"][0]
-                )
-                role = group["role"]
-                target = copy.deepcopy(group["target"])
-            else:
+            if action != "accept-recommendation":
                 role = mapping["role"]
                 if type(role) is not str:
                     raise ValueError("role must be an approved value")
                 target = self._target(mapping["target"])
             for target_item in targets:
+                if action == "accept-recommendation":
+                    target_group = next(
+                        group
+                        for group in groups
+                        if group["groupId"] == target_item["groupIds"][0]
+                    )
+                    target_role = target_group["role"]
+                    target_value = copy.deepcopy(target_group["target"])
+                else:
+                    target_role = role
+                    target_value = copy.deepcopy(target)
                 resolutions[target_item["exceptionId"]] = {
                     "action": "assign",
                     "requestedAction": action,
-                    "role": role,
-                    "target": copy.deepcopy(target),
+                    "role": target_role,
+                    "target": target_value,
                 }
         elif effective_action == "exclude":
             if action == "accept-recommendation":
-                reason = self._recommended_source_reason(candidate_item)
+                reason = self._recommended_exclusion_reason(candidate_item)
             else:
                 reason = _enum(
                     mapping["reason"], _EXCLUSION_REASONS, "reason"
                 )
             for target_item in targets:
                 target_reason = (
-                    self._recommended_source_reason(target_item)
+                    self._recommended_exclusion_reason(target_item)
                     if action == "accept-recommendation"
                     else reason
                 )
@@ -996,7 +1156,13 @@ class ProposalState:
             split_before = _string(
                 mapping["splitBeforeUnitId"], _UNIT_ID, "splitBeforeUnitId"
             )
-            groups, exceptions, resolutions = self._split_exception(
+            (
+                groups,
+                exceptions,
+                resolutions,
+                next_group_number,
+                next_exception_number,
+            ) = self._split_exception(
                 candidate_item, split_before, groups, exceptions, resolutions
             )
             operations.append(
@@ -1007,7 +1173,13 @@ class ProposalState:
                 }
             )
         elif effective_action == "merge-next":
-            groups, exceptions, resolutions = self._merge_next_exception(
+            (
+                groups,
+                exceptions,
+                resolutions,
+                next_group_number,
+                next_exception_number,
+            ) = self._merge_next_exception(
                 candidate_item, groups, exceptions, resolutions
             )
             operations.append(
@@ -1016,7 +1188,14 @@ class ProposalState:
                     "memberUnitIds": list(candidate_item["memberUnitIds"]),
                 }
             )
-        self._commit_review(groups, exceptions, resolutions, operations)
+        self._commit_review(
+            groups,
+            exceptions,
+            resolutions,
+            operations,
+            next_group_number=next_group_number,
+            next_exception_number=next_exception_number,
+        )
         self._undo_states = {exception_id: previous}
 
     def undo_exception(self, mapping):
@@ -1034,7 +1213,15 @@ class ProposalState:
     def reopen_group(self, mapping):
         mapping = _mapping(mapping, {"groupId"})
         group_id = _string(mapping["groupId"], _GROUP_ID, "groupId")
-        if not any(group["groupId"] == group_id for group in self._review_groups):
+        live_group = next(
+            (
+                group
+                for group in self._review_groups
+                if group["groupId"] == group_id
+            ),
+            None,
+        )
+        if live_group is None:
             raise ValueError("groupId must identify a current group")
         item = next(
             (
@@ -1046,11 +1233,54 @@ class ProposalState:
             ),
             None,
         )
-        if item is None:
-            raise ValueError("groupId must identify a user-resolved group")
         groups, exceptions, resolutions, operations = self._transition_state()
-        resolutions.pop(item["exceptionId"])
-        self._commit_review(groups, exceptions, resolutions, operations)
+        next_exception_number = None
+        if item is not None:
+            resolutions.pop(item["exceptionId"])
+        elif live_group["state"] == "automatically-organized":
+            group = next(
+                group for group in groups if group["groupId"] == group_id
+            )
+            group["state"] = "exception"
+            group["issueCodes"] = ("target-unresolved",)
+            is_automatic_exclusion = bool(group.get("automaticExclusion"))
+            actions = ["assign", "exclude"]
+            if len(group["memberUnitIds"]) > 1:
+                actions.append("split")
+            recommended_action = (
+                "exclude" if is_automatic_exclusion else "assign"
+            )
+            exception = {
+                "exceptionId": f"exception-{self._next_exception_number:04d}",
+                "kind": "unit-cluster",
+                "issueCode": "target-unresolved",
+                "recommendedAction": recommended_action,
+                "allowedActions": tuple(actions),
+                "similarityKey": _review_similarity_key(
+                    "target-unresolved",
+                    recommended_action,
+                    tuple(actions),
+                    group["role"],
+                    group["target"]["scope"],
+                ),
+                "groupIds": (group_id,),
+                "memberUnitIds": tuple(group["memberUnitIds"]),
+            }
+            if is_automatic_exclusion:
+                exception["recommendedReason"] = "duplicate"
+            exceptions.append(exception)
+            next_exception_number = self._next_exception_number + 1
+        else:
+            raise ValueError(
+                "groupId must identify an automatic or user-resolved group"
+            )
+        self._commit_review(
+            groups,
+            exceptions,
+            resolutions,
+            operations,
+            next_exception_number=next_exception_number,
+        )
         self._undo_states = {}
 
     def _invalidate_approved_package(self):
@@ -1070,37 +1300,24 @@ class ProposalState:
             candidate.canonical_to_source_columns,
         )
 
-    def _apply_roster_candidate(self, candidate: RosterCandidate):
-        unit_id = candidate.unit_id
-        self._invalidate_approved_package()
-        if self._roster_unit_id is not None and self._roster_unit_id != unit_id:
-            self._unit_decisions = {
-                decision_unit_id: record
-                for decision_unit_id, record in self._unit_decisions.items()
-                if not (
-                    record["decision"] in {"accepted", "reassigned"}
-                    and record["target"]["participantHandles"]
-                )
-            }
-        self._roster_unit_id = unit_id
-        self._participant_handles = tuple(
+    @staticmethod
+    def _roster_candidate_state(candidate: RosterCandidate):
+        participant_handles = tuple(
             f"participant-{index:04d}"
             for index, _row in enumerate(candidate.rows, start=1)
         )
-        self._participant_display = tuple(
+        participant_display = tuple(
             {
                 "participantHandle": handle,
                 "name": row["name"],
                 "identityHint": f"***-{row['identity'][-3:]}",
             }
             for handle, candidate_row in zip(
-                self._participant_handles, candidate.rows
+                participant_handles, candidate.rows
             )
             for row in (dict(candidate_row.values),)
         )
-        self._roster_issues = candidate.blocking_issue_codes
-        self._roster_package_issues = candidate.package_issue_codes
-        self._roster_rows_private = tuple(
+        roster_rows_private = tuple(
             RosterRowSnapshot(
                 participant_handle=handle,
                 row_index=candidate_row.row_index,
@@ -1114,11 +1331,42 @@ class ProposalState:
                 product=row.get("product", ""),
             )
             for handle, candidate_row in zip(
-                self._participant_handles, candidate.rows
+                participant_handles, candidate.rows
             )
             for row in (dict(candidate_row.values),)
         )
-        self._roster_columns_private = candidate.canonical_to_source_columns
+        return {
+            "unitId": candidate.unit_id,
+            "participantHandles": participant_handles,
+            "participantDisplay": participant_display,
+            "issues": candidate.blocking_issue_codes,
+            "packageIssues": candidate.package_issue_codes,
+            "rows": roster_rows_private,
+            "columns": candidate.canonical_to_source_columns,
+        }
+
+    def _commit_roster_state(self, state):
+        self._roster_unit_id = state["unitId"]
+        self._participant_handles = state["participantHandles"]
+        self._participant_display = state["participantDisplay"]
+        self._roster_issues = state["issues"]
+        self._roster_package_issues = state["packageIssues"]
+        self._roster_rows_private = state["rows"]
+        self._roster_columns_private = state["columns"]
+
+    def _apply_roster_candidate(self, candidate: RosterCandidate):
+        unit_id = candidate.unit_id
+        if self._roster_unit_id is not None and self._roster_unit_id != unit_id:
+            self._unit_decisions = {
+                decision_unit_id: record
+                for decision_unit_id, record in self._unit_decisions.items()
+                if not (
+                    record["decision"] in {"accepted", "reassigned"}
+                    and record["target"]["participantHandles"]
+                )
+            }
+        self._commit_roster_state(self._roster_candidate_state(candidate))
+        self._invalidate_approved_package()
 
     def select_roster(self, mapping):
         mapping = _mapping(mapping, {"rosterUnitId"})
@@ -1128,7 +1376,28 @@ class ProposalState:
             raise ValueError(
                 "rosterUnitId must identify an inspected roster worksheet"
             )
-        self._apply_roster_candidate(candidate)
+        if self._grouping_evidence is None:
+            self._apply_roster_candidate(candidate)
+            return
+        if (
+            unit_id not in self._roster_selection.candidate_unit_ids
+            or candidate.blocking_issue_codes
+            or candidate.package_issue_codes
+            or not candidate.rows
+        ):
+            raise ValueError(
+                "rosterUnitId must identify an eligible roster candidate"
+            )
+        selection = RosterSelection(
+            status="selected",
+            roster_unit_id=unit_id,
+            candidate_unit_ids=self._roster_selection.candidate_unit_ids,
+            issue_codes=(),
+        )
+        transition = self._prepare_grouped_roster_transition(
+            candidate, selection, retire_existing_ids=True
+        )
+        self._commit_grouped_roster_transition(transition)
 
     def participants_for_local_review(self):
         """Return private roster display fields only to the local review session."""
