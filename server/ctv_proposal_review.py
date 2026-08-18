@@ -41,33 +41,15 @@ _CSP = (
 )
 _POST_ROUTES = frozenset({
     "/api/roster",
-    "/api/unit",
-    "/api/source",
+    "/api/exception",
+    "/api/exception/undo",
+    "/api/group/reopen",
     "/api/summary",
     "/api/approve",
     "/api/draft",
     "/api/cancel",
     "/api/heartbeat",
 })
-_ALLOWED_ROLES_BY_KIND = {
-    "pdf-page": (
-        "payment-roster",
-        "service-contract",
-        "acceptance-record",
-        "payment-tax-form",
-        "identity-front",
-        "identity-back",
-        "shared-supporting-evidence",
-        "other-supporting-evidence",
-    ),
-    "worksheet": ("payment-roster", "other-supporting-evidence"),
-    "image": (
-        "identity-front",
-        "identity-back",
-        "shared-supporting-evidence",
-        "other-supporting-evidence",
-    ),
-}
 
 
 class ReviewError(RuntimeError):
@@ -113,6 +95,8 @@ def _strict_json(content: bytes) -> dict:
         raise ValueError("request JSON is invalid") from None
     if type(value) is not dict:
         raise ValueError("request JSON must be an object")
+    if any(type(key) is not str for key in value):
+        raise ValueError("request JSON keys must be strings")
     return value
 
 
@@ -140,60 +124,6 @@ def _cookie_pairs(value: str):
             return None
         pairs.append((name, cookie_value))
     return pairs
-
-
-def _local_decision(record) -> dict:
-    if record is None:
-        return {"decision": "unresolved"}
-    result = {"decision": record["decision"]}
-    if "role" in record:
-        result["role"] = record["role"]
-        result["target"] = {
-            "scope": record["target"]["scope"],
-            "participantHandles": list(record["target"]["participantHandles"]),
-        }
-    if "reason" in record:
-        result["reason"] = record["reason"]
-    return result
-
-
-def _local_review_projection(state: ProposalState, issue_codes) -> dict:
-    unit_records = []
-    for unit in state.units:
-        decisions = (
-            ("reassigned", "excluded", "unresolved")
-            if unit["suggestedRole"] == "unknown"
-            else ("accepted", "reassigned", "excluded", "unresolved")
-        )
-        unit_records.append({
-            "unitId": unit["unitId"],
-            "evidenceId": unit["evidenceId"],
-            "unitKind": unit["unitKind"],
-            "suggestedRole": unit["suggestedRole"],
-            "issueCodes": list(unit["issueCodes"]),
-            "allowedDecisions": list(decisions),
-            "allowedRoles": list(_ALLOWED_ROLES_BY_KIND[unit["unitKind"]]),
-            "decision": _local_decision(state._unit_decisions.get(unit["unitId"])),
-        })
-    unit_evidence_ids = {unit["evidenceId"] for unit in state.units}
-    source_records = []
-    for source in state.sources:
-        if source["evidenceId"] in unit_evidence_ids:
-            continue
-        source_records.append({
-            "evidenceId": source["evidenceId"],
-            "issueCodes": list(source["issueCodes"]),
-            "allowedDecisions": ["excluded", "unresolved"],
-            "allowedRoles": [],
-            "decision": _local_decision(
-                state._source_dispositions.get(source["evidenceId"])
-            ),
-        })
-    return {
-        "unitDecisions": unit_records,
-        "sourceDispositions": source_records,
-        "issueCodes": list(issue_codes),
-    }
 
 
 class _Session:
@@ -400,14 +330,19 @@ class _ReviewHandler(BaseHTTPRequestHandler):
 
     def _client_state(self) -> dict:
         state = self.session.state
-        summary = state.approval_summary()
+        local = state.local_review_snapshot()
+        local_review = local["review"]
         return {
             "csrfToken": self.session.csrf_token,
-            "units": [dict(unit) for unit in state.units],
-            "sources": [dict(source) for source in state.sources],
             "participants": state.participants_for_local_review(),
-            "review": _local_review_projection(state, summary["issueCodes"]),
-            "summary": summary,
+            "roster": local["roster"],
+            "review": {
+                "exceptions": local_review["exceptions"],
+                "organizedGroups": local_review["groups"],
+                "coverage": local_review["coverage"],
+                "issueCodes": local_review["issueCodes"],
+            },
+            "summary": local["summary"],
         }
 
     def _bootstrap(self, target) -> None:
@@ -477,6 +412,18 @@ class _ReviewHandler(BaseHTTPRequestHandler):
             self._reject(400, "invalid-request")
             return
         state = self.session.state
+        local_review = state.local_review_snapshot()["review"]
+        current_member_ids = {
+            member_unit_id
+            for record in (
+                *local_review["groups"],
+                *local_review["exceptions"],
+            )
+            for member_unit_id in record.get("memberUnitIds", ())
+        }
+        if unit_id not in current_member_ids:
+            self._reject(404, "preview-not-found")
+            return
         inspection_unit = next(
             (unit for unit in state._inspection.units if unit.unit_id == unit_id),
             None,
@@ -601,11 +548,14 @@ class _ReviewHandler(BaseHTTPRequestHandler):
         if route == "/api/roster":
             state.select_roster(mapping)
             return self._client_state(), False
-        if route == "/api/unit":
-            state.set_unit_decision(mapping)
+        if route == "/api/exception":
+            state.resolve_exception(mapping)
             return self._client_state(), False
-        if route == "/api/source":
-            state.set_source_disposition(mapping)
+        if route == "/api/exception/undo":
+            state.undo_exception(mapping)
+            return self._client_state(), False
+        if route == "/api/group/reopen":
+            state.reopen_group(mapping)
             return self._client_state(), False
         if route == "/api/summary":
             _exact_empty(mapping)

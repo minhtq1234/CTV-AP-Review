@@ -9,6 +9,7 @@ import fitz
 from openpyxl import Workbook
 import pytest
 
+from ctv_grouping_evidence import GroupingEvidence
 from ctv_inspection import inspect_observation
 from ctv_inventory import open_inventory_observation
 from ctv_proposal import ProposalState
@@ -23,22 +24,28 @@ def _workbook_bytes():
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "payment roster private"
-    sheet.append(("Ho ten", "Ma so nhan vien", "So tien"))
-    sheet.append((PRIVATE_NAME, "CTV-001", 100))
+    sheet.append(("Ho ten", "Ma so nhan vien", "faCode", "So tien"))
+    sheet.append((PRIVATE_NAME, "CTV-001", "FA-PRIVATE-001", 100))
     stream = BytesIO()
     workbook.save(stream)
     workbook.close()
     return stream.getvalue()
 
 
-def _pdf_bytes():
+def _pdf_bytes(
+    text="HOP DONG DICH VU BEN A BEN B NOI DUNG CHI TIET CHU KY CAC BEN",
+    *,
+    pages=1,
+):
     document = fitz.open()
-    page = document.new_page(width=120, height=80)
-    page.insert_textbox(
-        fitz.Rect(5, 5, 115, 75),
-        "HOP DONG DICH VU BEN A BEN B NOI DUNG CHI TIET CHU KY CAC BEN",
-        fontsize=6,
-    )
+    page_texts = (text,) * pages if type(text) is str else tuple(text)
+    for page_text in page_texts:
+        page = document.new_page(width=300, height=200)
+        page.insert_textbox(
+            fitz.Rect(10, 10, 290, 190),
+            page_text,
+            fontsize=8,
+        )
     snapshot = document.tobytes()
     document.close()
     return snapshot
@@ -48,11 +55,28 @@ def _state(tmp_path):
     source = tmp_path / PRIVATE_PATH_PART
     source.mkdir()
     (source / "private-roster.xlsx").write_bytes(_workbook_bytes())
-    (source / "private-contract.pdf").write_bytes(_pdf_bytes())
+    contract = _pdf_bytes()
+    (source / "private-contract.pdf").write_bytes(contract)
+    (source / "private-contract-copy.pdf").write_bytes(contract)
+    (source / "private-unknown.pdf").write_bytes(
+        _pdf_bytes("MYSTERY LOCAL EVIDENCE WITHOUT A SUPPORTED DOCUMENT ROLE")
+    )
     (source / "private-note.txt").write_text("local private supporting note")
     context = open_inventory_observation(source)
     observation = context.__enter__()
-    state = ProposalState.from_inspection(observation, inspect_observation(observation))
+    facts = GroupingEvidence()
+    for item in observation.result.items:
+        if item.duplicate_group_id is not None:
+            facts.capture_source_duplicate(item.evidence_id, item.duplicate_group_id)
+    inspection = inspect_observation(
+        observation,
+        _private_text_sink=facts.capture,
+    )
+    state = ProposalState.from_inspection(
+        observation,
+        inspection,
+        _grouping_evidence=facts,
+    )
     return source, context, state
 
 
@@ -125,9 +149,36 @@ def _post(parsed, route, cookie, csrf, body):
     )
 
 
-def test_bootstrap_is_one_time_static_routes_are_authenticated_and_shutdown_is_terminal(tmp_path):
+def _run_visible(state, drive):
+    driver_errors = []
+
+    def visible_driver(url):
+        try:
+            return drive(url)
+        except BaseException as error:
+            driver_errors.append(error)
+            raise
+
+    try:
+        return run_local_review(state, browser_open=visible_driver)
+    except ReviewError:
+        if driver_errors:
+            raise driver_errors[0]
+        raise
+
+
+def test_group_state_bootstrap_is_one_time_authenticated_and_exactly_projected(tmp_path):
     source, context, state = _state(tmp_path)
     captured = {}
+    snapshot_calls = 0
+    original_snapshot = state.local_review_snapshot
+
+    def counted_snapshot():
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot()
+
+    state.local_review_snapshot = counted_snapshot
 
     def drive(url):
         parsed, cookie, bootstrap_headers = _bootstrap(url)
@@ -150,8 +201,18 @@ def test_bootstrap_is_one_time_static_routes_are_authenticated_and_shutdown_is_t
         _security_headers(headers)
         local_state = _json(body)
         assert set(local_state) == {
-            "csrfToken", "units", "sources", "participants", "review", "summary"
+            "csrfToken", "participants", "roster", "review", "summary"
         }
+        assert snapshot_calls == 1
+        assert set(local_state["review"]) == {
+            "exceptions", "organizedGroups", "coverage", "issueCodes"
+        }
+        assert "groups" not in local_state["review"]
+        assert "unitDecisions" not in local_state["review"]
+        assert local_state["review"]["coverage"]["unaccountedUnits"] == 0
+        assert len(local_state["review"]["exceptions"]) == 3
+        assert len(local_state["review"]["organizedGroups"]) == 4
+        assert local_state["roster"]["status"] == "selected"
         captured["csrf"] = local_state["csrfToken"]
 
         status, _headers, body = _request(
@@ -183,7 +244,7 @@ def test_bootstrap_is_one_time_static_routes_are_authenticated_and_shutdown_is_t
         return True
 
     try:
-        result = run_local_review(state, browser_open=drive)
+        result = _run_visible(state, drive)
         assert result == {"version": "1.0", "outcome": "cancelled", "readyToPrepare": False}
         assert PRIVATE_NAME not in repr(result)
         with pytest.raises(OSError):
@@ -248,9 +309,259 @@ def test_http_boundary_rejects_malformed_authorization_routes_and_json(tmp_path)
         return True
 
     try:
-        result = run_local_review(state, browser_open=drive)
+        result = _run_visible(state, drive)
         assert result["outcome"] == "draft"
         assert PRIVATE_NAME not in repr(result)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_exception_routes_reject_hostile_requests_without_poisoning_session(
+    tmp_path,
+):
+    _source, context, state = _state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        initial = _json(body)
+        csrf = initial["csrfToken"]
+        initial_digest = initial["summary"]["proposalDigest"]
+        cluster = next(
+            item
+            for item in initial["review"]["exceptions"]
+            if item["kind"] == "unit-cluster"
+        )
+        automatic = next(
+            group
+            for group in initial["review"]["organizedGroups"]
+            if group["state"] == "automatically-organized"
+            and group["role"]
+        )
+        origin = f"http://127.0.0.1:{parsed.port}"
+        good_headers = {
+            "Cookie": cookie,
+            "Origin": origin,
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrf,
+        }
+        private_safe_bodies = []
+
+        def still_usable():
+            heartbeat_status, _heartbeat_headers, heartbeat_body = _post(
+                parsed, "/api/heartbeat", cookie, csrf, {}
+            )
+            assert heartbeat_status == 200
+            assert _json(heartbeat_body) == {"status": "active"}
+
+        def reject(method, route, *, request_body=b"{}", headers=None, expected=None):
+            response_status, response_headers, response_body = _request(
+                parsed,
+                method,
+                route,
+                body=request_body,
+                headers=good_headers if headers is None else headers,
+            )
+            assert response_status in (expected or {400, 403, 404, 405, 415})
+            parsed_body = _json(response_body)
+            assert parsed_body == {"error": parsed_body["error"]}
+            assert len(response_body) < 128
+            _security_headers(response_headers)
+            private_safe_bodies.append(response_body)
+            still_usable()
+
+        hostile_json = (
+            (
+                "/api/exception",
+                b'{"exceptionId":"exception-0001","exceptionId":"exception-0001","action":"exclude","reason":"irrelevant","applyToSimilar":false}',
+            ),
+            ("/api/exception", b'{"action":"exclude","reason":"irrelevant","applyToSimilar":false}'),
+            ("/api/exception", b'{"exceptionId":"exception-0001","action":"exclude","reason":"irrelevant","applyToSimilar":false,"extra":0}'),
+            ("/api/exception", b'{"exceptionId":true,"action":"exclude","reason":"irrelevant","applyToSimilar":false}'),
+            ("/api/exception", b'{"exceptionId":"exception-9999","action":"exclude","reason":"irrelevant","applyToSimilar":false}'),
+            ("/api/exception", json.dumps({
+                "exceptionId": cluster["exceptionId"],
+                "action": "assign",
+                "role": "not-a-role",
+                "target": {"scope": "case", "participantHandles": []},
+                "applyToSimilar": False,
+            }, separators=(",", ":")).encode()),
+            ("/api/exception", json.dumps({
+                "exceptionId": cluster["exceptionId"],
+                "action": "assign",
+                "role": "service-contract",
+                "target": {"scope": "remote", "participantHandles": []},
+                "applyToSimilar": False,
+            }, separators=(",", ":")).encode()),
+            ("/api/exception", json.dumps({
+                "exceptionId": cluster["exceptionId"],
+                "action": "exclude",
+                "reason": "not-a-reason",
+                "applyToSimilar": False,
+            }, separators=(",", ":")).encode()),
+            ("/api/exception", json.dumps({
+                "exceptionId": cluster["exceptionId"],
+                "action": "split",
+                "splitBeforeUnitId": initial["roster"]["rosterUnitId"],
+                "applyToSimilar": False,
+            }, separators=(",", ":")).encode()),
+            (
+                "/api/exception/undo",
+                b'{"exceptionId":"exception-0001","exceptionId":"exception-0001"}',
+            ),
+            ("/api/exception/undo", b'{}'),
+            ("/api/exception/undo", b'{"exceptionId":false}'),
+            ("/api/exception/undo", b'{"exceptionId":"exception-9999"}'),
+            (
+                "/api/group/reopen",
+                b'{"groupId":"group-0001","groupId":"group-0001"}',
+            ),
+            ("/api/group/reopen", b'{}'),
+            ("/api/group/reopen", b'{"groupId":0}'),
+            ("/api/group/reopen", b'{"groupId":"group-9999"}'),
+        )
+        for route, payload in hostile_json:
+            reject("POST", route, request_body=payload, expected={400})
+
+        route_bodies = {
+            "/api/exception": json.dumps({
+                "exceptionId": "exception-9999",
+                "action": "exclude",
+                "reason": "irrelevant",
+                "applyToSimilar": False,
+            }, separators=(",", ":")).encode(),
+            "/api/exception/undo": b'{"exceptionId":"exception-9999"}',
+            "/api/group/reopen": b'{"groupId":"group-9999"}',
+        }
+        for route, payload in route_bodies.items():
+            reject("POST", f"{route}?extra=1", request_body=payload, expected={400})
+            reject("GET", route, request_body=None, headers={"Cookie": cookie}, expected={404})
+            reject("PUT", route, request_body=payload, expected={405})
+            reject(
+                "POST",
+                route,
+                request_body=payload,
+                headers={**good_headers, "Host": "evil.invalid"},
+                expected={400},
+            )
+            reject(
+                "POST",
+                route,
+                request_body=payload,
+                headers={**good_headers, "Origin": "http://evil.invalid"},
+                expected={403},
+            )
+            reject(
+                "POST",
+                route,
+                request_body=payload,
+                headers={**good_headers, "X-CSRF-Token": "wrong"},
+                expected={403},
+            )
+            reject(
+                "POST",
+                route,
+                request_body=payload,
+                headers={**good_headers, "Cookie": "bad=token"},
+                expected={403},
+            )
+            reject(
+                "POST",
+                route,
+                request_body=payload,
+                headers={**good_headers, "Content-Type": "text/plain"},
+                expected={415},
+            )
+            connection = http.client.HTTPConnection(
+                parsed.hostname, parsed.port, timeout=3
+            )
+            connection.putrequest("POST", route, skip_host=True)
+            connection.putheader("Host", f"127.0.0.1:{parsed.port}")
+            connection.putheader("Cookie", cookie)
+            connection.putheader("Origin", origin)
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("X-CSRF-Token", csrf)
+            connection.putheader("Content-Length", str(1024 * 1024 + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            assert response.status == 413
+            oversized_body = response.read()
+            assert _json(oversized_body) == {"error": "request-too-large"}
+            private_safe_bodies.append(oversized_body)
+            connection.close()
+            still_usable()
+
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        assert _json(body)["summary"]["proposalDigest"] == initial_digest
+
+        resolve_payload = {
+            "exceptionId": cluster["exceptionId"],
+            "action": "exclude",
+            "reason": "irrelevant",
+            "applyToSimilar": False,
+        }
+        status, _headers, _body = _post(
+            parsed, "/api/exception", cookie, csrf, resolve_payload
+        )
+        assert status == 200
+        reject(
+            "POST",
+            "/api/exception",
+            request_body=json.dumps(resolve_payload, separators=(",", ":")).encode(),
+            expected={400},
+        )
+        status, _headers, _body = _post(
+            parsed,
+            "/api/exception/undo",
+            cookie,
+            csrf,
+            {"exceptionId": cluster["exceptionId"]},
+        )
+        assert status == 200
+        reject(
+            "POST",
+            "/api/exception/undo",
+            request_body=json.dumps(
+                {"exceptionId": cluster["exceptionId"]}, separators=(",", ":")
+            ).encode(),
+            expected={400},
+        )
+        status, _headers, _body = _post(
+            parsed,
+            "/api/group/reopen",
+            cookie,
+            csrf,
+            {"groupId": automatic["groupId"]},
+        )
+        assert status == 200
+        reject(
+            "POST",
+            "/api/group/reopen",
+            request_body=json.dumps(
+                {"groupId": automatic["groupId"]}, separators=(",", ":")
+            ).encode(),
+            expected={400},
+        )
+
+        serialized_errors = b"".join(private_safe_bodies)
+        assert PRIVATE_NAME.encode() not in serialized_errors
+        assert PRIVATE_PATH_PART.encode() not in serialized_errors
+        assert csrf.encode() not in serialized_errors
+
+        status, _headers, body = _post(parsed, "/api/draft", cookie, csrf, {})
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        result = _run_visible(state, drive)
+        assert result["outcome"] == "draft"
     finally:
         context.__exit__(None, None, None)
 
@@ -295,150 +606,184 @@ def test_huge_ascii_content_length_is_bounded_without_terminating_session(
         return True
 
     try:
-        result = run_local_review(state, browser_open=drive)
+        result = _run_visible(state, drive)
         assert result["outcome"] == "draft"
     finally:
         context.__exit__(None, None, None)
 
 
-def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_path):
+def test_exception_route_undo_group_reopen_and_group_preview_are_atomic(tmp_path):
+    _source, context, state = _state(tmp_path)
+
+    def drive(url):
+        parsed, cookie, _headers = _bootstrap(url)
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
+        )
+        assert status == 200
+        client_state = _json(body)
+        csrf = client_state["csrfToken"]
+        review = client_state["review"]
+        before_count = len(review["exceptions"])
+        before_coverage = review["coverage"]
+
+        roster_unit_id = client_state["roster"]["rosterUnitId"]
+        assert any(
+            roster_unit_id in group["memberUnitIds"]
+            for group in review["organizedGroups"]
+        )
+        status, headers, body = _request(
+            parsed,
+            "GET",
+            f"/api/preview?unitId={roster_unit_id}",
+            cookie=cookie,
+        )
+        assert status == 200
+        assert _header(headers, "Content-Type") == "application/json; charset=utf-8"
+        assert _json(body)["rows"][0][:2] == ["Ho ten", "Ma so nhan vien"]
+
+        for route in (
+            "/api/preview?unitId=unit-9999",
+            f"/api/preview?%75nitId={roster_unit_id}",
+            f"/api/preview?unitId={roster_unit_id}&extra=1",
+            f"/api/preview?unitId={roster_unit_id}&unitId={roster_unit_id}",
+            f"/api/preview?sourcePath=x&unitId={roster_unit_id}",
+        ):
+            status, _headers, response = _request(
+                parsed, "GET", route, cookie=cookie
+            )
+            assert status in {400, 404}
+            assert _json(response)["error"] in {"invalid-request", "preview-not-found"}
+
+        exception = next(
+            item for item in review["exceptions"] if item["kind"] == "unit-cluster"
+        )
+        status, _headers, body = _post(
+            parsed,
+            "/api/exception",
+            cookie,
+            csrf,
+            {
+                "exceptionId": exception["exceptionId"],
+                "action": "exclude",
+                "reason": "irrelevant",
+                "applyToSimilar": False,
+            },
+        )
+        assert status == 200
+        resolved = _json(body)
+        assert len(resolved["review"]["exceptions"]) == before_count - 1
+        assert resolved["review"]["coverage"]["unaccountedUnits"] == 0
+
+        status, _headers, body = _post(
+            parsed,
+            "/api/exception/undo",
+            cookie,
+            csrf,
+            {"exceptionId": exception["exceptionId"]},
+        )
+        assert status == 200
+        undone = _json(body)
+        assert [
+            item["exceptionId"] for item in undone["review"]["exceptions"]
+        ] == [item["exceptionId"] for item in review["exceptions"]]
+        assert undone["review"]["coverage"] == before_coverage
+
+        automatic = next(
+            group
+            for group in undone["review"]["organizedGroups"]
+            if group["state"] == "automatically-organized" and group["role"]
+        )
+        duplicate = next(
+            group
+            for group in undone["review"]["organizedGroups"]
+            if group["state"] == "automatically-organized" and not group["role"]
+        )
+        latest = undone
+        for group in (automatic, duplicate):
+            prior = len(latest["review"]["exceptions"])
+            status, _headers, body = _post(
+                parsed,
+                "/api/group/reopen",
+                cookie,
+                csrf,
+                {"groupId": group["groupId"]},
+            )
+            assert status == 200
+            latest = _json(body)
+            assert len(latest["review"]["exceptions"]) == prior + 1
+            assert latest["review"]["coverage"]["unaccountedUnits"] == 0
+
+        for removed_route in ("/api/unit", "/api/source"):
+            status, _headers, body = _post(
+                parsed, removed_route, cookie, csrf, {}
+            )
+            assert status == 404
+            assert _json(body) == {"error": "route-not-found"}
+
+        status, _headers, body = _post(parsed, "/api/draft", cookie, csrf, {})
+        assert status == 200
+        assert _json(body)["outcome"] == "draft"
+        return True
+
+    try:
+        result = _run_visible(state, drive)
+        assert result["outcome"] == "draft"
+        assert PRIVATE_NAME not in repr(result)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_exception_routes_can_resolve_complete_proposal_then_approve(tmp_path):
     _source, context, state = _state(tmp_path)
     approved_response = {}
 
     def drive(url):
         parsed, cookie, _headers = _bootstrap(url)
-        status, _headers, body = _request(parsed, "GET", "/api/state", cookie=cookie)
-        client_state = _json(body)
-        csrf = client_state["csrfToken"]
-        roster = next(unit for unit in client_state["units"] if unit["suggestedRole"] == "payment-roster")
-
-        status, _headers, body = _post(
-            parsed, "/api/roster", cookie, csrf, {"rosterUnitId": roster["unitId"]}
+        status, _headers, body = _request(
+            parsed, "GET", "/api/state", cookie=cookie
         )
         assert status == 200
-        roster_state = _json(body)
-        assert roster_state["participants"] == [
-            {"participantHandle": "participant-0001", "name": PRIVATE_NAME, "identityHint": "***-001"}
-        ]
-        assert set(roster_state["review"]) == {
-            "issueCodes", "sourceDispositions", "unitDecisions"
-        }
-        roster_record = next(
-            record for record in roster_state["review"]["unitDecisions"]
-            if record["unitId"] == roster["unitId"]
-        )
-        assert roster_record["decision"] == {"decision": "unresolved"}
-        assert roster_record["allowedRoles"] == [
-            "payment-roster", "other-supporting-evidence"
-        ]
-        assert roster_record["allowedDecisions"] == [
-            "accepted", "reassigned", "excluded", "unresolved"
-        ]
+        latest = _json(body)
+        csrf = latest["csrfToken"]
 
-        status, headers, body = _request(
-            parsed, "GET", f'/api/preview?unitId={roster["unitId"]}', cookie=cookie
-        )
-        assert status == 200
-        assert _header(headers, "Content-Type") == "application/json; charset=utf-8"
-        preview = _json(body)
-        assert preview["rows"][0][:2] == ["Ho ten", "Ma so nhan vien"]
-        assert len(body) <= 25 * 1024 * 1024
-
-        for route in (
-            "/api/preview?unitId=unit-9999",
-            f'/api/preview?%75nitId={roster["unitId"]}',
-            f'/api/preview?unitId={roster["unitId"]}&extra=1',
-            f'/api/preview?unitId={roster["unitId"]}&unitId={roster["unitId"]}',
-        ):
-            status, _headers, _body = _request(parsed, "GET", route, cookie=cookie)
-            assert status in {400, 404}
-
-        assigned_unit = next(
-            unit for unit in client_state["units"]
-            if unit["suggestedRole"] not in {"payment-roster", "unknown"}
-        )
-        latest_state = roster_state
-        for unit in client_state["units"]:
-            if unit["unitId"] == assigned_unit["unitId"]:
+        while latest["review"]["exceptions"]:
+            exception = latest["review"]["exceptions"][0]
+            if exception.get("recommendedAction") is not None:
                 payload = {
-                    "unitId": unit["unitId"],
-                    "decision": "accepted",
-                    "role": unit["suggestedRole"],
-                    "target": {
-                        "scope": "individual",
-                        "participantHandles": ["participant-0001"],
-                    },
+                    "exceptionId": exception["exceptionId"],
+                    "action": "accept-recommendation",
+                    "applyToSimilar": False,
                 }
             else:
                 payload = {
-                    "unitId": unit["unitId"],
-                    "decision": "excluded",
+                    "exceptionId": exception["exceptionId"],
+                    "action": "exclude",
                     "reason": "irrelevant",
+                    "applyToSimilar": False,
                 }
-            status, _headers, _body = _post(
-                parsed,
-                "/api/unit",
-                cookie,
-                csrf,
-                payload,
+            status, _headers, body = _post(
+                parsed, "/api/exception", cookie, csrf, payload
             )
             assert status == 200
-            latest_state = _json(_body)
-        unit_evidence = {unit["evidenceId"] for unit in client_state["units"]}
-        for source in client_state["sources"]:
-            if source["evidenceId"] not in unit_evidence:
-                status, _headers, _body = _post(
-                    parsed,
-                    "/api/source",
-                    cookie,
-                    csrf,
-                    {"evidenceId": source["evidenceId"], "decision": "excluded", "reason": "irrelevant"},
-                )
-                assert status == 200
-                latest_state = _json(_body)
-
-        assigned_record = next(
-            record for record in latest_state["review"]["unitDecisions"]
-            if record["unitId"] == assigned_unit["unitId"]
-        )
-        assert assigned_record["decision"] == {
-            "decision": "accepted",
-            "role": assigned_unit["suggestedRole"],
-            "target": {
-                "scope": "individual",
-                "participantHandles": ["participant-0001"],
-            },
-        }
-        excluded_record = next(
-            record for record in latest_state["review"]["unitDecisions"]
-            if record["unitId"] == roster["unitId"]
-        )
-        assert excluded_record["decision"] == {
-            "decision": "excluded", "reason": "irrelevant"
-        }
-        assert excluded_record["issueCodes"] == roster["issueCodes"]
-        assert all(
-            record["allowedDecisions"] == ["excluded", "unresolved"]
-            and record["allowedRoles"] == []
-            for record in latest_state["review"]["sourceDispositions"]
-        )
-        assert all(
-            record["decision"] == {"decision": "excluded", "reason": "irrelevant"}
-            for record in latest_state["review"]["sourceDispositions"]
-        )
-        assert latest_state["review"]["issueCodes"] == latest_state["summary"]["issueCodes"]
-        assert PRIVATE_NAME not in repr(latest_state["review"])
+            latest = _json(body)
+            assert latest["review"]["coverage"]["unaccountedUnits"] == 0
 
         status, _headers, body = _post(parsed, "/api/summary", cookie, csrf, {})
-        summary = _json(body)
         assert status == 200
+        summary = _json(body)
         assert summary["readyToPrepare"] is True
         assert PRIVATE_NAME not in repr(summary)
 
-        status, _headers, _body = _post(
-            parsed, "/api/approve", cookie, csrf, {"expectedProposalDigest": "0" * 64}
+        status, _headers, body = _post(
+            parsed,
+            "/api/approve",
+            cookie,
+            csrf,
+            {"expectedProposalDigest": "0" * 64},
         )
         assert status == 400
+        assert _json(body) == {"error": "invalid-request"}
         status, _headers, body = _post(
             parsed,
             "/api/approve",
@@ -451,7 +796,7 @@ def test_preview_state_mutations_summary_and_approval_use_exact_current_ids(tmp_
         return True
 
     try:
-        result = run_local_review(state, browser_open=drive)
+        result = _run_visible(state, drive)
         assert result == approved_response
         assert result["outcome"] == "approved"
         assert "review" not in result
