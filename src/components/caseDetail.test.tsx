@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { PacketMeta, PacketReview } from '../upload/api'
 import type { CaseDetail as CaseDetailT } from '../upload/api'
 import CaseDetail, {
-  PacketCard,
+  PacketListRow,
   PacketDashboardView,
   type PacketDashboardViewProps,
 } from './CaseDetail'
@@ -37,21 +37,46 @@ function packet(
     rosterIdentity: { cccd: 'synthetic', name },
     review: packetReview,
     reviewFieldCount: 6,
+    taxCommitmentDetected: false,
+    boundaryAssessment: {
+      status: 'clear',
+      suspectedMultiplePackets: false,
+      reasons: [],
+      candidateStarts: [],
+    },
     ...overrides,
   }
 }
 
 const packets: PacketMeta[] = [
-  packet(0, 'Synthetic Unseen', review()),
+  packet(0, 'Synthetic Unseen', review(), {
+    dashboardSummary: {
+      taxCommitmentDetected: true,
+      documents: { present: 5, total: 5, missing: [] },
+      aiResult: 'mismatch',
+    },
+  } as any),
   packet(1, 'Synthetic Reviewing', review({
     fields: {
       a: { seen: true, flag: null },
       b: { seen: true, flag: null },
     },
-  }), { matchedBy: 'name' }),
+  }), {
+    matchedBy: 'name',
+    dashboardSummary: {
+      taxCommitmentDetected: false,
+      documents: { present: 4, total: 4, missing: [] },
+      aiResult: 'review',
+    },
+  } as any),
   packet(2, 'Synthetic Completed', review({ done: true }), {
     flags: ['auto-merged'],
-  }),
+    dashboardSummary: {
+      taxCommitmentDetected: false,
+      documents: { present: 4, total: 4, missing: [] },
+      aiResult: 'match',
+    },
+  } as any),
   packet(3, 'Synthetic Field Flagged', review({
     fields: {
       a: {
@@ -63,7 +88,13 @@ const packets: PacketMeta[] = [
         flag: { reason: 'synthetic two', note: '' },
       },
     },
-  })),
+  }), {
+    dashboardSummary: {
+      taxCommitmentDetected: false,
+      documents: { present: 3, total: 4, missing: ['BBNT'] },
+      aiResult: 'mismatch',
+    },
+  } as any),
   packet(4, 'Synthetic Rejected', review({
     done: true,
     fields: {
@@ -114,7 +145,7 @@ function findButton(
 }
 
 describe('packet dashboard presentation', () => {
-  it('renders exact filters, exclusive counts, lifecycle classes, and summaries', () => {
+  it('renders a list header, exact filters, exclusive counts, lifecycle rows, and summaries', () => {
     const html = renderView()
     expect(html).toContain('Tất cả')
     expect(html).toContain('Chưa xem')
@@ -126,10 +157,26 @@ describe('packet dashboard presentation', () => {
     expect(html).toContain('Đang xem</span><span class="packet-filter-count">1')
     expect(html).toContain('Đã xong</span><span class="packet-filter-count">1')
     expect(html).toContain('Flagged</span><span class="packet-filter-count">2')
-    expect(html).toContain('packet-card unseen')
-    expect(html).toContain('packet-card reviewing')
-    expect(html).toContain('packet-card completed')
-    expect(html).toContain('packet-card flagged')
+    expect(html).toContain('STT')
+    expect(html).toContain('Họ và tên')
+    expect(html).toContain('Phạm vi trang')
+    expect(html).toContain('Trạng thái')
+    expect(html).toContain('Kết quả kiểm tra')
+    expect(html).toContain('Cam kết thuế')
+    expect(html).toContain('Chứng từ')
+    expect(html).toContain('Kết quả AI')
+    expect(html).toContain('Đầy đủ (5/5)')
+    expect(html).toContain('Thiếu (3/4)')
+    expect(html).toContain('Thiếu: BBNT')
+    expect(html).toContain('Không hợp lệ')
+    expect(html).toContain('Cần review')
+    expect(html).toContain('Hợp lệ')
+    expect(html).toContain('packet-list-row unseen')
+    expect(html).toContain('packet-list-row reviewing')
+    expect(html).toContain('packet-list-row completed')
+    expect(html).toContain('packet-list-row flagged')
+    expect(html).not.toContain('packet-grid')
+    expect(html).not.toContain('packet-card ')
     expect(html).toContain('2/6 đã xem')
     expect(html).toContain('2 trường đã đánh dấu')
     expect(html).toContain('Đã từ chối · Thiếu chứng từ')
@@ -142,14 +189,74 @@ describe('packet dashboard presentation', () => {
     ))
     const html = renderView({ packets: fallbackPackets })
     expect(html).toContain('2 trường đã xem')
-    expect(html).toContain('packet-card reviewing')
+    expect(html).toContain('packet-list-row reviewing')
     expect(html).toContain('packet-attention')
     expect(html).toContain('Chỉ khớp theo tên')
     expect(html).toContain('Cần xác nhận ranh giới')
     expect(html).toContain('Không khớp bảng kê')
   })
 
-  it('filters controlled packet cards and renders an explicit empty state', () => {
+  it('renders tax commitment as included or not included without a read state', () => {
+    const included = renderToStaticMarkup(
+      <PacketListRow
+        packet={{
+          ...packets[0],
+          taxCommitmentDetected: true,
+          dashboardSummary: undefined,
+        } as any}
+        onOpen={() => undefined}
+      />,
+    )
+    const notIncluded = renderToStaticMarkup(
+      <PacketListRow
+        packet={{
+          ...packets[0],
+          taxCommitmentDetected: false,
+          dashboardSummary: undefined,
+        } as any}
+        onOpen={() => undefined}
+      />,
+    )
+
+    expect(included).toContain('packet-tax-commitment')
+    expect(included).toContain('Có')
+    expect(notIncluded).toContain('packet-tax-commitment')
+    expect(notIncluded).toContain('Không')
+    expect(included).toContain('packet-ai-pill review')
+    expect(included).toContain('Cần review')
+    expect(notIncluded).toContain('packet-ai-pill review')
+    expect(notIncluded).toContain('Cần review')
+    expect((included.match(/Chưa đọc/g) ?? [])).toHaveLength(1)
+    expect((notIncluded.match(/Chưa đọc/g) ?? [])).toHaveLength(1)
+  })
+
+  it('surfaces a suspected mixed packet as an AI review exception', () => {
+    const html = renderToStaticMarkup(
+      <PacketListRow
+        packet={{
+          ...packets[0],
+          flags: ['length-out-of-range'],
+          boundaryAssessment: {
+            status: 'review',
+            suspectedMultiplePackets: true,
+            reasons: ['length-out-of-range', 'multiple-contract-starts'],
+            candidateStarts: [121, 129],
+          },
+          dashboardSummary: {
+            taxCommitmentDetected: true,
+            documents: { present: 5, total: 5, missing: [] },
+            aiResult: 'review',
+          },
+        }}
+        onOpen={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Cần review')
+    expect(html).toContain('Nghi ngờ nhiều hồ sơ trong một gói')
+  })
+
+  it('filters controlled packet rows and renders an explicit empty state', () => {
     const reviewing = renderView({ filter: 'reviewing' })
     expect(reviewing).toContain('Synthetic Reviewing')
     expect(reviewing).not.toContain('Synthetic Unseen')
@@ -185,7 +292,7 @@ describe('packet dashboard presentation', () => {
     expect(priority).toBe(true)
   })
 
-  it('stably prioritizes attention, restores base order, and keeps cards clickable', () => {
+  it('stably prioritizes attention, restores base order, and keeps rows clickable', () => {
     const base = renderView()
     const prioritized = renderView({ attentionFirst: true })
     expect(base.indexOf('Synthetic Unseen'))
@@ -198,16 +305,16 @@ describe('packet dashboard presentation', () => {
       .toBeLessThan(prioritized.indexOf('Synthetic Unseen'))
 
     let opened = -1
-    const tree = PacketCard({
+    const tree = PacketListRow({
       packet: packets[1],
       onOpen: index => { opened = index },
     })
-    const card = findButton(tree, element => (
+    const row = findButton(tree, element => (
       String((element.props as { className?: string }).className)
-        .includes('packet-card')
+        .includes('packet-list-row')
     ))
-    expect(card).not.toBeNull()
-    ;(card!.props as { onClick: () => void }).onClick()
+    expect(row).not.toBeNull()
+    ;(row!.props as { onClick: () => void }).onClick()
     expect(opened).toBe(1)
   })
 

@@ -12,6 +12,7 @@ import type { MatchedBy, PacketReview } from '../upload/api'
 import FolderFieldsPanel from './FolderFieldsPanel'
 import FolderReview from './FolderReview'
 import MatchKeyStrip from './MatchKeyStrip'
+import PacketBoundaryWarning from './PacketBoundaryWarning'
 import ReviewHeader from './ReviewHeader'
 
 const ranked: RankedCtv[] = [{
@@ -279,6 +280,37 @@ describe('review presentation', () => {
     expect(html.match(/6\.111\.111 ₫/g)).toHaveLength(1)
     expect(html).not.toContain('>6111111<')
     expect(html).not.toContain('roster-callout')
+  })
+})
+
+describe('packet boundary warning', () => {
+  it('explains unresolved mixed-packet evidence', () => {
+    const html = renderToStaticMarkup(
+      <PacketBoundaryWarning assessment={{
+        status: 'review',
+        suspectedMultiplePackets: true,
+        reasons: ['length-out-of-range', 'multiple-contract-starts'],
+        candidateStarts: [121, 129],
+      }} />,
+    )
+
+    expect(html).toContain('Nghi ngờ nhiều hồ sơ trong một gói')
+    expect(html).toContain(
+      'AI phát hiện ranh giới hoặc danh tính không nhất quán. Hãy kiểm tra và xác nhận ranh giới trước khi kết luận hồ sơ.',
+    )
+  })
+
+  it('renders nothing for a clear packet boundary', () => {
+    const html = renderToStaticMarkup(
+      <PacketBoundaryWarning assessment={{
+        status: 'clear',
+        suspectedMultiplePackets: false,
+        reasons: [],
+        candidateStarts: [],
+      }} />,
+    )
+
+    expect(html).toBe('')
   })
 })
 

@@ -79,6 +79,15 @@ test('packetNeedsResubmit: field flag or weak match', () => {
       rejection: { reasons: ['missing_documents'], note: '' },
     },
   })).toBe(true)
+  expect(packetNeedsResubmit({
+    ...base,
+    boundaryAssessment: {
+      status: 'review',
+      suspectedMultiplePackets: true,
+      reasons: ['multiple-contract-starts'],
+      candidateStarts: [10, 18],
+    },
+  })).toBe(false)
 })
 
 test('normalizePacketReview adds the additive legacy default', () => {

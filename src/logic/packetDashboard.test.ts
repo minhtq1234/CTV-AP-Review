@@ -36,6 +36,13 @@ function packet(
     rosterIdentity: { cccd: 'synthetic', name: `Synthetic ${index}` },
     review: packetReview,
     reviewFieldCount: 6,
+    taxCommitmentDetected: false,
+    boundaryAssessment: {
+      status: 'clear',
+      suspectedMultiplePackets: false,
+      reasons: [],
+      candidateStarts: [],
+    },
     ...overrides,
   }
 }
@@ -126,6 +133,23 @@ describe('system attention', () => {
     expect(attentionReasons(packet(2, review(), {
       matchedBy: 'name',
     }))).toEqual(['Chỉ khớp theo tên'])
+  })
+
+  it('prioritizes a suspected mixed packet with the strong boundary reason', () => {
+    const normal = packet(0)
+    const mixed = packet(1, review(), {
+      boundaryAssessment: {
+        status: 'review',
+        suspectedMultiplePackets: true,
+        reasons: ['multiple-contract-starts'],
+        candidateStarts: [20, 28],
+      },
+    })
+
+    expect(attentionReasons(mixed)[0]).toBe(
+      'Nghi ngờ nhiều hồ sơ trong một gói',
+    )
+    expect(prioritizeAttention([normal, mixed])).toEqual([mixed, normal])
   })
 })
 

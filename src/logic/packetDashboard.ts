@@ -46,13 +46,19 @@ const KNOWN_PIPELINE_FLAGS = new Set([
 ])
 
 export function attentionReasons(
-  packet: Pick<PacketMeta, 'matchedBy' | 'flags'>,
+  packet: Pick<PacketMeta, 'matchedBy' | 'flags' | 'boundaryAssessment'>,
 ): string[] {
   const reasons: string[] = []
   const add = (reason: string) => {
     if (!reasons.includes(reason)) reasons.push(reason)
   }
 
+  if (
+    packet.boundaryAssessment.status === 'review'
+    && packet.boundaryAssessment.suspectedMultiplePackets
+  ) {
+    add('Nghi ngờ nhiều hồ sơ trong một gói')
+  }
   if (packet.matchedBy === 'name') add('Chỉ khớp theo tên')
   if (packet.matchedBy === 'unmatched') add('Không khớp bảng kê')
   if (packet.flags.includes('auto-merged')) add('Cần xác nhận ranh giới')
@@ -94,7 +100,7 @@ export function filterPackets<T extends Pick<PacketMeta, 'review'>>(
 }
 
 export function prioritizeAttention<
-  T extends Pick<PacketMeta, 'matchedBy' | 'flags'>,
+  T extends Pick<PacketMeta, 'matchedBy' | 'flags' | 'boundaryAssessment'>,
 >(packets: ReadonlyArray<T>): T[] {
   return [
     ...packets.filter(packet => attentionReasons(packet).length > 0),

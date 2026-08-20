@@ -23,9 +23,8 @@ interface Props {
   onExport: () => void
 }
 
-// The case-detail screen: header (name + case status + review progress) over the
-// same packet-card grid the splitter's own result view uses (see SplitResultScreen),
-// with each card now also carrying its derived review status badge.
+// The case-detail screen: header (name + case status + review progress) over a
+// compact packet list, with each row carrying its derived review status.
 export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: Props) {
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
@@ -146,17 +145,30 @@ export function PacketDashboardView({
       </div>
 
       {visible.length > 0 ? (
-        <div className="packet-grid">
-          {visible.map(packet => (
-            <PacketCard
-              key={packet.index}
-              packet={packet}
-              onOpen={onOpenPacket}
-            />
-          ))}
+        <div className="packet-list-scroll">
+          <div className="packet-list" role="table" aria-label="Danh sách gói hồ sơ">
+            <div className="packet-list-header" role="row">
+              <span role="columnheader">STT</span>
+              <span role="columnheader">Họ và tên</span>
+              <span role="columnheader">Cam kết thuế</span>
+              <span role="columnheader">Chứng từ</span>
+              <span role="columnheader">Kết quả AI</span>
+              <span role="columnheader">Trạng thái</span>
+              <span role="columnheader">Kết quả kiểm tra</span>
+              <span role="columnheader">Phạm vi trang</span>
+              <span role="columnheader" aria-label="Mở hồ sơ" />
+            </div>
+            {visible.map(packet => (
+              <PacketListRow
+                key={packet.index}
+                packet={packet}
+                onOpen={onOpenPacket}
+              />
+            ))}
+          </div>
         </div>
       ) : (
-        <div className="packet-grid-empty">
+        <div className="packet-list-empty">
           Không có gói hồ sơ ở trạng thái này.
         </div>
       )}
@@ -164,7 +176,7 @@ export function PacketDashboardView({
   )
 }
 
-export function PacketCard({
+export function PacketListRow({
   packet,
   onOpen,
 }: {
@@ -179,30 +191,77 @@ export function PacketCard({
   const attentionCopy = attention.length > 1
     ? `${attention[0]} +${attention.length - 1}`
     : attention[0]
+  const packetName = packet.name || 'chưa khớp tên'
+  const dashboard = packet.dashboardSummary
+  const aiResult = dashboard?.aiResult
+  const presentedAiResult = aiResult ?? 'review'
+  const aiResultLabel = presentedAiResult === 'match'
+    ? 'Hợp lệ'
+    : presentedAiResult === 'review'
+      ? 'Cần review'
+      : 'Không hợp lệ'
+  const aiResultIcon = presentedAiResult === 'match' ? '✓' : presentedAiResult === 'review' ? '!' : '×'
 
   return (
     <button
-      className={`packet-card ${status}`}
+      type="button"
+      role="row"
+      className={`packet-list-row ${status}`}
+      aria-label={`Mở hồ sơ ${packetName}`}
       onClick={() => onOpen(packet.index)}
     >
-      <div className="packet-card-head">
+      <span className="packet-list-index" role="cell">
+        {String(packet.index + 1).padStart(2, '0')}
+      </span>
+      <span className="packet-list-person" role="cell">
         <span className="packet-status-dot" aria-hidden="true" />
-        <span className="packet-name">{packet.name || 'chưa khớp tên'}</span>
-      </div>
-      <div className="packet-range">
+        <span className="packet-name">{packetName}</span>
+      </span>
+      <span role="cell">
+        <span className="packet-summary-pill neutral packet-tax-commitment">
+          <span className="packet-summary-dot" aria-hidden="true" />
+          {packet.taxCommitmentDetected ? 'Có' : 'Không'}
+        </span>
+      </span>
+      <span className="packet-doc-summary" role="cell">
+        {dashboard ? (
+          <>
+            <span className={`packet-summary-pill ${dashboard.documents.missing.length ? 'mismatch' : 'match'}`}>
+              <span className="packet-summary-dot" aria-hidden="true" />
+              {dashboard.documents.missing.length ? 'Thiếu' : 'Đầy đủ'} ({dashboard.documents.present}/{dashboard.documents.total})
+            </span>
+            {dashboard.documents.missing.length > 0 && (
+              <span className="packet-doc-missing">
+                Thiếu: {dashboard.documents.missing.join(', ')}
+              </span>
+            )}
+          </>
+        ) : <span className="packet-list-empty-value">Chưa đọc</span>}
+      </span>
+      <span role="cell">
+        <span className={`packet-ai-pill ${presentedAiResult}`}>
+          <span className="packet-ai-icon" aria-hidden="true">{aiResultIcon}</span>
+          {aiResultLabel}
+        </span>
+      </span>
+      <span className={`decision-badge ${status}`} role="cell">
+        {PACKET_DASHBOARD_LABELS[status]}
+      </span>
+      <span className="packet-list-result" role="cell">
+        {summary && <span className="packet-status-summary">{summary}</span>}
+        {attentionCopy && (
+          <span className="packet-attention" title={attentionLabel} aria-label={attentionLabel}>
+            <span className="packet-attention-icon" aria-hidden="true">!</span>
+            <span>{attentionCopy}</span>
+          </span>
+        )}
+        {!summary && !attentionCopy && <span className="packet-list-empty-value">—</span>}
+      </span>
+      <span className="packet-range" role="cell">
         p{start + 1}–{end + 1}
         {packet.n_pages ? ` · ${packet.n_pages} trang` : ''}
-      </div>
-      <div className={`decision-badge ${status}`}>
-        {PACKET_DASHBOARD_LABELS[status]}
-      </div>
-      {summary && <div className="packet-status-summary">{summary}</div>}
-      {attentionCopy && (
-        <div className="packet-attention" title={attentionLabel} aria-label={attentionLabel}>
-          <span className="packet-attention-icon" aria-hidden="true">!</span>
-          <span>{attentionCopy}</span>
-        </div>
-      )}
+      </span>
+      <span className="packet-list-open" role="cell" aria-hidden="true">›</span>
     </button>
   )
 }

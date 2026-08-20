@@ -20,6 +20,7 @@ import CaseDetail from './CaseDetail'
 import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
 import ReviewHeader from './ReviewHeader'
+import PacketBoundaryWarning from './PacketBoundaryWarning'
 
 type Screen = 'list' | 'upload' | 'detail' | 'review'
 
@@ -156,7 +157,12 @@ export default function UploadFlow() {
     setDetail(current => current?.id === context.caseId ? ({
       ...current,
       packets: current.packets.map(packet => (
-        packet.index === context.packetIndex ? res.packet : packet
+        packet.index === context.packetIndex
+          ? {
+              ...res.packet,
+              dashboardSummary: res.packet.dashboardSummary ?? packet.dashboardSummary,
+            }
+          : packet
       )),
       status: res.status,
       progress: res.progress,
@@ -237,6 +243,7 @@ export default function UploadFlow() {
           onPrevious={() => prev && onOpenPacket(prev.index)}
           onNext={() => next && onOpenPacket(next.index)}
         />
+        <PacketBoundaryWarning assessment={meta?.boundaryAssessment} />
         <FolderReview
           key={packetIndex ?? folder.id}
           folder={folder}
