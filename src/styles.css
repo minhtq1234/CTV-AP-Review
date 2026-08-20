@@ -12,6 +12,14 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 6px; }
 .dot.approved { background: var(--success); } .dot.rejected { background: var(--danger); }
 .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.package-view-toggle { display: flex; align-items: center; justify-content: flex-end; gap: 2px;
+  padding: 7px 14px; border-bottom: 0.5px solid var(--border); background: var(--surface); }
+.package-view-toggle button { border: 0.5px solid var(--border); background: transparent; color: var(--text-muted);
+  padding: 6px 12px; cursor: pointer; font-size: 12px; }
+.package-view-toggle button:first-child { border-radius: 7px 0 0 7px; }
+.package-view-toggle button:last-child { border-radius: 0 7px 7px 0; }
+.package-view-toggle button.on { position: relative; border-color: var(--accent); background: #eaf1fb;
+  color: var(--accent); font-weight: 600; }
 .screen-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border-bottom: 0.5px solid var(--border); background: var(--surface); font-size: 14px; }
 .panes { flex: 1; display: flex; min-height: 0; }
 .fields-pane { width: 47%; overflow-y: auto; border-right: 0.5px solid var(--border); background: var(--surface); }
@@ -125,6 +133,50 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
    colored like a verdict, since an unread copy is a location to check, not a hint. */
 .srcchip.unread { color: var(--text-muted); font-style: italic; }
 .srcbad { font-family: monospace; }
+
+/* Package grid: Excel reference rows cross-checked against every document in the packet. */
+.packet-grid-view { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.packet-grid-scroll { flex: 1; min-height: 0; overflow: auto; }
+.packet-grid-table { min-width: 100%; border-spacing: 0; border-collapse: separate; table-layout: fixed;
+  color: var(--text); font-size: 12px; }
+.packet-grid-table th, .packet-grid-table td { height: 48px; padding: 8px 10px;
+  border-right: 0.5px solid var(--border); border-bottom: 0.5px solid var(--border); background: var(--surface); }
+.packet-grid-table thead th { position: sticky; top: 0; z-index: 4; height: 58px; background: #f2f4f6;
+  color: #7b838d; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-align: center;
+  text-transform: uppercase; }
+.packet-grid-order { position: sticky; left: 0; z-index: 2; width: 52px; min-width: 52px;
+  color: var(--text-muted); text-align: center; }
+.packet-grid-field { position: sticky; left: 52px; z-index: 2; width: 190px; min-width: 190px; text-align: left; }
+.packet-grid-table tbody .packet-grid-field { font-size: 12px; font-weight: 600; }
+.packet-grid-excel, .packet-grid-excel-value { position: sticky; left: 242px; z-index: 2;
+  width: 260px; min-width: 260px; }
+.packet-grid-excel-value { color: #59616b; font-family: monospace; }
+.packet-grid-document { width: 118px; min-width: 118px; white-space: normal; }
+.packet-grid-doc-order { display: block; margin-bottom: 2px; color: #9da4ad; font-size: 9px; }
+.packet-grid-cell { width: 118px; min-width: 118px; text-align: center; }
+.packet-grid-status { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border: 0; border-radius: 8px; font-size: 16px; font-weight: 700; }
+button.packet-grid-status { cursor: pointer; }
+button.packet-grid-status:hover { outline: 2px solid currentColor; outline-offset: 2px; }
+.packet-grid-status.match { background: #e7f6ed; color: var(--success); }
+.packet-grid-status.review { background: #fff1d7; color: var(--warning); }
+.packet-grid-status.mismatch { background: #fbe8e6; color: var(--danger); }
+.packet-grid-status.na { background: #f1f2f3; color: #a5abb2; font-weight: 500; }
+.packet-grid-table tfoot th, .packet-grid-table tfoot td { position: sticky; bottom: 0; z-index: 3;
+  height: 42px; background: #f2f4f6; font-weight: 700; text-align: center; }
+.packet-grid-result-label { left: 0; text-align: right !important; }
+.packet-grid-result.match { color: var(--success); }
+.packet-grid-result.review { color: var(--warning); }
+.packet-grid-result.mismatch { color: var(--danger); }
+.packet-grid-result.na { color: var(--text-muted); }
+.packet-grid-legend { display: flex; flex-wrap: wrap; gap: 16px; padding: 8px 14px;
+  border-top: 0.5px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.packet-grid-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.packet-grid-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.packet-grid-legend i.match { background: var(--success); }
+.packet-grid-legend i.review { background: var(--warning); }
+.packet-grid-legend i.mismatch { background: var(--danger); }
+.packet-grid-legend i.na { background: #9aa0a8; }
 
 /* Upload flow ("Tải hồ sơ"): dropzone, processing, split-result, review-back-bar. */
 .upload-screen { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 20px; overflow-y: auto; }

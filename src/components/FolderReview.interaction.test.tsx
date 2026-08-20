@@ -108,7 +108,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const renderReview = (review = emptyReview, reviewFolder = folder) => {
+const renderReview = (
+  review = emptyReview,
+  reviewFolder = folder,
+  initialMode: 'grid' | 'documents' = 'documents',
+) => {
   const onReview = vi.fn()
   act(() => {
     root.render(
@@ -120,6 +124,12 @@ const renderReview = (review = emptyReview, reviewFolder = folder) => {
       />,
     )
   })
+  if (initialMode === 'documents') {
+    const documents = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent === 'Xem chứng từ',
+    )
+    if (documents) click(documents)
+  }
   return onReview
 }
 
@@ -169,6 +179,51 @@ const configureFocusedFieldGeometry = () => {
     y: 0,
   })
 }
+
+describe('FolderReview package grid interactions', () => {
+  it('opens in grid mode and toggles to the document reviewer', () => {
+    renderReview(emptyReview, folder, 'grid')
+
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+    expect(container.querySelector('.panes')).toBeNull()
+
+    const documents = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent === 'Xem chứng từ',
+    )
+    expect(documents).toBeDefined()
+    click(documents!)
+
+    expect(container.querySelector('.packet-grid-view')).toBeNull()
+    expect(container.querySelector('.panes')).not.toBeNull()
+  })
+
+  it('opens the selected grid cell in its exact document evidence', () => {
+    const onReview = renderReview(emptyReview, folder, 'grid')
+    const evidenceCell = container.querySelector(
+      'button[aria-label="Trường mẫu · Chứng từ 1 Synthetic contract: Khớp"]',
+    )
+
+    expect(evidenceCell).not.toBeNull()
+    click(evidenceCell!)
+
+    expect(container.querySelector('.packet-grid-view')).toBeNull()
+    expect(container.querySelector('.ev-tab.on')?.textContent).toBe('Synthetic contract')
+    expect(container.querySelector('.doc-hl-fill')).not.toBeNull()
+    expect(onReview).toHaveBeenCalledWith({
+      ...emptyReview,
+      fields: { 'field-a': { seen: true, flag: null } },
+    })
+  })
+
+  it('does not run document-review shortcuts while the grid is visible', () => {
+    const onReview = renderReview(emptyReview, folder, 'grid')
+
+    press('ArrowDown')
+    press('F')
+
+    expect(onReview).not.toHaveBeenCalled()
+  })
+})
 
 describe('FolderReview mounted Overview interactions', () => {
   it('removes the field-autofocus spacer only while Overview is active', () => {

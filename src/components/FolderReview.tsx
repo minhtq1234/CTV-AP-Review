@@ -19,6 +19,7 @@ import {
 import FolderFieldsPanel from './FolderFieldsPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
+import PacketGrid from './PacketGrid'
 import PacketRejectionDialog from './PacketRejectionDialog'
 
 interface Props {
@@ -40,6 +41,7 @@ export default function FolderReview({
   const [selection, setSelection] = useState<ReviewSelection>(
     overviewSelection,
   )
+  const [viewMode, setViewMode] = useState<'grid' | 'documents'>('grid')
   const [overviewResetVersion, setOverviewResetVersion] = useState(0)
   const [activeDocId, setActiveDocId] = useState(folder.docs[0]?.id ?? '')
   const [activePage, setActivePage] = useState(0)
@@ -102,6 +104,7 @@ export default function FolderReview({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (viewMode !== 'documents') return
       const el = e.target as HTMLElement | null
       const fromOverviewControl = !!el?.closest('.overview-selection-control')
       if (el && (
@@ -134,13 +137,14 @@ export default function FolderReview({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ranked, selection, folder])
+  }, [ranked, selection, folder, viewMode])
 
   // `F` toggles a flag on the currently selected field — separate from the arrow-nav effect
   // above, same input-focus guard, plus skipping modified keystrokes so browser/OS shortcuts
   // (e.g. ⌘F find) pass through untouched.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (viewMode !== 'documents') return
       const el = e.target as HTMLElement | null
       if (el && (
         ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName)
@@ -156,7 +160,7 @@ export default function FolderReview({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [review, selection])
+  }, [review, selection, viewMode])
 
   const selectedKey = selectedFieldKey(selection)
   const selField = selectedKey
@@ -180,38 +184,68 @@ export default function FolderReview({
 
   return (
     <div className="screen">
-      <div className="panes">
-        <FolderFieldsPanel
-          ranked={ranked}
-          selection={selection}
-          onSelectOverview={selectOverview}
-          onSelectField={key => focusAt(key, 0)}
-          review={review}
-          onToggleFlag={toggleFlag}
-          onOpenPacketRejection={() => {
-            setRejectionError(null)
-            setRejectionDialogOpen(true)
+      <div className="package-view-toggle" role="group" aria-label="Chế độ xem hồ sơ">
+        <button
+          type="button"
+          aria-pressed={viewMode === 'grid'}
+          className={viewMode === 'grid' ? 'on' : ''}
+          onClick={() => setViewMode('grid')}
+        >
+          Dạng bảng
+        </button>
+        <button
+          type="button"
+          aria-pressed={viewMode === 'documents'}
+          className={viewMode === 'documents' ? 'on' : ''}
+          onClick={() => setViewMode('documents')}
+        >
+          Xem chứng từ
+        </button>
+      </div>
+      {viewMode === 'grid' ? (
+        <PacketGrid
+          folder={folder}
+          onOpenEvidence={(fieldKey, sourceIndex) => {
+            setViewMode('documents')
+            focusAt(fieldKey, sourceIndex)
           }}
         />
-        <EvidenceViewer
-          docs={folder.docs}
-          activeDocId={activeDocId}
-          activePage={activePage}
-          focusBbox={focusBbox}
-          lockView={lockView}
-          overviewMode={selection.kind === 'overview'}
-          overviewResetVersion={overviewResetVersion}
-          onSelectDoc={onSelectDoc}
-          onToggleLock={() => setLockView(v => !v)}
-          rosterLabel={selField?.label}
-          rosterValue={selField ? formatRosterValue(selField) : null}
-        />
-      </div>
+      ) : (
+        <div className="panes">
+          <FolderFieldsPanel
+            ranked={ranked}
+            selection={selection}
+            onSelectOverview={selectOverview}
+            onSelectField={key => focusAt(key, 0)}
+            review={review}
+            onToggleFlag={toggleFlag}
+            onOpenPacketRejection={() => {
+              setRejectionError(null)
+              setRejectionDialogOpen(true)
+            }}
+          />
+          <EvidenceViewer
+            docs={folder.docs}
+            activeDocId={activeDocId}
+            activePage={activePage}
+            focusBbox={focusBbox}
+            lockView={lockView}
+            overviewMode={selection.kind === 'overview'}
+            overviewResetVersion={overviewResetVersion}
+            onSelectDoc={onSelectDoc}
+            onToggleLock={() => setLockView(v => !v)}
+            rosterLabel={selField?.label}
+            rosterValue={selField ? formatRosterValue(selField) : null}
+          />
+        </div>
+      )}
       <ActionBar
         done={review.done}
         seenCount={seenCount}
         total={fieldKeys.length}
-        hint="↑↓ chuyển trường · ←→ đổi chứng từ · F đánh dấu · B khung · V giá trị bảng kê · ⌥P di chuyển · ? phím tắt"
+        hint={viewMode === 'grid'
+          ? 'Chọn một ô để mở đúng chứng từ và vùng dữ liệu'
+          : '↑↓ chuyển trường · ←→ đổi chứng từ · F đánh dấu · B khung · V giá trị bảng kê · ⌥P di chuyển · ? phím tắt'}
         onFinish={() => { if (allSeen(review, fieldKeys)) onReview({ ...review, done: true }) }}
       />
       {rejectionDialogOpen && (
