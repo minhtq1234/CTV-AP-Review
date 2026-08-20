@@ -41,6 +41,7 @@ const click = (element: Element) => {
 test('renders the optional xlsx CCCD chooser and high-resolution guidance', () => {
   const html = renderToStaticMarkup(createElement(UploadScreen, {
     busy: false,
+    onBack: () => undefined,
     onStart: () => undefined,
   }))
 
@@ -49,10 +50,38 @@ test('renders the optional xlsx CCCD chooser and high-resolution guidance', () =
   expect((html.match(/accept="\.xlsx"/g) ?? []).length).toBe(2)
 })
 
+test('returns to the case list from the upload screen', () => {
+  const onBack = vi.fn()
+  act(() => {
+    root.render(<UploadScreen busy={false} onBack={onBack} onStart={() => undefined} />)
+  })
+
+  const back = Array.from(container.querySelectorAll('button')).find(
+    button => button.textContent?.includes('Quay lại danh sách hồ sơ'),
+  )
+
+  expect(back).toBeDefined()
+  click(back!)
+  expect(onBack).toHaveBeenCalledOnce()
+})
+
+test('prevents leaving while an upload is being submitted', () => {
+  act(() => {
+    root.render(<UploadScreen busy onBack={() => undefined} onStart={() => undefined} />)
+  })
+
+  const back = Array.from(container.querySelectorAll('button')).find(
+    button => button.textContent?.includes('Quay lại danh sách hồ sơ'),
+  ) as HTMLButtonElement | undefined
+
+  expect(back).toBeDefined()
+  expect(back?.disabled).toBe(true)
+})
+
 test('blocks CCCD without roster, then submits and clears all three files', () => {
   const onStart = vi.fn()
   act(() => {
-    root.render(<UploadScreen busy={false} onStart={onStart} />)
+    root.render(<UploadScreen busy={false} onBack={() => undefined} onStart={onStart} />)
   })
   const pdfInput = container.querySelector(
     'input[accept="application/pdf"]',

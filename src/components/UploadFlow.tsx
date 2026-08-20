@@ -208,7 +208,7 @@ export default function UploadFlow() {
   }
 
   if (screen === 'upload') {
-    return <UploadScreen onStart={onStart} busy={busy} />
+    return <UploadScreen onStart={onStart} onBack={backToList} busy={busy} />
   }
 
   if (screen === 'detail' && detail) {

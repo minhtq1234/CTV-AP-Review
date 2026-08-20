@@ -128,7 +128,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 
 /* Upload flow ("Tải hồ sơ"): dropzone, processing, split-result, review-back-bar. */
 .upload-screen { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 20px; overflow-y: auto; }
-.upload-card { width: 480px; max-width: 100%; background: var(--surface); border: 0.5px solid var(--border);
+.upload-shell { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; width: 480px; max-width: 100%; }
+.upload-back { padding: 7px 12px; }
+.upload-card { box-sizing: border-box; width: 100%; background: var(--surface); border: 0.5px solid var(--border);
   border-radius: 12px; padding: 28px 26px; text-align: center; }
 .upload-card h2 { margin: 0 0 8px; font-size: 18px; }
 .upload-hint { font-size: 13px; color: var(--text-muted); margin: 0 0 20px; line-height: 1.5; }

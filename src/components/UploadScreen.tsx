@@ -6,12 +6,13 @@ import {
 
 interface Props {
   onStart: (pdf: File, roster?: File, cccd?: File) => void
+  onBack: () => void
   busy: boolean
 }
 
 // The very first screen of the "Tải hồ sơ" flow: pick the scanned PDF (required)
 // and, optionally, the Excel roster to reconcile against, then kick off a backend job.
-export default function UploadScreen({ onStart, busy }: Props) {
+export default function UploadScreen({ onStart, onBack, busy }: Props) {
   const [pdf, setPdf] = useState<File | null>(null)
   const [roster, setRoster] = useState<File | null>(null)
   const [cccd, setCccd] = useState<File | null>(null)
@@ -24,7 +25,16 @@ export default function UploadScreen({ onStart, busy }: Props) {
 
   return (
     <div className="upload-screen">
-      <div className="upload-card">
+      <div className="upload-shell">
+        <button
+          type="button"
+          className="btn upload-back"
+          disabled={busy}
+          onClick={onBack}
+        >
+          ← Quay lại danh sách hồ sơ
+        </button>
+        <div className="upload-card">
         <h2>Tải hồ sơ CTV</h2>
         <p className="upload-hint">
           Tải lên bản scan PDF gồm nhiều hồ sơ CTV (và bảng kê Excel nếu có) để tự động
@@ -103,6 +113,7 @@ export default function UploadScreen({ onStart, busy }: Props) {
         >
           {busy ? 'Đang tải lên…' : 'Bắt đầu xử lý'}
         </button>
+        </div>
       </div>
     </div>
   )
