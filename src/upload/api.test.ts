@@ -108,7 +108,7 @@ test('getCase normalizes missing and present review field counts', async () => {
     id: 'synthetic-case',
     name: 'Synthetic Case',
     createdAt: null,
-    status: 'ready',
+    status: 'processing',
     pdfName: 'synthetic.pdf',
     rosterName: null,
     summary: null,
@@ -129,6 +129,90 @@ test('getCase normalizes missing and present review field counts', async () => {
     })
   vi.stubGlobal('fetch', fetchMock)
 
-  expect((await getCase('synthetic-case')).packets[0].reviewFieldCount).toBe(0)
-  expect((await getCase('synthetic-case')).packets[0].reviewFieldCount).toBe(6)
+  const legacyPacket = (await getCase('synthetic-case')).packets[0]
+  const countedPacket = (await getCase('synthetic-case')).packets[0]
+  expect(legacyPacket.reviewFieldCount).toBe(0)
+  expect(countedPacket.reviewFieldCount).toBe(6)
+  expect(legacyPacket.boundaryAssessment).toEqual({
+    status: 'clear',
+    suspectedMultiplePackets: false,
+    reasons: [],
+    candidateStarts: [],
+  })
+  expect(countedPacket.boundaryAssessment).toEqual(
+    legacyPacket.boundaryAssessment,
+  )
+})
+
+test('getCase adds compact dashboard evidence summaries for ready packets', async () => {
+  const detail = {
+    id: 'synthetic-case',
+    name: 'Synthetic Case',
+    createdAt: null,
+    status: 'ready',
+    pdfName: 'synthetic.pdf',
+    rosterName: null,
+    cccdName: null,
+    cccdSummary: null,
+    summary: null,
+    error: null,
+    progress: { done: 0, total: 1, flagged: 0 },
+    packets: [{
+      index: 0,
+      name: 'Synthetic Person',
+      pages: [0, 1],
+      confidence: 'green',
+      flags: [],
+      matchedBy: 'cccd',
+      ocrIdentity: { cccd: 'synthetic', name: 'Synthetic Person' },
+      rosterIdentity: { cccd: 'synthetic', name: 'Synthetic Person' },
+      review: { done: false, fields: {}, rejection: null },
+      reviewFieldCount: 1,
+      boundaryAssessment: {
+        status: 'review',
+        suspectedMultiplePackets: true,
+        reasons: ['multiple-contract-starts'],
+        candidateStarts: [10, 18],
+      },
+    }],
+  }
+  const manifest = {
+    id: 'synthetic-folder',
+    name: 'Synthetic Person',
+    product: 'Synthetic Product',
+    status: 'pending',
+    exempt: false,
+    docs: ['id_front', 'id_back', 'contract', 'bbnt', 'appendix', 'commitment']
+      .map((kind, index) => ({
+        id: `doc-${index}`,
+        kind,
+        label: `Synthetic ${kind}`,
+        pages: [{ src: `/page-${index}.png`, width: 100, height: 100 }],
+      })),
+    fields: [{
+      key: 'name',
+      label: 'Name',
+      group: 'Danh tính',
+      check: 'compare',
+      kind: 'text',
+      expected: 'Synthetic Person',
+      sources: [{
+        docId: 'doc-2', page: 0, value: 'Synthetic Person', confidence: 0.99,
+        bbox: { x: 0, y: 0, width: 10, height: 10 },
+      }],
+    }],
+  }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => (
+    url.endsWith('/manifest.json')
+      ? { ok: true, json: async () => manifest }
+      : { ok: true, json: async () => detail }
+  )))
+
+  const result = await getCase('synthetic-case')
+
+  expect(result.packets[0].dashboardSummary).toEqual({
+    taxCommitmentDetected: true,
+    documents: { present: 5, total: 5, missing: [] },
+    aiResult: 'review',
+  })
 })

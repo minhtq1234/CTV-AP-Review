@@ -4,6 +4,10 @@
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
 import type { CtvFolder } from '../ctv/types'
+import {
+  summarizePacketEvidence,
+  type PacketEvidenceSummary,
+} from '../logic/packetEvidenceSummary'
 
 export const API_BASE = 'http://127.0.0.1:8001'
 
@@ -24,6 +28,21 @@ export interface Progress {
 export type CaseState = 'processing' | 'ready' | 'in_review' | 'done' | 'error'
 
 export type MatchedBy = 'cccd' | 'name' | 'unmatched' | 'no-roster'
+
+export type BoundaryReason =
+  | 'length-out-of-range'
+  | 'near-threshold'
+  | 'auto-merged'
+  | 'multiple-contract-starts'
+  | 'multiple-identities'
+  | 'batch-count-mismatch'
+
+export interface PacketBoundaryAssessment {
+  status: 'clear' | 'review' | 'accepted'
+  suspectedMultiplePackets: boolean
+  reasons: BoundaryReason[]
+  candidateStarts: number[]
+}
 
 export interface Identity {
   cccd: string
@@ -78,6 +97,9 @@ export interface PacketMeta {
   rosterIdentity: Identity | null
   review: PacketReview
   reviewFieldCount: number
+  taxCommitmentDetected: boolean
+  boundaryAssessment: PacketBoundaryAssessment
+  dashboardSummary?: PacketEvidenceSummary
 }
 
 // The pipeline's split/OCR summary — key names mirror server/pipeline.py's
@@ -168,9 +190,26 @@ export async function getCase(caseId: string): Promise<CaseDetail> {
   const res = await fetch(`${API_BASE}/api/cases/${caseId}`)
   if (!res.ok) throw new Error(`getCase: HTTP ${res.status}`)
   const detail = await res.json() as CaseDetail
+  const normalized = detail.packets.map(normalizePacketMeta)
+  const packets = detail.status === 'processing' || detail.status === 'error'
+    ? normalized
+    : await Promise.all(normalized.map(async packet => {
+      try {
+        const folder = await fetchPacketManifest(caseId, packet.index)
+        return {
+          ...packet,
+          dashboardSummary: summarizePacketEvidence(
+            folder,
+            packet.boundaryAssessment,
+          ),
+        }
+      } catch {
+        return packet
+      }
+    }))
   return {
     ...detail,
-    packets: detail.packets.map(normalizePacketMeta),
+    packets,
   }
 }
 
@@ -213,6 +252,13 @@ export async function setReview(
 function normalizePacketMeta(packet: PacketMeta): PacketMeta {
   return {
     ...packet,
+    taxCommitmentDetected: Boolean(packet.taxCommitmentDetected),
+    boundaryAssessment: packet.boundaryAssessment ?? {
+      status: 'clear',
+      suspectedMultiplePackets: false,
+      reasons: [],
+      candidateStarts: [],
+    },
     reviewFieldCount: Number.isFinite(packet.reviewFieldCount)
       ? Math.max(0, Math.trunc(packet.reviewFieldCount))
       : 0,
