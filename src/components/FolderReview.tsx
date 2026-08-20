@@ -20,6 +20,7 @@ import FolderFieldsPanel from './FolderFieldsPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
 import PacketGrid from './PacketGrid'
+import PacketEvidenceDrawer from './PacketEvidenceDrawer'
 import PacketRejectionDialog from './PacketRejectionDialog'
 
 interface Props {
@@ -42,6 +43,7 @@ export default function FolderReview({
     overviewSelection,
   )
   const [viewMode, setViewMode] = useState<'grid' | 'documents'>('grid')
+  const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false)
   const [overviewResetVersion, setOverviewResetVersion] = useState(0)
   const [activeDocId, setActiveDocId] = useState(folder.docs[0]?.id ?? '')
   const [activePage, setActivePage] = useState(0)
@@ -189,7 +191,10 @@ export default function FolderReview({
           type="button"
           aria-pressed={viewMode === 'grid'}
           className={viewMode === 'grid' ? 'on' : ''}
-          onClick={() => setViewMode('grid')}
+          onClick={() => {
+            setEvidenceDrawerOpen(false)
+            setViewMode('grid')
+          }}
         >
           Dạng bảng
         </button>
@@ -197,7 +202,10 @@ export default function FolderReview({
           type="button"
           aria-pressed={viewMode === 'documents'}
           className={viewMode === 'documents' ? 'on' : ''}
-          onClick={() => setViewMode('documents')}
+          onClick={() => {
+            setEvidenceDrawerOpen(false)
+            setViewMode('documents')
+          }}
         >
           Xem chứng từ
         </button>
@@ -205,9 +213,12 @@ export default function FolderReview({
       {viewMode === 'grid' ? (
         <PacketGrid
           folder={folder}
+          selectedEvidence={evidenceDrawerOpen && selection.kind === 'field'
+            ? { fieldKey: selection.key, sourceIndex: selection.sourceIndex }
+            : null}
           onOpenEvidence={(fieldKey, sourceIndex) => {
-            setViewMode('documents')
             focusAt(fieldKey, sourceIndex)
+            setEvidenceDrawerOpen(true)
           }}
         />
       ) : (
@@ -248,6 +259,25 @@ export default function FolderReview({
           : '↑↓ chuyển trường · ←→ đổi chứng từ · F đánh dấu · B khung · V giá trị bảng kê · ⌥P di chuyển · ? phím tắt'}
         onFinish={() => { if (allSeen(review, fieldKeys)) onReview({ ...review, done: true }) }}
       />
+      {viewMode === 'grid' && evidenceDrawerOpen && selField && (
+        <PacketEvidenceDrawer
+          docs={folder.docs}
+          activeDocId={activeDocId}
+          activePage={activePage}
+          focusBbox={focusBbox}
+          lockView={lockView}
+          overviewResetVersion={overviewResetVersion}
+          onSelectDoc={onSelectDoc}
+          onToggleLock={() => setLockView(value => !value)}
+          onClose={() => setEvidenceDrawerOpen(false)}
+          onOpenFull={() => {
+            setEvidenceDrawerOpen(false)
+            setViewMode('documents')
+          }}
+          rosterLabel={selField.label}
+          rosterValue={formatRosterValue(selField)}
+        />
+      )}
       {rejectionDialogOpen && (
         <PacketRejectionDialog
           rejection={review.rejection}

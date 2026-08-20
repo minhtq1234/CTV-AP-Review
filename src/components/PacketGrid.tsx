@@ -7,6 +7,7 @@ import { formatRosterValue } from '../logic/reviewValue'
 
 interface Props {
   folder: CtvFolder
+  selectedEvidence?: { fieldKey: string; sourceIndex: number } | null
   onOpenEvidence: (fieldKey: string, sourceIndex: number) => void
 }
 
@@ -17,7 +18,7 @@ const STATUS_PRESENTATION: Record<PacketGridStatus, { icon: string; label: strin
   na: { icon: '–', label: 'Không áp dụng' },
 }
 
-export default function PacketGrid({ folder, onOpenEvidence }: Props) {
+export default function PacketGrid({ folder, selectedEvidence, onOpenEvidence }: Props) {
   const grid = buildPacketGrid(folder)
 
   return (
@@ -48,6 +49,9 @@ export default function PacketGrid({ folder, onOpenEvidence }: Props) {
                   {row.cells.map((cell, columnIndex) => {
                     const presentation = STATUS_PRESENTATION[cell.status]
                     const label = `${row.label} · Chứng từ ${columnIndex + 1} ${grid.columns[columnIndex].label}: ${presentation.label}`
+                    const selected = cell.sourceIndex != null
+                      && selectedEvidence?.fieldKey === row.fieldKey
+                      && selectedEvidence.sourceIndex === cell.sourceIndex
                     return (
                       <td key={grid.columns[columnIndex].docId} className="packet-grid-cell">
                         {cell.sourceIndex == null ? (
@@ -57,8 +61,9 @@ export default function PacketGrid({ folder, onOpenEvidence }: Props) {
                         ) : (
                           <button
                             type="button"
-                            className={`packet-grid-status ${cell.status}`}
+                            className={`packet-grid-status ${cell.status}${selected ? ' selected' : ''}`}
                             aria-label={label}
+                            aria-pressed={selected}
                             title={`${presentation.label} — mở chứng từ`}
                             onClick={() => onOpenEvidence(row.fieldKey, cell.sourceIndex!)}
                           >

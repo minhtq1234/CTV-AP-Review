@@ -158,6 +158,8 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   border: 0; border-radius: 8px; font-size: 16px; font-weight: 700; }
 button.packet-grid-status { cursor: pointer; }
 button.packet-grid-status:hover { outline: 2px solid currentColor; outline-offset: 2px; }
+button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgba(47, 109, 179, .14); }
 .packet-grid-status.match { background: #e7f6ed; color: var(--success); }
 .packet-grid-status.review { background: #fff1d7; color: var(--warning); }
 .packet-grid-status.mismatch { background: #fbe8e6; color: var(--danger); }
@@ -177,6 +179,26 @@ button.packet-grid-status:hover { outline: 2px solid currentColor; outline-offse
 .packet-grid-legend i.review { background: var(--warning); }
 .packet-grid-legend i.mismatch { background: var(--danger); }
 .packet-grid-legend i.na { background: #9aa0a8; }
+
+/* Evidence drawer: keeps the comparison grid available while showing the exact source field. */
+.packet-evidence-overlay { position: fixed; inset: 0; z-index: 30; pointer-events: none;
+  background: linear-gradient(to left, rgba(32, 39, 48, .12), transparent 62%); }
+.packet-evidence-drawer { position: absolute; inset: 0 0 0 auto; display: flex; flex-direction: column;
+  width: min(60vw, 1100px); min-width: 720px; overflow: hidden; pointer-events: auto;
+  border-left: 1px solid var(--border); background: var(--surface);
+  box-shadow: -12px 0 34px rgba(32, 39, 48, .24); }
+.packet-evidence-header { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 62px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.packet-evidence-header > div:first-child { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.packet-evidence-header span { color: var(--text-muted); font-size: 10px; font-weight: 650;
+  letter-spacing: .05em; text-transform: uppercase; }
+.packet-evidence-header strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.packet-evidence-actions { display: flex; align-items: center; gap: 8px; }
+.packet-evidence-close { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px;
+  border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--text-muted);
+  cursor: pointer; font-size: 24px; line-height: 1; }
+.packet-evidence-close:hover { border-color: var(--accent); color: var(--accent); }
+.packet-evidence-drawer > .ev { flex: 1; width: 100%; min-height: 0; }
 
 /* Upload flow ("Tải hồ sơ"): dropzone, processing, split-result, review-back-bar. */
 .upload-screen { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 20px; overflow-y: auto; }
@@ -875,4 +897,5 @@ button.packet-grid-status:hover { outline: 2px solid currentColor; outline-offse
   .review-header .match-badge { padding-inline: 8px; font-size: 10px; }
   .doc-tools { gap: 2px; padding-inline: 5px; }
   .doc-tools button { flex-basis: 36px; width: 36px; height: 36px; }
+  .packet-evidence-drawer { width: 100vw; min-width: 0; }
 }

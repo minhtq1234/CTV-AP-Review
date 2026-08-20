@@ -76,3 +76,18 @@ test('distinguishes duplicate document labels by their package order', () => {
   expect(html).toContain('aria-label="Họ và tên · Chứng từ 1 Hợp đồng: Khớp"')
   expect(html).toContain('aria-label="Họ và tên · Chứng từ 2 Hợp đồng: Khớp"')
 })
+
+test('marks the exact evidence cell selected by the drawer', () => {
+  const html = renderToStaticMarkup(
+    <PacketGrid
+      folder={folder}
+      selectedEvidence={{ fieldKey: 'cccd', sourceIndex: 0 }}
+      onOpenEvidence={() => undefined}
+    />,
+  )
+
+  expect(html).toContain(
+    'class="packet-grid-status mismatch selected" aria-label="Số CCCD · Chứng từ 2 Website thuế: Không khớp"',
+  )
+  expect(html).toContain('aria-pressed="true"')
+})

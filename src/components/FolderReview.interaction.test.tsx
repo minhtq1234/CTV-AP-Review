@@ -197,7 +197,7 @@ describe('FolderReview package grid interactions', () => {
     expect(container.querySelector('.panes')).not.toBeNull()
   })
 
-  it('opens the selected grid cell in its exact document evidence', () => {
+  it('opens the selected grid cell in an evidence drawer without hiding the grid', () => {
     const onReview = renderReview(emptyReview, folder, 'grid')
     const evidenceCell = container.querySelector(
       'button[aria-label="Trường mẫu · Chứng từ 1 Synthetic contract: Khớp"]',
@@ -206,13 +206,51 @@ describe('FolderReview package grid interactions', () => {
     expect(evidenceCell).not.toBeNull()
     click(evidenceCell!)
 
-    expect(container.querySelector('.packet-grid-view')).toBeNull()
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+    expect(container.querySelector('[role="dialog"][aria-label="Chứng từ — Trường mẫu"]')).not.toBeNull()
+    expect(evidenceCell?.getAttribute('aria-pressed')).toBe('true')
     expect(container.querySelector('.ev-tab.on')?.textContent).toBe('Synthetic contract')
     expect(container.querySelector('.doc-hl-fill')).not.toBeNull()
     expect(onReview).toHaveBeenCalledWith({
       ...emptyReview,
       fields: { 'field-a': { seen: true, flag: null } },
     })
+  })
+
+  it('closes the evidence drawer with its close button or Escape', () => {
+    renderReview(emptyReview, folder, 'grid')
+    const evidenceCell = container.querySelector(
+      'button[aria-label="Trường mẫu · Chứng từ 1 Synthetic contract: Khớp"]',
+    )!
+
+    click(evidenceCell)
+    click(container.querySelector('button[aria-label="Đóng xem chứng từ"]')!)
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+
+    click(evidenceCell)
+    press('Escape')
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+  })
+
+  it('opens the drawer evidence in the full document workspace', () => {
+    renderReview(emptyReview, folder, 'grid')
+    click(container.querySelector(
+      'button[aria-label="Trường mẫu · Chứng từ 1 Synthetic contract: Khớp"]',
+    )!)
+
+    const openFull = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent === 'Mở toàn màn hình',
+    )
+    expect(openFull).toBeDefined()
+    click(openFull!)
+
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(container.querySelector('.packet-grid-view')).toBeNull()
+    expect(container.querySelector('.panes')).not.toBeNull()
+    expect(container.querySelector('.ev-tab.on')?.textContent).toBe('Synthetic contract')
+    expect(container.querySelector('.doc-hl-fill')).not.toBeNull()
   })
 
   it('does not run document-review shortcuts while the grid is visible', () => {
