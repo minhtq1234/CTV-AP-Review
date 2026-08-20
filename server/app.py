@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from typing import Literal
 import threading
 
+from boundary_assessment import assess_packet_boundary
 from cases import CaseStore, compact_cccd_summary, progress_of
 from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
@@ -74,23 +75,39 @@ def rewrite_manifest_urls(manifest: dict, base: str) -> dict:
     return out
 
 
-def _review_field_count(cid: str, index: int) -> int:
+def _packet_manifest(cid: str, index: int) -> dict | None:
     path = os.path.join(
         store.case_dir(cid), "packets", str(index), "manifest.json",
     )
     try:
         with open(path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        fields = manifest.get("fields") if isinstance(manifest, dict) else None
-        return len(fields) if isinstance(fields, list) else 0
+        return manifest if isinstance(manifest, dict) else None
     except (OSError, ValueError, TypeError):
-        return 0
+        return None
 
 
-def _packet_for_response(cid: str, packet: dict) -> dict:
+def _packet_for_response(
+    cid: str,
+    packet: dict,
+    case_summary: dict | None = None,
+) -> dict:
+    manifest = _packet_manifest(cid, packet["index"])
+    fields = manifest.get("fields") if isinstance(manifest, dict) else None
+    docs = manifest.get("docs") if isinstance(manifest, dict) else None
+    tax_commitment_detected = isinstance(docs, list) and any(
+        isinstance(doc, dict) and doc.get("kind") == "commitment"
+        for doc in docs
+    )
     return {
         **packet,
-        "reviewFieldCount": _review_field_count(cid, packet["index"]),
+        "reviewFieldCount": len(fields) if isinstance(fields, list) else 0,
+        "taxCommitmentDetected": tax_commitment_detected,
+        "boundaryAssessment": assess_packet_boundary(
+            packet,
+            manifest,
+            case_summary,
+        ),
     }
 
 
@@ -230,7 +247,8 @@ async def get_case(cid: str):
         case.get("cccdWorkbook"),
     )
     out["packets"] = [
-        _packet_for_response(cid, packet) for packet in case["packets"]
+        _packet_for_response(cid, packet, case.get("summary"))
+        for packet in case["packets"]
     ]
     out["progress"] = progress_of(case["packets"])
     if case["status"] == "processing" and cid in _progress:
@@ -269,7 +287,7 @@ async def put_review(cid: str, i: int, body: ReviewBody):
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
-    return {"packet": _packet_for_response(cid, packet),
+    return {"packet": _packet_for_response(cid, packet, updated.get("summary")),
             "progress": progress_of(updated["packets"]),
             "status": updated["status"]}
 

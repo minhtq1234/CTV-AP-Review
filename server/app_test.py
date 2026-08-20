@@ -85,27 +85,59 @@ def test_case_create_list_detail_review(tmp_path, monkeypatch):
 def test_case_and_review_responses_derive_field_count_without_persisting(
         tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
+    stored = appmod.store.get(cid)
+    packet = {
+        **stored["packets"][0],
+        "pages": [8, 23],
+        "n_pages": 16,
+        "flags": ["length-out-of-range"],
+    }
+    appmod.store.set_result(
+        cid,
+        stored["summary"],
+        [packet],
+        stored.get("cccdWorkbook"),
+    )
     packet_dir = tmp_path / cid / "packets" / "0"
     packet_dir.mkdir(parents=True)
     (packet_dir / "manifest.json").write_text(json.dumps({
         "fields": [{"key": "synthetic-a"}, {"key": "synthetic-b"}],
+        "docs": [
+            {"kind": "contract", "pages": [{"src": "/local/pg5.png"}]},
+            {"kind": "contract", "pages": [{"src": "/local/pg13.png"}]},
+            {"kind": "commitment", "pages": [{"src": "/local/pg15.png"}]},
+        ],
     }), encoding="utf-8")
 
     detail = c.get(f"/api/cases/{cid}").json()
     assert detail["packets"][0]["reviewFieldCount"] == 2
+    assert detail["packets"][0]["taxCommitmentDetected"] is True
+    assert detail["packets"][0]["boundaryAssessment"] == {
+        "status": "review",
+        "suspectedMultiplePackets": True,
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+        "candidateStarts": [13, 21],
+    }
 
     updated = c.put(
         f"/api/cases/{cid}/packets/0/review",
         json={"done": False, "fields": {}, "rejection": None},
     ).json()
     assert updated["packet"]["reviewFieldCount"] == 2
+    assert updated["packet"]["taxCommitmentDetected"] is True
+    assert updated["packet"]["boundaryAssessment"] == (
+        detail["packets"][0]["boundaryAssessment"]
+    )
     assert "reviewFieldCount" not in appmod.store.get(cid)["packets"][0]
+    assert "taxCommitmentDetected" not in appmod.store.get(cid)["packets"][0]
+    assert "boundaryAssessment" not in appmod.store.get(cid)["packets"][0]
 
 def test_case_response_uses_zero_field_count_when_manifest_is_missing(
         tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     detail = c.get(f"/api/cases/{cid}").json()
     assert detail["packets"][0]["reviewFieldCount"] == 0
+    assert detail["packets"][0]["taxCommitmentDetected"] is False
 
 def test_case_response_uses_zero_field_count_for_non_object_manifest(
         tmp_path, monkeypatch):
