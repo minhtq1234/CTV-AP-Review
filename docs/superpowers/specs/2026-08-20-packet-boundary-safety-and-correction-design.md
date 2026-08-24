@@ -1,7 +1,9 @@
 # Packet Boundary Safety and Correction Design
 
 **Date:** 2026-08-20  
-**Status:** approved direction, pending written-spec review
+**Last reviewed:** 2026-08-25
+**Status:** approved design; Stage 1 decision-surface guard implemented,
+publication gate and Stages 2-4 pending
 
 ## Problem
 
@@ -21,11 +23,25 @@ The existing safeguards are incomplete:
 - rewriting one packet in place would damage neighboring packets and could
   detach existing review decisions from their evidence.
 
+The stored evaluation cases demonstrate that this is a boundary failure before
+it is an OCR-character failure. The earlier stable batch had 32 roster rows,
+32 detected packets, and exactly one contract start in every packet. The later
+heterogeneous batch had 41 roster rows but only 36 detected packets; 25 of
+those 36 packet ranges contained two or three detected contract starts. The
+PDF extractor, pipeline orchestrator, and visual splitter were byte-identical
+between the stable checkpoint and the later run. The input exposed an existing
+single-signal assumption rather than a replacement OCR implementation.
+
 ## Goal
 
 Prevent an uncertain packet boundary from being shown or exported as valid,
 and provide a reviewer-confirmed way to create corrected packet boundaries
 without altering the original upload or silently moving reviewed evidence.
+
+Boundary resolution is a prerequisite for participant-level extraction. A
+packet with unresolved cross-person evidence may retain candidate observations
+for review, but those candidates must not be treated as one participant's
+field set or used to produce a business validity result.
 
 ## Non-goals
 
@@ -37,10 +53,14 @@ without altering the original upload or silently moving reviewed evidence.
   sample batch.
 - Do not replace the existing packet creation, OCR, review, report, or prepared-
   package flows.
+- Do not force the number of proposed packets to equal the roster count when
+  source evidence does not support those boundaries.
+- Do not treat OCR-engine confidence as proof that a value belongs to the
+  participant assigned to the packet.
 
 ## Delivery stages
 
-### Stage 1: safety guard for current and future cases
+### Stage 1: safety guard for current and future cases — partially implemented
 
 Derive a packet boundary assessment from evidence already available in the
 case and manifest. An unresolved boundary assessment has precedence over
@@ -62,6 +82,13 @@ This stage must work for existing stored cases without re-running OCR. Existing
 pipeline flags are enough to block false clearance. Manifest evidence can make
 the warning more specific when repeated contract documents are available.
 
+The implemented subset derives response metadata, prevents a clear AI result,
+and displays the warning. Report retention and prepared-package publication
+blocking remain required before Stage 1 is complete. Stage 1 protects the
+decision surface but does not repair contaminated stored field candidates.
+Existing unresolved packets therefore remain review-only until a reviewer
+accepts their current grouping or creates a corrected case revision.
+
 ### Stage 2: boundary proposal and reviewer confirmation
 
 For newly processed or explicitly reprocessed cases, retain page-level boundary
@@ -73,6 +100,39 @@ Confirming corrected boundaries creates a new case revision from the preserved
 source PDF and roster. The original case remains unchanged and linked as the
 source revision. The normal OCR, roster matching, review, report, and prepared-
 package flows then operate on the new case.
+
+### Stage 3: identity-isolated extraction
+
+For new and corrected revisions, extraction runs only after a candidate page
+range passes the boundary gate or is reviewer-confirmed. Within that range,
+the extractor groups observations by document and participant identity before
+roster reconciliation:
+
+- each observation retains document ID, page, bounding box, raw candidate
+  value, OCR confidence, and extractor version;
+- a participant assignment requires one unique roster target supported by an
+  exact CCCD or a sufficiently specific normalized-name fallback;
+- the highest-confidence candidate is never allowed to choose between two
+  conflicting participant identities;
+- conflicting identities or ambiguous roster targets return `cannot_assess`;
+- only observations assigned to the resolved participant enter field
+  comparison and the package evidence grid.
+
+This changes the processing order from `split -> extract everything -> choose
+one identity` to `propose boundary -> resolve one participant -> extract and
+compare that participant's evidence`.
+
+### Stage 4: CCCD geometry and accuracy qualification
+
+CCCD workbook ingestion remains a separate evidence source. A `oneCellAnchor`
+must retain its OOXML origin and actual `ext` dimensions; it must not be
+represented as an invented one-row/one-column box. Front/back pairing uses the
+preserved geometry, sheet identity, and explicit ambiguity handling. Automatic
+attachment still requires an exact 12-digit CCCD, a unique roster/packet
+target, both sides, no side conflict, and successful evidence writes.
+
+Stage 4 also establishes the versioned evaluation dataset and release gates
+described under Accuracy measurement.
 
 ## Approaches considered
 
@@ -171,6 +231,37 @@ An accepted-current resolution also stores `resolvedAt` and the exact candidate
 starts that were reviewed. The local prototype has no authenticated reviewer
 identity, so it must not invent or persist a reviewer name.
 
+### Participant extraction result
+
+The resolved or candidate packet result records whether field comparison is
+permitted:
+
+```ts
+interface ParticipantExtractionResult {
+  status: 'ready' | 'review' | 'cannot_assess'
+  packetRevision: number
+  extractorVersion: string
+  rosterTargetKey: string | null
+  identityConflict: boolean
+  observations: Array<{
+    fieldKey: string
+    docId: string
+    page: number
+    bbox: { x: number; y: number; width: number; height: number }
+    value: string
+    confidence: number
+  }>
+}
+```
+
+`rosterTargetKey` is the source workbook hash plus the zero-based canonical
+roster-row index; it is not a display name or logged PII. `ready` is required
+before observations can feed `evalField`. `review` retains evidence for human
+inspection. `cannot_assess` is a valid terminal extraction state and cannot be
+converted to `match` by a single high-confidence observation. The existing
+three-state user-facing AI result maps it to `review` with the specific reason
+`Không thể đánh giá tự động`; it does not add a fourth dashboard state.
+
 Candidate starts use zero-based absolute PDF pages internally and are displayed
 as one-based pages in the UI.
 
@@ -220,6 +311,20 @@ When a roster count exists, the proposal compares the candidate count to that
 count. It may rank alternative candidates but must not invent or force enough
 boundaries merely to equal the roster.
 
+### Extraction gate
+
+For newly processed or explicitly reprocessed cases:
+
+1. detect and rank candidate starts;
+2. build candidate page ranges without mutating the source upload;
+3. require one consistent participant identity in each candidate range;
+4. send ambiguous ranges to boundary review before field comparison;
+5. run participant-level extraction only for resolved ranges;
+6. persist the extractor version and evidence provenance with the revision.
+
+Legacy manifests remain readable, but an unresolved legacy boundary assessment
+prevents their mixed sources from being interpreted as participant-level truth.
+
 ## User experience
 
 ### Tổng hợp list
@@ -262,6 +367,10 @@ Actions:
   the current case; affected packets show `Ranh giới đã xác nhận` and return to
   ordinary document/field validity evaluation;
 - `Quay lại`: make no change.
+
+After `Tạo phiên bản đã sửa`, only the affected ranges need OCR reprocessing.
+Unaffected source pages may reuse immutable rendered-page assets, but field
+observations and review decisions are not copied across changed boundaries.
 
 ## API behavior
 
@@ -317,6 +426,11 @@ new revision is an ordinary error case and the source remains usable.
 - resolution validation rejects duplicates, unsorted starts, out-of-range starts,
   and empty ranges;
 - creating a revision leaves source files and reviews byte-for-byte unchanged.
+- a range containing two participant identities never reaches field comparison;
+- a higher-confidence candidate cannot override an identity conflict;
+- corrected ranges expose only observations assigned to their participant;
+- `oneCellAnchor` geometry preserves its declared extent rather than inventing
+  a one-cell rectangle.
 
 ### API tests
 
@@ -345,14 +459,55 @@ visible before opening them, no PII appears in logs, the proposed starts align
 with contract title pages, and creating a revision does not change the source
 case's files or review state.
 
+## Accuracy measurement
+
+Maintain a versioned, anonymized gold dataset containing:
+
+- the earlier stable 32-packet batch shape;
+- the failing 41-roster-row heterogeneous batch shape;
+- mixed-person ranges, missing covers, repeated contract titles, rotated pages,
+  missing documents, unreadable values, and CCCD images on multiple sheets;
+- reviewer-confirmed packet boundaries, roster assignments, critical field
+  values, and evidence locations.
+
+Every extractor version reports:
+
+- packet-boundary precision, recall, and exact batch accuracy;
+- cross-person contamination count;
+- exact critical-field accuracy by field;
+- complete-packet accuracy;
+- evidence-location accuracy;
+- false-clear rate;
+- abstention/manual-review rate;
+- CCCD automatic-attachment precision;
+- median reviewer time and correction count per packet.
+
+Pilot release gates are:
+
+1. zero cross-person contamination in the gold dataset;
+2. zero false-clear packets;
+3. every displayed value has navigable evidence and an extractor version;
+4. every unresolved boundary produces `review` or `cannot_assess`;
+5. CCCD auto-attachment has no known wrong-person attachment;
+6. reviewer time improves over the current workflow on the same evaluation
+   set.
+
+Boundary and field-accuracy targets beyond the zero-error safety gates are set
+only after the gold dataset size and class distribution are fixed; the design
+does not invent statistically unsupported percentages.
+
 ## Rollout
 
-1. Ship Stage 1 first; it is additive and protects existing cases immediately.
+1. Keep Stage 1 enabled for existing and future cases.
 2. Run Stage 2 proposal generation in shadow mode and compare proposals with
    reviewer-confirmed boundaries.
 3. Enable `Tạo phiên bản đã sửa` only after false boundary proposals are within
    the agreed pilot tolerance.
-4. Keep all boundary rewrites reviewer-confirmed; there is no unattended auto-
+4. Enable Stage 3 identity-isolated comparison only for resolved revisions;
+   keep legacy mixed manifests review-only.
+5. Qualify Stage 4 CCCD geometry and extractor-version metrics on the gold
+   dataset before enabling automatic attachment for new workbook shapes.
+6. Keep all boundary rewrites reviewer-confirmed; there is no unattended auto-
    split stage in this design.
 
 ## Success criteria
@@ -366,3 +521,8 @@ case's files or review state.
   linkage and no review-state leakage.
 - Packet count and participant identity accuracy are measured against reviewer-
   confirmed boundaries, not inferred from one successful CCCD match.
+- No field comparison combines observations from two participant identities.
+- Existing cases remain reproducible because results record their extractor
+  version and corrected boundaries create a new revision.
+- Accuracy reporting includes false-clear and reviewer-time outcomes, not only
+  OCR engine confidence.
