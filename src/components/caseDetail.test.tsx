@@ -360,6 +360,8 @@ describe('CCCD aggregate summary', () => {
       error: null,
       packets,
       progress: { done: 1, total: packets.length, flagged: 2 },
+      boundaryStatus: { status: 'clear', packetIndexes: [], reasons: [] },
+      publicationBlocked: false,
     }
 
     const html = renderToStaticMarkup(

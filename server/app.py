@@ -311,10 +311,9 @@ async def put_review(cid: str, i: int, body: ReviewBody):
 def _load_manifests(cid: str, packets: list[dict]) -> dict:
     out = {}
     for p in packets:
-        path = os.path.join(store.case_dir(cid), "packets", str(p["index"]), "manifest.json")
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                out[p["index"]] = json.load(f)
+        manifest = _packet_manifest(cid, p["index"])
+        if manifest is not None:
+            out[p["index"]] = manifest
     return out
 
 
