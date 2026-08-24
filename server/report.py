@@ -63,7 +63,23 @@ def _packet_rejection(packet: dict) -> dict | None:
     }
 
 
-def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
+def _boundary_warnings(boundary_status: dict | None) -> list[dict]:
+    if (boundary_status or {}).get("status") != "review":
+        return []
+    reasons = list(boundary_status.get("reasons") or [])
+    return [{
+        "packetIndex": index,
+        "packetNumber": index + 1,
+        "reasons": reasons,
+    } for index in boundary_status.get("packetIndexes") or []]
+
+
+def build_report(
+    case: dict,
+    manifests: dict,
+    generated_at: str,
+    boundary_status: dict | None = None,
+) -> dict:
     groups = []
     for p in case.get("packets", []):
         if not _needs_resubmit(p):
@@ -79,8 +95,16 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
             "items": _items_for(p, manifests.get(p["index"])),
         })
 
+    boundary_warnings = _boundary_warnings(boundary_status)
     md = [f"# Báo cáo cần gửi lại — {case.get('name', '')}", "",
           f"_Tạo lúc: {generated_at}_", ""]
+    for warning in boundary_warnings:
+        md.append(
+            f"> ⚠ Cảnh báo ranh giới: Gói {warning['packetNumber']} — "
+            f"{'; '.join(warning['reasons'])}"
+        )
+    if boundary_warnings:
+        md.append("")
     for g in groups:
         md.append(f"## {g['name']} — CCCD {g['cccd']}")
         if g["packetRejection"]:
@@ -104,6 +128,11 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
     w = _csv.writer(buf)
     w.writerow(["CTV", "CCCD", "Trường", "Chứng từ", "Trang",
                 "Bảng kê", "Chứng từ đọc được", "Lý do", "Ghi chú"])
+    for warning in boundary_warnings:
+        w.writerow([
+            "", "", "Cảnh báo ranh giới", f"Gói {warning['packetNumber']}",
+            "", "", "", "; ".join(warning["reasons"]), "",
+        ])
     for g in groups:
         if g["packetRejection"]:
             rejection = g["packetRejection"]
@@ -118,4 +147,9 @@ def build_report(case: dict, manifests: dict, generated_at: str) -> dict:
             w.writerow([g["name"], g["cccd"], it["fieldLabel"], it["document"],
                         it["page"] or "", it["rosterValue"], it["docValue"],
                         it["reason"], it["note"]])
-    return {"groups": groups, "markdown": "\n".join(md), "csv": buf.getvalue()}
+    return {
+        "groups": groups,
+        "boundaryWarnings": boundary_warnings,
+        "markdown": "\n".join(md),
+        "csv": buf.getvalue(),
+    }

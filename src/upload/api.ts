@@ -44,6 +44,12 @@ export interface PacketBoundaryAssessment {
   candidateStarts: number[]
 }
 
+export interface CaseBoundaryStatus {
+  status: 'clear' | 'review' | 'accepted'
+  packetIndexes: number[]
+  reasons: BoundaryReason[]
+}
+
 export interface Identity {
   cccd: string
   name: string
@@ -141,6 +147,8 @@ export interface CaseDetail {
   error: string | null
   packets: PacketMeta[]
   progress: CaseProgress
+  boundaryStatus: CaseBoundaryStatus
+  publicationBlocked: boolean
   liveProgress?: Progress // present while status === 'processing'
 }
 
@@ -210,6 +218,12 @@ export async function getCase(caseId: string): Promise<CaseDetail> {
   return {
     ...detail,
     packets,
+    boundaryStatus: detail.boundaryStatus ?? {
+      status: 'clear',
+      packetIndexes: [],
+      reasons: [],
+    },
+    publicationBlocked: Boolean(detail.publicationBlocked),
   }
 }
 

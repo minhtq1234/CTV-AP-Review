@@ -144,3 +144,27 @@ def test_packet_rejection_optional_note_is_omitted_from_markdown():
     assert len(report["groups"]) == 1
     assert "Chứng từ không đúng mẫu" in report["markdown"]
     assert "Ghi chú:" not in report["markdown"]
+
+
+def test_boundary_warning_keeps_participant_resubmission_groups_unchanged():
+    boundary_status = {
+        "status": "review",
+        "packetIndexes": [1],
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+    }
+
+    report = build_report(
+        CASE,
+        MANIFESTS,
+        generated_at="2026-07-27T00:00:00Z",
+        boundary_status=boundary_status,
+    )
+
+    assert [group["index"] for group in report["groups"]] == [0, 1]
+    assert report["boundaryWarnings"] == [{
+        "packetIndex": 1,
+        "packetNumber": 2,
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+    }]
+    assert "Gói 2" in report["markdown"]
+    assert "Cảnh báo ranh giới" in report["csv"]

@@ -218,6 +218,48 @@ def test_report_endpoint_generates_and_persists(tmp_path, monkeypatch):
     csv = c.get(f"/api/cases/{cid}/report.csv")
     assert csv.status_code == 200 and csv.text.startswith("CTV,CCCD,")
 
+
+def test_case_boundary_review_blocks_publication_without_participant_resubmission(
+        tmp_path, monkeypatch):
+    c, cid = _ready_case(monkeypatch, tmp_path)
+    stored = appmod.store.get(cid)
+    packet = {
+        **stored["packets"][0],
+        "pages": [8, 23],
+        "n_pages": 16,
+        "flags": ["length-out-of-range"],
+    }
+    appmod.store.set_result(
+        cid,
+        stored["summary"],
+        [packet],
+        stored.get("cccdWorkbook"),
+    )
+    packet_dir = tmp_path / cid / "packets" / "0"
+    packet_dir.mkdir(parents=True)
+    (packet_dir / "manifest.json").write_text(json.dumps({
+        "docs": [
+            {"kind": "contract", "pages": [{"src": "/local/pg0.png"}]},
+            {"kind": "contract", "pages": [{"src": "/local/pg8.png"}]},
+        ],
+    }), encoding="utf-8")
+
+    detail = c.get(f"/api/cases/{cid}").json()
+    assert detail["boundaryStatus"] == {
+        "status": "review",
+        "packetIndexes": [0],
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+    }
+    assert detail["publicationBlocked"] is True
+
+    report = c.post(f"/api/cases/{cid}/report").json()
+    assert report["groups"] == []
+    assert report["boundaryWarnings"] == [{
+        "packetIndex": 0,
+        "packetNumber": 1,
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+    }]
+
 def test_report_404_before_generation(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get(f"/api/cases/{cid}/report.md").status_code == 404

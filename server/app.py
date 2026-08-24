@@ -26,7 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from typing import Literal
 import threading
 
-from boundary_assessment import assess_packet_boundary
+from boundary_assessment import assess_case_boundaries, assess_packet_boundary
 from cases import CaseStore, compact_cccd_summary, progress_of
 from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
@@ -91,6 +91,7 @@ def _packet_for_response(
     cid: str,
     packet: dict,
     case_summary: dict | None = None,
+    boundary_resolution: dict | None = None,
 ) -> dict:
     manifest = _packet_manifest(cid, packet["index"])
     fields = manifest.get("fields") if isinstance(manifest, dict) else None
@@ -107,6 +108,7 @@ def _packet_for_response(
             packet,
             manifest,
             case_summary,
+            boundary_resolution,
         ),
     }
 
@@ -246,10 +248,19 @@ async def get_case(cid: str):
     out["cccdSummary"] = compact_cccd_summary(
         case.get("cccdWorkbook"),
     )
+    manifests = _load_manifests(cid, case["packets"])
+    boundary_status = assess_case_boundaries(case, manifests)
     out["packets"] = [
-        _packet_for_response(cid, packet, case.get("summary"))
+        _packet_for_response(
+            cid,
+            packet,
+            case.get("summary"),
+            case.get("boundaryResolution"),
+        )
         for packet in case["packets"]
     ]
+    out["boundaryStatus"] = boundary_status
+    out["publicationBlocked"] = boundary_status["status"] == "review"
     out["progress"] = progress_of(case["packets"])
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]
@@ -287,7 +298,12 @@ async def put_review(cid: str, i: int, body: ReviewBody):
     if updated is None:
         raise HTTPException(status_code=404, detail="case or packet not found")
     packet = next((p for p in updated["packets"] if p["index"] == i), None)
-    return {"packet": _packet_for_response(cid, packet, updated.get("summary")),
+    return {"packet": _packet_for_response(
+                cid,
+                packet,
+                updated.get("summary"),
+                updated.get("boundaryResolution"),
+            ),
             "progress": progress_of(updated["packets"]),
             "status": updated["status"]}
 
@@ -309,7 +325,12 @@ async def post_report(cid: str):
         raise HTTPException(status_code=404, detail="case not found")
     manifests = _load_manifests(cid, case["packets"])
     now = datetime.now(timezone.utc).isoformat()
-    report = build_report(case, manifests, generated_at=now)
+    report = build_report(
+        case,
+        manifests,
+        generated_at=now,
+        boundary_status=assess_case_boundaries(case, manifests),
+    )
     case_dir = store.case_dir(cid)
     with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(report["markdown"])

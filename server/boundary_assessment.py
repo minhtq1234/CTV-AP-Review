@@ -35,6 +35,7 @@ def assess_packet_boundary(
     packet: dict,
     manifest: dict | None,
     case_summary: dict | None,
+    resolution: dict | None = None,
 ) -> dict:
     flags = set(packet.get("flags") or [])
     reasons = [flag for flag in _BLOCKING_FLAGS if flag in flags]
@@ -49,8 +50,43 @@ def assess_packet_boundary(
         reasons.append("batch-count-mismatch")
 
     return {
-        "status": "review" if reasons else "clear",
+        "status": (
+            "accepted"
+            if reasons and (resolution or {}).get("action") == "keep-current"
+            else "review" if reasons else "clear"
+        ),
         "suspectedMultiplePackets": suspected_multiple,
         "reasons": reasons,
         "candidateStarts": starts,
+    }
+
+
+def assess_case_boundaries(case: dict, manifests: dict[int, dict]) -> dict:
+    resolution = case.get("boundaryResolution")
+    if resolution and resolution.get("action") == "keep-current":
+        return {
+            "status": "accepted",
+            "packetIndexes": [],
+            "reasons": resolution["reasons"],
+        }
+
+    reasons: list[str] = []
+    packet_indexes: list[int] = []
+    for packet in case.get("packets", []):
+        assessment = assess_packet_boundary(
+            packet,
+            manifests.get(packet["index"]),
+            case.get("summary"),
+            resolution,
+        )
+        if assessment["status"] != "review":
+            continue
+        packet_indexes.append(packet["index"])
+        for reason in assessment["reasons"]:
+            if reason not in reasons:
+                reasons.append(reason)
+    return {
+        "status": "review" if packet_indexes else "clear",
+        "packetIndexes": packet_indexes,
+        "reasons": reasons,
     }

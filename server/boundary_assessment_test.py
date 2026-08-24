@@ -1,4 +1,4 @@
-from boundary_assessment import assess_packet_boundary
+from boundary_assessment import assess_case_boundaries, assess_packet_boundary
 import pytest
 
 
@@ -106,3 +106,26 @@ def test_unknown_pipeline_flag_is_not_a_boundary_reason():
 
     assert result["status"] == "clear"
     assert result["reasons"] == []
+
+
+def test_case_boundary_status_blocks_only_review_packets():
+    case = {
+        "summary": {"found": 2, "roster_n": 2},
+        "packets": [
+            {"index": 0, "pages": [0, 7], "flags": []},
+            {"index": 1, "pages": [8, 23], "flags": ["length-out-of-range"]},
+        ],
+    }
+    manifests = {
+        0: {"docs": [{"kind": "contract", "pages": [{"src": "pg0.png"}]}]},
+        1: {"docs": [
+            {"kind": "contract", "pages": [{"src": "pg0.png"}]},
+            {"kind": "contract", "pages": [{"src": "pg8.png"}]},
+        ]},
+    }
+
+    assert assess_case_boundaries(case, manifests) == {
+        "status": "review",
+        "packetIndexes": [1],
+        "reasons": ["length-out-of-range", "multiple-contract-starts"],
+    }

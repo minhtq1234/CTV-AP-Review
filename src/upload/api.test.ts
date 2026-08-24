@@ -134,12 +134,20 @@ test('getCase normalizes missing and present review field counts', async () => {
       json: async () => ({
         ...detail,
         packets: [{ ...packet, reviewFieldCount: 6 }],
+        boundaryStatus: {
+          status: 'review',
+          packetIndexes: [0],
+          reasons: ['multiple-contract-starts'],
+        },
+        publicationBlocked: true,
       }),
     })
   vi.stubGlobal('fetch', fetchMock)
 
-  const legacyPacket = (await getCase('synthetic-case')).packets[0]
-  const countedPacket = (await getCase('synthetic-case')).packets[0]
+  const legacyCase = await getCase('synthetic-case')
+  const reviewedCase = await getCase('synthetic-case')
+  const legacyPacket = legacyCase.packets[0]
+  const countedPacket = reviewedCase.packets[0]
   expect(legacyPacket.reviewFieldCount).toBe(0)
   expect(countedPacket.reviewFieldCount).toBe(6)
   expect(legacyPacket.boundaryAssessment).toEqual({
@@ -148,9 +156,16 @@ test('getCase normalizes missing and present review field counts', async () => {
     reasons: [],
     candidateStarts: [],
   })
-  expect(countedPacket.boundaryAssessment).toEqual(
-    legacyPacket.boundaryAssessment,
-  )
+  expect(legacyCase.boundaryStatus).toEqual({
+    status: 'clear', packetIndexes: [], reasons: [],
+  })
+  expect(legacyCase.publicationBlocked).toBe(false)
+  expect(reviewedCase.boundaryStatus).toEqual({
+    status: 'review',
+    packetIndexes: [0],
+    reasons: ['multiple-contract-starts'],
+  })
+  expect(reviewedCase.publicationBlocked).toBe(true)
 })
 
 test('getCase adds compact dashboard evidence summaries for ready packets', async () => {
