@@ -85,10 +85,8 @@ def _serialize_candidate(page: int, signals: set[str], location: dict) -> dict:
         "identity-change" in signals or "cadence" in signals
     ):
         confidence = "high"
-    elif "visual" in signals:
-        confidence = "medium"
     else:
-        confidence = "low"
+        confidence = "medium"
     return {
         "page": page,
         "signals": ordered_signals,
@@ -99,7 +97,6 @@ def _serialize_candidate(page: int, signals: set[str], location: dict) -> dict:
 
 def build_boundary_proposal(case: dict, manifests: dict, total_pages: int) -> dict:
     """Fuse packet metadata into a deterministic, response-safe proposal."""
-    del total_pages
     candidates: dict[int, set[str]] = {}
     affected: list[int] = []
     packets = case.get("packets") or []
@@ -115,6 +112,11 @@ def build_boundary_proposal(case: dict, manifests: dict, total_pages: int) -> di
             candidates.setdefault(page, set()).add("contract-title")
         if assessment["status"] == "review":
             affected.append(packet["index"])
+    candidates = {
+        page: signals
+        for page, signals in candidates.items()
+        if type(page) is int and 0 <= page < total_pages
+    }
     _add_cadence_signals(candidates, _median_packet_length(packets))
     _add_identity_change_signals(candidates, case, manifests)
     starts = [

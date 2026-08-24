@@ -138,7 +138,7 @@ def test_identity_change_is_private_and_raises_later_contract_start_confidence()
     }.isdisjoint(str(proposal))
 
 
-def test_empty_identity_keys_never_create_identity_change_signal():
+def test_contract_title_only_has_medium_confidence_when_identity_keys_are_empty():
     case = {
         "id": "empty-identities",
         "packets": [{"index": 0, "pages": [0, 29], "flags": []}],
@@ -157,7 +157,37 @@ def test_empty_identity_keys_never_create_identity_change_signal():
     proposal = build_boundary_proposal(case, manifests, total_pages=30)
 
     assert proposal["candidateStarts"][1]["signals"] == ["contract-title"]
-    assert proposal["candidateStarts"][1]["confidence"] == "low"
+    assert proposal["candidateStarts"][1]["confidence"] == "medium"
+
+
+def test_out_of_range_visual_candidate_is_not_serialized():
+    case = {
+        "id": "invalid-visual",
+        "packets": [{"index": 0, "pages": [-1, 4], "flags": []}],
+    }
+
+    proposal = build_boundary_proposal(case, {}, total_pages=5)
+
+    assert proposal["candidateStarts"] == []
+
+
+def test_out_of_range_contract_candidate_is_not_serialized():
+    case = {
+        "id": "invalid-contract",
+        "packets": [{"index": 0, "pages": [0, 5], "flags": []}],
+    }
+
+    proposal = build_boundary_proposal(case, {0: _manifest(6)}, total_pages=6)
+
+    assert proposal["candidateStarts"] == [
+        {
+            "page": 0,
+            "signals": ["visual"],
+            "confidence": "medium",
+            "packetIndex": 0,
+            "relativePage": 0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
