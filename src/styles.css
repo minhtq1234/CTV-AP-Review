@@ -404,6 +404,9 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .flag-note { font-size: 12px; padding: 4px 8px; border: 0.5px solid var(--border); border-radius: 6px; }
 
 .case-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 16px; }
+.case-summary-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.boundary-review-open { border-color: #d69b28; background: #fff7df; color: #8d5b00; font-weight: 650; }
+.packet-boundary-accepted { color: var(--success); font-size: 11px; font-weight: 650; white-space: nowrap; }
 .cccd-summary { margin: 8px 0; color: var(--text-muted); font-size: 13px; }
 .cccd-summary.partial { color: #9a6700; }
 .cccd-summary.error { color: var(--danger); }
@@ -417,9 +420,49 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 
 @media (max-width: 760px) {
   .split-result { padding: 16px; }
+  .case-summary { align-items: flex-start; flex-direction: column; }
+  .case-summary-actions { width: 100%; flex-wrap: wrap; }
   .packet-dashboard-controls { align-items: flex-start; }
   .packet-attention-toggle { order: 2; }
   .packet-list-scroll { margin-right: -16px; border-right: 0; border-radius: 9px 0 0 9px; }
+}
+
+/* Exception-first packet-boundary review. */
+.boundary-review-screen { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 28px; }
+.boundary-review-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
+.boundary-review-header h2 { margin: 0; font-size: 18px; }
+.boundary-review-header p { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
+.boundary-shadow-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+  padding: 12px 14px; border: 1px solid #e4bd6c; border-radius: 9px; background: #fff7df;
+  color: #754d00; font-size: 13px; }
+.boundary-shadow-banner span { color: #7b6742; }
+.boundary-review-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 14px;
+  color: var(--text-muted); font-size: 12px; }
+.boundary-range-list { display: grid; gap: 10px; }
+.boundary-candidate { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 14px;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.boundary-thumbnail { overflow: hidden; border: 1px solid #d9d6ce; border-radius: 7px; background: var(--mat); }
+.boundary-thumbnail img { display: block; width: 100%; aspect-ratio: 5 / 7; object-fit: cover; object-position: top; }
+.boundary-candidate-body { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; }
+.boundary-candidate-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.boundary-candidate-title strong { font-size: 15px; }
+.boundary-confidence { padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 650; }
+.boundary-confidence.high { background: #e7f3ea; color: var(--success); }
+.boundary-confidence.medium { background: #fff1d7; color: #8d5b00; }
+.boundary-signals { display: flex; flex-wrap: wrap; gap: 6px; }
+.boundary-signals span { padding: 4px 8px; border: 1px solid var(--border); border-radius: 12px;
+  background: #f7f7f5; color: var(--text-muted); font-size: 11px; }
+.boundary-start-toggle { margin-top: auto; font-size: 12px; }
+.boundary-review-error { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
+.boundary-review-actions { position: sticky; bottom: -28px; display: flex; justify-content: flex-end;
+  gap: 8px; margin: 18px -24px -28px; padding: 12px 24px; border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, .96); box-shadow: 0 -3px 12px rgba(43, 42, 40, .07); }
+.boundary-review-actions button:disabled, .boundary-start-toggle:disabled { cursor: default; opacity: .5; }
+
+@media (max-width: 620px) {
+  .boundary-review-screen { padding: 16px; }
+  .boundary-candidate { grid-template-columns: 84px minmax(0, 1fr); }
+  .boundary-review-actions { bottom: -16px; margin: 18px -16px -16px; padding: 12px 16px; flex-wrap: wrap; }
 }
 
 .report-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex;

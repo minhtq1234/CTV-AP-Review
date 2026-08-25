@@ -8,8 +8,17 @@ import {
   deleteCase,
   fetchPacketManifest,
   normalizePacketReview,
+  getBoundaryProposal,
+  resolveBoundaryProposal,
 } from '../upload/api'
-import type { CaseSummary, CaseDetail as CaseDetailT, Progress, PacketReview } from '../upload/api'
+import type {
+  BoundaryProposal,
+  BoundaryResolution,
+  CaseSummary,
+  CaseDetail as CaseDetailT,
+  Progress,
+  PacketReview,
+} from '../upload/api'
 import {
   createReviewSaveQueue,
   type ReviewSaveContext,
@@ -21,10 +30,16 @@ import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
 import ReviewHeader from './ReviewHeader'
 import PacketBoundaryWarning from './PacketBoundaryWarning'
+import BoundaryReviewScreen from './BoundaryReviewScreen'
 
-type Screen = 'list' | 'upload' | 'detail' | 'review'
+type Screen = 'list' | 'upload' | 'detail' | 'review' | 'boundary'
 
 const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8001).'
+const REVISION_POLL_MS = 750
+
+const waitForRevisionPoll = () => new Promise<void>(resolve => {
+  setTimeout(resolve, REVISION_POLL_MS)
+})
 
 // The "Tải hồ sơ" flow. After an upload we return straight to the case list —
 // processing happens in the background and shows as an inline progress bar on the
@@ -44,6 +59,7 @@ export default function UploadFlow() {
   )
   const [err, setErr] = useState<string | null>(null)
   const [showReport, setShowReport] = useState(false)
+  const [boundaryProposal, setBoundaryProposal] = useState<BoundaryProposal | null>(null)
   const activeReviewRef = useRef<{
     caseId: string | null
     packetIndex: number | null
@@ -145,6 +161,45 @@ export default function UploadFlow() {
     } catch { setErr(CONN_ERR) }
   }
 
+  const onOpenBoundary = async () => {
+    if (!caseId) return
+    setErr(null)
+    try {
+      const proposal = await getBoundaryProposal(caseId)
+      setBoundaryProposal(proposal)
+      setScreen('boundary')
+    } catch {
+      setErr(CONN_ERR)
+    }
+  }
+
+  const openResolvedCase = (id: string, next: CaseDetailT) => {
+    setCaseId(id)
+    setDetail(next)
+    setBoundaryProposal(null)
+    setScreen('detail')
+  }
+
+  const onResolveBoundary = async (resolution: BoundaryResolution) => {
+    if (!boundaryProposal) return
+    const result = await resolveBoundaryProposal(
+      boundaryProposal.sourceCaseId,
+      resolution,
+    )
+    if (resolution.action === 'keep-current') {
+      openResolvedCase(result.sourceCaseId, await getCase(result.sourceCaseId))
+      return
+    }
+    while (true) {
+      const revision = await getCase(result.caseId)
+      if (revision.status !== 'processing') {
+        openResolvedCase(result.caseId, revision)
+        return
+      }
+      await waitForRevisionPoll()
+    }
+  }
+
   const currentReviewContext = (): ReviewSaveContext | null => (
     caseId && packetIndex != null ? { caseId, packetIndex } : null
   )
@@ -215,9 +270,22 @@ export default function UploadFlow() {
     return (
       <>
         <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList}
-          onExport={() => setShowReport(true)} />
+          onExport={() => setShowReport(true)} onReviewBoundary={onOpenBoundary} />
         {showReport && caseId && <ReportPanel caseId={caseId} onClose={() => setShowReport(false)} />}
       </>
+    )
+  }
+
+  if (screen === 'boundary' && boundaryProposal) {
+    return (
+      <BoundaryReviewScreen
+        proposal={boundaryProposal}
+        onResolve={onResolveBoundary}
+        onBack={() => {
+          setBoundaryProposal(null)
+          setScreen('detail')
+        }}
+      />
     )
   }
 

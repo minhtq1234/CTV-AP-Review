@@ -10,6 +10,8 @@ import {
   API_BASE,
   createCase,
   getCase,
+  getBoundaryProposal,
+  resolveBoundaryProposal,
 } from './api'
 
 afterEach(() => {
@@ -239,4 +241,60 @@ test('getCase adds compact dashboard evidence summaries for ready packets', asyn
     documents: { present: 5, total: 5, missing: [] },
     aiResult: 'review',
   })
+})
+
+test('boundary proposal API reads the source proposal and posts exact zero-based starts', async () => {
+  const proposal = {
+    status: 'review_required',
+    sourceCaseId: 'source-case',
+    expectedPacketCount: 3,
+    currentPacketCount: 2,
+    candidateStarts: [{
+      page: 8,
+      packetIndex: 1,
+      relativePage: 0,
+      signals: ['contract-title'],
+      confidence: 'medium',
+    }],
+    affectedPacketIndexes: [1],
+    correctionEnabled: true,
+  }
+  const resolved = {
+    caseId: 'revision-case',
+    sourceCaseId: 'source-case',
+    status: 'processing',
+  }
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify(proposal), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify(resolved), { status: 200 }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(getBoundaryProposal('source-case')).resolves.toEqual(proposal)
+  await expect(resolveBoundaryProposal('source-case', {
+    action: 'create-revision',
+    starts: [0, 8, 16],
+  })).resolves.toEqual(resolved)
+
+  expect(fetchMock.mock.calls[0][0]).toBe(
+    `${API_BASE}/api/cases/source-case/boundary-proposal`,
+  )
+  expect(fetchMock.mock.calls[1]).toEqual([
+    `${API_BASE}/api/cases/source-case/boundary-proposal/resolve`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'create-revision',
+        starts: [0, 8, 16],
+      }),
+    },
+  ])
+})
+
+test('boundary resolution throws on a non-success response', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 409 })))
+
+  await expect(resolveBoundaryProposal('source-case', {
+    action: 'keep-current',
+  })).rejects.toThrow('resolveBoundaryProposal: HTTP 409')
 })

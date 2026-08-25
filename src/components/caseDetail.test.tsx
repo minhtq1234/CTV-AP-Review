@@ -370,11 +370,79 @@ describe('CCCD aggregate summary', () => {
         onOpenPacket={() => undefined}
         onBack={() => undefined}
         onExport={() => undefined}
+        onReviewBoundary={() => undefined}
       />,
     )
 
     expect(html).toContain('CCCD: 2 đã gắn · 1 chưa ghép')
     expect(html).toContain('Cần chú ý trước')
     expect(html).toContain('Xuất báo cáo gửi lại')
+  })
+
+  it('shows boundary review only for unresolved review status', () => {
+    const base: CaseDetailT = {
+      id: 'synthetic-case',
+      name: 'Synthetic Case',
+      createdAt: null,
+      status: 'ready',
+      pdfName: 'packet.pdf',
+      rosterName: null,
+      cccdName: null,
+      cccdSummary: null,
+      summary: null,
+      error: null,
+      packets,
+      progress: { done: 0, total: packets.length, flagged: 0 },
+      boundaryStatus: { status: 'clear', packetIndexes: [], reasons: [] },
+      publicationBlocked: false,
+    }
+    const renderDetail = (detail: CaseDetailT) => renderToStaticMarkup(
+      <CaseDetail
+        detail={detail}
+        onOpenPacket={() => undefined}
+        onBack={() => undefined}
+        onExport={() => undefined}
+        onReviewBoundary={() => undefined}
+      />,
+    )
+
+    expect(renderDetail(base)).not.toContain('Kiểm tra ranh giới')
+    expect(renderDetail({
+      ...base,
+      boundaryStatus: {
+        status: 'review',
+        packetIndexes: [1],
+        reasons: ['multiple-contract-starts'],
+      },
+      publicationBlocked: true,
+    })).toContain('Kiểm tra ranh giới')
+    expect(renderDetail({
+      ...base,
+      boundaryStatus: {
+        status: 'accepted',
+        packetIndexes: [1],
+        reasons: ['multiple-contract-starts'],
+      },
+    })).not.toContain('Kiểm tra ranh giới')
+  })
+
+  it('labels an accepted source packet as reviewer-confirmed', () => {
+    const html = renderToStaticMarkup(
+      <PacketListRow
+        packet={{
+          ...packets[0],
+          boundaryAssessment: {
+            status: 'accepted',
+            suspectedMultiplePackets: true,
+            reasons: ['multiple-contract-starts'],
+            candidateStarts: [0, 8],
+          },
+        }}
+        onOpen={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Ranh giới đã xác nhận')
+    expect(html).not.toContain('Nghi ngờ nhiều hồ sơ trong một gói')
   })
 })

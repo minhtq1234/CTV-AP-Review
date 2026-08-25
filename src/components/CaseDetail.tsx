@@ -21,11 +21,18 @@ interface Props {
   onOpenPacket: (index: number) => void
   onBack: () => void
   onExport: () => void
+  onReviewBoundary: () => void
 }
 
 // The case-detail screen: header (name + case status + review progress) over a
 // compact packet list, with each row carrying its derived review status.
-export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: Props) {
+export default function CaseDetail({
+  detail,
+  onOpenPacket,
+  onBack,
+  onExport,
+  onReviewBoundary,
+}: Props) {
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
@@ -67,7 +74,14 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
 
       <div className="case-summary">
         <span>{packets.length} gói · {packets.filter(packetNeedsResubmit).length} cần gửi lại · {packets.reduce((n, p) => n + Object.values(p.review?.fields ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề</span>
-        <button className="btn primary" onClick={onExport}>Xuất báo cáo gửi lại</button>
+        <div className="case-summary-actions">
+          {detail.boundaryStatus.status === 'review' && (
+            <button className="btn boundary-review-open" onClick={onReviewBoundary}>
+              Kiểm tra ranh giới
+            </button>
+          )}
+          <button className="btn primary" onClick={onExport}>Xuất báo cáo gửi lại</button>
+        </div>
       </div>
 
       <PacketDashboardView
@@ -192,6 +206,7 @@ export function PacketListRow({
     ? `${attention[0]} +${attention.length - 1}`
     : attention[0]
   const packetName = packet.name || 'chưa khớp tên'
+  const boundaryAccepted = packet.boundaryAssessment.status === 'accepted'
   const dashboard = packet.dashboardSummary
   const aiResult = dashboard?.aiResult
   const presentedAiResult = aiResult ?? 'review'
@@ -249,13 +264,18 @@ export function PacketListRow({
       </span>
       <span className="packet-list-result" role="cell">
         {summary && <span className="packet-status-summary">{summary}</span>}
+        {boundaryAccepted && (
+          <span className="packet-boundary-accepted">Ranh giới đã xác nhận</span>
+        )}
         {attentionCopy && (
           <span className="packet-attention" title={attentionLabel} aria-label={attentionLabel}>
             <span className="packet-attention-icon" aria-hidden="true">!</span>
             <span>{attentionCopy}</span>
           </span>
         )}
-        {!summary && !attentionCopy && <span className="packet-list-empty-value">—</span>}
+        {!summary && !boundaryAccepted && !attentionCopy && (
+          <span className="packet-list-empty-value">—</span>
+        )}
       </span>
       <span className="packet-range" role="cell">
         p{start + 1}–{end + 1}

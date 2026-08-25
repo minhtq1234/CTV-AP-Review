@@ -50,6 +50,34 @@ export interface CaseBoundaryStatus {
   reasons: BoundaryReason[]
 }
 
+export interface BoundaryCandidate {
+  page: number
+  packetIndex: number
+  relativePage: number
+  signals: Array<'visual' | 'contract-title' | 'identity-change' | 'cadence'>
+  confidence: 'high' | 'medium'
+}
+
+export interface BoundaryProposal {
+  status: 'not_needed' | 'review_required' | 'accepted_current' | 'superseded'
+  sourceCaseId: string
+  expectedPacketCount: number | null
+  currentPacketCount: number
+  candidateStarts: BoundaryCandidate[]
+  affectedPacketIndexes: number[]
+  correctionEnabled: boolean
+}
+
+export type BoundaryResolution =
+  | { action: 'keep-current' }
+  | { action: 'create-revision'; starts: number[] }
+
+export interface BoundaryResolutionResult {
+  caseId: string
+  sourceCaseId: string
+  status: string
+}
+
 export interface Identity {
   cccd: string
   name: string
@@ -261,6 +289,25 @@ export async function setReview(
     ...result,
     packet: normalizePacketMeta(result.packet),
   }
+}
+
+export async function getBoundaryProposal(caseId: string): Promise<BoundaryProposal> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/boundary-proposal`)
+  if (!res.ok) throw new Error(`getBoundaryProposal: HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function resolveBoundaryProposal(
+  caseId: string,
+  resolution: BoundaryResolution,
+): Promise<BoundaryResolutionResult> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/boundary-proposal/resolve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(resolution),
+  })
+  if (!res.ok) throw new Error(`resolveBoundaryProposal: HTTP ${res.status}`)
+  return res.json()
 }
 
 function normalizePacketMeta(packet: PacketMeta): PacketMeta {
