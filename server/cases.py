@@ -237,7 +237,7 @@ class CaseStore:
         cid = uuid.uuid4().hex
         case = {
             "id": cid,
-            "name": source["name"],
+            "name": source["pdfName"],
             "createdAt": now,
             "status": "processing",
             "pdfName": source["pdfName"],

@@ -128,7 +128,7 @@ def test_delete_removes_case():
 def test_create_revision_links_cases_without_copying_reviews(tmp_path):
     store = CaseStore(str(tmp_path))
     source = store.create(
-        "batch.pdf", "batch.pdf", "roster.xlsx", "2026-08-25T00:00:00Z",
+        "August display label", "batch.pdf", "roster.xlsx", "2026-08-25T00:00:00Z",
     )
     store.set_result(
         source,
@@ -142,6 +142,7 @@ def test_create_revision_links_cases_without_copying_reviews(tmp_path):
     original = store.get(source)
     assert revised["sourceCaseId"] == source
     assert revised["revisionNumber"] == 1
+    assert revised["name"] == "batch.pdf"
     assert revised["pdfName"] == "batch.pdf"
     assert revised["rosterName"] == "roster.xlsx"
     assert original["revisionIds"] == [revision]
