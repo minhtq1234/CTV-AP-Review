@@ -629,6 +629,8 @@ def test_repeat_create_revision_returns_recorded_revision_without_copy_or_pipeli
         if appmod.store.get(revision_id)["status"] != "processing":
             break
         time.sleep(0.02)
+    case_path = tmp_path / cid / "case.json"
+    recorded_bytes = case_path.read_bytes()
     monkeypatch.setattr(
         appmod.shutil,
         "copy2",
@@ -641,10 +643,145 @@ def test_repeat_create_revision_returns_recorded_revision_without_copy_or_pipeli
     )
 
     assert second.status_code == 200
-    assert second.json()["caseId"] == revision_id
-    assert second.json()["sourceCaseId"] == cid
+    assert second.json() == {
+        "caseId": revision_id,
+        "sourceCaseId": cid,
+        "status": "processing",
+    }
+    assert case_path.read_bytes() == recorded_bytes
     assert appmod.store.get(cid)["revisionIds"] == [revision_id]
     assert calls["pipeline"] == 1
+
+
+def _install_empty_revision_pipeline(monkeypatch):
+    calls = {"pipeline": 0}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None, confirmed_starts=None):
+        calls["pipeline"] += 1
+        cb("done", 1, 1, "")
+        return {"summary": {"found": 0}, "packets": [], "cccdWorkbook": None}
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    return calls
+
+
+def test_create_then_keep_current_conflict_preserves_recorded_revision(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    calls = _install_empty_revision_pipeline(monkeypatch)
+    created = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+    assert created.status_code == 200
+    revision_id = created.json()["caseId"]
+    recorded = json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True)
+
+    conflict = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {"code": "boundary-resolution-conflict"}
+    assert json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True) == recorded
+    assert appmod.store.get(cid)["revisionIds"] == [revision_id]
+    assert calls["pipeline"] == 1
+
+
+def test_keep_current_then_create_conflict_creates_no_revision(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    calls = _install_empty_revision_pipeline(monkeypatch)
+    kept = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+    assert kept.status_code == 200
+    recorded = json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True)
+
+    conflict = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {"code": "boundary-resolution-conflict"}
+    assert json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True) == recorded
+    assert appmod.store.get(cid)["revisionIds"] == []
+    assert calls["pipeline"] == 0
+
+
+def test_malformed_repeated_create_is_validated_before_idempotent_return(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    calls = _install_empty_revision_pipeline(monkeypatch)
+    created = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+    revision_id = created.json()["caseId"]
+    recorded = json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True)
+
+    malformed = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3, 3]},
+    )
+
+    assert malformed.status_code == 422
+    assert malformed.json()["detail"] == {"code": "boundary-starts-invalid"}
+    assert json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True) == recorded
+    assert appmod.store.get(cid)["revisionIds"] == [revision_id]
+    assert calls["pipeline"] == 1
+
+
+def test_different_valid_starts_conflict_with_recorded_create(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    calls = _install_empty_revision_pipeline(monkeypatch)
+    created = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+    revision_id = created.json()["caseId"]
+    recorded = json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True)
+
+    conflict = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 2, 4]},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {"code": "boundary-resolution-conflict"}
+    assert json.dumps(appmod.store.get(cid)["boundaryResolution"], sort_keys=True) == recorded
+    assert appmod.store.get(cid)["revisionIds"] == [revision_id]
+    assert calls["pipeline"] == 1
+
+
+def test_exact_keep_current_retry_returns_recorded_result_without_rewriting(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    first = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+    assert first.status_code == 200
+    case_path = tmp_path / cid / "case.json"
+    recorded_bytes = case_path.read_bytes()
+
+    repeated = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert repeated.status_code == 200
+    assert repeated.json() == first.json() == {
+        "caseId": cid,
+        "sourceCaseId": cid,
+        "status": "accepted_current",
+    }
+    assert case_path.read_bytes() == recorded_bytes
+    assert appmod.store.get(cid)["revisionIds"] == []
 
 
 def test_revision_copy_failure_marks_revision_only_with_safe_error(tmp_path, monkeypatch):

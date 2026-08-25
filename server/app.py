@@ -440,6 +440,62 @@ async def resolve_boundary_proposal(cid: str, body: BoundaryResolutionBody):
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
 
+    existing_resolution = case.get("boundaryResolution") or {}
+    confirmed_starts = None
+    if body.action == "create-revision":
+        packet_starts = [
+            packet.get("pages", [None])[0]
+            for packet in case.get("packets") or []
+            if packet.get("pages")
+        ]
+        first_packet_start = min(
+            (page for page in packet_starts if type(page) is int),
+            default=None,
+        )
+        if first_packet_start is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "boundary-source-packets-invalid"},
+            )
+        try:
+            confirmed_starts = validate_revision_starts(
+                body.starts,
+                _source_pdf_page_count(cid),
+                first_packet_start,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(exc)},
+            ) from exc
+
+    if existing_resolution:
+        if existing_resolution.get("action") != body.action:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "boundary-resolution-conflict"},
+            )
+        if body.action == "keep-current":
+            return {
+                "caseId": cid,
+                "sourceCaseId": cid,
+                "status": "accepted_current",
+            }
+        existing_revision_id = existing_resolution.get("revisionCaseId")
+        if (
+            tuple(existing_resolution.get("starts") or ()) != confirmed_starts
+            or not isinstance(existing_revision_id, str)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "boundary-resolution-conflict"},
+            )
+        return {
+            "caseId": existing_revision_id,
+            "sourceCaseId": cid,
+            "status": "processing",
+        }
+
     now = datetime.now(timezone.utc).isoformat()
     proposal = _proposal_for_case(case)
     reasons = assess_case_boundaries(
@@ -458,44 +514,6 @@ async def resolve_boundary_proposal(cid: str, body: BoundaryResolutionBody):
             "sourceCaseId": cid,
             "status": "accepted_current",
         }
-
-    existing_resolution = case.get("boundaryResolution") or {}
-    existing_revision_id = existing_resolution.get("revisionCaseId")
-    if (
-        existing_resolution.get("action") == "create-revision"
-        and isinstance(existing_revision_id, str)
-    ):
-        return {
-            "caseId": existing_revision_id,
-            "sourceCaseId": cid,
-            "status": "processing",
-        }
-
-    packet_starts = [
-        packet.get("pages", [None])[0]
-        for packet in case.get("packets") or []
-        if packet.get("pages")
-    ]
-    first_packet_start = min(
-        (page for page in packet_starts if type(page) is int),
-        default=None,
-    )
-    if first_packet_start is None:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "boundary-source-packets-invalid"},
-        )
-    try:
-        confirmed_starts = validate_revision_starts(
-            body.starts,
-            _source_pdf_page_count(cid),
-            first_packet_start,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": str(exc)},
-        ) from exc
 
     try:
         revision_id = store.create_revision(cid, now)

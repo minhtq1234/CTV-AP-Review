@@ -79,6 +79,10 @@ accepts either
 only the source `input.pdf` and optional `roster.xlsx`/`cccd.xlsx` into a new
 case, then reprocesses every confirmed range with empty reviews. Production
 must remain in shadow mode until proposal accuracy meets the pilot tolerance.
+The first successful resolution is terminal: an exact repeat is idempotent,
+while a conflicting action or different valid starts returns HTTP 409 without
+changing the recorded result. Malformed create-revision retries still return
+HTTP 422 before the idempotence decision.
 
 ## Checking the standalone CTV toolkit
 
