@@ -33,7 +33,11 @@ export function boundaryPreviewSrc(
 
 export default function BoundaryReviewScreen({ proposal, onResolve, onBack }: Props) {
   const initialStarts = useMemo(
-    () => proposal.candidateStarts.map(candidate => candidate.page),
+    () => [...new Set(
+      proposal.candidateStarts
+        .map(candidate => candidate.page)
+        .filter(Number.isInteger),
+    )].sort((left, right) => left - right),
     [proposal],
   )
   const [selectedStarts, setSelectedStarts] = useState<number[]>(initialStarts)
@@ -45,7 +49,7 @@ export default function BoundaryReviewScreen({ proposal, onResolve, onBack }: Pr
       affectedIndexes.has(candidate.packetIndex)
     ))
   }, [proposal])
-  const firstSourceStart = Math.min(...initialStarts)
+  const firstSourceStart = initialStarts[0]
   const validStarts = selectedStarts.length > 0
     && selectedStarts[0] === firstSourceStart
     && selectedStarts.every((page, index) => (
@@ -104,10 +108,13 @@ export default function BoundaryReviewScreen({ proposal, onResolve, onBack }: Pr
       </div>
 
       <main className="boundary-range-list">
-        {affected.map(candidate => {
+        {affected.map((candidate, index) => {
           const selected = selectedStarts.includes(candidate.page)
           return (
-            <article className="boundary-candidate" key={`${candidate.packetIndex}-${candidate.page}`}>
+            <article
+              className="boundary-candidate"
+              key={`${candidate.packetIndex}-${candidate.page}-${index}`}
+            >
               <div className="boundary-thumbnail">
                 <img
                   src={boundaryPreviewSrc(proposal.sourceCaseId, candidate)}

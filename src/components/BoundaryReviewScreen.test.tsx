@@ -165,6 +165,44 @@ describe('boundary review presentation and controls', () => {
     expect(button('Tạo phiên bản đã sửa').disabled).toBe(true)
   })
 
+  it('normalizes unsorted duplicate proposal pages before posting zero-based starts', async () => {
+    const { onResolve } = renderBoundary(proposalWithPages(
+      [16, 8, 8, 0],
+      { affectedPacketIndexes: [0, 1] },
+    ))
+
+    expect(button('Tạo phiên bản đã sửa').disabled).toBe(false)
+    await click(button('Tạo phiên bản đã sửa'))
+
+    expect(onResolve).toHaveBeenCalledWith({
+      action: 'create-revision',
+      starts: [0, 8, 16],
+    })
+  })
+
+  it('preserves a valid nonzero source start and disables submit only after removing it', async () => {
+    const { onResolve } = renderBoundary(proposalWithPages(
+      [4, 12],
+      { affectedPacketIndexes: [0, 1] },
+    ))
+
+    expect(button('Tạo phiên bản đã sửa').disabled).toBe(false)
+    await click(button('Tạo phiên bản đã sửa'))
+    expect(onResolve).toHaveBeenCalledWith({
+      action: 'create-revision',
+      starts: [4, 12],
+    })
+
+    await click(button('Bỏ ranh giới Trang 5'))
+    expect(button('Tạo phiên bản đã sửa').disabled).toBe(true)
+  })
+
+  it('disables revision submission when no integer proposal starts remain', () => {
+    renderBoundary(proposalWithPages([]))
+
+    expect(button('Tạo phiên bản đã sửa').disabled).toBe(true)
+  })
+
   it('is read-only in shadow mode while Back remains active', async () => {
     const { onResolve, onBack } = renderBoundary(proposalWithPages([0, 8, 16], {
       correctionEnabled: false,
