@@ -58,6 +58,28 @@ Binds `127.0.0.1` only — this is a local, single-user tool, not a hosted
 service. CORS allows the Vite dev origins (`localhost`/`127.0.0.1`, ports
 5173-5175).
 
+### Boundary proposal shadow mode
+
+`GET /api/cases/{id}/boundary-proposal` is always available and returns a
+privacy-safe, zero-based proposal plus `correctionEnabled`. Boundary resolution
+is shadow-only by default: both `keep-current` and `create-revision` mutations
+return HTTP 409 unless the exact startup environment value below is set:
+
+```bash
+cd server
+CTV_BOUNDARY_CORRECTION_ENABLED=1 \
+  python3 -m uvicorn app:app --host 127.0.0.1 --port 8001
+```
+
+The setting is read once when `app.py` starts; values such as `true`, `01`, or
+`1 ` do not enable mutation. `POST /api/cases/{id}/boundary-proposal/resolve`
+accepts either
+`{"action":"keep-current"}` or
+`{"action":"create-revision","starts":[0,8,16]}`. Revision creation copies
+only the source `input.pdf` and optional `roster.xlsx`/`cccd.xlsx` into a new
+case, then reprocesses every confirmed range with empty reviews. Production
+must remain in shadow mode until proposal accuracy meets the pilot tolerance.
+
 ## Checking the standalone CTV toolkit
 
 The caller supplies the explicit local path to the script. These commands work

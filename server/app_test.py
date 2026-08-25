@@ -1,10 +1,14 @@
 from fastapi.testclient import TestClient
+import fitz
+import hashlib
 import io
 import json
 import os
+from pathlib import Path
 import time
 
 import openpyxl
+import pytest
 
 import app as appmod
 from app import app, rewrite_manifest_urls
@@ -34,7 +38,9 @@ def test_page_endpoint_serves_attached_jpeg(tmp_path, monkeypatch):
 
     assert response.status_code == 200
 
-def _fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+def _fake_pipeline(
+    pdf, roster, out_dir, cb, cccd_xlsx_path=None, confirmed_starts=None,
+):
     cb("done", 1, 1, "")
     return {"summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
             "packets": [{"index": 0, "name": "P0", "pages": [8, 15],
@@ -275,6 +281,427 @@ def test_case_boundary_review_blocks_publication_without_participant_resubmissio
         "reasons": ["length-out-of-range", "multiple-contract-starts"],
     }]
 
+
+def _write_pdf(path, page_count=6):
+    document = fitz.open()
+    for _ in range(page_count):
+        document.new_page()
+    document.save(path)
+    document.close()
+
+
+def _ready_ambiguous_case(monkeypatch, tmp_path, *, with_workbooks=False):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    cid = appmod.store.create(
+        "synthetic.pdf",
+        "synthetic.pdf",
+        "synthetic-roster.xlsx" if with_workbooks else None,
+        "2026-08-25T00:00:00+00:00",
+        cccd_name="synthetic-cccd.xlsx" if with_workbooks else None,
+    )
+    appmod.store.set_result(
+        cid,
+        {"found": 1, "roster_n": 2},
+        [{
+            "index": 0,
+            "name": "Synthetic A",
+            "pages": [0, 5],
+            "n_pages": 6,
+            "confidence": "yellow",
+            "flags": ["length-out-of-range"],
+            "labels": [],
+        }],
+    )
+    appmod.store.set_review(
+        cid,
+        0,
+        {"done": True, "fields": {"amount": {"seen": True, "flag": None}}},
+    )
+    case_dir = tmp_path / cid
+    _write_pdf(case_dir / "input.pdf")
+    if with_workbooks:
+        (case_dir / "roster.xlsx").write_bytes(b"synthetic-roster")
+        (case_dir / "cccd.xlsx").write_bytes(b"synthetic-cccd")
+    packet_dir = case_dir / "packets" / "0"
+    packet_dir.mkdir(parents=True)
+    (packet_dir / "manifest.json").write_text(json.dumps({
+        "docs": [
+            {"kind": "contract", "pages": [{"src": "/private/pg0.png"}]},
+            {"kind": "contract", "pages": [{"src": "/private/pg3.png"}]},
+        ],
+        "fields": [{"key": "amount", "observed": "private-value"}],
+    }), encoding="utf-8")
+    return TestClient(app), cid
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, False), ("", False), ("true", False), ("01", False), ("1 ", False), ("1", True)],
+)
+def test_boundary_correction_startup_flag_accepts_only_exact_one(value, expected):
+    assert appmod._boundary_correction_enabled(value) is expected
+
+
+def test_boundary_proposal_get_remains_available_in_shadow_mode(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", False, raising=False)
+
+    response = client.get(f"/api/cases/{cid}/boundary-proposal")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "review_required",
+        "sourceCaseId": cid,
+        "expectedPacketCount": 2,
+        "currentPacketCount": 1,
+        "candidateStarts": [
+            {
+                "page": 0,
+                "signals": ["contract-title", "visual"],
+                "confidence": "medium",
+                "packetIndex": 0,
+                "relativePage": 0,
+            },
+            {
+                "page": 3,
+                "signals": ["contract-title", "cadence"],
+                "confidence": "high",
+                "packetIndex": 0,
+                "relativePage": 3,
+            },
+        ],
+        "affectedPacketIndexes": [0],
+        "correctionEnabled": False,
+    }
+    assert "private-value" not in response.text
+    assert "/private/" not in response.text
+
+
+def test_boundary_proposal_unknown_case_returns_404(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    response = TestClient(app).get("/api/cases/missing/boundary-proposal")
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "keep-current"},
+        {"action": "create-revision", "starts": [0, 3]},
+    ],
+)
+def test_disabled_boundary_resolution_returns_409_before_store_or_file_mutation(
+    tmp_path, monkeypatch, body,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", False, raising=False)
+    monkeypatch.setattr(
+        appmod.store,
+        "get",
+        lambda *_: (_ for _ in ()).throw(AssertionError("store read after disabled gate")),
+    )
+    monkeypatch.setattr(
+        appmod.shutil,
+        "copy2",
+        lambda *_: (_ for _ in ()).throw(AssertionError("copy after disabled gate")),
+    )
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json=body,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"code": "boundary-correction-disabled"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "create-revision"},
+        {"action": "keep-current", "starts": [0, 3]},
+        {"action": "create-revision", "starts": [0, True]},
+        {"action": "create-revision", "starts": [0, "3"]},
+        {"action": "create-revision", "starts": [0, 3.0]},
+    ],
+)
+def test_boundary_resolution_body_rejects_action_start_mismatches_and_non_integers(
+    tmp_path, monkeypatch, body,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json=body,
+    )
+
+    assert response.status_code == 422
+    assert appmod.store.get(cid)["boundaryResolution"] is None
+
+
+@pytest.mark.parametrize(
+    ("starts", "code"),
+    [
+        ([0, 3, 3], "boundary-starts-invalid"),
+        ([0, 4, 3], "boundary-starts-invalid"),
+        ([1, 3], "boundary-preamble-invalid"),
+        ([0, 6], "boundary-starts-out-of-range"),
+    ],
+)
+def test_create_revision_maps_invalid_starts_to_stable_422(
+    tmp_path, monkeypatch, starts, code,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": starts},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {"code": code}
+    assert appmod.store.get(cid)["revisionIds"] == []
+
+
+def test_boundary_resolution_unknown_case_returns_404_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    response = TestClient(app).post(
+        "/api/cases/missing/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+    assert response.status_code == 404
+
+
+def test_keep_current_records_resolution_without_reprocessing(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        appmod,
+        "run_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pipeline reran")),
+    )
+    before_review = json.dumps(appmod.store.get(cid)["packets"][0]["review"], sort_keys=True)
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "caseId": cid,
+        "sourceCaseId": cid,
+        "status": "accepted_current",
+    }
+    resolution = appmod.store.get(cid)["boundaryResolution"]
+    assert resolution["action"] == "keep-current"
+    assert resolution["starts"] == [0, 3]
+    assert resolution["reasons"] == [
+        "length-out-of-range", "multiple-contract-starts", "batch-count-mismatch",
+    ]
+    assert resolution["resolvedAt"].endswith("+00:00")
+    assert json.dumps(appmod.store.get(cid)["packets"][0]["review"], sort_keys=True) == before_review
+    proposal = client.get(f"/api/cases/{cid}/boundary-proposal").json()
+    assert proposal["status"] == "accepted_current"
+    detail = client.get(f"/api/cases/{cid}").json()
+    assert detail["boundaryStatus"]["status"] == "accepted"
+    assert detail["publicationBlocked"] is False
+    assert detail["packets"][0]["boundaryAssessment"]["status"] == "accepted"
+
+
+def test_create_revision_copies_only_inputs_reprocesses_exact_starts_and_stamps_revision(
+    tmp_path, monkeypatch,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path, with_workbooks=True)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    source_dir = tmp_path / cid
+    source_hashes = {
+        name: hashlib.sha256((source_dir / name).read_bytes()).hexdigest()
+        for name in ("input.pdf", "roster.xlsx", "cccd.xlsx")
+    }
+    source_review = json.dumps(appmod.store.get(cid)["packets"][0]["review"], sort_keys=True)
+    seen = {}
+
+    def fake_pipeline(
+        pdf, roster, out_dir, cb, cccd_xlsx_path=None, confirmed_starts=None,
+    ):
+        seen["paths"] = (
+            os.path.basename(pdf),
+            os.path.basename(roster),
+            os.path.basename(cccd_xlsx_path),
+        )
+        seen["starts"] = confirmed_starts
+        seen["initial_files"] = sorted(
+            str(path.relative_to(out_dir))
+            for path in Path(out_dir).rglob("*")
+            if path.is_file()
+        )
+        packets = []
+        for index, (start, end) in enumerate(((0, 2), (3, 5))):
+            packet_dir = Path(out_dir) / "packets" / str(index)
+            packet_dir.mkdir(parents=True)
+            (packet_dir / "manifest.json").write_text(
+                json.dumps({"docs": [], "fields": [{"key": "synthetic"}]}),
+                encoding="utf-8",
+            )
+            packets.append({
+                "index": index,
+                "name": f"Synthetic {index}",
+                "pages": [start, end],
+                "n_pages": end - start + 1,
+                "confidence": "green",
+                "flags": [],
+                "labels": [],
+            })
+        cb("done", 2, 2, "")
+        return {
+            "summary": {"found": 2, "boundary_source": "reviewer-confirmed"},
+            "packets": packets,
+            "cccdWorkbook": None,
+        }
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+
+    assert response.status_code == 200
+    revision_id = response.json()["caseId"]
+    assert response.json() == {
+        "caseId": revision_id,
+        "sourceCaseId": cid,
+        "status": "processing",
+    }
+    for _ in range(100):
+        revised = appmod.store.get(revision_id)
+        if revised["status"] != "processing":
+            break
+        time.sleep(0.02)
+    assert revised["status"] == "ready"
+    assert revised["sourceCaseId"] == cid
+    assert revised["revisionNumber"] == 1
+    assert appmod.store.get(cid)["revisionIds"] == [revision_id]
+    assert seen["starts"] == (0, 3)
+    assert seen["paths"] == ("input.pdf", "roster.xlsx", "cccd.xlsx")
+    assert seen["initial_files"] == ["case.json", "cccd.xlsx", "input.pdf", "roster.xlsx"]
+    assert all(packet["packetRevision"] == 1 for packet in revised["packets"])
+    assert all(packet["review"] == {
+        "done": False, "fields": {}, "rejection": None,
+    } for packet in revised["packets"])
+    for packet in revised["packets"]:
+        manifest = json.loads(
+            (tmp_path / revision_id / "packets" / str(packet["index"]) / "manifest.json")
+            .read_text(encoding="utf-8")
+        )
+        assert manifest["packetRevision"] == 1
+    assert json.dumps(appmod.store.get(cid)["packets"][0]["review"], sort_keys=True) == source_review
+    assert {
+        name: hashlib.sha256((source_dir / name).read_bytes()).hexdigest()
+        for name in source_hashes
+    } == source_hashes
+    assert client.get(f"/api/cases/{cid}/boundary-proposal").json()["status"] == "superseded"
+
+
+def test_repeat_create_revision_returns_recorded_revision_without_copy_or_pipeline(
+    tmp_path, monkeypatch,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    calls = {"pipeline": 0}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None, confirmed_starts=None):
+        calls["pipeline"] += 1
+        cb("done", 1, 1, "")
+        return {"summary": {"found": 0}, "packets": [], "cccdWorkbook": None}
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    first = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+    assert first.status_code == 200
+    revision_id = first.json()["caseId"]
+    for _ in range(100):
+        if appmod.store.get(revision_id)["status"] != "processing":
+            break
+        time.sleep(0.02)
+    monkeypatch.setattr(
+        appmod.shutil,
+        "copy2",
+        lambda *_: (_ for _ in ()).throw(AssertionError("idempotent retry copied")),
+    )
+
+    second = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+
+    assert second.status_code == 200
+    assert second.json()["caseId"] == revision_id
+    assert second.json()["sourceCaseId"] == cid
+    assert appmod.store.get(cid)["revisionIds"] == [revision_id]
+    assert calls["pipeline"] == 1
+
+
+def test_revision_copy_failure_marks_revision_only_with_safe_error(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    source_before = json.dumps(appmod.store.get(cid)["packets"], sort_keys=True)
+    source_pdf_hash = hashlib.sha256((tmp_path / cid / "input.pdf").read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        appmod.shutil,
+        "copy2",
+        lambda *_: (_ for _ in ()).throw(OSError("/private/path and identity")),
+    )
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "boundary-revision-copy-failed"
+    revision_id = appmod.store.get(cid)["revisionIds"][0]
+    revision = appmod.store.get(revision_id)
+    assert revision["status"] == "error"
+    assert revision["error"] == "boundary-revision-copy-failed"
+    assert appmod.store.get(cid)["boundaryResolution"] is None
+    assert json.dumps(appmod.store.get(cid)["packets"], sort_keys=True) == source_before
+    assert hashlib.sha256((tmp_path / cid / "input.pdf").read_bytes()).hexdigest() == source_pdf_hash
+    assert "/private/path" not in response.text
+
+
+def test_revision_pipeline_failure_is_sanitized_without_changing_source(tmp_path, monkeypatch):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    source_before = json.dumps(appmod.store.get(cid)["packets"], sort_keys=True)
+
+    def failing_pipeline(*_args, **_kwargs):
+        raise RuntimeError("/private/path Synthetic Person 000000000001")
+
+    monkeypatch.setattr(appmod, "run_pipeline", failing_pipeline)
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "create-revision", "starts": [0, 3]},
+    )
+    assert response.status_code == 200
+    revision_id = response.json()["caseId"]
+    for _ in range(100):
+        revision = appmod.store.get(revision_id)
+        if revision["status"] != "processing":
+            break
+        time.sleep(0.02)
+
+    assert revision["status"] == "error"
+    assert revision["error"] == "boundary-revision-processing-failed"
+    assert "/private/path" not in json.dumps(revision)
+    assert "000000000001" not in json.dumps(revision)
+    assert json.dumps(appmod.store.get(cid)["packets"], sort_keys=True) == source_before
+
 def test_report_404_before_generation(tmp_path, monkeypatch):
     c, cid = _ready_case(monkeypatch, tmp_path)
     assert c.get(f"/api/cases/{cid}/report.md").status_code == 404
@@ -342,7 +769,9 @@ def test_valid_cccd_upload_is_saved_passed_to_pipeline_and_redacted(
         }],
     }
 
-    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+    def fake_pipeline(
+        pdf, roster, out_dir, cb, cccd_xlsx_path=None, confirmed_starts=None,
+    ):
         seen["cccd"] = cccd_xlsx_path
         seen["cccd_exists"] = os.path.isfile(cccd_xlsx_path)
         cb("done", 1, 1, "")

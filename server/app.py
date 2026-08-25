@@ -21,12 +21,14 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, field_validator
+import fitz
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from typing import Literal
 import threading
 
 from boundary_assessment import assess_case_boundaries, assess_packet_boundary
+from boundary_proposal import build_boundary_proposal, validate_revision_starts
 from cases import CaseStore, compact_cccd_summary, progress_of
 from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
@@ -53,6 +55,15 @@ app.add_middleware(
 )
 
 store = CaseStore(os.path.join(os.path.dirname(__file__), "data", "cases"))
+
+
+def _boundary_correction_enabled(value: str | None) -> bool:
+    return value == "1"
+
+
+BOUNDARY_CORRECTION_ENABLED = _boundary_correction_enabled(
+    os.environ.get("CTV_BOUNDARY_CORRECTION_ENABLED")
+)
 
 # Live progress while a case is `processing` (not persisted — it's transient
 # and only meaningful for the in-flight run); keyed by case id.
@@ -169,6 +180,7 @@ def _run_case(
     pdf_path: str,
     roster_path: str | None,
     cccd_path: str | None = None,
+    confirmed_starts: tuple[int, ...] | None = None,
 ) -> None:
     case_dir = store.case_dir(cid)
 
@@ -182,15 +194,39 @@ def _run_case(
             case_dir,
             cb,
             cccd_xlsx_path=cccd_path,
+            confirmed_starts=confirmed_starts,
         )
+        case = store.get(cid)
+        revision_number = case.get("revisionNumber", 0) if case else 0
+        packets = []
+        for packet in result.get("packets", []):
+            stamped = {**packet, "packetRevision": revision_number}
+            packets.append(stamped)
+            manifest_path = os.path.join(
+                case_dir, "packets", str(stamped["index"]), "manifest.json",
+            )
+            if os.path.isfile(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                if not isinstance(manifest, dict):
+                    raise ValueError("boundary-manifest-invalid")
+                manifest["packetRevision"] = revision_number
+                with open(manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, ensure_ascii=False, indent=2)
         store.set_result(
             cid,
             summary=result.get("summary"),
-            packets=result.get("packets", []),
+            packets=packets,
             cccd_workbook=result.get("cccdWorkbook"),
         )
     except Exception as e:  # noqa: BLE001 - surfaced to the caller via case["error"]
-        store.set_error(cid, str(e))
+        failed_case = store.get(cid)
+        error = (
+            "boundary-revision-processing-failed"
+            if failed_case and failed_case.get("revisionNumber", 0) > 0
+            else str(e)
+        )
+        store.set_error(cid, error)
     finally:
         _progress.pop(cid, None)
 
@@ -292,6 +328,29 @@ class ReviewBody(BaseModel):
     rejection: PacketRejectionBody | None = None
 
 
+class BoundaryResolutionBody(BaseModel):
+    action: Literal["keep-current", "create-revision"]
+    starts: list[int] | None = None
+
+    @field_validator("starts", mode="before")
+    @classmethod
+    def starts_are_plain_integers(cls, starts):
+        if starts is not None and (
+            not isinstance(starts, list)
+            or any(type(page) is not int for page in starts)
+        ):
+            raise ValueError("boundary-starts-invalid")
+        return starts
+
+    @model_validator(mode="after")
+    def starts_match_action(self):
+        if self.action == "create-revision" and self.starts is None:
+            raise ValueError("boundary-starts-required")
+        if self.action == "keep-current" and self.starts is not None:
+            raise ValueError("boundary-starts-not-allowed")
+        return self
+
+
 @app.put("/api/cases/{cid}/packets/{i}/review")
 async def put_review(cid: str, i: int, body: ReviewBody):
     updated = store.set_review(cid, i, body.model_dump())
@@ -315,6 +374,162 @@ def _load_manifests(cid: str, packets: list[dict]) -> dict:
         if manifest is not None:
             out[p["index"]] = manifest
     return out
+
+
+def _source_pdf_page_count(cid: str) -> int:
+    path = os.path.join(store.case_dir(cid), "input.pdf")
+    try:
+        with fitz.open(path) as document:
+            return document.page_count
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "boundary-source-pdf-invalid"},
+        ) from exc
+
+
+def _proposal_for_case(case: dict) -> dict:
+    proposal = build_boundary_proposal(
+        case,
+        _load_manifests(case["id"], case.get("packets") or []),
+        _source_pdf_page_count(case["id"]),
+    )
+    resolution = case.get("boundaryResolution") or {}
+    if resolution.get("action") == "keep-current":
+        proposal["status"] = "accepted_current"
+    elif resolution.get("action") == "create-revision":
+        proposal["status"] = "superseded"
+    proposal["correctionEnabled"] = BOUNDARY_CORRECTION_ENABLED
+    return proposal
+
+
+def _copy_revision_inputs(
+    source_dir: str,
+    revision_dir: str,
+) -> tuple[str, str | None, str | None]:
+    copied: list[str | None] = []
+    for name in ("input.pdf", "roster.xlsx", "cccd.xlsx"):
+        source = os.path.join(source_dir, name)
+        if os.path.isfile(source):
+            target = os.path.join(revision_dir, name)
+            shutil.copy2(source, target)
+            copied.append(target)
+        else:
+            copied.append(None)
+    if copied[0] is None:
+        raise ValueError("boundary-source-pdf-missing")
+    return copied[0], copied[1], copied[2]
+
+
+@app.get("/api/cases/{cid}/boundary-proposal")
+async def get_boundary_proposal(cid: str):
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return _proposal_for_case(case)
+
+
+@app.post("/api/cases/{cid}/boundary-proposal/resolve")
+async def resolve_boundary_proposal(cid: str, body: BoundaryResolutionBody):
+    if not BOUNDARY_CORRECTION_ENABLED:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "boundary-correction-disabled"},
+        )
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    proposal = _proposal_for_case(case)
+    reasons = assess_case_boundaries(
+        case,
+        _load_manifests(cid, case.get("packets") or []),
+    )["reasons"]
+    if body.action == "keep-current":
+        store.set_boundary_resolution(cid, {
+            "action": "keep-current",
+            "starts": [candidate["page"] for candidate in proposal["candidateStarts"]],
+            "reasons": reasons,
+            "resolvedAt": now,
+        })
+        return {
+            "caseId": cid,
+            "sourceCaseId": cid,
+            "status": "accepted_current",
+        }
+
+    existing_resolution = case.get("boundaryResolution") or {}
+    existing_revision_id = existing_resolution.get("revisionCaseId")
+    if (
+        existing_resolution.get("action") == "create-revision"
+        and isinstance(existing_revision_id, str)
+    ):
+        return {
+            "caseId": existing_revision_id,
+            "sourceCaseId": cid,
+            "status": "processing",
+        }
+
+    packet_starts = [
+        packet.get("pages", [None])[0]
+        for packet in case.get("packets") or []
+        if packet.get("pages")
+    ]
+    first_packet_start = min(
+        (page for page in packet_starts if type(page) is int),
+        default=None,
+    )
+    if first_packet_start is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "boundary-source-packets-invalid"},
+        )
+    try:
+        confirmed_starts = validate_revision_starts(
+            body.starts,
+            _source_pdf_page_count(cid),
+            first_packet_start,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": str(exc)},
+        ) from exc
+
+    try:
+        revision_id = store.create_revision(cid, now)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="case not found") from exc
+    try:
+        pdf_path, roster_path, cccd_path = _copy_revision_inputs(
+            store.case_dir(cid),
+            store.case_dir(revision_id),
+        )
+    except Exception as exc:
+        store.set_error(revision_id, "boundary-revision-copy-failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "boundary-revision-copy-failed"},
+        ) from exc
+
+    store.set_boundary_resolution(cid, {
+        "action": "create-revision",
+        "starts": list(confirmed_starts),
+        "reasons": reasons,
+        "revisionCaseId": revision_id,
+        "resolvedAt": now,
+    })
+    threading.Thread(
+        target=_run_case,
+        args=(revision_id, pdf_path, roster_path, cccd_path, confirmed_starts),
+        daemon=True,
+    ).start()
+    return {
+        "caseId": revision_id,
+        "sourceCaseId": cid,
+        "status": "processing",
+    }
 
 
 @app.post("/api/cases/{cid}/report")
