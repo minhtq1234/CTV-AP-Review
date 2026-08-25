@@ -156,6 +156,15 @@ class CaseStore:
             if "cccdWorkbook" not in case:
                 case["cccdWorkbook"] = None
                 changed = True
+            for key, default in (
+                ("sourceCaseId", None),
+                ("revisionIds", []),
+                ("revisionNumber", 0),
+                ("boundaryResolution", None),
+            ):
+                if key not in case:
+                    case[key] = default
+                    changed = True
             for i, p in enumerate(case.get("packets", [])):
                 had_review = "review" in p
                 normalized = _ensure_packet_defaults(p)
@@ -212,9 +221,40 @@ class CaseStore:
             "cccdWorkbook": None,
             "error": None,
             "packets": [],
+            "sourceCaseId": None,
+            "revisionIds": [],
+            "revisionNumber": 0,
+            "boundaryResolution": None,
         }
         os.makedirs(os.path.join(self.root, cid), exist_ok=True)
         self._write(case)
+        return cid
+
+    def create_revision(self, source_cid: str, now: str) -> str:
+        source = self._idx.get(source_cid)
+        if source is None:
+            raise KeyError(source_cid)
+        cid = uuid.uuid4().hex
+        case = {
+            "id": cid,
+            "name": source["name"],
+            "createdAt": now,
+            "status": "processing",
+            "pdfName": source["pdfName"],
+            "rosterName": source["rosterName"],
+            "cccdName": source.get("cccdName"),
+            "summary": None,
+            "cccdWorkbook": None,
+            "error": None,
+            "packets": [],
+            "sourceCaseId": source_cid,
+            "revisionIds": [],
+            "revisionNumber": source["revisionNumber"] + 1,
+            "boundaryResolution": None,
+        }
+        self._write(case)
+        source["revisionIds"].append(cid)
+        self._write(source)
         return cid
 
     def get(self, cid: str) -> dict | None:
@@ -280,6 +320,14 @@ class CaseStore:
             return None
         base = case["status"] if case["status"] in ("processing", "error") else "ready"
         case["status"] = case_status(base, case["packets"])
+        self._write(case)
+        return case
+
+    def set_boundary_resolution(self, cid: str, resolution: dict) -> dict | None:
+        case = self._idx.get(cid)
+        if case is None:
+            return None
+        case["boundaryResolution"] = dict(resolution)
         self._write(case)
         return case
 

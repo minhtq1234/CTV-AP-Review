@@ -125,6 +125,115 @@ def test_delete_removes_case():
         assert s.get(cid) is None and s.list() == []
 
 
+def test_create_revision_links_cases_without_copying_reviews(tmp_path):
+    store = CaseStore(str(tmp_path))
+    source = store.create(
+        "batch.pdf", "batch.pdf", "roster.xlsx", "2026-08-25T00:00:00Z",
+    )
+    store.set_result(
+        source,
+        {"found": 1, "roster_n": 2},
+        [_pkt(0, done=True, flags=["cccd"])],
+    )
+
+    revision = store.create_revision(source, "2026-08-25T00:01:00Z")
+
+    revised = store.get(revision)
+    original = store.get(source)
+    assert revised["sourceCaseId"] == source
+    assert revised["revisionNumber"] == 1
+    assert revised["pdfName"] == "batch.pdf"
+    assert revised["rosterName"] == "roster.xlsx"
+    assert original["revisionIds"] == [revision]
+    assert revised["packets"] == []
+    assert revised["summary"] is None
+    assert revised["boundaryResolution"] is None
+
+
+def test_revision_lineage_and_empty_reviews_survive_restart(tmp_path):
+    store = CaseStore(str(tmp_path))
+    source = store.create("batch.pdf", "batch.pdf", None, "2026-08-25T00:00:00Z")
+    store.set_result(source, {"found": 1}, [_pkt(0, done=True)])
+    revision = store.create_revision(source, "2026-08-25T00:01:00Z")
+
+    reloaded = CaseStore(str(tmp_path))
+    assert reloaded.get(source)["revisionIds"] == [revision]
+    assert reloaded.get(revision)["sourceCaseId"] == source
+    assert reloaded.get(revision)["revisionNumber"] == 1
+    assert reloaded.get(revision)["packets"] == []
+
+
+def test_set_boundary_resolution_persists_without_mutating_packet_reviews(tmp_path):
+    store = CaseStore(str(tmp_path))
+    cid = store.create("batch.pdf", "batch.pdf", None, "2026-08-25T00:00:00Z")
+    store.set_result(cid, {"found": 1}, [_pkt(0, done=True, flags=["cccd"])])
+    before = json.dumps(store.get(cid)["packets"], ensure_ascii=False, sort_keys=True)
+    resolution = {
+        "action": "keep-current",
+        "starts": [0, 8],
+        "reasons": ["multiple-contract-starts"],
+        "resolvedAt": "2026-08-25T00:01:00Z",
+    }
+
+    updated = store.set_boundary_resolution(cid, resolution)
+
+    assert updated["boundaryResolution"] == resolution
+    assert json.dumps(updated["packets"], ensure_ascii=False, sort_keys=True) == before
+    reloaded = CaseStore(str(tmp_path)).get(cid)
+    assert reloaded["boundaryResolution"] == resolution
+    assert json.dumps(reloaded["packets"], ensure_ascii=False, sort_keys=True) == before
+    assert "reviewerName" not in reloaded["boundaryResolution"]
+
+
+def test_load_migrates_boundary_defaults_without_changing_reviews(tmp_path):
+    cid = "legacy-boundary"
+    case_dir = tmp_path / cid
+    case_dir.mkdir()
+    packet = _pkt(0, done=True, flags=["cccd"])
+    legacy = {
+        "id": cid, "name": "x", "createdAt": None, "status": "done",
+        "pdfName": "x.pdf", "rosterName": None, "summary": None,
+        "error": None, "packets": [packet],
+    }
+    (case_dir / "case.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = CaseStore(str(tmp_path)).get(cid)
+
+    assert loaded["sourceCaseId"] is None
+    assert loaded["revisionIds"] == []
+    assert loaded["revisionNumber"] == 0
+    assert loaded["boundaryResolution"] is None
+    assert loaded["packets"] == [packet]
+    persisted = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert persisted["packets"] == [packet]
+
+
+def test_deleting_revision_does_not_delete_source(tmp_path):
+    store = CaseStore(str(tmp_path))
+    source = store.create("batch.pdf", "batch.pdf", None, "2026-08-25T00:00:00Z")
+    revision = store.create_revision(source, "2026-08-25T00:01:00Z")
+
+    store.delete(revision)
+
+    assert store.get(source) is not None
+    assert store.get(source)["revisionIds"] == [revision]
+    assert CaseStore(str(tmp_path)).get(source) is not None
+
+
+def test_deleting_source_leaves_revision_usable_with_lineage(tmp_path):
+    store = CaseStore(str(tmp_path))
+    source = store.create("batch.pdf", "batch.pdf", None, "2026-08-25T00:00:00Z")
+    revision = store.create_revision(source, "2026-08-25T00:01:00Z")
+
+    store.delete(source)
+
+    reloaded_revision = CaseStore(str(tmp_path)).get(revision)
+    assert reloaded_revision is not None
+    assert reloaded_revision["sourceCaseId"] == source
+    store.set_result(revision, {"found": 1}, [_pkt(0)])
+    assert store.get(revision)["packets"][0]["index"] == 0
+
+
 def _write_raw_case(root: str, cid: str, status: str, error=None) -> None:
     """Write a case.json directly to disk (bypassing CaseStore), simulating
     whatever a previous process last wrote before it died/restarted."""
