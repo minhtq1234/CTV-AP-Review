@@ -204,6 +204,7 @@ def run_pipeline(
     job_dir: str,
     progress_cb,
     cccd_xlsx_path: str | None = None,
+    confirmed_starts: tuple[int, ...] | None = None,
 ) -> dict:
     """Split `pdf_path` into packets, OCR/extract each into a manifest under
     `job_dir/packets/{i}/`, reporting progress via `progress_cb(stage, done,
@@ -212,9 +213,15 @@ def run_pipeline(
     progress_cb("splitting", 0, 0, "")
 
     bands, aspects, inks, n = dp.load_page_bands(pdf_path)
-    scores, seed = dp.seed_scores(bands)
-    threshold = dp.derive_threshold(scores)
-    cover_pages = dp.covers_from_scores(scores, threshold)
+    if confirmed_starts is None:
+        scores, seed = dp.seed_scores(bands)
+        threshold = dp.derive_threshold(scores)
+        cover_pages = dp.covers_from_scores(scores, threshold)
+        boundary_source = "detected"
+    else:
+        scores = [1.0 if page in confirmed_starts else 0.0 for page in range(n)]
+        threshold = 0.0
+        boundary_source = "reviewer-confirmed"
 
     roster_rows_raw = None
     roster_rows: list[dict[str, str]] = []
@@ -228,7 +235,11 @@ def run_pipeline(
         by_cccd, by_name = build_roster_index(roster_rows_raw)
     roster_n = len(roster_names) if roster_names is not None else None
 
-    kept_covers, merged_covers = dp.prune_excess_covers(cover_pages, scores, roster_n)
+    if confirmed_starts is None:
+        kept_covers, merged_covers = dp.prune_excess_covers(cover_pages, scores, roster_n)
+    else:
+        kept_covers = list(confirmed_starts)
+        merged_covers = []
     bounds = dp.packets_from_covers(kept_covers, n)
     packets = dp.reconcile(bounds, scores, roster_names, threshold)
 
@@ -301,6 +312,7 @@ def run_pipeline(
         "roster_n": roster_n,
         "matched": matched,
         "auto_merged": len(merged_covers),
+        "boundary_source": boundary_source,
     }
     cccd_workbook = None
     if cccd_xlsx_path is not None:

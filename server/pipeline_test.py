@@ -246,6 +246,83 @@ def test_legacy_pipeline_call_returns_null_cccd_workbook(tmp_path, monkeypatch):
     assert result["cccdWorkbook"] is None
 
 
+def test_confirmed_starts_bypass_visual_cover_selection(monkeypatch, tmp_path):
+    _install_fake_detection(monkeypatch)
+    monkeypatch.setattr(
+        pl.dp,
+        "covers_from_scores",
+        lambda *_: (_ for _ in ()).throw(AssertionError()),
+    )
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        None,
+        str(tmp_path),
+        lambda *args: None,
+        confirmed_starts=(0, 3),
+    )
+
+    assert result["summary"]["boundary_source"] == "reviewer-confirmed"
+    assert [packet["pages"] for packet in result["packets"]] == [[0, 2], [3, 5]]
+
+
+def test_detected_starts_keep_existing_splitter_calls_and_output(monkeypatch, tmp_path):
+    calls = []
+    n = 6
+    monkeypatch.setattr(
+        pl.dp,
+        "load_page_bands",
+        lambda pdf_path: ([None] * n, [1.0] * n, [0.001] * n, n),
+    )
+    monkeypatch.setattr(
+        pl.dp,
+        "seed_scores",
+        lambda bands: (calls.append("seed_scores") or ([0.0] * len(bands), 0)),
+    )
+    monkeypatch.setattr(
+        pl.dp,
+        "derive_threshold",
+        lambda scores: (calls.append("derive_threshold") or 0.5),
+    )
+    monkeypatch.setattr(
+        pl.dp,
+        "covers_from_scores",
+        lambda scores, threshold: (calls.append("covers_from_scores") or [0, 3]),
+    )
+    monkeypatch.setattr(
+        pl.dp,
+        "prune_excess_covers",
+        lambda cover_pages, scores, roster_n: (
+            calls.append(("prune_excess_covers", cover_pages, roster_n)) or (cover_pages, [])
+        ),
+    )
+    monkeypatch.setattr(
+        pl.dp,
+        "packets_from_covers",
+        lambda cover_pages, page_count: (
+            calls.append(("packets_from_covers", cover_pages, page_count)) or _FAKE_BOUNDS
+        ),
+    )
+    monkeypatch.setattr(pl.oc, "ocr_packet", _fake_ocr_packet)
+
+    result = pl.run_pipeline(
+        str(tmp_path / "input.pdf"),
+        None,
+        str(tmp_path),
+        lambda *args: None,
+    )
+
+    assert calls == [
+        "seed_scores",
+        "derive_threshold",
+        "covers_from_scores",
+        ("prune_excess_covers", [0, 3], None),
+        ("packets_from_covers", [0, 3], 6),
+    ]
+    assert [packet["pages"] for packet in result["packets"]] == [[0, 2], [3, 5]]
+    assert result["summary"]["boundary_source"] == "detected"
+
+
 if __name__ == "__main__":
     import inspect
     for n, f in sorted(globals().items()):
