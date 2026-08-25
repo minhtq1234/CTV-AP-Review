@@ -371,6 +371,11 @@ def test_boundary_proposal_get_remains_available_in_shadow_mode(tmp_path, monkey
             },
         ],
         "affectedPacketIndexes": [0],
+        "affectedRanges": [{
+            "packetIndex": 0,
+            "startPage": 0,
+            "endPage": 5,
+        }],
         "correctionEnabled": False,
     }
     assert "private-value" not in response.text
@@ -473,6 +478,100 @@ def test_boundary_resolution_unknown_case_returns_404_when_enabled(tmp_path, mon
         json={"action": "keep-current"},
     )
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize("lifecycle_status", ["processing", "error"])
+def test_unfinished_case_cannot_record_a_first_keep_current_resolution(
+    tmp_path, monkeypatch, lifecycle_status,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    stored = appmod.store.get(cid)
+    stored["status"] = lifecycle_status
+    if lifecycle_status == "error":
+        stored["error"] = "synthetic-processing-error"
+    appmod.store._write(stored)
+
+    assert appmod.store.get(cid)["status"] == lifecycle_status
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "boundary-resolution-not-reviewable",
+    }
+    assert appmod.store.get(cid)["boundaryResolution"] is None
+    assert appmod.store.get(cid)["revisionIds"] == []
+
+
+def test_clear_ready_case_cannot_record_a_first_boundary_resolution(
+    tmp_path, monkeypatch,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    stored = appmod.store.get(cid)
+    appmod.store.set_result(
+        cid,
+        {"found": 1, "roster_n": 1},
+        [{
+            **stored["packets"][0],
+            "flags": [],
+            "n_pages": 6,
+        }],
+    )
+    appmod.store.set_review(
+        cid,
+        0,
+        {"done": False, "fields": {}, "rejection": None},
+    )
+    manifest_path = tmp_path / cid / "packets" / "0" / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "docs": [{
+            "kind": "contract",
+            "pages": [{"src": "/private/pg0.png"}],
+        }],
+    }), encoding="utf-8")
+
+    assert appmod.store.get(cid)["status"] == "ready"
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "boundary-resolution-not-reviewable",
+    }
+    assert appmod.store.get(cid)["boundaryResolution"] is None
+    assert appmod.store.get(cid)["revisionIds"] == []
+
+
+def test_review_required_ready_case_remains_eligible_for_first_resolution(
+    tmp_path, monkeypatch,
+):
+    client, cid = _ready_ambiguous_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(appmod, "BOUNDARY_CORRECTION_ENABLED", True, raising=False)
+    appmod.store.set_review(
+        cid,
+        0,
+        {"done": False, "fields": {}, "rejection": None},
+    )
+
+    assert appmod.store.get(cid)["status"] == "ready"
+
+    response = client.post(
+        f"/api/cases/{cid}/boundary-proposal/resolve",
+        json={"action": "keep-current"},
+    )
+
+    assert appmod.store.get(cid)["status"] == "ready"
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted_current"
+    assert appmod.store.get(cid)["boundaryResolution"]["action"] == "keep-current"
 
 
 def test_keep_current_records_resolution_without_reprocessing(tmp_path, monkeypatch):

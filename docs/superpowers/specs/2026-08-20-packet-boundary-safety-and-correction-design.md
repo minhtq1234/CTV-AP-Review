@@ -224,8 +224,18 @@ interface CaseBoundaryProposal {
     confidence: 'high' | 'medium'
   }>
   affectedPacketIndexes: number[]
+  affectedRanges: Array<{
+    packetIndex: number
+    startPage: number
+    endPage: number
+  }>
 }
 ```
+
+`affectedRanges` contains only valid affected packet ranges. Its page bounds
+are inclusive and zero-based, and its entries contain no source paths, OCR
+text, identity values, or other participant data. The reviewer may inspect and
+toggle any page in these ranges, including a page with no detector signal.
 
 An accepted-current resolution also stores `resolvedAt` and the exact candidate
 starts that were reviewed. The local prototype has no authenticated reviewer

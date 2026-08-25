@@ -257,6 +257,7 @@ test('boundary proposal API reads the source proposal and posts exact zero-based
       confidence: 'medium',
     }],
     affectedPacketIndexes: [1],
+    affectedRanges: [{ packetIndex: 1, startPage: 8, endPage: 15 }],
     correctionEnabled: true,
   }
   const resolved = {

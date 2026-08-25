@@ -58,6 +58,12 @@ export interface BoundaryCandidate {
   confidence: 'high' | 'medium'
 }
 
+export interface BoundaryAffectedRange {
+  packetIndex: number
+  startPage: number
+  endPage: number
+}
+
 export interface BoundaryProposal {
   status: 'not_needed' | 'review_required' | 'accepted_current' | 'superseded'
   sourceCaseId: string
@@ -65,6 +71,7 @@ export interface BoundaryProposal {
   currentPacketCount: number
   candidateStarts: BoundaryCandidate[]
   affectedPacketIndexes: number[]
+  affectedRanges: BoundaryAffectedRange[]
   correctionEnabled: boolean
 }
 

@@ -421,6 +421,38 @@ def _copy_revision_inputs(
     return copied[0], copied[1], copied[2]
 
 
+def _validated_revision_starts(
+    cid: str,
+    case: dict,
+    starts: list[int] | None,
+) -> tuple[int, ...]:
+    packet_starts = [
+        packet.get("pages", [None])[0]
+        for packet in case.get("packets") or []
+        if packet.get("pages")
+    ]
+    first_packet_start = min(
+        (page for page in packet_starts if type(page) is int),
+        default=None,
+    )
+    if first_packet_start is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "boundary-source-packets-invalid"},
+        )
+    try:
+        return validate_revision_starts(
+            starts,
+            _source_pdf_page_count(cid),
+            first_packet_start,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": str(exc)},
+        ) from exc
+
+
 @app.get("/api/cases/{cid}/boundary-proposal")
 async def get_boundary_proposal(cid: str):
     case = store.get(cid)
@@ -442,32 +474,8 @@ async def resolve_boundary_proposal(cid: str, body: BoundaryResolutionBody):
 
     existing_resolution = case.get("boundaryResolution") or {}
     confirmed_starts = None
-    if body.action == "create-revision":
-        packet_starts = [
-            packet.get("pages", [None])[0]
-            for packet in case.get("packets") or []
-            if packet.get("pages")
-        ]
-        first_packet_start = min(
-            (page for page in packet_starts if type(page) is int),
-            default=None,
-        )
-        if first_packet_start is None:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "boundary-source-packets-invalid"},
-            )
-        try:
-            confirmed_starts = validate_revision_starts(
-                body.starts,
-                _source_pdf_page_count(cid),
-                first_packet_start,
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": str(exc)},
-            ) from exc
+    if existing_resolution and body.action == "create-revision":
+        confirmed_starts = _validated_revision_starts(cid, case, body.starts)
 
     if existing_resolution:
         if existing_resolution.get("action") != body.action:
@@ -496,12 +504,29 @@ async def resolve_boundary_proposal(cid: str, body: BoundaryResolutionBody):
             "status": "processing",
         }
 
-    now = datetime.now(timezone.utc).isoformat()
+    if case.get("status") not in ("ready", "in_review", "done"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "boundary-resolution-not-reviewable"},
+        )
+    manifests = _load_manifests(cid, case.get("packets") or [])
+    assessment = assess_case_boundaries(case, manifests)
+    if assessment["status"] != "review":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "boundary-resolution-not-reviewable"},
+        )
     proposal = _proposal_for_case(case)
-    reasons = assess_case_boundaries(
-        case,
-        _load_manifests(cid, case.get("packets") or []),
-    )["reasons"]
+    if proposal["status"] != "review_required":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "boundary-resolution-not-reviewable"},
+        )
+    if body.action == "create-revision":
+        confirmed_starts = _validated_revision_starts(cid, case, body.starts)
+
+    now = datetime.now(timezone.utc).isoformat()
+    reasons = assessment["reasons"]
     if body.action == "keep-current":
         store.set_boundary_resolution(cid, {
             "action": "keep-current",

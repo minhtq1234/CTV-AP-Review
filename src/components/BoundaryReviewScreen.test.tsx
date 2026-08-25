@@ -62,6 +62,7 @@ function proposalWithPages(
       confidence: page % 8 === 0 ? 'medium' : 'high',
     })),
     affectedPacketIndexes: [1],
+    affectedRanges: [{ packetIndex: 1, startPage: 8, endPage: 17 }],
     correctionEnabled: true,
     ...overrides,
   }
@@ -106,25 +107,40 @@ async function flush() {
 }
 
 describe('boundary review presentation and controls', () => {
-  it('displays only affected one-based candidates but posts the complete zero-based starts', async () => {
-    const { onResolve } = renderBoundary(proposalWithPages([0, 8, 16]))
+  it('renders every page in an inclusive affected range with one-based labels and safe thumbnails', () => {
+    renderBoundary(proposalWithPages([0, 8], {
+      affectedRanges: [{ packetIndex: 1, startPage: 8, endPage: 10 }],
+    }))
 
     const visiblePages = Array.from(
       container.querySelectorAll('.boundary-candidate-title strong'),
     ).map(element => element.textContent)
-    expect(visiblePages).toEqual(['Trang 9', 'Trang 17'])
+    expect(visiblePages).toEqual(['Trang 9', 'Trang 10', 'Trang 11'])
     const sources = Array.from(container.querySelectorAll('img'))
       .map(image => image.getAttribute('src'))
-    expect(sources).toContain(
+    expect(sources).toEqual([
       'http://127.0.0.1:8001/api/cases/source-case/packets/1/page/pg0.png',
-    )
+      'http://127.0.0.1:8001/api/cases/source-case/packets/1/page/pg1.png',
+      'http://127.0.0.1:8001/api/cases/source-case/packets/1/page/pg2.png',
+    ])
     expect(sources.join(' ')).not.toMatch(/private|file:|\/Users\//)
+    expect(container.textContent).toContain('Ranh giới hiện tại')
+    expect(container.textContent).toContain('Ranh giới đề xuất')
+    expect(container.textContent).toContain('Không có tín hiệu AI')
+  })
+
+  it('adds an unproposed page and posts complete sorted zero-based starts', async () => {
+    const { onResolve } = renderBoundary(proposalWithPages([0, 8, 16], {
+      affectedRanges: [{ packetIndex: 1, startPage: 8, endPage: 10 }],
+    }))
+
+    await click(button('Thêm ranh giới Trang 10'))
 
     await click(button('Tạo phiên bản đã sửa'))
 
     expect(onResolve).toHaveBeenCalledWith({
       action: 'create-revision',
-      starts: [0, 8, 16],
+      starts: [0, 8, 9, 16],
     })
   })
 
@@ -158,7 +174,13 @@ describe('boundary review presentation and controls', () => {
   })
 
   it('disables revision submission when the source start is removed', async () => {
-    renderBoundary(proposalWithPages([0, 8], { affectedPacketIndexes: [0, 1] }))
+    renderBoundary(proposalWithPages([0, 8], {
+      affectedPacketIndexes: [0, 1],
+      affectedRanges: [
+        { packetIndex: 0, startPage: 0, endPage: 7 },
+        { packetIndex: 1, startPage: 8, endPage: 15 },
+      ],
+    }))
 
     await click(button('Bỏ ranh giới Trang 1'))
 
@@ -168,7 +190,13 @@ describe('boundary review presentation and controls', () => {
   it('normalizes unsorted duplicate proposal pages before posting zero-based starts', async () => {
     const { onResolve } = renderBoundary(proposalWithPages(
       [16, 8, 8, 0],
-      { affectedPacketIndexes: [0, 1] },
+      {
+        affectedPacketIndexes: [0, 1],
+        affectedRanges: [
+          { packetIndex: 0, startPage: 0, endPage: 7 },
+          { packetIndex: 1, startPage: 8, endPage: 17 },
+        ],
+      },
     ))
 
     expect(button('Tạo phiên bản đã sửa').disabled).toBe(false)
@@ -183,7 +211,13 @@ describe('boundary review presentation and controls', () => {
   it('preserves a valid nonzero source start and disables submit only after removing it', async () => {
     const { onResolve } = renderBoundary(proposalWithPages(
       [4, 12],
-      { affectedPacketIndexes: [0, 1] },
+      {
+        affectedPacketIndexes: [0, 1],
+        affectedRanges: [
+          { packetIndex: 0, startPage: 4, endPage: 11 },
+          { packetIndex: 1, startPage: 12, endPage: 15 },
+        ],
+      },
     ))
 
     expect(button('Tạo phiên bản đã sửa').disabled).toBe(false)
@@ -217,6 +251,42 @@ describe('boundary review presentation and controls', () => {
     expect(onBack).toHaveBeenCalledOnce()
     expect(onResolve).not.toHaveBeenCalled()
   })
+
+  it.each([
+    [
+      'accepted_current',
+      'Ranh giới hiện tại đã được xác nhận',
+      'Quay lại hồ sơ để tiếp tục duyệt.',
+    ],
+    [
+      'superseded',
+      'Đã tạo phiên bản ranh giới đã sửa',
+      'Mở phiên bản đã sửa từ chi tiết hồ sơ.',
+    ],
+    [
+      'not_needed',
+      'Không cần sửa ranh giới',
+      'Không còn vùng ranh giới nào cần xác nhận.',
+    ],
+  ] as const)(
+    'shows status-specific read-only recovery for %s while Back stays active',
+    async (status, title, recovery) => {
+      const { onResolve, onBack } = renderBoundary(proposalWithPages([0, 8, 16], {
+        status,
+        correctionEnabled: true,
+      }))
+
+      expect(container.textContent).toContain(title)
+      expect(container.textContent).toContain(recovery)
+      expect(container.textContent).not.toContain('Tạo phiên bản đã sửa')
+      expect(container.textContent).not.toContain('Giữ ranh giới hiện tại')
+      expect(container.textContent).not.toMatch(/(Thêm|Bỏ) ranh giới Trang/)
+
+      await click(button('Quay lại'))
+      expect(onBack).toHaveBeenCalledOnce()
+      expect(onResolve).not.toHaveBeenCalled()
+    },
+  )
 })
 
 function caseSummary(id: string, name: string): CaseSummary {

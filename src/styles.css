@@ -432,14 +432,21 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .boundary-review-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
 .boundary-review-header h2 { margin: 0; font-size: 18px; }
 .boundary-review-header p { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
-.boundary-shadow-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+.boundary-shadow-banner, .boundary-recovery-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
   padding: 12px 14px; border: 1px solid #e4bd6c; border-radius: 9px; background: #fff7df;
   color: #754d00; font-size: 13px; }
-.boundary-shadow-banner span { color: #7b6742; }
+.boundary-shadow-banner span, .boundary-recovery-banner span { color: #7b6742; }
+.boundary-recovery-banner { border-color: #c9d8ce; background: #f2f8f4; color: #245b36; }
+.boundary-recovery-banner span { color: #50685a; }
 .boundary-review-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 14px;
   color: var(--text-muted); font-size: 12px; }
-.boundary-range-list { display: grid; gap: 10px; }
-.boundary-candidate { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 14px;
+.boundary-range-list { display: grid; gap: 16px; }
+.boundary-range { padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: #faf9f6; }
+.boundary-range-header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px;
+  color: var(--text-muted); font-size: 12px; }
+.boundary-range-header strong { color: var(--text); font-size: 13px; }
+.boundary-page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.boundary-candidate { display: flex; flex-direction: column; gap: 10px;
   padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .boundary-thumbnail { overflow: hidden; border: 1px solid #d9d6ce; border-radius: 7px; background: var(--mat); }
 .boundary-thumbnail img { display: block; width: 100%; aspect-ratio: 5 / 7; object-fit: cover; object-position: top; }
@@ -452,6 +459,7 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .boundary-signals { display: flex; flex-wrap: wrap; gap: 6px; }
 .boundary-signals span { padding: 4px 8px; border: 1px solid var(--border); border-radius: 12px;
   background: #f7f7f5; color: var(--text-muted); font-size: 11px; }
+.boundary-signals span.proposed { border-color: #b8dcc2; background: #e7f3ea; color: var(--success); }
 .boundary-start-toggle { margin-top: auto; font-size: 12px; }
 .boundary-review-error { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
 .boundary-review-actions { position: sticky; bottom: -28px; display: flex; justify-content: flex-end;
@@ -461,7 +469,7 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 
 @media (max-width: 620px) {
   .boundary-review-screen { padding: 16px; }
-  .boundary-candidate { grid-template-columns: 84px minmax(0, 1fr); }
+  .boundary-page-grid { grid-template-columns: repeat(auto-fill, minmax(142px, 1fr)); }
   .boundary-review-actions { bottom: -16px; margin: 18px -16px -16px; padding: 12px 16px; flex-wrap: wrap; }
 }
 

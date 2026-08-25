@@ -190,6 +190,145 @@ def test_out_of_range_contract_candidate_is_not_serialized():
     ]
 
 
+def test_contract_starts_outside_their_originating_packet_are_discarded():
+    case = {
+        "id": "packet-bounded-contracts",
+        "packets": [
+            {
+                "index": 0,
+                "pages": [2, 5],
+                "flags": ["length-out-of-range"],
+            },
+            {"index": 1, "pages": [6, 9], "flags": []},
+        ],
+    }
+    manifests = {
+        # pg4 is absolute page 6, but it belongs to packet 1 rather than the
+        # packet 0 manifest that supplied it. pg8 is still inside the PDF but
+        # outside every stored packet.
+        0: _manifest(0, 4, 8),
+    }
+
+    proposal = build_boundary_proposal(case, manifests, total_pages=12)
+
+    assert [candidate["page"] for candidate in proposal["candidateStarts"]] == [2, 6]
+    assert "contract-title" not in proposal["candidateStarts"][1]["signals"]
+
+
+def test_out_of_packet_contracts_do_not_make_a_clear_packet_affected():
+    case = {
+        "id": "invalid-contract-only",
+        "packets": [{"index": 0, "pages": [0, 3], "flags": []}],
+    }
+
+    proposal = build_boundary_proposal(
+        case,
+        {0: _manifest(4, 5)},
+        total_pages=10,
+    )
+
+    assert proposal["status"] == "not_needed"
+    assert proposal["affectedPacketIndexes"] == []
+    assert proposal["affectedRanges"] == []
+
+
+def test_malformed_manifest_never_serializes_a_candidate_without_a_location():
+    case = {
+        "id": "malformed-manifest",
+        "packets": [{"index": 0, "pages": [0, 3], "flags": []}],
+    }
+    manifest = {
+        "docs": [
+            None,
+            "private text",
+            {"kind": "contract", "pages": []},
+            {"kind": "contract", "pages": [None]},
+            {"kind": "contract", "pages": "not-pages"},
+            {"kind": "contract", "pages": [{"src": "/private/not-a-page.png"}]},
+            {"kind": "contract", "pages": [{"src": "/private/pg8.png"}]},
+        ],
+    }
+
+    proposal = build_boundary_proposal(case, {0: manifest}, total_pages=10)
+
+    assert [candidate["page"] for candidate in proposal["candidateStarts"]] == [0]
+    assert all(
+        type(candidate.get("packetIndex")) is int
+        and type(candidate.get("relativePage")) is int
+        for candidate in proposal["candidateStarts"]
+    )
+    assert "/private/" not in str(proposal)
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        {"docs": 42},
+        {"docs": {"kind": "contract"}},
+        {"docs": [{"kind": "contract", "pages": 42}]},
+    ],
+)
+def test_corrupt_manifest_shapes_are_ignored(manifest):
+    case = {
+        "id": "corrupt-manifest-shape",
+        "packets": [{"index": 0, "pages": [0, 3], "flags": []}],
+    }
+
+    proposal = build_boundary_proposal(case, {0: manifest}, total_pages=4)
+
+    assert proposal["status"] == "not_needed"
+    assert proposal["candidateStarts"] == [{
+        "page": 0,
+        "signals": ["visual"],
+        "confidence": "medium",
+        "packetIndex": 0,
+        "relativePage": 0,
+    }]
+
+
+def test_affected_ranges_are_inclusive_bounded_and_privacy_safe():
+    case = {
+        "id": "affected-ranges",
+        "packets": [
+            {"index": 2, "pages": [0, 12], "flags": ["length-out-of-range"]},
+            {
+                "index": 3,
+                "pages": [4, 7],
+                "flags": ["length-out-of-range"],
+                "name": "Private Person",
+            },
+            {"index": 4, "pages": [-1, 2], "flags": ["length-out-of-range"]},
+            {"index": 5, "pages": [8, 12], "flags": ["length-out-of-range"]},
+        ],
+    }
+    manifests = {
+        3: {
+            "docs": [{
+                "kind": "contract",
+                "pages": [{"src": "/private/pg0.png", "ocrText": "Private OCR"}],
+            }],
+        },
+    }
+
+    proposal = build_boundary_proposal(case, manifests, total_pages=10)
+
+    assert proposal["affectedRanges"] == [{
+        "packetIndex": 3,
+        "startPage": 4,
+        "endPage": 7,
+    }]
+    assert set(proposal["affectedRanges"][0]) == {
+        "packetIndex", "startPage", "endPage",
+    }
+    page_four = next(
+        candidate for candidate in proposal["candidateStarts"]
+        if candidate["page"] == 4
+    )
+    assert (page_four["packetIndex"], page_four["relativePage"]) == (3, 0)
+    for private_value in ("Private Person", "Private OCR", "/private/pg0.png"):
+        assert private_value not in str(proposal)
+
+
 @pytest.mark.parametrize(
     ("starts", "total_pages", "first_packet_start", "message"),
     [

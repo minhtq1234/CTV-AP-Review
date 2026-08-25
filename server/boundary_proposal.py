@@ -9,6 +9,21 @@ from boundary_assessment import assess_packet_boundary
 _SIGNAL_ORDER = ("contract-title", "identity-change", "cadence", "visual")
 
 
+def _valid_packet_range(packet: dict, total_pages: int) -> tuple[int, int, int] | None:
+    packet_index = packet.get("index")
+    pages = packet.get("pages") or []
+    if type(packet_index) is not int or len(pages) < 2:
+        return None
+    start, end = pages[0], pages[1]
+    if (
+        type(start) is not int
+        or type(end) is not int
+        or not 0 <= start <= end < total_pages
+    ):
+        return None
+    return packet_index, start, end
+
+
 def _median_packet_length(packets: list[dict]) -> float:
     lengths = []
     for packet in packets:
@@ -63,16 +78,16 @@ def _add_identity_change_signals(
         previous_key = key
 
 
-def _packet_location(case: dict, page: int) -> dict:
+def _packet_location(case: dict, page: int, total_pages: int) -> dict:
     packet_locations = []
     for packet in case.get("packets") or []:
-        pages = packet.get("pages") or []
-        if len(pages) < 2:
+        packet_range = _valid_packet_range(packet, total_pages)
+        if packet_range is None:
             continue
-        start, end = pages[0], pages[1]
-        if type(start) is not int or type(end) is not int or not start <= page <= end:
+        packet_index, start, end = packet_range
+        if not start <= page <= end:
             continue
-        packet_locations.append((start, packet.get("index"), page - start))
+        packet_locations.append((start, packet_index, page - start))
     if not packet_locations:
         return {}
     _start, packet_index, relative_page = min(packet_locations)
@@ -99,19 +114,29 @@ def build_boundary_proposal(case: dict, manifests: dict, total_pages: int) -> di
     """Fuse packet metadata into a deterministic, response-safe proposal."""
     candidates: dict[int, set[str]] = {}
     affected: list[int] = []
+    affected_ranges: list[dict] = []
     packets = case.get("packets") or []
     for packet in packets:
-        start, _end = packet["pages"]
-        candidates.setdefault(start, set()).add("visual")
+        packet_range = _valid_packet_range(packet, total_pages)
+        if packet_range is not None:
+            packet_index, start, end = packet_range
+            candidates.setdefault(start, set()).add("visual")
         assessment = assess_packet_boundary(
             packet,
-            manifests.get(packet["index"]),
+            manifests.get(packet.get("index")),
             case.get("summary"),
         )
-        for page in assessment["candidateStarts"]:
-            candidates.setdefault(page, set()).add("contract-title")
-        if assessment["status"] == "review":
-            affected.append(packet["index"])
+        if packet_range is not None:
+            for page in assessment["candidateStarts"]:
+                if start <= page <= end:
+                    candidates.setdefault(page, set()).add("contract-title")
+            if assessment["status"] == "review":
+                affected.append(packet_index)
+                affected_ranges.append({
+                    "packetIndex": packet_index,
+                    "startPage": start,
+                    "endPage": end,
+                })
     candidates = {
         page: signals
         for page, signals in candidates.items()
@@ -119,10 +144,15 @@ def build_boundary_proposal(case: dict, manifests: dict, total_pages: int) -> di
     }
     _add_cadence_signals(candidates, _median_packet_length(packets))
     _add_identity_change_signals(candidates, case, manifests)
-    starts = [
-        _serialize_candidate(page, signals, _packet_location(case, page))
-        for page, signals in sorted(candidates.items())
-    ]
+    starts = []
+    for page, signals in sorted(candidates.items()):
+        location = _packet_location(case, page, total_pages)
+        if (
+            type(location.get("packetIndex")) is not int
+            or type(location.get("relativePage")) is not int
+        ):
+            continue
+        starts.append(_serialize_candidate(page, signals, location))
     return {
         "status": "review_required" if affected else "not_needed",
         "sourceCaseId": case["id"],
@@ -130,6 +160,7 @@ def build_boundary_proposal(case: dict, manifests: dict, total_pages: int) -> di
         "currentPacketCount": len(packets),
         "candidateStarts": starts,
         "affectedPacketIndexes": affected,
+        "affectedRanges": affected_ranges,
     }
 
 
