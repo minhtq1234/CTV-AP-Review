@@ -55,7 +55,7 @@ describe('evalField compare — unread sources never gate the verdict', () => {
 })
 
 describe('rankFolder ordering — mismatch and review surface before matches', () => {
-  it('orders mismatch -> review -> low_conf -> fuzzy -> match', () => {
+  it('orders mismatch -> fuzzy -> review -> low_conf -> match', () => {
     const mismatch = field({ key: 'mismatch', sources: [src('a', '999')] })
     const review = field({ key: 'review', sources: [src('a', '')] })
     const lowConf = field({ key: 'low_conf', sources: [src('a', '123', 0.5)] })
@@ -63,8 +63,8 @@ describe('rankFolder ordering — mismatch and review surface before matches', (
     const match = field({ key: 'match', sources: [src('a', '123')] })
     const folder = folderWith([match, fuzzy, lowConf, review, mismatch])
     const ranked = rankFolder(folder)
-    expect(ranked.map(r => r.field.key)).toEqual(['mismatch', 'review', 'low_conf', 'fuzzy', 'match'])
-    expect(ranked.map(r => r.verdict)).toEqual(['mismatch', 'review', 'low_conf', 'fuzzy', 'match'])
+    expect(ranked.map(r => r.field.key)).toEqual(['mismatch', 'fuzzy', 'review', 'low_conf', 'match'])
+    expect(ranked.map(r => r.verdict)).toEqual(['mismatch', 'fuzzy', 'review', 'low_conf', 'match'])
   })
 })
 

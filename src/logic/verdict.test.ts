@@ -28,6 +28,42 @@ describe('compareField', () => {
     expect(compareField('Grab', pred('CÔNG TY TNHH GRAB'), 'name')).toBe('fuzzy')
     expect(compareField('Grab', pred('Highlands Coffee'), 'name')).toBe('mismatch')
   })
+
+  describe("person names (Vietnamese)", () => {
+    const p = (expected: string, read: string) =>
+      compareField(expected, pred(read), 'person')
+
+    it('identical is a match', () => {
+      expect(p('Trần Thanh Vân Anh', 'Trần Thanh Vân Anh')).toBe('match')
+    })
+
+    it('a tone-mark-only difference is never a pass', () => {
+      // OCR drops diacritics -- but so does the gap between two real people.
+      expect(p('Nguyễn Thị Anh', 'Nguyễn Thị Ánh')).toBe('fuzzy')
+      expect(p('Trần Văn Hùng', 'Trần Văn Hưng')).toBe('fuzzy')
+      expect(p('Phạm Minh Tuấn', 'Phạm Minh Tuân')).toBe('fuzzy')
+      expect(p('Nguyễn Văn An', 'Nguyễn Văn Ân')).toBe('fuzzy')
+    })
+
+    it('an extra given name is a different person, not a near miss', () => {
+      expect(p('Lê Thị Thu Hà', 'Lê Thị Thu Hà Vy')).toBe('mismatch')
+      expect(p('Nguyễn Thị Anh', 'Nguyễn Thị Anh Tuyết')).toBe('mismatch')
+    })
+
+    it('unrelated names mismatch', () => {
+      expect(p('Nguyễn Đào Hồng Hạnh', 'Nguyễn Thảo Ly')).toBe('mismatch')
+    })
+
+    it('a single mangled letter still reads as close', () => {
+      expect(p('Trần Thanh Vân Anh', 'Trần Thanh Vân Anb')).toBe('fuzzy')
+    })
+
+    it('company-suffix stripping does not apply to people', () => {
+      // 'Cô' folds to 'co', which the organisation comparator would delete.
+      expect(p('Nguyễn Thị Cô', 'Nguyễn Thị Cô')).toBe('match')
+    })
+  })
+
   it('low confidence overlays a match', () => {
     expect(compareField('2050000', pred('2050000', 0.5), 'number')).toBe('low_conf')
   })
@@ -43,7 +79,7 @@ describe('orderFields', () => {
   const f = (key: string, kind: CaseField['kind'], expected: string, p: Prediction | null): CaseField =>
     ({ key, label: key, kind, expected, prediction: p })
 
-  it('orders mismatch -> low_conf -> fuzzy -> match, keeping original index', () => {
+  it('orders mismatch -> fuzzy -> low_conf -> match, keeping original index', () => {
     const fields: CaseField[] = [
       f('ok', 'number', '100', pred('100')),
       f('vendor', 'name', 'Grab', pred('CÔNG TY TNHH GRAB')),
@@ -51,8 +87,8 @@ describe('orderFields', () => {
       f('total', 'number', '2500000', pred('2050000')),
     ]
     const ranked = orderFields(fields)
-    expect(ranked.map(r => r.field.key)).toEqual(['total', 'inv', 'vendor', 'ok'])
-    expect(ranked.map(r => r.verdict)).toEqual(['mismatch', 'low_conf', 'fuzzy', 'match'])
+    expect(ranked.map(r => r.field.key)).toEqual(['total', 'vendor', 'inv', 'ok'])
+    expect(ranked.map(r => r.verdict)).toEqual(['mismatch', 'fuzzy', 'low_conf', 'match'])
     expect(ranked.find(r => r.field.key === 'total')!.index).toBe(3)
   })
 

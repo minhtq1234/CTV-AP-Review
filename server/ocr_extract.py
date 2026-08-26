@@ -646,7 +646,7 @@ FIELD_SPECS = [
         # of "Tên", reading the printed label as "ên tôi là" -- still safely
         # scoped by the same `_is_labeled_anchor` guard (ALL CAPS or a ':'
         # label), so it doesn't open the door to unrelated prose.
-        "key": "hoten", "label": "Họ tên", "group": "Danh tính", "kind": "name",
+        "key": "hoten", "label": "Họ tên", "group": "Danh tính", "kind": "person",
         "anchors": ["ben cung ung dich vu", "ten nguoi nop thue", "ten toi la", "en toi la", "ho va ten"],
         "patterns": [], "roster_key": "name",
     },
@@ -701,7 +701,11 @@ def _hits_for_doc(spec: dict, pages: dict[int, list[dict]]) -> list[tuple[int, d
     hits = []
     for page_idx, words in pages.items():
         lines = group_lines(words)
-        page_hits = find_name(lines, spec["anchors"]) if spec["kind"] == "name" else locate_field(lines, spec)
+        page_hits = (
+            find_name(lines, spec["anchors"])
+            if spec["kind"] in ("name", "person")
+            else locate_field(lines, spec)
+        )
         hits.extend((page_idx, h) for h in page_hits)
     return hits
 

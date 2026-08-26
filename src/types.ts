@@ -1,5 +1,8 @@
 export type Verdict = 'match' | 'fuzzy' | 'mismatch' | 'low_conf'
-export type FieldKind = 'number' | 'date' | 'text' | 'name'
+// 'name' is an organisation-ish name (a bank, a vendor); 'person' is a human
+// being. They need different rules: a vendor may legitimately be written
+// "Grab" or "Cong ty TNHH Grab", but no person is a prefix of another person.
+export type FieldKind = 'number' | 'date' | 'text' | 'name' | 'person'
 export type CaseStatus = 'pending' | 'approved' | 'rejected'
 
 export interface Bbox { x: number; y: number; width: number; height: number }

@@ -15,7 +15,7 @@ function parseVnDate(s: string): Date | null {
 
 const vnd = (n: number) => `${n.toLocaleString('vi-VN')} ₫`
 
-const SEVERITY: Record<Verdict, number> = { mismatch: 0, low_conf: 1, fuzzy: 2, match: 3 }
+const SEVERITY: Record<Verdict, number> = { mismatch: 0, fuzzy: 1, low_conf: 2, match: 3 }
 const worst = (vs: Verdict[]): Verdict =>
   vs.length === 0 ? 'mismatch' : vs.reduce((a, b) => (SEVERITY[b] < SEVERITY[a] ? b : a))
 
@@ -29,7 +29,7 @@ export type FieldVerdict = Verdict | 'review'
 // mismatch/review both need a human's attention and surface first; low_conf/fuzzy/match follow
 // in the original severity order. Used only for field-level ranking (rankFolder) -- `worst`
 // above still resolves a single field's READABLE sources using the plain 4-value Verdict.
-const FIELD_SEVERITY: Record<FieldVerdict, number> = { mismatch: 0, review: 1, low_conf: 2, fuzzy: 3, match: 4 }
+const FIELD_SEVERITY: Record<FieldVerdict, number> = { mismatch: 0, fuzzy: 1, review: 2, low_conf: 3, match: 4 }
 
 // How each source of a field stacks up against the Excel value.
 export interface SourceResult { source: CtvSource; verdict: SourceVerdict }

@@ -20,6 +20,22 @@ function stripDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D')
 }
 
+// Personal names get no company-suffix stripping and no token-containment
+// shortcuts -- only accent folding, so an OCR read that lost its tone marks can
+// still line up with the roster.
+function normPerson(s: string): string {
+  return stripDiacritics(s.toLowerCase())
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Plain edit-distance ratio -- no containment floor. */
+function editRatio(a: string, b: string): number {
+  const longer = Math.max(a.length, b.length)
+  return longer === 0 ? 1 : 1 - levenshtein(a, b) / longer
+}
+
 function normName(s: string): string {
   return stripDiacritics(s.toLowerCase())
     .replace(/\b(cong ty|cty|tnhh|cp|co\.?|ltd|jsc)\b/g, ' ')
@@ -63,6 +79,22 @@ function baseVerdict(expected: string, value: string, kind: FieldKind): Verdict 
       const sim = similarity(normName(expected), normName(value))
       return sim >= NAME_SIM ? 'fuzzy' : 'mismatch'
     }
+    case 'person': {
+      if (expected.trim() === value.trim()) return 'match'
+      const a = normPerson(expected)
+      const b = normPerson(value)
+      if (!a || !b) return 'mismatch'
+      // Same letters, different tone marks. Tesseract drops Vietnamese
+      // diacritics routinely -- but so does the difference between Anh and
+      // Ánh, or Hùng and Hưng, who are different people. Never a pass; always
+      // worth a look.
+      if (a === b) return 'fuzzy'
+      // A person's name is not a prefix of another person's. "Lê Thị Thu Hà"
+      // and "Lê Thị Thu Hà Vy" are two people however close the strings are,
+      // so a differing word count is a mismatch, not a near miss.
+      if (a.split(' ').length !== b.split(' ').length) return 'mismatch'
+      return editRatio(a, b) >= NAME_SIM ? 'fuzzy' : 'mismatch'
+    }
   }
 }
 
@@ -74,7 +106,10 @@ export function compareField(expected: string, prediction: Prediction | null, ki
   return base
 }
 
-const SEVERITY: Record<Verdict, number> = { mismatch: 0, low_conf: 1, fuzzy: 2, match: 3 }
+// An approximate identity match is the wrong-person case, which is the most
+// expensive error this tool can wave through -- so it sorts just behind an
+// outright mismatch, ahead of a merely low-confidence read.
+const SEVERITY: Record<Verdict, number> = { mismatch: 0, fuzzy: 1, low_conf: 2, match: 3 }
 
 export interface RankedField { field: CaseField; index: number; verdict: Verdict }
 
