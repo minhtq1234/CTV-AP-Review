@@ -268,47 +268,80 @@ def _column_sums(rows, report) -> dict[str, int]:
 
 
 def _duplicate_payment_cell(packets) -> SummaryCell:
-    """#31 — warn only. Acc's rule: "Chỉ cảnh báo trùng, không tự động xóa dòng."""
+    """#31 — warn only. Acc's rule: "Chỉ cảnh báo trùng, không tự động xóa dòng.
+
+    The collision is recomputed from the packets' roster identities rather than
+    read off `flags`: cases ingested before `pipeline.flag_duplicate_identities`
+    existed carry no flag, and the stored July submission is one of them -- nine
+    CCCDs on two packets each, not one flagged. A criterion whose answer depends
+    on when a case was ingested is not a criterion.
+    """
     if not packets:
         return _cell(
             31, Status.PENDING,
             "Chưa có gói hồ sơ nào để đối chiếu trùng thanh toán.",
         )
-    flagged = [
-        p for p in packets
-        if "duplicate-roster-identity" in (p.get("flags") or [])
-    ]
-    if not flagged:
+
+    identified = [p for p in packets if p.get("rosterIdentity")]
+    if not identified:
         # A packet that matched nobody has no identity to collide with, so a
         # set of unmatched packets is not evidence of no duplicate payment.
-        identified = [p for p in packets if p.get("rosterIdentity")]
-        if not identified:
-            return _cell(
-                31, Status.PENDING,
-                f"{len(packets)} gói chưa khớp được với dòng nào trên bảng kê, "
-                "chưa đối chiếu được trùng thanh toán.",
-                (EXCEL,),
-            )
+        return _cell(
+            31, Status.PENDING,
+            f"{len(packets)} gói chưa khớp được với dòng nào trên bảng kê, "
+            "chưa đối chiếu được trùng thanh toán.",
+            (EXCEL,),
+        )
+
+    groups = _identity_groups(identified)
+    if not groups:
+        unmatched = len(packets) - len(identified)
         return _cell(
             31, Status.OK,
             f"Không có gói nào trùng danh tính trên {len(identified)} gói đã "
             f"khớp bảng kê"
-            + (f" ({len(packets) - len(identified)} gói chưa khớp)."
-               if len(identified) != len(packets) else "."),
+            + (f" ({unmatched} gói chưa khớp)." if unmatched else "."),
         )
-    groups = {
-        tuple(sorted([p["index"]] + list(p.get("duplicateOf") or [])))
-        for p in flagged
-    }
+
     detail = tuple(
-        "gói " + " + ".join(str(i + 1) for i in group)
-        for group in sorted(groups)
+        "gói " + " + ".join(str(i + 1) for i in group) for group in groups
     )
+    involved = sum(len(group) for group in groups)
     return _cell(
         31, Status.NO,
         f"Có dấu hiệu thanh toán trùng: {len(groups)} CTV có nhiều hơn một gói "
-        f"({len(flagged)} gói liên quan). Chỉ cảnh báo — cần người xác minh.",
+        f"({involved} gói liên quan). Chỉ cảnh báo — cần người xác minh.",
         detail,
+    )
+
+
+def _identity_groups(packets) -> list[tuple[int, ...]]:
+    """Packet indexes grouped by the roster row they resolve to.
+
+    Keyed the same way `pipeline.flag_duplicate_identities` keys it -- CCCD
+    digits, falling back to the accent-folded name -- so both agree on what
+    counts as the same person.
+    """
+    from ocr_extract import norm  # lazy: keeps this module free of OCR deps
+
+    by_key: dict[str, list[int]] = {}
+    for packet in packets:
+        identity = packet.get("rosterIdentity") or {}
+        key = (roster_checks.digits(identity.get("cccd", ""))
+               or norm(identity.get("name", "") or ""))
+        if key:
+            by_key.setdefault(key, []).append(packet["index"])
+    # honour a flag the pipeline already set, even if the identity is gone
+    for packet in packets:
+        if "duplicate-roster-identity" in (packet.get("flags") or []):
+            group = sorted(
+                {packet["index"], *(packet.get("duplicateOf") or [])}
+            )
+            if len(group) > 1:
+                by_key.setdefault(f"flagged:{group[0]}", list(group))
+    return sorted(
+        {tuple(sorted(indexes)) for indexes in by_key.values()
+         if len(indexes) > 1}
     )
 
 

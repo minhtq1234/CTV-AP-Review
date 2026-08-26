@@ -11,15 +11,21 @@ def by_stt(cells):
     return {c.stt: c for c in cells}
 
 
-def packet(index, cccd="", duplicate_of=None):
+def packet(index, cccd="", duplicate_of=None, name=""):
     record = {
         "index": index,
         "flags": ["duplicate-roster-identity"] if duplicate_of else [],
-        "rosterIdentity": {"cccd": cccd, "name": ""} if cccd else None,
+        "rosterIdentity": {"cccd": cccd, "name": name} if cccd or name else None,
     }
     if duplicate_of:
         record["duplicateOf"] = duplicate_of
     return record
+
+
+def unflagged(index, cccd="", name=""):
+    """A packet as stored before `flag_duplicate_identities` existed."""
+    return {"index": index, "flags": [],
+            "rosterIdentity": {"cccd": cccd, "name": name}}
 
 
 class TestRegistry:
@@ -154,6 +160,25 @@ class TestDuplicatePayment:
         # Acc's rule is warn-only: "Chỉ cảnh báo trùng, không tự động xóa dòng"
         assert "Chỉ cảnh báo" in cells[31].message
         assert cells[31].detail == ("gói 1 + 2",)
+
+    def test_a_collision_is_found_without_the_pipeline_flag(self):
+        """The stored July case predates `flag_duplicate_identities`: 9 CCCDs
+        appear on two packets each and not one packet carries the flag. The
+        criterion must read the identities, not trust a persisted flag."""
+        cells = by_stt(sc.assess(sheet([GOOD]), packets=[
+            unflagged(0, "079303009457"),
+            unflagged(1, "079303009457"),
+            unflagged(2, "001204004530"),
+        ]))
+        assert cells[31].status is Status.NO
+        assert cells[31].detail == ("gói 1 + 2",)
+
+    def test_a_collision_on_name_alone_is_found(self):
+        cells = by_stt(sc.assess(sheet([GOOD]), packets=[
+            unflagged(0, "", "Nguyễn Văn A"),
+            unflagged(1, "", "NGUYEN VAN A"),
+        ]))
+        assert cells[31].status is Status.NO
 
     def test_the_real_july_shape(self):
         """Nine CTVs with two packets each — 18 of 36 flagged."""
