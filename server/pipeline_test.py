@@ -97,7 +97,7 @@ def test_build_roster_index_keys_by_digits_and_norm_name():
         ["Họ và tên", "Số CCCD", "MST", "Ngày tháng năm sinh", "Số TK", "Phí dịch vụ", "Note"],
         ["Nguyễn Văn A", "048 091 001 309", "048091001309", "24/04/1991", "19001234567", "10.000.000", ""],
     ]
-    by_cccd, by_name = build_roster_index(rows)
+    by_cccd, by_name, _by_mst = build_roster_index(rows)
     assert "048091001309" in by_cccd
     assert by_cccd["048091001309"]["name"] == "Nguyễn Văn A"
     assert "nguyen van a" in by_name
@@ -617,3 +617,107 @@ class TestRunPipelineSplitsMergedPackets:
 
         assert len(result["packets"]) == 4
         assert result["summary"]["boundaries_inserted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Matching on the personal MST.
+#
+# The July packet that matched no roster row is row 32's. Its number is printed
+# on three of its pages, and `extract_fields` reads it cleanly at 0.95 — but
+# under the `mst` key, because the CCCD label was split by line grouping while
+# the `MSTTNCN` label survived. `match_roster` only ever tried the CCCD and then
+# the name, so a strong identifier already in hand went unused and the packet
+# fell through to `unmatched`.
+# ---------------------------------------------------------------------------
+
+_MST_ROWS = [
+    ["Họ và tên", "Số CCCD", "MST", "Ngày tháng năm sinh", "Số TK",
+     "Phí dịch vụ", "Note"],
+    ["Phan Tấn Tài", "060203014847", "060203014847", "01/01/2003",
+     "19001234567", "1.000.000", "Demo"],
+    ["Nguyễn Văn B", "079303009457", "8765432109", "02/02/1990",
+     "19009876543", "2.000.000", "Demo"],
+]
+
+
+class TestMatchingOnTheMst:
+    def _index(self):
+        return pl.build_roster_index(_MST_ROWS)
+
+    def test_the_mst_matches_when_the_cccd_was_not_read(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster("", "", by_cccd, by_name, mst="060203014847",
+                              by_mst=by_mst)
+
+        assert how == "mst"
+        assert row["name"] == "Phan Tấn Tài"
+
+    def test_an_mst_that_differs_from_the_cccd_still_matches(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster("", "", by_cccd, by_name, mst="8765432109",
+                              by_mst=by_mst)
+
+        assert how == "mst"
+        assert row["name"] == "Nguyễn Văn B"
+
+    def test_the_cccd_still_wins_when_both_are_read(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster(
+            "079303009457", "", by_cccd, by_name, mst="060203014847",
+            by_mst=by_mst,
+        )
+
+        assert how == "cccd"
+        assert row["name"] == "Nguyễn Văn B"
+
+    def test_the_mst_beats_the_name(self):
+        """A name is the weakest key and the wrong-person error is the most
+        expensive one this tool can make, so a strong identifier goes first."""
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster(
+            "", "Nguyễn Văn B", by_cccd, by_name, mst="060203014847",
+            by_mst=by_mst,
+        )
+
+        assert how == "mst"
+        assert row["name"] == "Phan Tấn Tài"
+
+    def test_the_name_still_works_with_no_numbers_at_all(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster("", "Phan Tấn Tài", by_cccd, by_name)
+
+        assert how == "name"
+
+    def test_an_unknown_mst_does_not_match(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster("", "", by_cccd, by_name, mst="111111111111",
+                              by_mst=by_mst)
+
+        assert row is None
+        assert how == "unmatched"
+
+    def test_the_mst_index_is_keyed_on_digits(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        assert "060203014847" in by_mst
+        assert "8765432109" in by_mst
+
+    def test_a_roster_row_whose_mst_repeats_keeps_the_first(self):
+        rows = _MST_ROWS + [["Trùng MST", "099999999999", "060203014847",
+                            "03/03/1993", "1", "1", ""]]
+        by_cccd, by_name, by_mst = pl.build_roster_index(rows)
+
+        assert by_mst["060203014847"]["name"] == "Phan Tấn Tài"
+
+    def test_the_call_still_works_without_the_mst_argument(self):
+        by_cccd, by_name, by_mst = self._index()
+
+        row, how = pl.match_roster("060203014847", "", by_cccd, by_name)
+
+        assert how == "cccd"

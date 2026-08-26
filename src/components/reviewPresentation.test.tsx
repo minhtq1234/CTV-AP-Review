@@ -285,6 +285,7 @@ describe('review presentation', () => {
 describe('mapping pill', () => {
   const labels: Record<MatchedBy, string> = {
     cccd: 'Khớp theo CCCD',
+    mst: 'Khớp theo MST',
     name: 'Khớp theo họ tên',
     unmatched: 'Chưa khớp bảng kê',
     'no-roster': 'Không có bảng kê',
@@ -329,5 +330,21 @@ describe('compact review header', () => {
     expect(html).toContain('Gói 3 / 5')
     expect(html).toContain('Khớp theo CCCD')
     expect(html.match(/<header/g)).toHaveLength(1)
+  })
+})
+
+describe('an MST match', () => {
+  it('is labelled as its own key, not as a name match', () => {
+    // A packet matched on the personal MST is on a strong identifier — it must
+    // not be presented with the caution a name-only match deserves.
+    const html = renderToStaticMarkup(<MatchKeyStrip matchedBy="mst" />)
+
+    expect(html).toContain('Khớp theo MST')
+    expect(html).not.toContain('họ tên')
+  })
+
+  it('reads as reliable rather than as something to check', () => {
+    const html = renderToStaticMarkup(<MatchKeyStrip matchedBy="mst" />)
+    expect(html).toContain('match-badge ok')
   })
 })

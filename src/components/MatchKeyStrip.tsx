@@ -8,6 +8,8 @@ interface Props {
 
 const BADGE: Record<MatchedBy, { label: string; cls: string }> = {
   cccd: { label: 'Khớp theo CCCD', cls: 'ok' },
+  // A strong identifier, so it reads as reliable rather than as a caution.
+  mst: { label: 'Khớp theo MST', cls: 'ok' },
   name: { label: 'Khớp theo họ tên', cls: 'warn' },
   unmatched: { label: 'Chưa khớp bảng kê', cls: 'bad' },
   'no-roster': { label: 'Không có bảng kê', cls: 'muted' },

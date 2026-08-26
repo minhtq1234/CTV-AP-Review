@@ -143,12 +143,16 @@ def digits(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")
 
 
-def build_roster_index(rows: list[list]) -> tuple[dict[str, dict], dict[str, dict]]:
-    """Build `{digits(cccd): row}` and `{norm(name): row}` indexes once from
-    the roster, for `match_roster` to look packets up in (by identity,
-    instead of by position)."""
+def build_roster_index(
+    rows: list[list],
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+    """Build `{digits(cccd): row}`, `{norm(name): row}` and `{digits(mst): row}`
+    indexes once from the roster, for `match_roster` to look packets up in (by
+    identity, instead of by position). First row wins on a repeated key."""
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
+    by_mst: dict[str, dict] = {}
+    by_mst: dict[str, dict] = {}
     for row in all_roster_rows(rows):
         c = digits(row["cccd"])
         if c and c not in by_cccd:
@@ -156,24 +160,39 @@ def build_roster_index(rows: list[list]) -> tuple[dict[str, dict], dict[str, dic
         n = oc.norm(row["name"]) if row["name"] else ""
         if n and n not in by_name:
             by_name[n] = row
-    return by_cccd, by_name
+        m = digits(row.get("mst", ""))
+        if m and m not in by_mst:
+            by_mst[m] = row
+    return by_cccd, by_name, by_mst
 
 
 def match_roster(
     cccd: str, name: str, by_cccd: dict[str, dict], by_name: dict[str, dict],
+    mst: str = "", by_mst: dict[str, dict] | None = None,
 ) -> tuple[dict | None, str]:
     """Align a packet to its roster row by identity (#002 fix).
 
+    Strongest key first, because the wrong-person error is the most expensive
+    one this tool can make:
+
     1. exact CCCD match (reliable, unique per person) -> (row, "cccd")
-    2. else name match (fallback -- needed so a roster row with a
+    2. else exact personal MST match -> (row, "mst"). The July packet that
+       matched nothing is row 32's: its number is printed on three of its pages
+       and read cleanly at 0.95, but under the `mst` key, because the CCCD label
+       was split by line grouping while `MSTTNCN` survived. A strong identifier
+       already in hand should not go unused.
+    3. else name match (fallback -- needed so a roster row with a
        deliberately-typo'd CCCD still aligns by name, and then correctly
        shows the CCCD field as a mismatch rather than failing to match at
        all) -> (row, "name")
-    3. else -> (None, "unmatched")
+    4. else -> (None, "unmatched")
     """
     key = digits(cccd)
     if key and key in by_cccd:
         return by_cccd[key], "cccd"
+    mkey = digits(mst)
+    if mkey and by_mst and mkey in by_mst:
+        return by_mst[mkey], "mst"
     nkey = oc.norm(name) if name else ""
     if nkey and nkey in by_name:
         return by_name[nkey], "name"
@@ -363,7 +382,7 @@ def run_pipeline(
         roster_rows_raw = load_roster_rows(roster_path)
         roster_rows = all_roster_rows(roster_rows_raw)
         roster_names = dp.extract_roster_names(roster_rows_raw)
-        by_cccd, by_name = build_roster_index(roster_rows_raw)
+        by_cccd, by_name, by_mst = build_roster_index(roster_rows_raw)
     roster_n = len(roster_names) if roster_names is not None else None
 
     kept_covers, merged_covers = dp.prune_excess_covers(cover_pages, scores, roster_n)
@@ -424,7 +443,10 @@ def run_pipeline(
         # position (#002) -- a single swap or boundary shift in the PDF vs.
         # roster order used to mispair a packet and cascade to the rest.
         if roster_rows_raw is not None:
-            row, how = match_roster(identity["cccd"], identity["name"], by_cccd, by_name)
+            row, how = match_roster(
+                identity["cccd"], identity["name"], by_cccd, by_name,
+                mst=identity.get("mst", ""), by_mst=by_mst,
+            )
         else:
             row, how = None, "no-roster"
 

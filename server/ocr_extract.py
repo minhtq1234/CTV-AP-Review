@@ -1100,6 +1100,10 @@ def ocr_packet(
     by_key = {f["key"]: f for f in fields}
     identity = {
         "cccd": _best_value(by_key["cccd"]),
+        # The personal MST is a strong identifier in its own right, and its
+        # `MSTTNCN` label survives OCR where the CCCD label sometimes does not.
+        # `pipeline.match_roster` tries it between the CCCD and the name.
+        "mst": _best_value(by_key["mst"]),
         "name": _best_value(by_key["hoten"]),
     }
 

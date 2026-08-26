@@ -24,7 +24,10 @@ export interface Progress {
 
 export type CaseState = 'processing' | 'ready' | 'in_review' | 'done' | 'error'
 
-export type MatchedBy = 'cccd' | 'name' | 'unmatched' | 'no-roster'
+// Strongest key first. `mst` sits between `cccd` and `name` because the
+// personal MST is a real identifier, while a name match is the fragile path —
+// see server/pipeline.py's `match_roster`.
+export type MatchedBy = 'cccd' | 'mst' | 'name' | 'unmatched' | 'no-roster'
 
 export interface Identity {
   cccd: string

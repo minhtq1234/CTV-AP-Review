@@ -3,6 +3,7 @@ from ocr_extract import (
     extract_fields, build_manifest, find_name, FIELD_SPECS,
     classify_page, segment_docs, locate_field, _upright_rotation,
     ocr_words,
+    ocr_packet,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -1002,3 +1003,24 @@ class TestALabelAndItsValueOnOneVisualRow:
         hits = locate_field(lines, self.SPEC)
 
         assert hits[0]["value"] == "060203014847"
+
+
+class TestTheIdentityCarriesTheMst:
+    """`match_roster` tries the personal MST between the CCCD and the name, so
+    `ocr_packet` has to hand it over. On the July packet that matched nothing the
+    number reads at 0.95 under `mst` while the CCCD label was lost to line
+    grouping."""
+
+    def test_the_identity_keys(self):
+        import inspect
+        source = inspect.getsource(ocr_packet)
+        assert '"mst": _best_value(by_key["mst"])' in source
+
+    def test_best_value_takes_the_most_confident_read(self):
+        field = {"sources": [
+            {"value": "", "confidence": 0.0},
+            {"value": "060203014847", "confidence": 0.95},
+            {"value": "999999999999", "confidence": 0.4},
+        ]}
+        from ocr_extract import _best_value
+        assert _best_value(field) == "060203014847"
