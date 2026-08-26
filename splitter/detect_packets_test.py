@@ -6,6 +6,7 @@ from detect_packets import reconcile, Packet
 from detect_packets import prune_excess_covers
 from detect_packets import implausible_structure
 from detect_packets import extract_roster_names
+from detect_packets import snap_covers_to_starts
 from detect_packets import coarse_label
 from detect_packets import build_report_html
 from detect_packets import packet_filename
@@ -249,3 +250,296 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn(); print(f"  ok {name}")
     print("ALL OK")
+
+
+# ---------------------------------------------------------------------------
+# snap_covers_to_starts — the boundary fix.
+#
+# The band detector finds a strongly recurring page once per packet, but that
+# page is not necessarily the packet's first. On the real July submission it is
+# the *fourth*: covers landed on pages 12, 20, 28 while each CTV's documents
+# actually begin at 9, 17, 25. Every packet therefore held the tail of the
+# previous CTV's documents, which is what the criteria matrix surfaced as 32 of
+# 36 packets disagreeing on the CTV's name.
+# ---------------------------------------------------------------------------
+
+def _classifier(kinds):
+    """A fake page classifier over `{page_index: kind}`, counting its calls."""
+    calls = []
+
+    def classify(page):
+        calls.append(page)
+        return kinds.get(page)
+    return classify, calls
+
+
+class TestSnapCoversToStarts:
+    #: The real July shape: contract at 9/17/25 (0-based 8/16/24), cover three
+    #: pages later, then bbnt, appendix, pit.
+    JULY = {
+        8: "contract", 12: "bbnt", 13: "bbnt", 14: "appendix", 15: "pit",
+        16: "contract", 20: "bbnt", 22: "appendix", 23: "pit",
+        24: "contract", 27: "bbnt", 30: "appendix", 31: "pit",
+    }
+
+    def test_it_moves_each_cover_back_to_its_contract(self):
+        classify, _ = _classifier(self.JULY)
+
+        starts, report = snap_covers_to_starts([11, 19, 27], classify)
+
+        assert starts == [8, 16, 24]
+        assert report["shifted"] == 3
+
+    def test_a_cover_already_at_a_start_does_not_move(self):
+        classify, _ = _classifier(self.JULY)
+
+        starts, report = snap_covers_to_starts([8, 16, 24], classify)
+
+        assert starts == [8, 16, 24]
+        assert report["shifted"] == 0
+
+    def test_the_nearest_start_wins(self):
+        # Walking back from 24 must stop at 24, not continue to 16.
+        classify, calls = _classifier(self.JULY)
+
+        starts, _ = snap_covers_to_starts([24], classify)
+
+        assert starts == [24]
+        assert calls == [24]
+
+    def test_no_start_within_the_window_leaves_the_cover_alone(self):
+        """The PUBGm nghiệm thu submission has no contracts at all. Its
+        boundaries must not move on a guess."""
+        classify, _ = _classifier({})
+
+        starts, report = snap_covers_to_starts([32, 38, 44], classify)
+
+        assert starts == [32, 38, 44]
+        assert report["offset"] is None
+        assert report["shifted"] == 0
+
+    def test_one_cover_finding_a_start_moves_them_both(self):
+        """A cover that found nothing is a failed page read, not evidence of a
+        different offset — so the offset the other cover found applies to it
+        too, keeping the packets evenly sized."""
+        classify, _ = _classifier({8: "contract"})
+
+        starts, report = snap_covers_to_starts([11, 19], classify)
+
+        assert starts == [8, 16]
+        assert report["offset"] == 3
+        assert report["inferred"] == [19]
+
+    def test_a_cover_too_near_the_front_to_move_stays_put(self):
+        """Shifting it would put a packet's start inside the batch-level front
+        matter, so it keeps its place and says so."""
+        classify, _ = _classifier({5: "contract"})
+
+        starts, report = snap_covers_to_starts([2, 8], classify)
+
+        assert report["offset"] == 3
+        assert report["immovable"] == [2]
+        assert starts == [2, 5]
+
+    def test_distinct_covers_always_give_distinct_starts(self):
+        classify, _ = _classifier({i * 8: "contract" for i in range(5)})
+        covers = [i * 8 + 3 for i in range(5)]
+
+        starts, _ = snap_covers_to_starts(covers, classify)
+
+        assert len(starts) == len(set(starts)) == len(covers)
+
+    def test_the_window_bounds_the_search(self):
+        classify, calls = _classifier({0: "contract"})
+
+        starts, _ = snap_covers_to_starts([20], classify, window=4)
+
+        assert starts == [20]
+        assert calls == [20, 19, 18, 17]
+
+    def test_a_page_before_the_document_start_is_never_asked_for(self):
+        classify, calls = _classifier({})
+
+        snap_covers_to_starts([1], classify, window=8)
+
+        assert calls == [1, 0]
+
+    def test_pages_are_classified_once_across_overlapping_windows(self):
+        """Adjacent covers walk over the same pages; OCR is the expensive part
+        here, so it must not be repeated."""
+        classify, calls = _classifier({8: "contract"})
+
+        snap_covers_to_starts([11, 12, 13], classify, window=8)
+
+        assert len(calls) == len(set(calls))
+
+    def test_what_counts_as_a_start_is_configurable(self):
+        classify, _ = _classifier({8: "bbnt"})
+
+        starts, _ = snap_covers_to_starts(
+            [11], classify, start_kinds=("bbnt",),
+        )
+
+        assert starts == [8]
+
+    def test_no_covers_at_all(self):
+        classify, calls = _classifier({})
+        assert snap_covers_to_starts([], classify)[0] == []
+        assert calls == []
+
+    def test_the_report_names_the_single_offset_it_applied(self):
+        classify, _ = _classifier(self.JULY)
+
+        _, report = snap_covers_to_starts([11, 19, 27], classify)
+
+        assert report["offset"] == 3
+        assert report["shifted"] == 3
+        assert report["reason"] == ""
+
+
+class TestReconcileAfterSnapping:
+    """Snapping moves each packet's start off the recurring cover page, whose
+    score is what `near-threshold` is about. Reading the score at the *start*
+    page instead would flag every packet."""
+
+    #: The real July shape: cover ~0.96, contract first page ~0.19, threshold
+    #: ~0.50.
+    SCORES = [0.19, 0.17, 0.19, 0.96, 0.06, 0.17, 0.11, 0.04,
+              0.19, 0.12, 0.22, 0.97, 0.07, 0.16, 0.17, 0.10]
+
+    def test_without_cover_scores_it_reads_the_start_page(self):
+        # Unchanged behaviour for the splitter CLI, which does not snap.
+        packets = reconcile([(3, 10), (11, 15)], self.SCORES, None, 0.50)
+        assert [p.cover_score for p in packets] == [0.96, 0.97]
+
+    def test_supplied_cover_scores_are_used_instead(self):
+        packets = reconcile([(0, 7), (8, 15)], self.SCORES, None, 0.50,
+                            cover_scores=[0.96, 0.97])
+
+        assert [p.cover_score for p in packets] == [0.96, 0.97]
+        assert not any("near-threshold" in p.flags for p in packets)
+
+    def test_without_them_a_snapped_packet_looks_falsely_marginal(self):
+        packets = reconcile([(0, 7), (8, 15)], self.SCORES, None, 0.50)
+        assert all("near-threshold" in p.flags for p in packets)
+
+    def test_a_genuinely_marginal_cover_is_still_flagged(self):
+        packets = reconcile([(0, 7)], self.SCORES, None, 0.50,
+                            cover_scores=[0.52])
+        assert "near-threshold" in packets[0].flags
+
+    def test_a_short_cover_score_list_falls_back_per_packet(self):
+        packets = reconcile([(0, 7), (8, 15)], self.SCORES, None, 0.50,
+                            cover_scores=[0.96])
+        assert packets[0].cover_score == 0.96
+        assert packets[1].cover_score == self.SCORES[8]
+
+
+class TestSnapReportsItsCovers:
+    """`reconcile` needs each packet's cover score, and after snapping the start
+    page is no longer the cover — so the mapping has to come back out."""
+
+    def test_each_start_names_the_cover_it_came_from(self):
+        classify, _ = _classifier({8: "contract", 16: "contract"})
+
+        starts, report = snap_covers_to_starts([11, 19], classify)
+
+        assert report["cover_of"] == {8: 11, 16: 19}
+
+    def test_a_submission_that_did_not_snap_has_no_mapping_to_make(self):
+        classify, _ = _classifier({})
+        _, report = snap_covers_to_starts([11], classify)
+        assert report["cover_of"] == {}
+        assert report["offset"] is None
+
+    def test_too_few_covers_finding_a_start_snaps_nothing(self):
+        """One page's evidence must not shift a whole submission."""
+        classify, _ = _classifier({8: "contract"})
+
+        starts, report = snap_covers_to_starts([11, 19, 27, 35], classify)
+
+        assert starts == [11, 19, 27, 35]
+        assert "too-few-starts: 1/4" in report["reason"]
+
+
+class TestTheSnapMustBeConsistent:
+    """The offset from a packet's start to its recurring cover is a property of
+    the submission's document template, so it is the same for every packet. A
+    mixed result means the classification is unreliable, not that the offsets
+    genuinely vary — and snapping some covers but not others produces packets of
+    wildly different lengths. On the PUBGm submission an unfixed classifier
+    snapped 19 of 25 covers and left a two-page packet in the split.
+    """
+
+    def test_a_unanimous_shift_is_applied(self):
+        classify, _ = _classifier({0: "contract", 8: "contract", 16: "contract"})
+
+        starts, report = snap_covers_to_starts([3, 11, 19], classify)
+
+        assert starts == [0, 8, 16]
+        assert report["offset"] == 3
+
+    def test_a_dominant_shift_is_applied_to_every_cover(self):
+        # Three covers agree on 3; the fourth found nothing. Applying the
+        # dominant offset keeps the packets evenly sized.
+        classify, _ = _classifier({0: "contract", 8: "contract", 16: "contract"})
+
+        starts, report = snap_covers_to_starts([3, 11, 19, 27], classify)
+
+        assert starts == [0, 8, 16, 24]
+        assert report["offset"] == 3
+        assert report["inferred"] == [27]
+
+    def test_a_scattered_result_snaps_nothing(self):
+        # Half the covers say 4, the rest say 0 — nothing to trust.
+        classify, _ = _classifier({
+            0: "contract", 6: "contract",
+            14: "contract", 20: "contract",
+        })
+
+        starts, report = snap_covers_to_starts([4, 6, 14, 20], classify)
+
+        assert starts == [4, 6, 14, 20]
+        assert report["offset"] is None
+        assert report["shifted"] == 0
+        assert "inconsistent" in report["reason"]
+
+    def test_no_start_found_anywhere_snaps_nothing(self):
+        classify, _ = _classifier({})
+
+        starts, report = snap_covers_to_starts([4, 10, 16], classify)
+
+        assert starts == [4, 10, 16]
+        assert report["offset"] is None
+        assert "no-start-found" in report["reason"]
+
+    def test_an_offset_of_zero_is_a_valid_answer(self):
+        # The February submission: covers already sit on the packet starts.
+        classify, _ = _classifier({4: "contract", 12: "contract"})
+
+        starts, report = snap_covers_to_starts([4, 12], classify)
+
+        assert starts == [4, 12]
+        assert report["offset"] == 0
+        assert report["shifted"] == 0
+
+    def test_a_shift_is_never_applied_before_the_document_start(self):
+        classify, _ = _classifier({0: "contract", 8: "contract", 16: "contract"})
+
+        starts, report = snap_covers_to_starts([1, 9, 17], classify)
+
+        # cover 1 cannot move back 8; it stays, and says so
+        assert starts[0] >= 0
+        assert report["offset"] is not None
+
+    def test_the_real_july_shape_is_unanimous(self):
+        kinds = {}
+        for block in range(6):
+            kinds[block * 8] = "contract"
+            kinds[block * 8 + 4] = "bbnt"
+        covers = [block * 8 + 3 for block in range(6)]
+
+        starts, report = snap_covers_to_starts(covers, _classifier(kinds)[0])
+
+        assert starts == [block * 8 for block in range(6)]
+        assert report["offset"] == 3

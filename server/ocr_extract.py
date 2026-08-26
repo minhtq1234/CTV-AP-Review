@@ -499,9 +499,16 @@ _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
     ("bang thong tin tra cuu", "pit", "Tra cứu thuế"),
     ("nguoi nop thue tncn", "pit", "Tra cứu thuế"),
     ("can cuoc cong dan", "id_front", "CCCD"),
-    ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
+    # Before the contract rule: these name what the page *is*, while
+    # "hợp đồng dịch vụ" may only be what it *cites*. Page 45 of the PUBGm
+    # submission is a BBNT whose title OCR scrambled, and whose next line reads
+    # "Căn cứ Hợp Đồng Dịch Vụ số đã ký" -- it classified as a contract, which
+    # put a false packet start and a two-page packet in the split. A false
+    # `contract` is the expensive direction: it invents a boundary, where a
+    # false `bbnt` only means a boundary is not found and the cover stays put.
     ("bien ban", "bbnt", "Biên bản nghiệm thu"),
     ("cam ket", "commitment", "Bản cam kết"),
+    ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
     ("tra cuu", "pit", "Tra cứu thuế"),
 ]
 
@@ -917,9 +924,15 @@ def render_pages(
 
 def ocr_words(
     pdf_path: str, page_index: int, ocr_dpi: int = 300, display_dpi: int = 150,
-    rotation: int = 0,
+    rotation: int = 0, band_frac: float = 1.0,
 ) -> tuple[list[dict], float]:
     """OCR one page (0-based, absolute index) at `ocr_dpi` with Tesseract `vie`.
+
+    `band_frac` < 1.0 OCRs only the top fraction of the page. Coordinates stay
+    valid (the crop is from the origin), and it is roughly three times faster --
+    for a caller that only needs to know whether a document *starts* here, which
+    its title answers at the top of the page. A cropped read will miss titles
+    further down, so it is not a general classifier.
 
     `rotation` (PIL CCW degrees, see `_upright_rotation`) is applied to the
     OCR-dpi image before running Tesseract, so a rotated page's words come
@@ -930,6 +943,8 @@ def ocr_words(
     Returns (words in OCR-pixel space, `display_dpi/ocr_dpi` scale factor) —
     the caller scales the words to display space with `scale_words`.
     """
+    if not 0.0 < band_frac <= 1.0:
+        raise ValueError(f"band_frac must be in (0, 1], got {band_frac!r}")
     doc = fitz.open(pdf_path)
     try:
         page = doc[page_index]
@@ -940,6 +955,8 @@ def ocr_words(
         doc.close()
     if rotation:
         img = img.rotate(rotation, expand=True)
+    if band_frac < 1.0:
+        img = img.crop((0, 0, img.width, max(1, int(img.height * band_frac))))
     data = pytesseract.image_to_data(img, lang="vie", output_type=pytesseract.Output.DICT)
     words = []
     for i in range(len(data["text"])):

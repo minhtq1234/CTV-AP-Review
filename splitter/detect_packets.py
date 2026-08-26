@@ -12,6 +12,7 @@ import html as _html
 import os
 import re
 import sys
+import collections
 from dataclasses import dataclass, field
 
 import fitz          # PyMuPDF
@@ -83,11 +84,20 @@ def reconcile(
     threshold: float,
     len_range: tuple[int, int] = (5, 12),
     near_margin: float = 0.05,
+    cover_scores: list[float] | None = None,
 ) -> list[Packet]:
-    """Build Packets, align to the roster by order, attach confidence flags."""
+    """Build Packets, align to the roster by order, attach confidence flags.
+
+    `cover_scores` supplies each packet's *cover* score when the start page is
+    no longer the cover -- which is the case after `snap_covers_to_starts`. The
+    `near-threshold` flag is about how strongly the cover was detected, so
+    reading the score at a snapped start page would flag every packet.
+    """
     packets: list[Packet] = []
     for i, (start, end) in enumerate(bounds):
-        p = Packet(index=i, start=start, end=end, cover_score=page_scores[start])
+        score = (cover_scores[i] if cover_scores is not None
+                 and i < len(cover_scores) else page_scores[start])
+        p = Packet(index=i, start=start, end=end, cover_score=score)
         if roster_names is not None:
             # Only a roster-relative fact: an excess packet beyond the roster's
             # length. With no roster at all, there's nothing to mismatch against,
@@ -119,6 +129,123 @@ def implausible_structure(n_covers: int, total_pages: int, roster_n: int | None)
     if roster_n is not None:
         return n_covers > 2 * roster_n
     return n_covers > total_pages / 4
+
+
+#: A packet begins with its contract. `snap_covers_to_starts` walks back from
+#: each cover looking for one of these.
+START_KINDS: tuple[str, ...] = ("contract",)
+
+#: How far back to look. Comfortably more than the observed offset (3 pages on
+#: the July submission) without reaching into the previous packet, whose blocks
+#: run 6-8 pages.
+SNAP_WINDOW = 6
+
+
+#: How much the covers that *found* a start must agree on the offset. A cover
+#: that found nothing is weak dissent -- the page read failed -- and does not
+#: count against the consensus; a cover that found a *different* offset is
+#: strong dissent, and means the classification cannot be trusted. On the PUBGm
+#: submission an unfixed classifier had 19 covers report offset 4 and 6 report
+#: 0, and snapping only the 19 left a two-page packet behind.
+SNAP_CONSENSUS = 0.8
+
+#: How many covers must find a start at all. Without a floor, one page's
+#: evidence could shift a whole submission.
+SNAP_MIN_EVIDENCE = 0.5
+
+
+def snap_covers_to_starts(
+    cover_pages: list[int],
+    classify,
+    window: int = SNAP_WINDOW,
+    start_kinds: tuple[str, ...] = START_KINDS,
+    consensus: float = SNAP_CONSENSUS,
+    min_evidence: float = SNAP_MIN_EVIDENCE,
+) -> tuple[list[int], dict]:
+    """Move every cover back to where its packet's documents actually begin.
+
+    The band detector finds a page that recurs once per packet, but nothing
+    guarantees it is the packet's *first* page. On the real July submission it
+    is the fourth: covers landed on pages 12, 20, 28 while each CTV's documents
+    begin at 9, 17, 25 -- so every packet carried the tail of the previous
+    CTV's documents, and 32 of 36 packets disagreed with the bảng kê about whose
+    documents they held.
+
+    Each cover is walked back up to `window` pages looking for a `start_kinds`
+    page. The offsets found are then required to agree: at least `consensus` of
+    the covers must report the same one, and that single offset is applied to
+    all of them, so packets keep the even sizes the cover cadence implies. When
+    they do not agree, nothing moves and `reason` says why -- an unverified
+    boundary is better than a scrambled one.
+
+    `classify(page_index) -> kind | None` is injected so this stays testable and
+    free of OCR dependencies; the caller supplies one that caches, since OCR is
+    the expensive part.
+    """
+    if not cover_pages:
+        return [], _report(None, {}, [], 0, 0, "no-covers")
+
+    seen: dict[int, str | None] = {}
+
+    def kind_of(page: int) -> str | None:
+        if page not in seen:
+            seen[page] = classify(page)
+        return seen[page]
+
+    covers = sorted(cover_pages)
+    offsets: dict[int, int] = {}
+    for cover in covers:
+        for page in range(cover, max(-1, cover - window), -1):
+            if kind_of(page) in start_kinds:
+                offsets[cover] = cover - page
+                break
+
+    missing = sorted(set(covers) - set(offsets))
+    if not offsets:
+        return covers, _report(None, {}, covers, len(seen), 0, "no-start-found")
+    if len(offsets) < min_evidence * len(covers):
+        return covers, _report(
+            None, {}, missing, len(seen), 0,
+            f"too-few-starts: {len(offsets)}/{len(covers)}",
+        )
+
+    counts = collections.Counter(offsets.values())
+    offset, agreeing = counts.most_common(1)[0]
+    if agreeing < consensus * len(offsets):
+        return covers, _report(
+            None, {}, missing, len(seen), 0,
+            f"inconsistent-offsets: {dict(sorted(counts.items()))}",
+        )
+
+    inferred = sorted(c for c in covers if offsets.get(c) != offset)
+    # A cover too near the front of the document to take the offset stays put
+    # rather than being clamped to page 0, which would put a packet's start in
+    # the batch-level front matter.
+    immovable = sorted(c for c in covers if c < offset)
+    # Distinct covers always give distinct starts: a uniform shift preserves
+    # order, and a cover that would land on another cover cannot happen -- that
+    # other cover would itself be a start page, reporting offset 0 and breaking
+    # the consensus this branch already passed.
+    snapped = [cover - offset if cover >= offset else cover for cover in covers]
+    return snapped, _report(
+        offset,
+        {start: cover for start, cover in zip(snapped, covers)},
+        immovable, len(seen), len(covers) - len(immovable) if offset else 0, "",
+        inferred=inferred,
+    )
+
+
+def _report(offset, cover_of, immovable, classified, shifted, reason,
+            inferred=()) -> dict:
+    return {
+        "offset": offset,
+        "shifted": shifted,
+        "cover_of": cover_of,
+        "immovable": list(immovable),
+        "inferred": list(inferred),
+        "classified": classified,
+        "reason": reason,
+    }
 
 
 def prune_excess_covers(

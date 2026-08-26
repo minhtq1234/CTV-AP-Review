@@ -2,6 +2,7 @@ from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
     classify_page, segment_docs, locate_field, _upright_rotation,
+    ocr_words,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -852,3 +853,74 @@ class TestTheTokenRuleStaysTitleShaped:
             "vụ quy",
         ])
         assert classify_page(page) is None
+
+
+class TestOcrWordsBandCrop:
+    """`band_frac` OCRs only the top fraction of a page. The boundary-snapping
+    pass only needs to know whether a document *starts* here, and its title is
+    at the top — measured at 355ms/page against 786ms for the whole page."""
+
+    def test_the_default_is_the_whole_page(self):
+        import inspect
+        assert inspect.signature(ocr_words).parameters["band_frac"].default == 1.0
+
+    def test_a_fraction_outside_the_range_is_refused(self):
+        import pytest as _pytest
+        for bad in (0.0, -0.5, 1.5):
+            with _pytest.raises(ValueError):
+                ocr_words("x.pdf", 0, band_frac=bad)
+
+
+class TestADocumentIsWhatItSaysItIs:
+    """A heading naming the document's own class beats a heading that merely
+    cites another document. Page 45 of the PUBGm submission is a BBNT whose
+    title OCR scrambled, and whose next line cites the contract:
+
+        BIÊN BÁN NGHIỆM VÀ LÝ ĐÒNG
+        THU THANH HỢP
+        Căn cứ Hợp Đồng Dịch Vụ số đã ký
+
+    The citation matched `hop dong dich vu` and the page classified as a
+    contract — a false packet start, which put a two-page packet in the split.
+    """
+
+    #: Verbatim, all eleven lines — the citation has to land inside the top
+    #: third for the bug to reproduce, which a shortened fixture hides.
+    REAL_PAGE_45 = "\n".join([
+        "BIÊN BÁN NGHIỆM VÀ LÝ ĐÒNG",
+        "THU THANH HỢP",
+        "Căn cứ Hợp Đồng Dịch Vụ số đã ký",
+        "-_ ngày I1 tháng 06 năm 2026 (“Hợp",
+        ".....................",
+        "Đồng\");",
+        "Căn cứ thực tế thực hiện Hợp Đồng.",
+        "-_",
+        "Hôm nay, ngày 23 tháng 06 năm 2026, chúng tôi gồm:",
+        "CÔNG TY CÔ PHẢN TẬP ĐOÀN",
+        "VNG",
+    ])
+
+    def test_the_real_page_is_a_bbnt_not_a_contract(self):
+        assert classify_page(self.REAL_PAGE_45)[0] == "bbnt"
+
+    def test_a_contract_citing_itself_is_still_a_contract(self):
+        page = "\n".join([
+            "Tài liệu Bảo mật",
+            "VNG.HDK.CTV",
+            "HỢP ĐỒNG DỊCH VỤ",
+            "Số:",
+        ])
+        assert classify_page(page)[0] == "contract"
+
+    def test_a_commitment_citing_the_contract_is_still_a_commitment(self):
+        page = "BẢN CAM KẾT\nTheo Hợp Đồng Dịch Vụ số 01"
+        assert classify_page(page)[0] == "commitment"
+
+    def test_an_appendix_citing_the_contract_is_still_an_appendix(self):
+        page = "PHỤ LỤC 01\nCăn cứ Hợp Đồng Dịch Vụ đã ký"
+        assert classify_page(page)[0] == "appendix"
+
+    def test_the_real_pubgm_contract_pages_are_unaffected(self):
+        for title in ("HỢP ĐỎNG DỊCH VỤ", "HỢP ĐÔNG DỊCH VỤ", "HỢP ĐÒNG DỊCH VỤ"):
+            page = f"Tài liệu Bảo mật\nVNG.HDK.CTV\n{title}\nSố:"
+            assert classify_page(page)[0] == "contract", title

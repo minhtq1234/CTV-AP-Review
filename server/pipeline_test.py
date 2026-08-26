@@ -1,6 +1,13 @@
 import os
 
 import pipeline as pl
+# `pipeline` puts the splitter on sys.path, so this import must follow it.
+import detect_packets as dp_real  # noqa: E402
+
+#: Captured at import, before any monkeypatching: `pl.dp` and `dp_real` are the
+#: same module object, so reading the attribute later would return the fake that
+#: `_install_fake_detection` put there.
+_REAL_PACKETS_FROM_COVERS = dp_real.packets_from_covers
 from pipeline import digits, match_roster, fill_expected, all_roster_rows, build_roster_index
 
 
@@ -451,3 +458,100 @@ class TestRunPipelineCarriesTheTotal:
         )
 
         assert result["purchaseTotal"] is None
+
+
+# ---------------------------------------------------------------------------
+# Boundary snapping: covers land mid-packet, so they are moved back to the page
+# that starts one.
+# ---------------------------------------------------------------------------
+
+class TestStartPageClassifier:
+    def test_it_classifies_a_page_by_its_title(self, monkeypatch):
+        monkeypatch.setattr(pl.oc, "ocr_words",
+                            lambda *a, **k: ([{"text": "HỢP", "x": 0, "y": 0,
+                                               "w": 9, "h": 9, "conf": 90.0},
+                                              {"text": "DỊCH", "x": 20, "y": 0,
+                                               "w": 9, "h": 9, "conf": 90.0},
+                                              {"text": "VỤ", "x": 40, "y": 0,
+                                               "w": 9, "h": 9, "conf": 90.0}], 1.0))
+
+        classify = pl._start_page_classifier("x.pdf")
+
+        assert classify(0) == "contract"
+
+    def test_an_unreadable_page_is_not_a_kind(self, monkeypatch):
+        monkeypatch.setattr(pl.oc, "ocr_words", lambda *a, **k: ([], 1.0))
+        assert pl._start_page_classifier("x.pdf")(0) is None
+
+    def test_an_ocr_failure_does_not_stop_the_ingest(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("tesseract fell over")
+        monkeypatch.setattr(pl.oc, "ocr_words", boom)
+
+        # A page that cannot be read is simply not a start; splitting continues.
+        assert pl._start_page_classifier("x.pdf")(0) is None
+
+    def test_it_reads_each_page_once(self, monkeypatch):
+        reads = []
+
+        def ocr(pdf_path, page, **kwargs):
+            reads.append(page)
+            return [], 1.0
+        monkeypatch.setattr(pl.oc, "ocr_words", ocr)
+
+        classify = pl._start_page_classifier("x.pdf")
+        classify(3), classify(3), classify(3)
+
+        assert reads == [3]
+
+
+class TestRunPipelineSnapsBoundaries:
+    def _install(self, monkeypatch, covers, kinds, pages=12):
+        """Fake detection over a `pages`-page document, but with the real
+        `packets_from_covers` so the bounds under test are actually derived."""
+        _install_fake_detection(monkeypatch)
+        monkeypatch.setattr(
+            pl.dp, "load_page_bands",
+            lambda pdf_path: ([None] * pages, [1.0] * pages,
+                              [0.001] * pages, pages))
+        monkeypatch.setattr(pl.dp, "packets_from_covers",
+                            _REAL_PACKETS_FROM_COVERS)
+        monkeypatch.setattr(pl.dp, "covers_from_scores",
+                            lambda scores, threshold: covers)
+        monkeypatch.setattr(pl.dp, "prune_excess_covers",
+                            lambda cover_pages, scores, roster_n: (cover_pages, []))
+        monkeypatch.setattr(pl, "_start_page_classifier",
+                            lambda pdf_path, **k: lambda page: kinds.get(page))
+
+    def test_the_packets_start_where_the_documents_do(self, tmp_path, monkeypatch):
+        # covers three pages late, as on the real submission
+        self._install(monkeypatch, [3, 9], {0: "contract", 6: "contract"})
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert [p["pages"] for p in result["packets"]] == [[0, 5], [6, 11]]
+
+    def test_it_reports_what_it_moved(self, tmp_path, monkeypatch):
+        self._install(monkeypatch, [3, 9], {0: "contract", 6: "contract"})
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert result["summary"]["boundaries_snapped"] == 2
+
+    def test_a_submission_with_no_contract_pages_is_left_alone(
+        self, tmp_path, monkeypatch,
+    ):
+        """The PUBGm nghiệm thu submission has no contracts. Its boundaries must
+        not move on a guess."""
+        self._install(monkeypatch, [0, 3], {})
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert [p["pages"] for p in result["packets"]] == [[0, 2], [3, 11]]
+        assert result["summary"]["boundaries_snapped"] == 0

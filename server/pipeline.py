@@ -231,6 +231,43 @@ def flag_duplicate_identities(packets_out: list[dict]) -> list[dict]:
 MAX_FRONT_MATTER_PAGES = 40
 
 
+#: DPI and page fraction for the boundary-snapping pass. A document's title is
+#: large and at the top, so this reads it reliably at a third of the cost of a
+#: full-page 300-dpi read -- measured at 255ms/page against 1.2s, with zero
+#: missed or false contract starts over four real packets. The packet pages are
+#: OCR'd properly later; this pass only answers "does a document start here".
+SNAP_DPI = 150
+SNAP_BAND = 0.35
+
+
+def _start_page_classifier(pdf_path: str, dpi: int = SNAP_DPI,
+                           band: float = SNAP_BAND):
+    """A cached `page_index -> kind` reader for `snap_covers_to_starts`.
+
+    Reads only the top `band` of each page, so it detects the kinds whose title
+    sits at the top -- which is what a *start* page has. It will miss a title
+    further down (an appendix or tax-lookup heading), so this is not a general
+    page classifier and must not be reused as one.
+
+    A page that cannot be read is simply not a start: an OCR failure must not
+    stop an ingest, and leaving the cover where it was is the safe answer.
+    """
+    cache: dict[int, str | None] = {}
+
+    def classify(page: int) -> str | None:
+        if page in cache:
+            return cache[page]
+        try:
+            words, _ = oc.ocr_words(pdf_path, page, ocr_dpi=dpi, band_frac=band)
+            found = oc.classify_page(oc._page_text(words))
+        except Exception:  # noqa: BLE001 - an unreadable page is not a start
+            found = None
+        cache[page] = found[0] if found else None
+        return cache[page]
+
+    return classify
+
+
 def read_purchase_total(
     pdf_path: str,
     front_pages: int,
@@ -330,8 +367,24 @@ def run_pipeline(
     roster_n = len(roster_names) if roster_names is not None else None
 
     kept_covers, merged_covers = dp.prune_excess_covers(cover_pages, scores, roster_n)
+
+    # The recurring page the bands find is not necessarily a packet's first --
+    # on the July submission it was the fourth, so every packet held the tail of
+    # the previous CTV's documents. Move each cover back to the page that starts
+    # a packet; a cover with no start in its window keeps its place.
+    progress_cb("boundaries", 0, len(kept_covers), "")
+    kept_covers, snap_report = dp.snap_covers_to_starts(
+        kept_covers, _start_page_classifier(pdf_path),
+    )
+    progress_cb("boundaries", len(kept_covers), len(kept_covers), "")
+
     bounds = dp.packets_from_covers(kept_covers, n)
-    packets = dp.reconcile(bounds, scores, roster_names, threshold)
+    # `near-threshold` is about how strongly the *cover* was detected, and the
+    # start page is no longer the cover, so pass the cover's score explicitly.
+    cover_of = snap_report["cover_of"]
+    cover_scores = [scores[cover_of.get(start, start)] for start, _ in bounds]
+    packets = dp.reconcile(bounds, scores, roster_names, threshold,
+                           cover_scores=cover_scores)
 
     for merged_page in merged_covers:
         for p in packets:
@@ -408,6 +461,10 @@ def run_pipeline(
             1 for p in packets_out
             if DUPLICATE_IDENTITY_FLAG in p["flags"]
         ),
+        "boundaries_snapped": snap_report["shifted"],
+        "boundaries_offset": snap_report["offset"],
+        "boundaries_reason": snap_report["reason"],
+        "boundaries_inferred": len(snap_report["inferred"]),
     }
     purchase_total = read_purchase_total(
         pdf_path,
