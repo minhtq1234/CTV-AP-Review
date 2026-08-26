@@ -282,11 +282,53 @@ matched, 0 duplicate identities:
 | #14 Gross | 7 | 3 | **0** |
 | **`no` cells** | **142** | **50** | **25** |
 
-What remains is no longer about boundaries. The two #01 findings are
-single-document name reads that failed while that packet's CCCD and cam kết
-agree, and #15's thirteen are zero-PIT rows without a cam kết — a real finding,
-and the count rose from twelve only because there are now 41 packets rather than
-36. Extraction and the checklist, not splitting.
+### 3.9 The packet that matched nobody
+
+It was roster row 32's, and its number **was** extracted — cleanly, at 0.95, on
+two of its documents. Under the `mst` key, because `MSTTNCN` survived OCR while
+the CCCD label did not. `match_roster` tried only CCCD then name, so a strong
+identifier already in hand went unused.
+
+Three defects, two fixed:
+
+- **A value that sorted above its own label.** `group_lines` baselines a line on
+  its first word's y, so page 251's CCCD row split into six fragments with the
+  number two lines above its label, and `locate_field` only looked forward.
+  `_row_words` reassembles the label's visual row. CCCD reads went 31 → 38 of 41.
+- **`match_roster` ignored the MST.** Now CCCD → MST → name, strongest first: a
+  name match is the fragile path, and the wrong-person error is the most
+  expensive one this tool can make.
+- **`group_lines` uses a fixed `y_tol=8`** — not fixed. At display scale, half
+  the OCR resolution, it splits `CCCD` from `sô` and interleaves words across a
+  row. A resolution-relative tolerance is the real answer but changes the input
+  to every caller, so it wants measuring on its own.
+
+**Final state of the July submission**: 41 packets for 41 roster rows, **41
+matched — 37 by CCCD, 4 by MST, none by name, none unmatched** — and 0 duplicate
+identities.
+
+| STT | original | boundaries | + identity |
+|---|---|---|---|
+| #01 Họ và tên | 32 | 2 | 3 |
+| #02 Số CCCD | 18 | 5 | 5 |
+| #03 Ngày sinh | 15 | 1 | 1 |
+| #05 MST cá nhân | 21 | 2 | **1** |
+| #07 Số tài khoản | 35 | 2 | 2 |
+| #14 Gross | 7 | **0** | **0** |
+| `ok` cells | 86 | 124 | **128** |
+| `no` cells | 142 | 25 | 26 |
+
+#01 and #15 each gained one finding in the last column, and that is the fix
+working rather than a regression: matching row 32 means its criteria are now
+evaluated against a reference instead of sitting `pending`. Its name reads
+`Trịnh Đức Minh` — VNG's own contact from the two-column block on page 248,
+confirmed by `minhtd4@vng.com.vn` — so #01 correctly reports a mismatch a
+reviewer should look at, where before the whole packet was invisible.
+
+That VNG-vs-CTV name preference is the remaining known defect in this area. It
+needs a column-association rule, and it could not have matched this packet
+anyway: the CTV's own name reads `Phan Tài`, having lost `Tấn` to the line above.
+Not fixed here.
 
 **A partial snap is worse than none.** Before the classification fixes below,
 PUBGm had 19 of 25 covers report offset 4 and 6 report 0; snapping only the 19
