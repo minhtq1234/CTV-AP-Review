@@ -998,6 +998,12 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .criteria-cell.bad .criteria-mark { background: #fbe3e2; color: #a5201d; }
 .criteria-cell.attention .criteria-mark { background: #fdf1d8; color: #8d5b00; }
 .criteria-cell.unknown .criteria-mark { background: #ebebe8; color: #55544f; }
+/* `na` carries a reason and can be opened; an out-of-scope cell is not part of
+   the criterion at all. Both are dashes, so the chip has to tell them apart. */
+.criteria-cell.muted .criteria-mark { background: transparent;
+  border: 1px dashed var(--mat); color: var(--text-muted); }
+.criteria-cell.out-of-scope { background: repeating-linear-gradient(
+  -45deg, transparent, transparent 5px, #f4f3ef 5px, #f4f3ef 6px); }
 .criteria-value { display: block; margin-top: 3px; max-width: 190px;
   overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);
   font-size: 11px; }
