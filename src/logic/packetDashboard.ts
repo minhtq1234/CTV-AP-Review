@@ -123,11 +123,14 @@ export function boundaryNote(summary: CaseResultSummary): string {
   if (offset === null) {
     return 'Chưa xác nhận được ranh giới gói — cần kiểm tra trang đầu mỗi gói'
   }
+  const parts: string[] = []
   const moved = summary.boundaries_snapped ?? 0
-  if (!offset || !moved) return ''
-  const inferred = summary.boundaries_inferred ?? 0
-  const tail = inferred
-    ? ` (${inferred} gói suy ra theo số còn lại)`
-    : ''
-  return `${moved} gói được cắt lại sớm hơn ${offset} trang${tail}`
+  if (offset && moved) {
+    const inferred = summary.boundaries_inferred ?? 0
+    parts.push(`${moved} gói được cắt lại sớm hơn ${offset} trang`
+      + (inferred ? ` (${inferred} gói suy ra theo số còn lại)` : ''))
+  }
+  const split = summary.boundaries_inserted ?? 0
+  if (split) parts.push(`${split} gói bị gộp đã tách ra`)
+  return parts.join(' · ')
 }

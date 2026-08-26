@@ -373,16 +373,28 @@ def run_pipeline(
     # the previous CTV's documents. Move each cover back to the page that starts
     # a packet; a cover with no start in its window keeps its place.
     progress_cb("boundaries", 0, len(kept_covers), "")
+    classify_start = _start_page_classifier(pdf_path)
     kept_covers, snap_report = dp.snap_covers_to_starts(
-        kept_covers, _start_page_classifier(pdf_path),
+        kept_covers, classify_start,
+    )
+    # A cover can also be missed outright, leaving one packet holding two CTVs'
+    # documents. An over-long packet with a document start inside it is that.
+    kept_covers, missed_report = dp.insert_missed_starts(
+        kept_covers, n, classify_start,
     )
     progress_cb("boundaries", len(kept_covers), len(kept_covers), "")
 
     bounds = dp.packets_from_covers(kept_covers, n)
     # `near-threshold` is about how strongly the *cover* was detected, and the
     # start page is no longer the cover, so pass the cover's score explicitly.
+    # `None` marks a boundary that came from a document title, which has no
+    # cover score to judge.
     cover_of = snap_report["cover_of"]
-    cover_scores = [scores[cover_of.get(start, start)] for start, _ in bounds]
+    inserted = set(missed_report["inserted"])
+    cover_scores = [
+        None if start in inserted else scores[cover_of.get(start, start)]
+        for start, _ in bounds
+    ]
     packets = dp.reconcile(bounds, scores, roster_names, threshold,
                            cover_scores=cover_scores)
 
@@ -465,6 +477,7 @@ def run_pipeline(
         "boundaries_offset": snap_report["offset"],
         "boundaries_reason": snap_report["reason"],
         "boundaries_inferred": len(snap_report["inferred"]),
+        "boundaries_inserted": len(missed_report["inserted"]),
     }
     purchase_total = read_purchase_total(
         pdf_path,

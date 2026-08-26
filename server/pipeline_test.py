@@ -555,3 +555,65 @@ class TestRunPipelineSnapsBoundaries:
 
         assert [p["pages"] for p in result["packets"]] == [[0, 2], [3, 11]]
         assert result["summary"]["boundaries_snapped"] == 0
+
+
+class TestRunPipelineSplitsMergedPackets:
+    """Five July packets ran 14-16 pages against a median of 8, each holding two
+    CTVs, because a cover was never found. Their interiors carry the contract
+    page the boundary belongs on."""
+
+    def _install(self, monkeypatch, covers, kinds, pages=32):
+        _install_fake_detection(monkeypatch)
+        monkeypatch.setattr(
+            pl.dp, "load_page_bands",
+            lambda pdf_path: ([None] * pages, [1.0] * pages,
+                              [0.001] * pages, pages))
+        monkeypatch.setattr(pl.dp, "packets_from_covers",
+                            _REAL_PACKETS_FROM_COVERS)
+        monkeypatch.setattr(pl.dp, "covers_from_scores",
+                            lambda scores, threshold: covers)
+        monkeypatch.setattr(pl.dp, "prune_excess_covers",
+                            lambda cover_pages, scores, roster_n: (cover_pages, []))
+        monkeypatch.setattr(pl, "_start_page_classifier",
+                            lambda pdf_path, **k: lambda page: kinds.get(page))
+
+    def test_a_merged_packet_becomes_two(self, tmp_path, monkeypatch):
+        # covers at 0, 8, 24 — the one at 16 was never found
+        kinds = {p: "contract" for p in (0, 8, 16, 24)}
+        self._install(monkeypatch, [0, 8, 24], kinds)
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert [p["pages"] for p in result["packets"]] == [
+            [0, 7], [8, 15], [16, 23], [24, 31],
+        ]
+        assert result["summary"]["boundaries_inserted"] == 1
+
+    def test_the_inserted_packet_is_flagged_as_inferred(
+        self, tmp_path, monkeypatch,
+    ):
+        kinds = {p: "contract" for p in (0, 8, 16, 24)}
+        self._install(monkeypatch, [0, 8, 24], kinds)
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        flags = {p["index"]: p["flags"] for p in result["packets"]}
+        assert "inferred-boundary" in flags[2]
+        assert "inferred-boundary" not in flags[0]
+
+    def test_a_submission_with_even_packets_is_untouched(
+        self, tmp_path, monkeypatch,
+    ):
+        kinds = {p: "contract" for p in (0, 8, 16, 24)}
+        self._install(monkeypatch, [0, 8, 16, 24], kinds)
+
+        result = pl.run_pipeline(
+            str(tmp_path / "in.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert len(result["packets"]) == 4
+        assert result["summary"]["boundaries_inserted"] == 0

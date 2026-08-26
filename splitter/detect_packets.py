@@ -63,7 +63,7 @@ class Packet:
     index: int              # 0-based packet number
     start: int              # 0-based first page (the cover)
     end: int                # 0-based last page, inclusive
-    cover_score: float
+    cover_score: float | None
     name: str | None = None
     flags: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)  # coarse type per page
@@ -92,11 +92,16 @@ def reconcile(
     no longer the cover -- which is the case after `snap_covers_to_starts`. The
     `near-threshold` flag is about how strongly the cover was detected, so
     reading the score at a snapped start page would flag every packet.
+
+    A `None` entry means this boundary came from a document title rather than a
+    detected cover (`insert_missed_starts`). There is no cover score to judge, so
+    it is flagged `inferred-boundary` instead of being measured against the
+    threshold.
     """
     packets: list[Packet] = []
     for i, (start, end) in enumerate(bounds):
-        score = (cover_scores[i] if cover_scores is not None
-                 and i < len(cover_scores) else page_scores[start])
+        supplied = cover_scores is not None and i < len(cover_scores)
+        score = cover_scores[i] if supplied else page_scores[start]
         p = Packet(index=i, start=start, end=end, cover_score=score)
         if roster_names is not None:
             # Only a roster-relative fact: an excess packet beyond the roster's
@@ -108,7 +113,9 @@ def reconcile(
                 p.flags.append("no-roster-match")
         if not (len_range[0] <= p.n_pages <= len_range[1]):
             p.flags.append("length-out-of-range")
-        if p.cover_score - threshold < near_margin:
+        if score is None:
+            p.flags.append("inferred-boundary")
+        elif p.cover_score - threshold < near_margin:
             p.flags.append("near-threshold")
         packets.append(p)
     # Count mismatch is a whole-batch fact, not a per-packet defect — it belongs
@@ -248,6 +255,76 @@ def _report(offset, cover_of, immovable, classified, shifted, reason,
         "inferred": list(inferred),
         "classified": classified,
         "reason": reason,
+    }
+
+
+#: How much longer than the median a packet must be before its interior is
+#: searched for a missed boundary. Half again: on the July submission the median
+#: is 8 pages and the merged packets ran 14 and 16, while a 9-page packet is
+#: ordinary variation and must not be cut.
+MISSED_LENGTH_RATIO = 1.5
+
+
+def insert_missed_starts(
+    starts: list[int],
+    total_pages: int,
+    classify,
+    start_kinds: tuple[str, ...] = START_KINDS,
+    length_ratio: float = MISSED_LENGTH_RATIO,
+) -> tuple[list[int], dict]:
+    """Add a start wherever an over-long packet holds a document start inside it.
+
+    `snap_covers_to_starts` fixes covers that are in the wrong *place*; this
+    handles covers that were never found at all. Five July packets ran 14-16
+    pages against a median of 8, each holding two CTVs' documents -- which is why
+    36 packets came back for 41 roster rows -- and each had exactly one contract
+    page in its interior, at the boundary.
+
+    Only packets at least `length_ratio` times the median are searched, and a
+    candidate must leave at least half a median-length packet on both sides, so a
+    stray title page cannot slice off a fragment. A long packet with no document
+    start inside is left alone: one CTV really can have more documents than the
+    rest.
+    """
+    if len(starts) < 2:
+        return list(starts), _missed_report([], 0, 0, 0)
+
+    ordered = sorted(starts)
+    bounds = packets_from_covers(ordered, total_pages)
+    lengths = [end - start + 1 for start, end in bounds]
+    # The mode, not the median: a submission where several packets are merged
+    # drags the median up towards the merged length and hides them. Packet sizes
+    # cluster tightly around the template's, so the most common length *is* the
+    # single-CTV length. Ties go to the smaller, which is the more conservative
+    # baseline.
+    counts = collections.Counter(lengths)
+    typical = min(counts, key=lambda n: (-counts[n], n))
+    limit = typical * length_ratio
+    min_gap = max(2, typical // 2)
+
+    seen: dict[int, str | None] = {}
+    inserted: list[int] = []
+    scanned = 0
+    for start, end in bounds:
+        if end - start + 1 < limit:
+            continue
+        scanned += 1
+        for page in range(start + min_gap, end - min_gap + 2):
+            if page not in seen:
+                seen[page] = classify(page)
+            if seen[page] in start_kinds:
+                inserted.append(page)
+
+    return (sorted(set(ordered) | set(inserted)),
+            _missed_report(sorted(inserted), scanned, typical, len(seen)))
+
+
+def _missed_report(inserted, scanned, typical, classified) -> dict:
+    return {
+        "inserted": inserted,
+        "scanned": scanned,
+        "typical": typical,
+        "classified": classified,
     }
 
 
@@ -411,7 +488,10 @@ def build_report_html(
         cards.append(
             f'<div class="card {p.confidence}">{img}'
             f'<div class="meta"><div class="nm">{name}</div>'
-            f'<div class="rng">{rng} · {p.n_pages} trang · score {p.cover_score:.2f}</div>'
+            f'<div class="rng">{rng} · {p.n_pages} trang'
+            + (f' · score {p.cover_score:.2f}' if p.cover_score is not None
+               else ' · ranh giới suy ra từ tiêu đề')
+            + '</div>'
             f'<div class="chips">{chips}</div><div class="flags">{flags}</div>'
             f'</div></div>'
         )

@@ -99,6 +99,8 @@ export interface CaseResultSummary {
   boundaries_reason?: string
   /** Packets that took the offset from the others rather than finding it. */
   boundaries_inferred?: number
+  /** Boundaries added inside packets that held two CTVs' documents. */
+  boundaries_inserted?: number
 }
 
 export interface CaseSummary {

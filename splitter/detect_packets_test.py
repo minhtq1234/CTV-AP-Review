@@ -7,6 +7,8 @@ from detect_packets import prune_excess_covers
 from detect_packets import implausible_structure
 from detect_packets import extract_roster_names
 from detect_packets import snap_covers_to_starts
+from detect_packets import insert_missed_starts
+from detect_packets import build_report_html
 from detect_packets import coarse_label
 from detect_packets import build_report_html
 from detect_packets import packet_filename
@@ -543,3 +545,174 @@ class TestTheSnapMustBeConsistent:
 
         assert starts == [block * 8 for block in range(6)]
         assert report["offset"] == 3
+
+
+# ---------------------------------------------------------------------------
+# insert_missed_starts — the other half of the boundary problem.
+#
+# Snapping fixes covers that are in the wrong *place*. This handles covers that
+# were never found at all: five July packets ran 14-16 pages against a median of
+# 8, each holding two CTVs, which is why 36 packets came back for 41 roster rows.
+# ---------------------------------------------------------------------------
+
+class TestInsertMissedStarts:
+    #: The real July shape after snapping: mostly 8-page packets, with one
+    #: 16-page packet whose interior carries a contract page 8 pages in.
+    def _july(self, merged_at=4):
+        starts = [i * 8 for i in range(6)]
+        kinds = {s: "contract" for s in starts}
+        merged = starts.pop(merged_at)      # its cover was never found
+        kinds[merged] = "contract"          # but its contract page is there
+        return starts, kinds, merged
+
+    def test_it_splits_a_packet_that_holds_two_ctvs(self):
+        starts, kinds, merged = self._july()
+        classify, _ = _classifier(kinds)
+
+        out, report = insert_missed_starts(starts, 48, classify)
+
+        assert merged in out
+        assert out == sorted(set(starts) | {merged})
+        assert report["inserted"] == [merged]
+
+    def test_a_packet_of_normal_length_is_left_alone(self):
+        classify, calls = _classifier({i * 8: "contract" for i in range(4)})
+
+        out, report = insert_missed_starts([0, 8, 16, 24], 32, classify)
+
+        assert out == [0, 8, 16, 24]
+        assert report["inserted"] == []
+        assert calls == []               # nothing even read
+
+    def test_a_slightly_long_packet_is_not_split(self):
+        """A 9-page packet against a median of 8 is normal variation, not two
+        CTVs. Only a packet at least half again as long is a candidate."""
+        starts = [0, 8, 16, 24, 33]      # last runs 33..41 = 9 pages
+        classify, calls = _classifier({s: "contract" for s in starts})
+
+        out, report = insert_missed_starts(starts, 42, classify)
+
+        assert out == starts
+        assert calls == []
+
+    def test_it_will_not_slice_off_a_fragment(self):
+        """A contract page two pages into a long packet would leave a two-page
+        packet behind — that is a stray title page, not a CTV's documents."""
+        classify, _ = _classifier({0: "contract", 8: "contract", 18: "contract"})
+
+        out, report = insert_missed_starts([0, 8], 32, classify)
+
+        # 8..31 is 24 pages, so it is scanned; 18 is far enough in to be real
+        assert 18 in out
+        # but a page at 9 would not be
+        classify2, _ = _classifier({0: "contract", 8: "contract", 9: "contract"})
+        out2, report2 = insert_missed_starts([0, 8], 32, classify2)
+        assert out2 == [0, 8]
+        assert report2["inserted"] == []
+
+    def test_two_missed_covers_in_one_run_are_both_found(self):
+        classify, _ = _classifier({0: "contract", 8: "contract",
+                                   16: "contract", 24: "contract"})
+
+        out, report = insert_missed_starts([0, 8], 32, classify)
+
+        assert out == [0, 8, 16, 24]
+        assert report["inserted"] == [16, 24]
+
+    def test_the_baseline_is_the_most_common_length_not_the_median(self):
+        """Three 8-page packets and two merged 16-page ones: the median of
+        [8, 8, 8, 16, 16] is 8, but of [8, 8, 16, 16] it is 16 — which would
+        hide both merges. The mode is 8 either way."""
+        starts = [0, 8, 16, 32]          # 16..31 and 32..47 are 16pp each
+        classify, _ = _classifier({s: "contract" for s in
+                                   (0, 8, 16, 24, 32, 40)})
+
+        out, report = insert_missed_starts(starts, 48, classify)
+
+        assert report["typical"] == 8
+        assert report["inserted"] == [24, 40]
+        assert out == [0, 8, 16, 24, 32, 40]
+
+    def test_a_long_packet_with_no_contract_inside_is_left_alone(self):
+        """One CTV really can have more documents than the rest. Without a
+        document start inside, there is nothing to act on."""
+        classify, _ = _classifier({0: "contract", 8: "contract"})
+
+        out, report = insert_missed_starts([0, 8], 40, classify)
+
+        assert out == [0, 8]
+        assert report["inserted"] == []
+
+    def test_no_starts_at_all(self):
+        classify, calls = _classifier({})
+        assert insert_missed_starts([], 10, classify) == ([], {
+            "inserted": [], "scanned": 0, "typical": 0, "classified": 0})
+        assert calls == []
+
+    def test_a_single_packet_has_no_baseline_to_compare_against(self):
+        # One packet spanning the whole document: nothing to call anomalous.
+        classify, calls = _classifier({0: "contract", 8: "contract"})
+        out, report = insert_missed_starts([0], 16, classify)
+        assert out == [0]
+        assert calls == []
+
+    def test_the_report_names_what_it_scanned(self):
+        starts, kinds, merged = self._july()
+        classify, _ = _classifier(kinds)
+
+        _, report = insert_missed_starts(starts, 48, classify)
+
+        assert report["typical"] == 8
+        assert report["scanned"] == 1
+        assert report["classified"] > 0
+
+    def test_what_counts_as_a_start_is_configurable(self):
+        classify, _ = _classifier({0: "bbnt", 8: "bbnt", 24: "bbnt"})
+
+        out, _ = insert_missed_starts([0, 8], 32, classify,
+                                      start_kinds=("bbnt",))
+
+        assert 24 in out
+
+
+class TestAnInsertedBoundaryHasNoCover:
+    """A boundary found from a document title was never detected as a cover, so
+    `near-threshold` — which is about how strongly the cover scored — says
+    nothing about it. It gets its own flag instead."""
+
+    SCORES = [0.19] * 8 + [0.96] + [0.11] * 8 + [0.97] + [0.08] * 8
+
+    def test_a_none_score_is_flagged_as_inferred_not_marginal(self):
+        packets = reconcile([(0, 7), (8, 15)], self.SCORES, None, 0.50,
+                            cover_scores=[0.96, None])
+
+        assert "near-threshold" not in packets[1].flags
+        assert "inferred-boundary" in packets[1].flags
+
+    def test_a_real_cover_is_not_flagged_as_inferred(self):
+        packets = reconcile([(0, 7)], self.SCORES, None, 0.50,
+                            cover_scores=[0.96])
+
+        assert "inferred-boundary" not in packets[0].flags
+
+    def test_an_inferred_packet_reports_no_cover_score(self):
+        packets = reconcile([(0, 7)], self.SCORES, None, 0.50,
+                            cover_scores=[None])
+        assert packets[0].cover_score is None
+
+    def test_a_marginal_real_cover_is_still_flagged(self):
+        packets = reconcile([(0, 7), (8, 15)], self.SCORES, None, 0.50,
+                            cover_scores=[0.52, None])
+
+        assert "near-threshold" in packets[0].flags
+        assert "inferred-boundary" in packets[1].flags
+
+
+class TestTheReportSurvivesAnInferredBoundary:
+    def test_it_renders_a_packet_with_no_cover_score(self):
+        packets = [Packet(index=0, start=0, end=7, cover_score=None)]
+
+        html = build_report_html(packets, None, {}, "x.pdf")
+
+        assert "8 trang" in html
+        assert "None" not in html

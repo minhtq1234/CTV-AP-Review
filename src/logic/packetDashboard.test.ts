@@ -203,3 +203,26 @@ describe('boundaryNote', () => {
       .toBe('10 gói được cắt lại sớm hơn 3 trang (2 gói suy ra theo số còn lại)')
   })
 })
+
+describe('boundaryNote with inserted boundaries', () => {
+  it('reports packets that were split apart', () => {
+    expect(boundaryNote({ found: 41, roster_n: 41, matched: 41, auto_merged: 0,
+                          boundaries_offset: 3, boundaries_snapped: 36,
+                          boundaries_inserted: 5 }))
+      .toBe('36 gói được cắt lại sớm hơn 3 trang · 5 gói bị gộp đã tách ra')
+  })
+
+  it('reports a split even when no boundary moved', () => {
+    // February: covers already right, but a merged packet is still a merge.
+    expect(boundaryNote({ found: 33, roster_n: 32, matched: 32, auto_merged: 0,
+                          boundaries_offset: 0, boundaries_snapped: 0,
+                          boundaries_inserted: 1 }))
+      .toBe('1 gói bị gộp đã tách ra')
+  })
+
+  it('says nothing when neither happened', () => {
+    expect(boundaryNote({ found: 32, roster_n: 32, matched: 32, auto_merged: 0,
+                          boundaries_offset: 0, boundaries_snapped: 0,
+                          boundaries_inserted: 0 })).toBe('')
+  })
+})
