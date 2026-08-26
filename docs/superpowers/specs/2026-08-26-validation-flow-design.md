@@ -181,6 +181,54 @@ matrix is what makes that visible at scale.
 So the comparators stay strict. A fuzzy tier for identity numbers would have
 softened 3 cells out of 900 and hidden nothing useful.
 
+**The splitter is fixed** (§3.7). The matrix was right; the packets were wrong.
+
+### 3.7 The splitter fix the matrix prompted
+
+The root cause was not in the splitter's arithmetic. Tesseract reads the
+contract's first page as
+
+    ĐÔNG
+    HỢP DỊCH VỤ
+
+hoisting `ĐỒNG` out of `HỢP ĐỒNG DỊCH VỤ` onto its own line, so the phrase
+keyword never matched and **every contract first page went unclassified**. With
+no document landmark, `detect_packets` fell back to band recurrence, whose seed
+locked onto a *mid-contract* page — the fourth of each eight-page block.
+
+`snap_covers_to_starts` walks each cover back to the nearest page that starts a
+packet, then requires the offsets to agree before moving anything. Each
+submission has its own offset, which is why it is measured rather than assumed:
+
+| Submission | Covers before | Starts after | Offset | Packet lengths |
+|---|---|---|---|---|
+| July | 12, 20, 28 | 9, 17, 25 | 3 | 7–16, median 8 |
+| February | 8, 16, 24 | unchanged | **0** | 7–9, median 8 |
+| PUBGm | 33, 39, 45 | 29, 35, 41 | 4 | **all 6** |
+
+February's boundaries were never broken, and the fix is a no-op there — which is
+the property that made it safe to ship.
+
+**A partial snap is worse than none.** Before the classification fixes below,
+PUBGm had 19 of 25 covers report offset 4 and 6 report 0; snapping only the 19
+left a two-page packet in the split. The offset is a property of the
+submission's document template, so the guard requires 80% agreement *among
+covers that found a start* — a cover that found nothing is a failed page read,
+not evidence of a different offset — and applies one offset to all of them.
+
+Two classification defects found on the way, both of the same shape: the generic
+`hợp đồng dịch vụ` beating a specific title.
+
+- `Biên bản thanh lý hợp đồng dịch vụ` classified as a **contract**, as did
+  `Biên bản nghiệm thu hợp đồng dịch vụ` and `Phụ lục hợp đồng dịch vụ`.
+- Page 45 of the PUBGm submission is a BBNT whose title OCR scrambled and whose
+  next line cites `Căn cứ Hợp Đồng Dịch Vụ số đã ký`. The citation matched, and
+  invented a packet start.
+
+Headings that name the document's own class now come first. A false `contract`
+is the expensive direction — it invents a boundary; a false `bbnt` only means a
+boundary is not found and the cover stays put.
+
 **Coverage is bounded by extraction, not by the engine.** Six fields are
 extracted today, so 8 criteria can be compared and the rest report `pending`
 with a stated reason — #08 needs bank branch and province, #09–#13 need service
