@@ -234,12 +234,40 @@ packets below, and two are single-document name reads that failed while the
 packet's CCCD and cam kết agree — a field-extraction problem, and exactly what
 the matrix exists to put in front of a reviewer.
 
-**What is still wrong, and is a different defect.** July yields 36 packets
-against 41 roster rows, with five packets of 14-16 pages against a median of 8 —
-each holding two CTVs because a cover was *missed*, not misplaced. That predates
-this work and the phase fix does not touch it. Now that contract classification
-works the remedy is available: a contract page inside an over-long packet is a
-missed boundary. Not done here.
+### 3.8 Covers that were never found
+
+A cover can also be missed outright, leaving one packet holding two CTVs'
+documents. July had five: 14-16 pages against a typical 8, which is why 36
+packets came back for 41 roster rows. Each one had **exactly one** contract page
+in its interior, sitting where the boundary belongs.
+
+`insert_missed_starts` searches only packets at least half again the typical
+length, and requires a candidate to leave at least half a packet on both sides so
+a stray title page cannot slice off a fragment. All three submissions now match
+their roster counts:
+
+| | Roster | Covers found | Final packets | Offset | Inserted | Lengths |
+|---|---|---|---|---|---|---|
+| July | 41 | 36 | **41** | 3 | 5 | 7-9 |
+| February | 32 | 32 | **32** | 0 | 0 | 7-9 |
+| PUBGm | 25 | 25 | **25** | 4 | 0 | all 6 |
+
+**The baseline is the mode, not the median.** A submission where several packets
+are merged drags the median towards the merged length and hides them — for
+lengths `[8, 8, 16, 16]` the median is 16 and nothing would be found. Packet
+sizes cluster tightly around the template's, so the most common length *is* the
+single-CTV length.
+
+An inserted boundary was never detected as a cover, so `near-threshold` says
+nothing about it; `reconcile` takes `None` for such a packet and flags it
+`inferred-boundary`, so a reviewer can see which boundaries came from a document
+title rather than the cover cadence. The case header reports both adjustments —
+`36 gói được cắt lại sớm hơn 3 trang · 5 gói bị gộp đã tách ra` — because
+re-cutting a packet changes which pages belong to whom and should never be
+silent.
+
+A long packet with **no** document start inside is left alone: one CTV really can
+have more documents than the rest.
 
 **A partial snap is worse than none.** Before the classification fixes below,
 PUBGm had 19 of 25 covers report offset 4 and 6 report 0; snapping only the 19
