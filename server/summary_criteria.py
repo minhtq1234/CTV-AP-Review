@@ -145,7 +145,6 @@ def assess(
         26, Status.REVIEW,
         "Cần người kiểm tra: chữ ký người lập, người phê duyệt và dấu/giáp lai "
         "trên cả hai bảng kê.",
-        (EXCEL, PURCHASE),
     ))
 
     # -- #30 nothing shared between CTVs ------------------------------------
@@ -158,7 +157,6 @@ def assess(
             30, Status.PENDING,
             "Không đọc được dòng CTV hoặc cột CCCD/MST/tài khoản trên bảng kê "
             "để đối chiếu trùng.",
-            (EXCEL,),
         ))
         cells.append(_duplicate_payment_cell(packets))
         cells.append(_date_sequence_cell())
@@ -196,7 +194,6 @@ def _date_sequence_cell() -> SummaryCell:
         32, Status.PENDING,
         "Chưa kiểm tra tự động: cần ngày ký trích xuất từ Hợp đồng, Phụ lục, "
         "BBNT và bảng kê.",
-        (CONTRACT, APPENDIX, BBNT, EXCEL),
     )
 
 
@@ -232,7 +229,6 @@ def _total_cell(rows, report, by_code, purchase_total) -> SummaryCell:
             20, Status.PENDING,
             "Bảng kê không có dòng tổng. Cần tổng trên Bảng Kê Thu Mua để đối "
             f"chiếu (tổng Gross cộng được: {sums.get('gross', 0):,} đ).",
-            (PURCHASE,),
         )
 
     gaps = [
@@ -243,7 +239,7 @@ def _total_cell(rows, report, by_code, purchase_total) -> SummaryCell:
         if key in purchase_total and sums.get(key, 0) != purchase_total[key]
     ]
     if gaps:
-        return _cell(20, Status.NO, "; ".join(gaps), (EXCEL, PURCHASE))
+        return _cell(20, Status.NO, "; ".join(gaps))
     checked = ", ".join(
         label for key, label in
         (("gross", "Gross"), ("pit", "PIT"), ("net", "Net"))
@@ -252,8 +248,7 @@ def _total_cell(rows, report, by_code, purchase_total) -> SummaryCell:
     return _cell(
         20, Status.OK,
         f"{checked} khớp giữa bảng kê ({report.people} dòng) và "
-        f"{PURCHASE}.",
-        (EXCEL, PURCHASE),
+        f"{PURCHASE}."
     )
 
 
@@ -290,7 +285,6 @@ def _duplicate_payment_cell(packets) -> SummaryCell:
             31, Status.PENDING,
             f"{len(packets)} gói chưa khớp được với dòng nào trên bảng kê, "
             "chưa đối chiếu được trùng thanh toán.",
-            (EXCEL,),
         )
 
     groups = _identity_groups(identified)

@@ -298,3 +298,21 @@ class TestSerialisation:
         )
         assert payload["missing"] == []
         assert payload["counts"]["ok"] == 3
+
+
+class TestDetailIsWhatToLookAt:
+    """`detail` names rows or packets to open; the documents are already on the
+    criterion itself, so repeating them there renders them twice in the UI."""
+
+    def test_no_cell_repeats_its_own_documents_as_detail(self):
+        cases = (
+            ([], None, None),
+            (sheet([GOOD]), None, None),
+            (sheet([GOOD]), [packet(0, "079303009457")], {"gross": 10_000_000}),
+            (sheet([GOOD]), [packet(0), packet(1)], None),
+            (sheet([GOOD], total=(10_000_000, 1_000_000, 8_000_000)), None, None),
+        )
+        for rows, packets, total in cases:
+            for cell in sc.assess(rows, packets, total):
+                docs = set(sc.BY_STT[cell.stt].docs)
+                assert not (set(cell.detail) & docs), (cell.stt, cell.detail)

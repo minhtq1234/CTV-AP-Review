@@ -269,3 +269,56 @@ describe('CCCD aggregate summary', () => {
     expect(html).toContain('Xuất báo cáo gửi lại')
   })
 })
+
+describe('view tabs', () => {
+  function detailFor(): CaseDetailT {
+    return {
+      id: 'synthetic-case',
+      name: 'Synthetic Case',
+      createdAt: null,
+      status: 'ready',
+      pdfName: 'packet.pdf',
+      rosterName: 'roster.xlsx',
+      cccdName: null,
+      cccdSummary: null,
+      summary: {
+        found: packets.length,
+        roster_n: packets.length,
+        matched: packets.length,
+        auto_merged: 0,
+      },
+      error: null,
+      packets,
+      progress: { done: 1, total: packets.length, flagged: 2 },
+    }
+  }
+
+  it('offers the packet grid and the roster-level tab', () => {
+    const html = renderToStaticMarkup(
+      <CaseDetail
+        detail={detailFor()}
+        onOpenPacket={() => undefined}
+        onBack={() => undefined}
+        onExport={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('>Gói hồ sơ<')
+    expect(html).toContain('>Tổng hợp<')
+  })
+
+  it('opens on the packets, so the tab is additive', () => {
+    const html = renderToStaticMarkup(
+      <CaseDetail
+        detail={detailFor()}
+        onOpenPacket={() => undefined}
+        onBack={() => undefined}
+        onExport={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Cần chú ý trước')
+    expect(html).toContain('Xuất báo cáo gửi lại')
+    expect(html).not.toContain('Kiểm tra toàn bảng kê')
+  })
+})

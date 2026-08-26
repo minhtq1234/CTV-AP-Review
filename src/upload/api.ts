@@ -365,3 +365,42 @@ export async function assignCccdCard(
   }
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// Tổng hợp tab — the five criteria Acc's checklist marks `Toàn bảng kê`
+// (mirrors server/summary_criteria.py's payload 1:1).
+// ---------------------------------------------------------------------------
+
+export type SummaryStatus = 'ok' | 'no' | 'rv' | 'na' | 'missing' | 'pending'
+
+export interface SummaryCriterion {
+  stt: number
+  code: string
+  label: string
+  group: string
+  kind: string
+  /** Documents this criterion reconciles across. */
+  docs: string[]
+  /** Acc's own instruction, so an abstention is never a dead end. */
+  how: string
+  status: SummaryStatus
+  message: string
+  /** Rows, packets or documents to look at, in Acc's phrasing. */
+  detail: string[]
+}
+
+export interface SummaryPayload {
+  criteria: SummaryCriterion[]
+  counts: Record<SummaryStatus, number>
+  /** CTV rows read off the bảng kê. */
+  people: number
+  /** Inputs the backend could not reach, e.g. `purchaseTotal`. */
+  missing: string[]
+  rosterName: string | null
+}
+
+export async function fetchCaseSummary(caseId: string): Promise<SummaryPayload> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/summary`)
+  if (!res.ok) throw new Error(`fetchCaseSummary: HTTP ${res.status}`)
+  return res.json()
+}

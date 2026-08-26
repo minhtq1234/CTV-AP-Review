@@ -15,6 +15,7 @@ import {
 } from '../logic/packetDashboard'
 import { PACKET_REJECTION_OPTIONS } from '../logic/packetRejection'
 import { formatCccdSummary } from '../upload/cccd'
+import SummaryTab from './SummaryTab'
 
 interface Props {
   detail: CaseDetailT
@@ -30,6 +31,7 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
+  const [tab, setTab] = useState<CaseTab>('packets')
   const rosterTxt = summary?.roster_n == null ? '—' : String(summary.roster_n)
   const mergedTxt = summary?.auto_merged
     ? ` · ${summary.auto_merged} ranh giới gộp tự động — cần xác nhận`
@@ -66,6 +68,25 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
         </div>
       )}
 
+      <div className="case-tabs" role="tablist" aria-label="Chế độ xem hồ sơ">
+        {CASE_TABS.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            className={`case-tab${tab === option.value ? ' active' : ''}`}
+            aria-selected={tab === option.value}
+            onClick={() => setTab(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'summary' ? (
+        <SummaryTab caseId={detail.id} />
+      ) : (
+        <>
       <div className="case-summary">
         <span>{packets.length} gói · {packets.filter(packetNeedsResubmit).length} cần gửi lại · {packets.reduce((n, p) => n + Object.values(p.review?.fields ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề</span>
         <button className="btn primary" onClick={onExport}>Xuất báo cáo gửi lại</button>
@@ -79,9 +100,20 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
         onAttentionFirst={setAttentionFirst}
         onOpenPacket={onOpenPacket}
       />
+        </>
+      )}
     </div>
   )
 }
+
+// Two views over one hồ sơ: the per-CTV packets, and the five criteria that
+// apply to the whole bảng kê and so belong to no packet.
+export type CaseTab = 'packets' | 'summary'
+
+const CASE_TABS: Array<{ value: CaseTab; label: string }> = [
+  { value: 'packets', label: 'Gói hồ sơ' },
+  { value: 'summary', label: 'Tổng hợp' },
+]
 
 export interface PacketDashboardViewProps {
   packets: PacketMeta[]
