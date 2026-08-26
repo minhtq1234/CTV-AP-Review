@@ -287,7 +287,7 @@ them, and they match its `.scope-note` list in order:
 
 | STT | Criterion | Status here |
 |---|---|---|
-| #20 | Tổng Gross/PIT/Net toàn bảng kê | **built** — `roster_checks`, plus the cross-document total below |
+| #20 | Tổng Gross/PIT/Net toàn bảng kê | **closed** — `roster_checks` + `purchase_listing`; resolves on all 8 payment cases |
 | #26 | 2 Bảng kê signed by preparer and approver, with seal | `presence`, batch level — human |
 | #30 | No CCCD / MST / account shared between CTVs | **built** — `roster_checks` |
 | #31 | No duplicate payment (same CTV + amount + period) | **built** — `flag_duplicate_identities` |
@@ -298,9 +298,27 @@ the prototype correctly folds into #14's card.
 
 **#20 spans two documents, which is why it looked unbuildable.** None of the
 three rosters carries a total row, so an Excel-only check cannot run. The total
-is on **page 8 of the Bảng Kê Thu Mua**: `240.305.556 VNĐ` — which reconciles
-exactly with the sum of the July roster's 41 Gross values. That reconciliation
-runs today and passes.
+is on the last page of the Bảng Kê Thu Mua, and `purchase_listing` reads it
+there:
+
+| Submission | Page | Total | Roster Gross sum |
+|---|---|---|---|
+| July | 8 | 240.305.556 | 240,305,556 ✓ |
+| February | 7 | 258.638.890 | 258,638,890 ✓ |
+
+Both reconcile exactly. #20 now reports `ok` on all eight payment cases; the two
+PUBGm nghiệm thu submissions have no money columns and no listing, and #20
+stays `pending` there, which is correct — it does not apply.
+
+**The total is read twice, and that is not belt-and-braces.** Vietnamese
+invoices print every amount in digits and again spelled out. On February's page
+7 Tesseract read the `8` in `258.638.890` as `§` — the digit read fails
+outright, and the spelled-out amount is the *only* working read. So
+`vn_number_words` parses the words, `digit_repairs` proposes bounded OCR
+substitutions for the digits, and a repair is accepted only when it reproduces
+the words exactly. The words stay the authority; a repair can never invent a
+value. When the two reads disagree, #20 abstains and says so rather than
+accusing the roster of a mismatch that is really an OCR slip.
 
 ### 8.1 Three false-clean results the tab exposed
 
@@ -352,7 +370,7 @@ Seven, against the five this codebase models today.
 | BBNT | `bbnt` | as above |
 | Phụ lục / KPI | `appendix` | as above |
 | Kết quả tra cứu MST | `pit` (existing) | local OCR |
-| **Bảng Kê Thu Mua** (mẫu 02/TNDN) | **new kind needed** | see below |
+| **Bảng Kê Thu Mua** (mẫu 02/TNDN) | **new kind needed** | `purchase_listing` — total only, see §9.1 |
 
 **Bảng Kê Thu Mua needs an in-house parser.** IDP's `GET_TABLE` was tested on it
 four times — as a 6-page PDF and as upright single-page images, twice each. It
@@ -361,14 +379,54 @@ classifies the form confidently once rotation is corrected
 `ocr_data: None, schema.table: []` every time. Zero rows.
 
 Our own OCR reads the same page at **288 words, mean confidence 83**, with
-money tokens in two tight columns (x≈1900, x≈2100) and identity numbers in one
-(x≈1000). Recall is incomplete — 5 detected rows on a page holding more — but
-the listing has a **checksum**: rows must sum to the stated total. Parse, sum,
-and route the page to a human when it does not reconcile.
+money tokens in two tight columns (x≈1860 đơn giá, x≈2100 tổng giá thanh toán)
+and identity numbers in one (x≈1000). The total is read reliably from this.
+**The rows are not**, and §9.1 records why.
 
 Note this document is **batch-level, not per-packet** — one listing covering all
-41 CTVs, which is why #28 concerns a single preparer signature. It sits at pages
-3–8 of the submission, outside every packet.
+41 CTVs, which is why #28 concerns a single preparer signature. It sits outside
+every packet, in the front matter before the first one:
+
+| Submission | Front matter | Listing total found |
+|---|---|---|
+| July | pages 1–11 | page 8 (4 pages scanned) |
+| February | pages 1–7 | page 7 (1 page scanned) |
+| PUBGm | pages 1–32 | none — no listing in this submission |
+
+`pipeline.read_purchase_total` scans that range **backwards**, because the total
+is the last thing on the listing.
+
+### 9.1 The rows are not readable at this scan quality
+
+Measured on the July listing's five row pages (41 rows, total 240,305,556):
+
+| Reading | Result |
+|---|---|
+| Money tokens in the total column, default OCR (300 dpi, psm 3) | 34 tokens, **62%** of the total |
+| psm 6 · psm 4 · 400 dpi · 600 dpi · 2× upscale | 49–61% — every one **worse** |
+| Exact-matching the 41 known roster amounts against all tokens | 32/41, **78%** |
+
+The shortfall is digit-level corruption, not missed detection. The nine
+unmatched roster amounts have near-twins among the unclaimed tokens —
+`7.777.778` read as `1.777.778`, `2.777.778` and `1.771.718`; `8.888.889` as
+`8.888.880`, `8.885.880` and `8.888.850`. Recovering those needs
+digit→digit substitution, which would let almost any token match almost any
+amount. That is the invention this design refuses.
+
+**So #14's third column, #27 and #28 stay blocked**, and the honest reason is
+input quality rather than missing code. A fuzzy matcher would raise 78% to
+roughly 88% while flagging nine non-problems out of forty-one — a tool the
+reviewer would learn to ignore.
+
+Two things make this an acceptable place to stop:
+
+- #20 already carries the aggregate guarantee. The printed total equals the
+  roster sum **exactly**, so the listing's rows and the roster's rows agree in
+  total. Per-row matching would only add detection of offsetting errors, and
+  #17 already checks each row's own arithmetic.
+- The unblock is better input, and it is already on the list: Acc's original
+  files rather than a scan of a print, or a table-capable model. Both raise the
+  ceiling for every reader, not just this one.
 
 ---
 
@@ -416,6 +474,9 @@ Note this document is **batch-level, not per-packet** — one listing covering a
    false-clean results the per-criterion tests had not (see §8).
 3. **`compare` and `compute` evaluators.** The engine proper — the point at which
    the matrix stops being hand-typed.
-4. **Bảng Kê Thu Mua parser**, checksum-gated. Unlocks #14's third column, #27
-   and #28.
+4. ~~**Bảng Kê Thu Mua parser**, checksum-gated.~~ **Total done** —
+   `purchase_listing` + `vn_number_words`, closing #20 on all eight payment
+   cases. **Rows not done and not attempted**: §9.1 measures the ceiling at
+   62% extraction / 78% corroboration, so #14's third column, #27 and #28 stay
+   blocked on better input rather than on code.
 5. **Override and audit.** Needs the auth decision first.
