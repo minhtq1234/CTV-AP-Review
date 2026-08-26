@@ -207,6 +207,7 @@ def test_cccd_ingest_runs_after_packet_manifests_and_returns_workbook(
         manifest_paths,
         assets_dir,
         progress_cb,
+        analyze=None,
     ):
         seen["xlsx_path"] = xlsx_path
         seen["roster_rows"] = roster_rows
@@ -254,3 +255,59 @@ if __name__ == "__main__":
                 continue  # needs pytest fixtures (monkeypatch/tmp_path) -- see pytest run below
             f(); print(f"  ok {n}")
     print("ALL OK (run fixture-based tests via: python3 -m pytest pipeline_test.py)")
+
+
+def _packet(index, cccd="", name=""):
+    return {
+        "index": index,
+        "flags": [],
+        "rosterIdentity": {"cccd": cccd, "name": name} if (cccd or name) else None,
+    }
+
+
+def test_two_packets_claiming_one_roster_row_are_both_flagged():
+    # The bảng kê holds one row per person -- one payment. Both packets must be
+    # told about each other; neither may look clean on its own.
+    packets = [_packet(0, "079303009457"), _packet(1, "079303009457")]
+
+    pl.flag_duplicate_identities(packets)
+
+    assert all(pl.DUPLICATE_IDENTITY_FLAG in p["flags"] for p in packets)
+    assert packets[0]["duplicateOf"] == [1]
+    assert packets[1]["duplicateOf"] == [0]
+
+
+def test_a_unique_identity_is_not_flagged():
+    packets = [_packet(0, "079303009457"), _packet(1, "001204004530")]
+
+    pl.flag_duplicate_identities(packets)
+
+    assert all(p["flags"] == [] for p in packets)
+    assert all("duplicateOf" not in p for p in packets)
+
+
+def test_packets_with_no_roster_row_are_left_alone():
+    packets = [_packet(0), _packet(1)]
+
+    pl.flag_duplicate_identities(packets)
+
+    assert all(p["flags"] == [] for p in packets)
+
+
+def test_a_name_only_match_still_collides():
+    # A packet matched by name has no CCCD on its roster identity; the name is
+    # then the only key available, and two of them still contend for one row.
+    packets = [_packet(0, name="Trần Thanh Vân Anh"),
+               _packet(1, name="TRAN THANH VAN ANH")]
+
+    pl.flag_duplicate_identities(packets)
+
+    assert all(pl.DUPLICATE_IDENTITY_FLAG in p["flags"] for p in packets)
+
+
+def test_three_packets_all_reference_each_other():
+    packets = [_packet(i, "079303009457") for i in range(3)]
+
+    pl.flag_duplicate_identities(packets)
+
+    assert packets[1]["duplicateOf"] == [0, 2]

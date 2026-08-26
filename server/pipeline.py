@@ -182,6 +182,55 @@ def match_roster(
 _ROSTER_KEY_BY_FIELD = {spec["key"]: spec["roster_key"] for spec in oc.FIELD_SPECS}
 
 
+# Which reader handles CCCD cards. Local Tesseract by default; GreenNode IDP
+# when both variables are set. On a real batch the difference is large --
+# 26 of 41 people resolved locally versus 40 of 41 via IDP, with no false
+# reads either way -- but IDP is a network call, so it stays opt-in.
+# The roster carries exactly one row per person -- one payment. So two packets
+# resolving to the SAME row is a double-payment risk, and it is not rare: on a
+# real July batch, 9 of 41 people had two complete packets each (contract, BBNT,
+# tax lookup, sometimes an appendix -- full submissions, not split fragments),
+# and 16 of those 18 packets matched by CCCD, so the identity read was right.
+#
+# Left unflagged, both packets look clean and both can be approved. This is the
+# most expensive error the tool can wave through, and it costs nothing to
+# detect: it is a pure count over already-matched packets. `cccd_matching` has
+# had the equivalent guard (`competing-candidate`) since the card work; the
+# packet path never did.
+DUPLICATE_IDENTITY_FLAG = "duplicate-roster-identity"
+
+
+def flag_duplicate_identities(packets_out: list[dict]) -> list[dict]:
+    """Flag every packet that shares a roster row with another packet."""
+    by_row: dict[str, list[dict]] = {}
+    for packet in packets_out:
+        roster = packet.get("rosterIdentity") or {}
+        key = digits(roster.get("cccd", "")) or oc.norm(roster.get("name", ""))
+        if key:
+            by_row.setdefault(key, []).append(packet)
+    for group in by_row.values():
+        if len(group) < 2:
+            continue
+        for packet in group:
+            if DUPLICATE_IDENTITY_FLAG not in packet["flags"]:
+                packet["flags"].append(DUPLICATE_IDENTITY_FLAG)
+            # which packets it collides with, so the reviewer can compare them
+            packet["duplicateOf"] = sorted(
+                other["index"] for other in group if other is not packet
+            )
+    return packets_out
+
+
+def _card_reader():
+    base_url = os.environ.get("GREENNODE_IDP_URL", "").strip()
+    api_key = os.environ.get("GREENNODE_API_KEY", "").strip()
+    if not base_url or not api_key:
+        return None
+    from cccd_idp import reader  # imported lazily: only needed when enabled
+
+    return reader(base_url.rstrip("/").removesuffix("/ocr/ingest"), api_key)
+
+
 def fill_expected(fields: list[dict], row: dict[str, str] | None) -> list[dict]:
     """Fill each field's `expected` from the matched roster `row` (or leave
     it empty if `row` is None, i.e. the packet didn't match anyone)."""
@@ -296,11 +345,17 @@ def run_pipeline(
             ),
         })
 
+    flag_duplicate_identities(packets_out)
+
     summary = {
         "found": len(packets),
         "roster_n": roster_n,
         "matched": matched,
         "auto_merged": len(merged_covers),
+        "duplicate_identities": sum(
+            1 for p in packets_out
+            if DUPLICATE_IDENTITY_FLAG in p["flags"]
+        ),
     }
     cccd_workbook = None
     if cccd_xlsx_path is not None:
@@ -322,6 +377,7 @@ def run_pipeline(
             manifest_paths,
             os.path.join(job_dir, "cccd-assets"),
             progress_cb,
+            analyze=_card_reader(),
         )
         packets_out = ingest_result["packets"]
         cccd_workbook = ingest_result["cccdWorkbook"]
