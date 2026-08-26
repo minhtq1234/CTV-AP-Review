@@ -82,8 +82,8 @@ Derived from Acc's own `Loại kiểm tra` column.
 
 | Kind | Criteria | What it does |
 |---|---|---|
-| `compare` | 01 02 03 04 05 07 08 09 10 11 13 27 | one value must agree across `docs`; optional format rule and required-parts rule |
-| `compute` | 12 14 15 16 17 | recompute from named inputs and compare against what the documents state |
+| `compare` | 01 02 03 04 05 07 08 09 10 11 13 27 | one value must agree across `docs`; optional format rule and required-parts rule. **Built**; 01 02 03 05 07 run today, the rest await extraction (§3.6) |
+| `compute` | 12 14 15 16 17 | recompute from named inputs and compare against what the documents state. **Built**; 14 15 16 17 run today, 12 awaits date extraction |
 | `presence` | 21 22 23 24 25 28 | signature / seal / content present — the tool navigates, the human decides |
 | `external` | 06 | an artefact the reviewer supplies answers it (MST lookup screenshot) |
 | `conditional` | 18 | applies only if a document exists; its absence is itself an input to another criterion |
@@ -157,6 +157,45 @@ network dependency in the pipeline.
 an answer**, and it feeds #15: no commitment means the withholding rule applies.
 The prototype models this correctly — #18 as `na` with a stated reason, and the
 PIT card citing it as its input.
+
+### 3.6 What the engine found, first run
+
+Over all 36 July packets — 900 criterion cells: **86 ok · 142 no · 249 rv · 48
+na · 146 missing · 229 pending**. Two things in that are worth recording.
+
+**The engine's first real output is a diagnosis of the splitter.** #01 Họ và tên
+reports `no` on 32 of 36 packets, and #07 Số tài khoản on 35 of 36. That looked
+like the comparators being too strict, so the disagreements were measured:
+
+| Field | Exact | 1 digit apart | 4+ digits apart |
+|---|---|---|---|
+| CCCD | 35 | 2 | 20 |
+| Số TK | 30 | 1 | 42 |
+
+Not OCR noise — different values. And the names name the pattern: `Lê Thanh Hải`
+expected, `Đinh Hữu Phúc` read; `Lý Gia Huy` expected, `Lê Thanh Hải` read. Each
+packet carries the tail of the **previous** CTV's documents. Packet 0 holds two
+contracts and a BBNT naming a third person. The boundaries are off, and the
+matrix is what makes that visible at scale.
+
+So the comparators stay strict. A fuzzy tier for identity numbers would have
+softened 3 cells out of 900 and hidden nothing useful.
+
+**Coverage is bounded by extraction, not by the engine.** Six fields are
+extracted today, so 8 criteria can be compared and the rest report `pending`
+with a stated reason — #08 needs bank branch and province, #09–#13 need service
+descriptions and dates, #27 needs VNG's own particulars. Those are extraction
+work, and the matrix fills in as it lands.
+
+Two truthfulness defects the real data exposed, both fixed:
+
+- `fuzzy` has two causes — accent-folded-equal, and a genuinely different string
+  that happens to be close — and the note described both as *"chỉ khác dấu hoặc
+  chữ hoa/thường"*. For the second that is simply untrue about what is on the
+  page. `compare_values.fuzzy_reason` separates them.
+- Copies of one document disagreeing **with each other** were reported only when
+  the cell was already a mismatch. Two contracts naming two people is a finding
+  about the packet whatever the verdict against the bảng kê is.
 
 ---
 
@@ -472,8 +511,10 @@ Two things make this an acceptable place to stop:
    `GET /api/cases/{cid}/summary`, `src/components/SummaryTab.tsx`. It was less
    "mostly presentation" than this spec assumed: building the tab surfaced three
    false-clean results the per-criterion tests had not (see §8).
-3. **`compare` and `compute` evaluators.** The engine proper — the point at which
-   the matrix stops being hand-typed.
+3. ~~**`compare` and `compute` evaluators.**~~ **Done** — `compare_values.py`,
+   `evaluate.py`, `GET /api/cases/{cid}/packets/{i}/criteria`,
+   `src/components/CriteriaMatrix.tsx`. The matrix is computed. §3.6 records what
+   it found on the real submission, which is not what this spec expected.
 4. ~~**Bảng Kê Thu Mua parser**, checksum-gated.~~ **Total done** —
    `purchase_listing` + `vn_number_words`, closing #20 on all eight payment
    cases. **Rows not done and not attempted**: §9.1 measures the ceiling at
