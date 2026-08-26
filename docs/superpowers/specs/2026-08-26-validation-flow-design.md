@@ -209,6 +209,38 @@ submission has its own offset, which is why it is measured rather than assumed:
 February's boundaries were never broken, and the fix is a no-op there — which is
 the property that made it safe to ship.
 
+**What the re-ingest showed.** July re-ingested in 639s, and the boundary error
+turns out to have been the cause of almost every finding the matrix reported:
+
+| | Before | After |
+|---|---|---|
+| Roster rows matched by two packets | **9** | **0** |
+| `no` cells (of 900) | 142 | **50** |
+| #01 Họ và tên `no` | 32/36 | **7/36** |
+| #02 Số CCCD `no` | 18/36 | **8/36** |
+| #03 Ngày sinh `no` | 15/36 | **6/36** |
+| #05 MST `no` | 21/36 | **7/36** |
+| #07 Số tài khoản `no` | 35/36 | **7/36** |
+| #31 duplicate payment | `no` — 9 CTV / 18 gói | **`ok`** |
+
+The nine people who appeared to have two complete packets each had none: their
+packets held the neighbouring CTV's documents, so identity matching put two
+packets on one roster row. `matched` fell 36 → 35 because one packet now
+genuinely matches nobody, which is more honest than being assigned a row that
+was already taken.
+
+The seven remaining #01 findings account for completely: five are the over-long
+packets below, and two are single-document name reads that failed while the
+packet's CCCD and cam kết agree — a field-extraction problem, and exactly what
+the matrix exists to put in front of a reviewer.
+
+**What is still wrong, and is a different defect.** July yields 36 packets
+against 41 roster rows, with five packets of 14-16 pages against a median of 8 —
+each holding two CTVs because a cover was *missed*, not misplaced. That predates
+this work and the phase fix does not touch it. Now that contract classification
+works the remedy is available: a contract page inside an over-long packet is a
+missed boundary. Not done here.
+
 **A partial snap is worse than none.** Before the classification fixes below,
 PUBGm had 19 of 25 covers report offset 4 and 6 report 0; snapping only the 19
 left a two-page packet in the split. The offset is a property of the
