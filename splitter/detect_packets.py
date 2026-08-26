@@ -135,9 +135,12 @@ def implausible_structure(n_covers: int, total_pages: int, roster_n: int | None)
 #: each cover looking for one of these.
 START_KINDS: tuple[str, ...] = ("contract",)
 
-#: How far back to look. Comfortably more than the observed offset (3 pages on
-#: the July submission) without reaching into the previous packet, whose blocks
-#: run 6-8 pages.
+#: How far back to look. Covers the offsets seen on real submissions -- 3 on
+#: July, 4 on PUBGm, 0 on February -- and reaching into the previous packet is
+#: safe rather than merely unlikely: the walk stops at the *first* start it
+#: finds, so the current packet's own contract is always reached first. Only a
+#: packet whose contract went unclassified can read the previous one's, and that
+#: shows up as a conflicting offset, which the consensus guard refuses.
 SNAP_WINDOW = 6
 
 
