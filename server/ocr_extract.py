@@ -484,22 +484,48 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
 # before the generic "bien ban"/"cam ket" catch-alls they're a substring-
 # superset of (a real title like "BIÊN BẢN NGHIỆM THU VÀ THANH LÝ HỢP ĐỒNG"
 # contains "bien ban" too, but should resolve to the more specific label).
+# Specific titles first, loose keywords next. Order is load-bearing: every one
+# of these documents can carry "hợp đồng dịch vụ" in its own heading -- a
+# `Biên bản thanh lý hợp đồng dịch vụ` is a BBNT, not a contract -- and the
+# generic phrase used to sit first and win, mislabelling all three.
 _PAGE_KEYWORDS: list[tuple[str, str, str]] = [
-    ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
     ("thanh ly hop dong", "bbnt", "Biên bản thanh lý hợp đồng"),
     ("nghiem thu", "bbnt", "Biên bản nghiệm thu"),
-    ("bien ban", "bbnt", "Biên bản nghiệm thu"),
     ("ban cam ket", "commitment", "Bản cam kết"),
-    ("cam ket", "commitment", "Bản cam kết"),
     # "appendix" (not "pit") per #010 -- Phụ lục (an SOW/KPI evaluation
     # appendix) is its own document type, distinct from the tax-lookup
     # ("pit") docs it used to share a kind with.
     ("phu luc", "appendix", "Phụ lục"),
     ("bang thong tin tra cuu", "pit", "Tra cứu thuế"),
     ("nguoi nop thue tncn", "pit", "Tra cứu thuế"),
-    ("tra cuu", "pit", "Tra cứu thuế"),
     ("can cuoc cong dan", "id_front", "CCCD"),
+    ("hop dong dich vu", "contract", "Hợp đồng dịch vụ"),
+    ("bien ban", "bbnt", "Biên bản nghiệm thu"),
+    ("cam ket", "commitment", "Bản cam kết"),
+    ("tra cuu", "pit", "Tra cứu thuế"),
 ]
+
+#: Last resort: a heading whose *tokens* name a document, in any order and with
+#: words missing. The July contract's first page really reads
+#:
+#:     ĐÔNG
+#:     HỢP DỊCH VỤ
+#:
+#: because Tesseract hoists `ĐỒNG` out of `HỢP ĐỒNG DỊCH VỤ` onto its own line.
+#: No phrase keyword can match that, so every contract first page went
+#: unclassified -- which is what put the splitter's packet boundaries three
+#: pages into each packet. Checked after every phrase rule above, so a title
+#: that names itself precisely still wins.
+_TITLE_TOKEN_RULES: list[tuple[frozenset[str], str, str]] = [
+    (frozenset({"hop", "dich", "vu"}), "contract", "Hợp đồng dịch vụ"),
+]
+
+#: A token set matches far more loosely than a phrase, so it needs a tighter
+#: shape test than `_TITLE_MAX_WORDS`. Real mid-contract lines on pages 11 and
+#: 19 -- "Trả cho Bên Cung Dịch Vụ theo định tại Hợp" -- are nine words and
+#: slipped under the ten-word cap, splitting one contract into three. The title
+#: forms this rule exists for are three or four words.
+_TITLE_TOKEN_MAX_WORDS = 5
 
 # #009: two document types whose title/heading band is often too noisy or
 # nonstandard for the heading-shaped-line check above to catch reliably --
@@ -585,6 +611,15 @@ def classify_page(text: str) -> tuple[str, str] | None:
         for kw, kind, label in _PAGE_KEYWORDS:
             if any(kw in c for c in candidates):
                 return kind, label
+    for line_group in (lines[:top_n], lines):
+        for candidate in _title_candidates(line_group):
+            tokens = _flatten(norm(candidate)).split()
+            if len(tokens) > _TITLE_TOKEN_MAX_WORDS:
+                continue
+            for needed, kind, label in _TITLE_TOKEN_RULES:
+                if needed <= set(tokens):
+                    return kind, label
+
     whole_page = _flatten(norm(text))
     for markers, kind, label in _FULL_PAGE_MARKERS:
         if any(m in whole_page for m in markers):

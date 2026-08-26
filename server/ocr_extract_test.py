@@ -748,3 +748,107 @@ if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f): f(); print(f"  ok {n}")
     print("ALL OK")
+
+
+class TestTheContractTitleSurvivesOcr:
+    """The July contract's first page really reads:
+
+        Tài liệu Bảo mật
+        VNG.HDK.CTV
+        ĐÔNG
+        HỢP DỊCH VỤ
+        Số:
+
+    Tesseract hoists `ĐỒNG` out of `HỢP ĐỒNG DỊCH VỤ` onto its own line, so the
+    `hop dong dich vu` keyword never matches and every contract first page went
+    unclassified. That is what put the splitter's packet boundaries three pages
+    into each packet.
+    """
+
+    REAL_PAGE = "\n".join([
+        "Tài liệu Bảo mật",
+        "VỰNG HDKCTW",
+        "ĐÔNG",
+        "HỢP DỊCH VỤ",
+        "Số:",
+        "Đồng Đồng”)",
+    ])
+
+    def test_the_real_page_classifies_as_a_contract(self):
+        assert classify_page(self.REAL_PAGE) == ("contract", "Hợp đồng dịch vụ")
+
+    def test_the_intact_title_still_classifies(self):
+        assert classify_page("HỢP ĐỒNG DỊCH VỤ\nSố: 01") \
+            == ("contract", "Hợp đồng dịch vụ")
+
+    def test_the_words_may_arrive_in_any_order(self):
+        for title in ("ĐỒNG HỢP DỊCH VỤ", "DỊCH VỤ HỢP ĐỒNG", "HỢP DỊCH VỤ"):
+            assert classify_page(f"{title}\nSố: 01") \
+                == ("contract", "Hợp đồng dịch vụ"), title
+
+    def test_a_liquidation_record_is_still_a_bbnt_not_a_contract(self):
+        # "Biên bản thanh lý hợp đồng dịch vụ" contains every contract token.
+        # The specific titles must keep winning.
+        assert classify_page("BIÊN BẢN THANH LÝ HỢP ĐỒNG DỊCH VỤ")[0] == "bbnt"
+
+    def test_an_acceptance_record_is_still_a_bbnt(self):
+        assert classify_page("BIÊN BẢN NGHIỆM THU HỢP ĐỒNG DỊCH VỤ")[0] == "bbnt"
+
+    def test_an_appendix_is_still_an_appendix(self):
+        assert classify_page("PHỤ LỤC HỢP ĐỒNG DỊCH VỤ")[0] == "appendix"
+
+    def test_body_prose_mentioning_the_words_is_not_a_title(self):
+        prose = ("Hai bên đã thống nhất các điều khoản của hợp đồng dịch vụ "
+                 "này và cam kết thực hiện đầy đủ nghĩa vụ của mình theo quy "
+                 "định của pháp luật hiện hành có liên quan.")
+        assert classify_page(prose) is None
+
+    def test_a_mid_contract_page_is_still_a_continuation(self):
+        """Page 12 of the real submission — the page the splitter mistook for a
+        packet start. It must not classify, or it would start a document."""
+        page = "\n".join([
+            "Tài liệu Bảo mật",
+            "ỰNG.HDK.CTV",
+            "quyền Đồng",
+            "Các và nghĩa khác theo định của Hợp và pháp luật liên",
+            "vụ quy quan.",
+            "ĐIÊU ĐIỀU KHOẢN",
+        ])
+        assert classify_page(page) is None
+
+
+class TestTheTokenRuleStaysTitleShaped:
+    """A token set is far looser than a phrase, so it needs a tighter shape
+    test. These are real mid-contract lines from pages 11 and 19 of the July
+    submission — nine words each, which slipped under the ten-word heading cap
+    and split one contract into three."""
+
+    PROSE = (
+        "Trả cho Bên Cung Dịch Vụ theo định tại Hợp",
+        "VNG được dứt Hợp này với Bên Cung Dịch vụ",
+        "2 = tiền phí dịch Ứng Đồng; Trả cho Bên Cung Dịch Vụ theo định tại Hợp",
+    )
+
+    def test_mid_contract_prose_is_not_a_title(self):
+        for line in self.PROSE:
+            assert classify_page(f"Tài liệu Bảo mật\n{line}\nvụ quy") is None, line
+
+    def test_the_real_mangled_titles_still_classify(self):
+        for title in ("HỢP DỊCH VỤ", "ĐÔNG HỢP DỊCH VỤ", "HỢP ĐỒNG DỊCH VỤ"):
+            assert classify_page(f"Tài liệu Bảo mật\n{title}\nSố:")[0] \
+                == "contract", title
+
+    def test_the_real_page_eleven_stays_a_continuation(self):
+        page = "\n".join([
+            "Tài liệu Bảo mật",
+            "VNG.HDK.CTWƯ",
+            "ĐIÊU QUYÈN VÀ NGHĨA CỦA",
+            "3. VỤ VNG",
+            "cấp Ứng cần thiết để",
+            "Cung cho Bên Cung Dịch Vụ các thông tin, tài liệu thực hiện Dịch",
+            "vụ;",
+            "2 = tiền phí dịch Ứng Đồng;",
+            "Trả cho Bên Cung Dịch Vụ theo định tại Hợp",
+            "vụ quy",
+        ])
+        assert classify_page(page) is None
