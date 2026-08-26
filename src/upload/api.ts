@@ -1,11 +1,11 @@
-// Client for the isolated v1 backend. Port 8001 keeps its field-keyed case data
+// Client for the isolated v1 backend. Port 8002 keeps its field-keyed case data
 // separate from the v2 checklist backend on port 8000.
 // upload a scanned PDF (+ optional roster) as a durable **case**, list/inspect
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
 import type { CtvFolder } from '../ctv/types'
 
-export const API_BASE = 'http://127.0.0.1:8001'
+export const API_BASE = 'http://127.0.0.1:8002'
 
 export type Stage = 'queued' | 'splitting' | 'ocr' | 'done' | 'error' | string
 
@@ -72,6 +72,8 @@ export interface PacketMeta {
   n_pages?: number
   confidence: 'green' | 'amber'
   flags: string[]
+  /** Other packets claiming the same bảng kê row, when flagged duplicate. */
+  duplicateOf?: number[]
   labels?: string[]
   matchedBy: MatchedBy
   ocrIdentity: Identity
@@ -300,4 +302,66 @@ export async function fetchPacketManifest(caseId: string, index: number): Promis
 export function caseProgressLabel(p: CaseProgress): string {
   const base = `${p.done}/${p.total} đã xong`
   return p.flagged > 0 ? `${base} · ${p.flagged} cần gửi lại` : base
+}
+
+// --- manual CCCD card assignment --------------------------------------------
+// About half the cards in a real workbook never yield a readable number, so the
+// matcher can never place them. The reviewer places those by eye. The server
+// returns ids and image URLs for UNATTACHED cards only — no file paths, no
+// roster values.
+
+export interface CccdCardSide {
+  side: 'front' | 'back' | 'unknown'
+  width: number
+  height: number
+}
+
+export interface CccdCard {
+  cardId: string
+  state: string
+  /** Which packet holds this card, or null when nothing has claimed it. */
+  attachedPacketIndex: number | null
+  /** What OCR read off the card — usually empty; that's why it's here. */
+  number: string
+  issues: string[]
+  sides: CccdCardSide[]
+}
+
+export function cccdCardImageUrl(
+  caseId: string,
+  cardId: string,
+  side: string,
+): string {
+  return `${API_BASE}/api/cases/${caseId}/cccd-cards/${encodeURIComponent(cardId)}/image/${side}`
+}
+
+/** Every card in the workbook — filter on `attachedPacketIndex`. */
+export async function listCccdCards(caseId: string): Promise<CccdCard[]> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/cccd-cards`)
+  if (!res.ok) throw new Error(`listCccdCards: HTTP ${res.status}`)
+  const result = await res.json() as { cards: CccdCard[] }
+  return result.cards
+}
+
+/** Attach `cardId` to a packet, or pass null to detach it. */
+export async function assignCccdCard(
+  caseId: string,
+  cardId: string,
+  packetIndex: number | null,
+): Promise<{ cards: CccdCard[]; cccdSummary: CccdSummary | null }> {
+  const res = await fetch(
+    `${API_BASE}/api/cases/${caseId}/cccd-cards/${encodeURIComponent(cardId)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ packetIndex }),
+    },
+  )
+  if (!res.ok) {
+    const code = await res.json()
+      .then(body => body?.detail?.code as string | undefined)
+      .catch(() => undefined)
+    throw new Error(code ?? `assignCccdCard: HTTP ${res.status}`)
+  }
+  return res.json()
 }

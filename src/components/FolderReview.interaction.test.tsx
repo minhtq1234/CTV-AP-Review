@@ -108,7 +108,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const renderReview = (review = emptyReview, reviewFolder = folder) => {
+// The reviewer opens in grid mode; these tests exercise the document panes, so
+// they switch over after mounting unless a test asks for the grid.
+const renderReview = (
+  review = emptyReview,
+  reviewFolder = folder,
+  initialMode: 'grid' | 'documents' = 'documents',
+) => {
   const onReview = vi.fn()
   act(() => {
     root.render(
@@ -120,6 +126,12 @@ const renderReview = (review = emptyReview, reviewFolder = folder) => {
       />,
     )
   })
+  if (initialMode === 'documents') {
+    const documents = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent === 'Xem chứng từ',
+    )
+    if (documents) click(documents)
+  }
   return onReview
 }
 
@@ -506,5 +518,36 @@ describe('FolderReview mounted Overview interactions', () => {
     expect(computed.marginRight).toBe('0px')
     expect(computed.marginBottom).toBe('0px')
     expect(computed.marginLeft).toBe('0px')
+  })
+})
+
+describe('FolderReview package grid', () => {
+  it('opens in grid mode and toggles to the document reviewer', () => {
+    renderReview(emptyReview, folder, 'grid')
+
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+    expect(container.querySelector('.panes')).toBeNull()
+
+    const documents = Array.from(container.querySelectorAll('button')).find(
+      button => button.textContent === 'Xem chứng từ',
+    )
+    click(documents!)
+
+    expect(container.querySelector('.packet-grid-view')).toBeNull()
+    expect(container.querySelector('.panes')).not.toBeNull()
+  })
+
+  it('a grid cell opens the evidence drawer without hiding the grid', () => {
+    renderReview(emptyReview, folder, 'grid')
+
+    const cell = container.querySelector<HTMLButtonElement>(
+      '.packet-grid-cell button',
+    )
+    expect(cell).not.toBeNull()
+    click(cell!)
+
+    // the table stays put -- the scan opens beside it, not instead of it
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+    expect(container.querySelector('.packet-evidence-drawer')).not.toBeNull()
   })
 })

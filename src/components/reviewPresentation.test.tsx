@@ -220,7 +220,7 @@ describe('flat field panel', () => {
 })
 
 describe('review presentation', () => {
-  it('opens on Overview without publishing a field review', () => {
+  it('opens on the package grid without publishing a field review', () => {
     const onReview = vi.fn()
     const html = renderToStaticMarkup(
       <FolderReview
@@ -245,10 +245,10 @@ describe('review presentation', () => {
     )
 
     expect(onReview).not.toHaveBeenCalled()
-    expect(html).toContain('data-review-selection="overview"')
-    expect(html).toContain('data-view-presentation="overview"')
-    expect(html).toContain('class="ev-document paired"')
-    expect(html).toContain('class="zoom-value">100%</span>')
+    // The reviewer now opens on the comparison table, not the panes.
+    expect(html).toContain('aria-pressed="true" class="on">Dạng bảng')
+    expect(html).toContain('aria-label="Dạng bảng đối chiếu chứng từ"')
+    expect(html).not.toContain('class="panes"')
     expect(html).toContain('0/1 đã xem')
     expect(html).not.toContain('roster-callout')
   })

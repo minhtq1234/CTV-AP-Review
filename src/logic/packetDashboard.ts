@@ -43,6 +43,7 @@ const KNOWN_PIPELINE_FLAGS = new Set([
   'length-out-of-range',
   'no-roster-match',
   'roster-unmatched',
+  'duplicate-roster-identity',
 ])
 
 export function attentionReasons(
@@ -58,6 +59,11 @@ export function attentionReasons(
   if (packet.flags.includes('auto-merged')) add('Cần xác nhận ranh giới')
   if (packet.flags.includes('near-threshold')) add('Ranh giới gần ngưỡng')
   if (packet.flags.includes('length-out-of-range')) add('Số trang bất thường')
+  // The bảng kê lists each person once — one payment. Two packets claiming
+  // the same row means only one of them should be paid.
+  if (packet.flags.includes('duplicate-roster-identity')) {
+    add('Trùng danh tính với gói khác')
+  }
   if (
     packet.flags.includes('no-roster-match')
     || packet.flags.includes('roster-unmatched')

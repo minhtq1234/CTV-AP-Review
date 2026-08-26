@@ -23,7 +23,7 @@ import ReviewHeader from './ReviewHeader'
 
 type Screen = 'list' | 'upload' | 'detail' | 'review'
 
-const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8001).'
+const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8002).'
 
 // The "Tải hồ sơ" flow. After an upload we return straight to the case list —
 // processing happens in the background and shows as an inline progress bar on the
@@ -243,6 +243,11 @@ export default function UploadFlow() {
           review={review}
           onReview={saveOptimisticReview}
           onCommitReview={commitTransactionalReview}
+          caseId={caseId}
+          packetIndex={packetIndex}
+          onCardAssigned={() => {
+            if (packetIndex != null) void onOpenPacket(packetIndex)
+          }}
         />
       </div>
     )

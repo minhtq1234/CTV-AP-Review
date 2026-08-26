@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Bbox } from '../types'
 import type { CtvFolder } from '../ctv/types'
 import { rankFolder } from '../ctv/checks'
-import type { PacketReview, FieldFlag } from '../upload/api'
+import {
+  assignCccdCard,
+  listCccdCards,
+  type PacketReview,
+  type FieldFlag,
+} from '../upload/api'
 import { allSeen } from '../logic/review'
 import {
   fieldSelection,
@@ -20,12 +25,20 @@ import FolderFieldsPanel from './FolderFieldsPanel'
 import EvidenceViewer from './EvidenceViewer'
 import ActionBar from './ActionBar'
 import PacketRejectionDialog from './PacketRejectionDialog'
+import CccdCardPicker from './CccdCardPicker'
+import PacketGrid from './PacketGrid'
+import PacketEvidenceDrawer from './PacketEvidenceDrawer'
 
 interface Props {
   folder: CtvFolder
   review: PacketReview
   onReview: (review: PacketReview) => void
   onCommitReview: (review: PacketReview) => Promise<void>
+  // Present only in the live (server-backed) flow; the offline demo has no
+  // case to assign cards against, so the picker stays hidden there.
+  caseId?: string | null
+  packetIndex?: number | null
+  onCardAssigned?: () => void
 }
 
 const SAVE_ERROR = 'Không lưu được. Vui lòng thử lại.'
@@ -35,6 +48,9 @@ export default function FolderReview({
   review,
   onReview,
   onCommitReview,
+  caseId = null,
+  packetIndex = null,
+  onCardAssigned,
 }: Props) {
   const ranked = useMemo(() => rankFolder(folder), [folder])
   const [selection, setSelection] = useState<ReviewSelection>(
@@ -48,6 +64,38 @@ export default function FolderReview({
   const [rejectionDialogOpen, setRejectionDialogOpen] = useState(false)
   const [rejectionSaving, setRejectionSaving] = useState(false)
   const [rejectionError, setRejectionError] = useState<string | null>(null)
+  // 'grid' is the default: the comparison table answers "does this packet
+  // reconcile?" at a glance, and a cell opens the scan behind it.
+  const [viewMode, setViewMode] = useState<'grid' | 'documents'>('grid')
+  const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false)
+  const [cardPickerOpen, setCardPickerOpen] = useState(false)
+  const [cardBusy, setCardBusy] = useState(false)
+  const [cardError, setCardError] = useState<string | null>(null)
+
+  // The CCCD card the ingest could not place. OCR fails on roughly half of
+  // them (the images Excel stores are too small to read digits off), so the
+  // reviewer needs a way to say which card is whose.
+  const hasCard = folder.docs.some(doc => doc.kind === 'id_front')
+  const canAssignCard = caseId !== null && packetIndex !== null
+
+  // The card's id lives server-side, so it is looked up on demand rather than
+  // fetched for every packet the reviewer opens.
+  const detachCard = async () => {
+    if (caseId === null || packetIndex === null) return
+    setCardBusy(true)
+    setCardError(null)
+    try {
+      const cards = await listCccdCards(caseId)
+      const attached = cards.find(c => c.attachedPacketIndex === packetIndex)
+      if (!attached) throw new Error('card-not-found')
+      await assignCccdCard(caseId, attached.cardId, null)
+      onCardAssigned?.()
+    } catch {
+      setCardError('Không gỡ được ảnh. Vui lòng thử lại.')
+    } finally {
+      setCardBusy(false)
+    }
+  }
 
   // Mark a field as seen the first time it is explicitly focused — a no-op (no onReview call)
   // if it's already seen, so re-focusing it never loops.
@@ -134,7 +182,7 @@ export default function FolderReview({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ranked, selection, folder])
+  }, [ranked, selection, folder, viewMode])
 
   // `F` toggles a flag on the currently selected field — separate from the arrow-nav effect
   // above, same input-focus guard, plus skipping modified keystrokes so browser/OS shortcuts
@@ -156,7 +204,7 @@ export default function FolderReview({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [review, selection])
+  }, [review, selection, viewMode])
 
   const selectedKey = selectedFieldKey(selection)
   const selField = selectedKey
@@ -180,6 +228,36 @@ export default function FolderReview({
 
   return (
     <div className="screen">
+      <div className="package-view-toggle" role="group" aria-label="Chế độ xem hồ sơ">
+        <button
+          type="button"
+          aria-pressed={viewMode === 'grid'}
+          className={viewMode === 'grid' ? 'on' : ''}
+          onClick={() => { setEvidenceDrawerOpen(false); setViewMode('grid') }}
+        >
+          Dạng bảng
+        </button>
+        <button
+          type="button"
+          aria-pressed={viewMode === 'documents'}
+          className={viewMode === 'documents' ? 'on' : ''}
+          onClick={() => { setEvidenceDrawerOpen(false); setViewMode('documents') }}
+        >
+          Xem chứng từ
+        </button>
+      </div>
+      {viewMode === 'grid' ? (
+        <PacketGrid
+          folder={folder}
+          selectedEvidence={evidenceDrawerOpen && selection.kind === 'field'
+            ? { fieldKey: selection.key, sourceIndex: selection.sourceIndex }
+            : null}
+          onOpenEvidence={(fieldKey, sourceIndex) => {
+            focusAt(fieldKey, sourceIndex)
+            setEvidenceDrawerOpen(true)
+          }}
+        />
+      ) : (
       <div className="panes">
         <FolderFieldsPanel
           ranked={ranked}
@@ -207,6 +285,52 @@ export default function FolderReview({
           rosterValue={selField ? formatRosterValue(selField) : null}
         />
       </div>
+      )}
+      {viewMode === 'grid' && evidenceDrawerOpen && selField && (
+        <PacketEvidenceDrawer
+          docs={folder.docs}
+          activeDocId={activeDocId}
+          activePage={activePage}
+          focusBbox={focusBbox}
+          lockView={lockView}
+          overviewResetVersion={overviewResetVersion}
+          onSelectDoc={onSelectDoc}
+          onToggleLock={() => setLockView(value => !value)}
+          onClose={() => setEvidenceDrawerOpen(false)}
+          onOpenFull={() => {
+            setEvidenceDrawerOpen(false)
+            setViewMode('documents')
+          }}
+          rosterLabel={selField.label}
+          rosterValue={formatRosterValue(selField)}
+        />
+      )}
+      {canAssignCard && (
+        <div className={`cccd-card-note${hasCard ? ' attached' : ''}`}>
+          <span>
+            {hasCard
+              ? 'Ảnh CCCD lấy từ file Excel'
+              : 'Gói này chưa có ảnh CCCD'}
+          </span>
+          {cardError && (
+            <span className="cccd-card-note-error" role="alert">
+              {cardError}
+            </span>
+          )}
+          <button
+            type="button"
+            disabled={cardBusy}
+            onClick={() => {
+              if (hasCard) void detachCard()
+              else setCardPickerOpen(true)
+            }}
+          >
+            {hasCard
+              ? (cardBusy ? 'Đang gỡ…' : 'Gỡ ảnh CCCD')
+              : 'Gán ảnh CCCD…'}
+          </button>
+        </div>
+      )}
       <ActionBar
         done={review.done}
         seenCount={seenCount}
@@ -214,6 +338,18 @@ export default function FolderReview({
         hint="↑↓ chuyển trường · ←→ đổi chứng từ · F đánh dấu · B khung · V giá trị bảng kê · ⌥P di chuyển · ? phím tắt"
         onFinish={() => { if (allSeen(review, fieldKeys)) onReview({ ...review, done: true }) }}
       />
+      {cardPickerOpen && canAssignCard && (
+        <CccdCardPicker
+          caseId={caseId!}
+          packetIndex={packetIndex!}
+          packetLabel={folder.name}
+          onCancel={() => setCardPickerOpen(false)}
+          onAssigned={() => {
+            setCardPickerOpen(false)
+            onCardAssigned?.()
+          }}
+        />
+      )}
       {rejectionDialogOpen && (
         <PacketRejectionDialog
           rejection={review.rejection}
