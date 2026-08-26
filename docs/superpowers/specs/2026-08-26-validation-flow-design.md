@@ -269,6 +269,25 @@ silent.
 A long packet with **no** document start inside is left alone: one CTV really can
 have more documents than the rest.
 
+**Both fixes, re-ingested.** July now returns 41 packets for 41 roster rows, 40
+matched, 0 duplicate identities:
+
+| STT | original | phase fix | both fixes |
+|---|---|---|---|
+| #01 Họ và tên | 32 | 7 | **2** |
+| #02 Số CCCD | 18 | 8 | **5** |
+| #03 Ngày sinh | 15 | 6 | **1** |
+| #05 MST cá nhân | 21 | 7 | **2** |
+| #07 Số tài khoản | 35 | 7 | **2** |
+| #14 Gross | 7 | 3 | **0** |
+| **`no` cells** | **142** | **50** | **25** |
+
+What remains is no longer about boundaries. The two #01 findings are
+single-document name reads that failed while that packet's CCCD and cam kết
+agree, and #15's thirteen are zero-PIT rows without a cam kết — a real finding,
+and the count rose from twelve only because there are now 41 packets rather than
+36. Extraction and the checklist, not splitting.
+
 **A partial snap is worse than none.** Before the classification fixes below,
 PUBGm had 19 of 25 covers report offset 4 and 6 report 0; snapping only the 19
 left a two-page packet in the split. The offset is a property of the
