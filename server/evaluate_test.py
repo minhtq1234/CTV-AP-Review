@@ -538,3 +538,54 @@ class TestPayload:
         net = next(c for c in payload["criteria"] if c["stt"] == 16)
 
         assert [c["document"] for c in net["cells"]] == [cr.EXCEL]
+
+
+class TestTheNoteMustBeTrue:
+    def test_a_tone_mark_difference_is_described_as_one(self):
+        packet = manifest(
+            docs=[doc("contract-0", "contract")],
+            fields=[("hoten", "Đinh Hữu Phúc",
+                     [source("contract-0", "Dinh Huu Phuc")])],
+        )
+        note = cells_by_doc(
+            by_stt(ev.evaluate_packet(packet, ROSTER))[1])[cr.CONTRACT].note
+
+        assert "khác dấu" in note
+
+    def test_a_near_miss_is_not_described_as_a_tone_mark_difference(self):
+        """`Trần Văn Bải` is not `Trần Văn Bảy` with the accents dropped — it is
+        a different string. Saying otherwise tells the reviewer something
+        false."""
+        roster = {**ROSTER, "name": "Trần Văn Bảy"}
+        packet = manifest(
+            docs=[doc("contract-0", "contract")],
+            fields=[("hoten", "Trần Văn Bảy",
+                     [source("contract-0", "Trần Văn Bải")])],
+        )
+        note = cells_by_doc(
+            by_stt(ev.evaluate_packet(packet, roster))[1])[cr.CONTRACT].note
+
+        assert "khác dấu" not in note
+        assert "gần khớp" in note.casefold()
+
+    def test_copies_that_disagree_with_each_other_are_reported(self):
+        """Two contracts in one packet reading two different names is a finding
+        about the packet, whatever the verdict against the bảng kê is."""
+        roster = {**ROSTER, "name": "Trần Văn Bảy"}
+        packet = manifest(
+            docs=[doc("contract-0", "contract"), doc("contract-1", "contract")],
+            fields=[("hoten", "Trần Văn Bảy", [
+                source("contract-0", "Trần Văn Bải"),
+                source("contract-1", "Trần Văn Bảy"),
+            ])],
+        )
+        note = cells_by_doc(
+            by_stt(ev.evaluate_packet(packet, roster))[1])[cr.CONTRACT].note
+
+        assert "2 bản ghi khác nhau" in note
+        assert "Trần Văn Bải" in note
+
+    def test_agreeing_copies_are_not_reported_as_differing(self):
+        note = cells_by_doc(
+            by_stt(ev.evaluate_packet(full_packet(), ROSTER))[1])[cr.CONTRACT].note
+        assert "khác nhau" not in note

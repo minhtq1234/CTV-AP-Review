@@ -223,3 +223,25 @@ class TestVerdictToStatus:
     def test_every_verdict_maps(self):
         for verdict in Verdict:
             assert cv.to_status(verdict) is not None
+
+
+class TestWhyItIsFuzzy:
+    """`fuzzy` has two causes and they are not the same finding. Reporting a
+    near-miss as "only the tone marks differ" tells the reviewer something
+    false."""
+
+    def test_accent_folding_only(self):
+        assert cv.fuzzy_reason("Đinh Hữu Phúc", "Dinh Huu Phuc", "person") == "folded"
+        assert cv.fuzzy_reason("ĐINH HỮU PHÚC", "Đinh Hữu Phúc", "person") == "folded"
+
+    def test_a_genuinely_different_string_that_is_close(self):
+        assert cv.fuzzy_reason("Trần Văn Bảy", "Trần Văn Bải", "person") == "near"
+
+    def test_an_organisation_matched_by_containment(self):
+        assert cv.fuzzy_reason(
+            "Công ty Cổ phần Tập đoàn VNG", "Tập đoàn VNG", "organisation",
+        ) == "near"
+
+    def test_it_is_empty_when_the_verdict_is_not_fuzzy(self):
+        assert cv.fuzzy_reason("A", "A", "person") == ""
+        assert cv.fuzzy_reason("Đinh Hữu Phúc", "Lê Thanh Hải", "person") == ""

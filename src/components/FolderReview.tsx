@@ -28,6 +28,7 @@ import PacketRejectionDialog from './PacketRejectionDialog'
 import CccdCardPicker from './CccdCardPicker'
 import PacketGrid from './PacketGrid'
 import PacketEvidenceDrawer from './PacketEvidenceDrawer'
+import CriteriaMatrix from './CriteriaMatrix'
 
 interface Props {
   folder: CtvFolder
@@ -42,6 +43,11 @@ interface Props {
 }
 
 const SAVE_ERROR = 'Không lưu được. Vui lòng thử lại.'
+
+// Three ways to look at one packet: the field grid the reviewer already knows,
+// Acc's 25 criteria, and the scans themselves. The criteria view needs a live
+// case, so it is offered only when there is one.
+type ViewMode = 'grid' | 'criteria' | 'documents'
 
 export default function FolderReview({
   folder,
@@ -66,7 +72,7 @@ export default function FolderReview({
   const [rejectionError, setRejectionError] = useState<string | null>(null)
   // 'grid' is the default: the comparison table answers "does this packet
   // reconcile?" at a glance, and a cell opens the scan behind it.
-  const [viewMode, setViewMode] = useState<'grid' | 'documents'>('grid')
+  const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false)
   const [cardPickerOpen, setCardPickerOpen] = useState(false)
   const [cardBusy, setCardBusy] = useState(false)
@@ -237,6 +243,16 @@ export default function FolderReview({
         >
           Dạng bảng
         </button>
+        {caseId != null && packetIndex != null && (
+          <button
+            type="button"
+            aria-pressed={viewMode === 'criteria'}
+            className={viewMode === 'criteria' ? 'on' : ''}
+            onClick={() => { setEvidenceDrawerOpen(false); setViewMode('criteria') }}
+          >
+            25 tiêu chí
+          </button>
+        )}
         <button
           type="button"
           aria-pressed={viewMode === 'documents'}
@@ -246,7 +262,9 @@ export default function FolderReview({
           Xem chứng từ
         </button>
       </div>
-      {viewMode === 'grid' ? (
+      {viewMode === 'criteria' && caseId != null && packetIndex != null ? (
+        <CriteriaMatrix caseId={caseId} packetIndex={packetIndex} />
+      ) : viewMode === 'grid' ? (
         <PacketGrid
           folder={folder}
           selectedEvidence={evidenceDrawerOpen && selection.kind === 'field'

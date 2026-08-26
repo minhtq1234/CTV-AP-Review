@@ -317,8 +317,8 @@ def _compare_reads(
     return Cell(
         name, cv.to_status(verdict),
         " · ".join(values),
-        _compare_note(verdict, reference, values, confidence, bbox, copies,
-                      len(readable), kind),
+        _compare_note(verdict, reference, value, values, confidence, bbox,
+                      copies, len(readable), kind),
         tuple(evidence),
     )
 
@@ -357,38 +357,46 @@ def _digit_gap(kind: str, reference: str, values: list[str]) -> str:
 
 
 def _compare_note(
-    verdict, reference, values, confidence, bbox, copies, readable, kind,
+    verdict, reference, value, values, confidence, bbox, copies, readable, kind,
 ) -> str:
     """Acc's rule: never just "không khớp" -- name the value and the reference."""
-    coverage = f"{readable}/{copies} bản" if copies > 1 else ""
     parts: list[str] = []
 
     if verdict is cv.Verdict.MISMATCH:
         parts.append(f"Không khớp bảng kê ({reference}).")
-        if len(values) > 1:
-            parts.append(f"{copies} bản ghi khác nhau: {', '.join(values)}.")
         hint = _digit_gap(kind, reference, values)
         if hint:
             parts.append(hint)
     elif verdict is cv.Verdict.FUZZY:
-        parts.append(
-            "Chỉ khác dấu hoặc chữ hoa/thường so với bảng kê "
-            f"({reference}) — cần người xác nhận đúng một người."
-            if kind in ("person", "organisation", "enum")
-            else f"Gần khớp bảng kê ({reference}) — cần người xác nhận."
-        )
+        parts.append(_fuzzy_note(reference, value, kind))
     elif verdict is cv.Verdict.LOW_CONF:
         shown = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "?"
         parts.append(f"Khớp bảng kê nhưng độ tin cậy đọc thấp ({shown}) — "
                      "cần người xác nhận.")
     else:
         parts.append(f"Khớp bảng kê ({reference}).")
-        if coverage:
-            parts.append(f"Đối chiếu được {coverage}.")
+        if copies > 1:
+            parts.append(f"Đối chiếu được {readable}/{copies} bản.")
+
+    # Copies disagreeing with each other is a finding about the packet whatever
+    # the verdict against the bảng kê is -- two contracts naming two people is a
+    # mis-split, not a near miss.
+    if len(values) > 1:
+        parts.append(f"{copies} bản ghi khác nhau: {', '.join(values)}.")
 
     if bbox is None:
         parts.append("Chưa định vị được vị trí trên trang.")
     return " ".join(parts)
+
+
+def _fuzzy_note(reference: str, value: str, kind: str) -> str:
+    """Two causes, two sentences. Calling a near miss a tone-mark difference
+    would state something untrue about what is on the page."""
+    if kind == "enum" or cv.fuzzy_reason(reference, value, kind) == "folded":
+        return ("Chỉ khác dấu hoặc chữ hoa/thường so với bảng kê "
+                f"({reference}) — cần người xác nhận đúng một đối tượng.")
+    return (f"Gần khớp bảng kê ({reference}) nhưng không trùng khớp — "
+            "cần người xác nhận.")
 
 
 # --- presence ----------------------------------------------------------------

@@ -4,6 +4,7 @@
 // cases, fetch a packet's manifest as a CtvFolder the existing reviewer already
 // knows how to render, and persist per-packet duyệt/từ chối decisions.
 import type { CtvFolder } from '../ctv/types'
+import type { Bbox } from '../types'
 
 export const API_BASE = 'http://127.0.0.1:8002'
 
@@ -402,5 +403,64 @@ export interface SummaryPayload {
 export async function fetchCaseSummary(caseId: string): Promise<SummaryPayload> {
   const res = await fetch(`${API_BASE}/api/cases/${caseId}/summary`)
   if (!res.ok) throw new Error(`fetchCaseSummary: HTTP ${res.status}`)
+  return res.json()
+}
+
+// ---------------------------------------------------------------------------
+// Acc's 25-criterion matrix for one packet (mirrors server/evaluate.py's
+// payload 1:1).
+// ---------------------------------------------------------------------------
+
+export interface CriterionEvidence {
+  documentId: string
+  page: number
+  bbox: Bbox | null
+  value: string
+  confidence: number | null
+  /** "ocr" | "idp" | "roster" | "override" — how strong a claim this is. */
+  provenance: string
+}
+
+export interface CriterionCell {
+  document: string
+  status: SummaryStatus
+  /** What was read here, verbatim. */
+  value: string
+  note: string
+  evidence: CriterionEvidence[]
+}
+
+export interface CriterionRow {
+  stt: number
+  code: string
+  label: string
+  group: string
+  groupLabel: string
+  kind: string
+  render: 'matrix' | 'card'
+  /** Acc's own instruction, for when the tool abstains. */
+  how: string
+  status: SummaryStatus
+  note: string
+  cells: CriterionCell[]
+}
+
+export interface CriteriaPayload {
+  packet: number
+  name: string
+  /** Matrix column order; the Excel reference comes first. */
+  documents: string[]
+  criteria: CriterionRow[]
+  counts: Record<SummaryStatus, number>
+  groups: Record<string, { label: string; counts: Record<SummaryStatus, number> }>
+  matchedRoster: boolean
+}
+
+export async function fetchPacketCriteria(
+  caseId: string,
+  index: number,
+): Promise<CriteriaPayload> {
+  const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/criteria`)
+  if (!res.ok) throw new Error(`fetchPacketCriteria: HTTP ${res.status}`)
   return res.json()
 }

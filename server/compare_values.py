@@ -240,3 +240,22 @@ def matches_format(value: str, formats: tuple[str, ...]) -> bool:
     if not formats:
         return True
     return any(FORMATS[name](value) for name in formats)
+
+
+def fuzzy_reason(expected: str, value: str, kind: str) -> str:
+    """Why a `fuzzy` verdict is fuzzy: `"folded"`, `"near"`, or `""`.
+
+    The two causes are different findings. `folded` means the two strings are
+    the same letters with different tone marks or case -- what Tesseract does to
+    Vietnamese constantly. `near` means they are genuinely different strings
+    that happen to be close. Telling a reviewer "only the tone marks differ"
+    about a `near` result states something untrue, so the caller has to know
+    which it has.
+    """
+    if _base(expected, value, kind, ("Nam", "Nữ") if kind == "enum" else ()) \
+            is not Verdict.FUZZY:
+        return ""
+    if kind == "enum":
+        return "folded"
+    fold = _person if kind == "person" else _organisation
+    return "folded" if fold(expected) == fold(value) else "near"
