@@ -319,6 +319,38 @@ def _label_region_bbox(line: list[dict], anchors_norm: list[str], page_lines: li
     return union_bbox(line)
 
 
+#: How much of the shorter line's height must overlap for two lines to count as
+#: the same visual row. `group_lines` baselines a line on its first word's y, so
+#: a wide row with a little vertical jitter splits into fragments -- and the
+#: fragment holding the value can sort *before* the one holding the label. Page
+#: 251 of the July submission split its CCCD row into six, with the number two
+#: lines above its own label, and the packet's CCCD went unread.
+_ROW_OVERLAP = 0.5
+
+
+def _span(line: list[dict]) -> tuple[int, int]:
+    return (min(w["y"] for w in line),
+            max(w["y"] + w["h"] for w in line))
+
+
+def _same_row(a: tuple[int, int], b: tuple[int, int],
+              overlap: float = _ROW_OVERLAP) -> bool:
+    shared = min(a[1], b[1]) - max(a[0], b[0])
+    shortest = min(a[1] - a[0], b[1] - b[0])
+    return shortest > 0 and shared / shortest >= overlap
+
+
+def _row_words(lines: list[list[dict]], idx: int) -> list[dict]:
+    """Every word on the same visual row as `lines[idx]`, in reading order.
+
+    Reassembles a row `group_lines` split, so a label can find the value beside
+    it whichever fragment happened to sort first.
+    """
+    band = _span(lines[idx])
+    words = [w for line in lines if _same_row(band, _span(line)) for w in line]
+    return sorted(words, key=lambda w: w["x"])
+
+
 def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
     """For each line whose text contains one of `spec["anchors"]` (accent-
     insensitively), produce exactly one hit -- never zero for a matching
@@ -343,8 +375,14 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
         if not any(a in norm(text) for a in anchors_norm):
             continue
         hit = None
+        row = None
         for pattern in patterns:
             hit = _search_line(line, pattern)
+            if hit is None:
+                # the label's own row, reassembled -- the value may have sorted
+                # into a different line despite sitting beside the label
+                row = row if row is not None else _row_words(lines, idx)
+                hit = _search_line(row, pattern)
             if hit is None and idx + 1 < len(lines):
                 hit = _search_line(lines[idx + 1], pattern)
             if hit is not None:

@@ -924,3 +924,81 @@ class TestADocumentIsWhatItSaysItIs:
         for title in ("HỢP ĐỎNG DỊCH VỤ", "HỢP ĐÔNG DỊCH VỤ", "HỢP ĐÒNG DỊCH VỤ"):
             page = f"Tài liệu Bảo mật\nVNG.HDK.CTV\n{title}\nSố:"
             assert classify_page(page)[0] == "contract", title
+
+
+class TestALabelAndItsValueOnOneVisualRow:
+    """`group_lines` clusters by the first word's y, so a wide row with slight
+    vertical jitter splits into fragments — and the fragment holding the value
+    can sort *before* the one holding the label. Page 251 of the July
+    submission is exactly this: the CCCD row came out as six lines, with the
+    number two lines above its own label.
+
+        line 44  y=1785..1829  x=814   '060203014847 Ngày'
+        line 45  y=1794..1800  x=556   ','
+        line 46  y=1804..1841  x=391   'CCCD sô :'
+
+    `locate_field` only looked one line forward, so the packet's CCCD was never
+    read and it matched no roster row at all.
+    """
+
+    def _row(self):
+        def w(text, x, y, h):
+            return {"text": text, "x": x, "y": y, "w": len(text) * 18,
+                    "h": h, "conf": 95.0}
+        return [
+            [w("Nơicấp:", 1696, 1759, 50), w("QLNHC", 1810, 1759, 50)],
+            [w("câp:", 1275, 1774, 50), w("15/04/2022", 1350, 1774, 50)],
+            [w("060203014847", 814, 1785, 44), w("Ngày", 1000, 1785, 44)],
+            [w(",", 556, 1794, 6)],
+            [w("CCCD", 391, 1804, 37), w("sô", 470, 1804, 37),
+             w(":", 500, 1804, 37)],
+            [w("TTIXH", 1914, 1819, 35)],
+        ]
+
+    SPEC = {"key": "cccd", "anchors": ["cccd so"],
+            "patterns": [r"\d(?:\s*\d){8,12}", r"\d{10,13}"]}
+
+    def test_the_value_is_found_though_it_sorted_above_the_label(self):
+        hits = locate_field(self._row(), self.SPEC)
+
+        assert len(hits) == 1
+        assert hits[0]["value"] == "060203014847"
+        assert hits[0]["confidence"] > 0
+
+    def test_it_marks_where_the_value_is_not_where_the_label_is(self):
+        hits = locate_field(self._row(), self.SPEC)
+        assert hits[0]["bbox"]["x"] == 814
+
+    def test_a_value_on_the_label_s_own_line_still_wins(self):
+        def w(text, x):
+            return {"text": text, "x": x, "y": 100, "w": len(text) * 18,
+                    "h": 40, "conf": 95.0}
+        lines = [[w("CCCD", 100), w("sô:", 180), w("079203031329", 260)],
+                 [w("060203014847", 260)]]
+
+        hits = locate_field(lines, self.SPEC)
+
+        assert hits[0]["value"] == "079203031329"
+
+    def test_a_row_far_above_is_not_borrowed_from(self):
+        def w(text, x, y):
+            return {"text": text, "x": x, "y": y, "w": len(text) * 18,
+                    "h": 40, "conf": 95.0}
+        lines = [[w("060203014847", 800, 100)],          # a different row
+                 [w("CCCD", 391, 900), w("sô:", 470, 900)]]
+
+        hits = locate_field(lines, self.SPEC)
+
+        assert hits[0]["value"] == ""                     # located, unread
+        assert hits[0]["confidence"] == 0.0
+
+    def test_the_next_line_lookahead_still_works(self):
+        def w(text, x, y):
+            return {"text": text, "x": x, "y": y, "w": len(text) * 18,
+                    "h": 40, "conf": 95.0}
+        lines = [[w("CCCD", 391, 100), w("sô:", 470, 100)],
+                 [w("060203014847", 391, 160)]]          # the row below
+
+        hits = locate_field(lines, self.SPEC)
+
+        assert hits[0]["value"] == "060203014847"
