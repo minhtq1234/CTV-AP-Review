@@ -283,6 +283,15 @@ class CaseStore:
         self._write(case)
         return case
 
+    def set_cccd_workbook(self, cid: str, workbook: dict) -> dict | None:
+        """Persist a mutated CCCD workbook (manual card assignment)."""
+        case = self._idx.get(cid)
+        if case is None:
+            return None
+        case["cccdWorkbook"] = workbook
+        self._write(case)
+        return case
+
     def delete(self, cid: str) -> None:
         case_dir = os.path.join(self.root, cid)
         if os.path.isdir(case_dir):

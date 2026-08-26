@@ -27,6 +27,12 @@ from typing import Literal
 import threading
 
 from cases import CaseStore, compact_cccd_summary, progress_of
+from cccd_manual import (
+    CccdManualError,
+    assign_card,
+    card_side_path,
+    list_cards,
+)
 from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
@@ -347,3 +353,69 @@ async def get_page(cid: str, i: int, name: str):
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="page not found")
     return FileResponse(path)
+
+
+# --- manual CCCD card assignment -------------------------------------------
+# Roughly half the cards in a real workbook never yield a readable number, so
+# the matcher can never place them. These three routes let the reviewer do it
+# by eye. Deliberately narrow: card ids and images for UNATTACHED cards only —
+# never file paths, never roster values (see cases.compact_cccd_summary).
+
+
+class CccdAssignBody(BaseModel):
+    packetIndex: int | None = None
+
+
+def _manifest_paths(cid: str, packets: list[dict]) -> dict[int, str]:
+    return {
+        p["index"]: os.path.join(
+            store.case_dir(cid), "packets", str(p["index"]), "manifest.json"
+        )
+        for p in packets
+    }
+
+
+def _case_or_404(cid: str) -> dict:
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return case
+
+
+@app.get("/api/cases/{cid}/cccd-cards")
+async def get_cccd_cards(cid: str):
+    case = _case_or_404(cid)
+    try:
+        return {"cards": list_cards(case)}
+    except CccdManualError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code})
+
+
+@app.get("/api/cases/{cid}/cccd-cards/{card_id}/image/{side}")
+async def get_cccd_card_image(cid: str, card_id: str, side: str):
+    case = _case_or_404(cid)
+    try:
+        path = card_side_path(case, store.case_dir(cid), card_id, side)
+    except CccdManualError as error:
+        raise HTTPException(status_code=404, detail={"code": error.code})
+    return FileResponse(path)
+
+
+@app.put("/api/cases/{cid}/cccd-cards/{card_id}")
+async def put_cccd_card(cid: str, card_id: str, body: CccdAssignBody):
+    case = _case_or_404(cid)
+    try:
+        updated = assign_card(
+            case,
+            card_id,
+            body.packetIndex,
+            store.case_dir(cid),
+            _manifest_paths(cid, case["packets"]),
+        )
+    except CccdManualError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code})
+    store.set_cccd_workbook(cid, updated["cccdWorkbook"])
+    return {
+        "cards": list_cards(updated),
+        "cccdSummary": compact_cccd_summary(updated["cccdWorkbook"]),
+    }
