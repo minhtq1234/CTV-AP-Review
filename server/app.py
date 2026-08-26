@@ -37,7 +37,11 @@ from cccd_workbook import MAX_WORKBOOK_BYTES as MAX_CCCD_WORKBOOK_BYTES
 from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` at call
                                     # time below so tests can monkeypatch this name.
 from report import build_report
-from roster_workbook import preflight_roster_workbook
+from roster_workbook import (
+    load_roster_rows,
+    preflight_roster_workbook,
+)
+from summary_criteria import as_payload as summary_payload
 
 app = FastAPI()
 
@@ -242,6 +246,36 @@ async def get_case(cid: str):
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]
     return out
+
+
+def _roster_rows(cid: str) -> list[list]:
+    """The bảng kê rows as uploaded, or [] if this case has no roster."""
+    path = os.path.join(store.case_dir(cid), "roster.xlsx")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "rb") as f:
+            return load_roster_rows(f)
+    except (OSError, ValueError):
+        return []
+
+
+@app.get("/api/cases/{cid}/summary")
+async def get_summary(cid: str):
+    """The five roster-level criteria — Acc's Tổng hợp tab.
+
+    These span the whole bảng kê rather than one CTV, so they are computed here
+    from the roster as uploaded plus the packets' duplicate-identity flags.
+    """
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    rows = await run_in_threadpool(_roster_rows, cid)
+    payload = await run_in_threadpool(
+        summary_payload, rows, case["packets"], case.get("purchaseTotal"),
+    )
+    payload["rosterName"] = case.get("rosterName")
+    return payload
 
 
 PacketRejectionReason = Literal[

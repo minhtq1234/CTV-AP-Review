@@ -318,3 +318,102 @@ if __name__ == "__main__":
     test_get_unknown_case_404(); print("  ok get-unknown-404")
     test_review_unknown_case_404(); print("  ok review-unknown-404")
     print("BASIC OK (run monkeypatch tests via pytest)")
+
+
+def _bang_ke_bytes(people=((1, "079303009457", 10_000_000, 1_000_000, 9_000_000),)):
+    """A roster shaped like Acc's real one, as an actual workbook."""
+    content = io.BytesIO()
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["THANH TOÁN DỊCH VỤ CTV"])
+    sheet.append(["STT", "Họ và Tên", "Số CCCD", "MST", "Ngày Tháng Năm Sinh",
+                  "Giới Tính", "Số TK", "Ngân Hàng", "Thời gian làm việc",
+                  "Phí dịch vụ", "Chi Phí\n(+ PIT)", "", "", "", "Note"])
+    # "Gross (1)" must sit under "Chi Phí (+ PIT)" at index 10, as it does on
+    # the real bảng kê -- the money columns are named on the second header row.
+    sheet.append([""] * 10 + ["Gross (1)", "Bản cam kết", "Thuế PIT (2)",
+                              "Thực Nhận\n(3 = 1-2)"])
+    for stt, cccd, gross, pit, net in people:
+        sheet.append([stt, f"Người {stt}", cccd, cccd, "03/09/2003", "Nam",
+                      "0081001142415", "Bank", "01/07 - 25/07/2026", gross,
+                      gross, "không", pit, net, ""])
+    workbook.save(content)
+    workbook.close()
+    return content.getvalue()
+
+
+def _case_with_roster(monkeypatch, tmp_path, roster_bytes):
+    monkeypatch.setattr(appmod, "run_pipeline", _fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    c = TestClient(app)
+    r = c.post(
+        "/api/cases",
+        files={"pdf": ("jul.pdf", b"%PDF-1.4 x", "application/pdf"),
+               "roster": ("bangke.xlsx", roster_bytes,
+                          "application/vnd.openxmlformats-officedocument."
+                          "spreadsheetml.sheet")},
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["case_id"]
+    for _ in range(100):
+        d = c.get(f"/api/cases/{cid}").json()
+        if d["status"] in ("ready", "in_review", "done", "error"):
+            break
+        time.sleep(0.02)
+    assert d["status"] == "ready", d
+    return c, cid
+
+
+class TestSummaryEndpoint:
+    def test_unknown_case_is_not_found(self):
+        assert TestClient(app).get("/api/cases/nope/summary").status_code == 404
+
+    def test_it_returns_the_five_roster_level_criteria(self, tmp_path, monkeypatch):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+
+        body = c.get(f"/api/cases/{cid}/summary").json()
+
+        assert [x["stt"] for x in body["criteria"]] == [20, 26, 30, 31, 32]
+        assert body["people"] == 1
+        assert body["rosterName"] == "bangke.xlsx"
+
+    def test_every_criterion_carries_accs_instruction(self, tmp_path, monkeypatch):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+
+        body = c.get(f"/api/cases/{cid}/summary").json()
+
+        for item in body["criteria"]:
+            assert len(item["how"]) > 40, item["stt"]
+            assert item["message"]
+
+    def test_the_duplicate_check_reads_the_real_roster(self, tmp_path, monkeypatch):
+        twins = ((1, "079303009457", 10_000_000, 1_000_000, 9_000_000),
+                 (2, "079303009457", 5_000_000, 500_000, 4_500_000))
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes(twins))
+
+        body = c.get(f"/api/cases/{cid}/summary").json()
+        thirty = next(x for x in body["criteria"] if x["stt"] == 30)
+
+        assert thirty["status"] == "no"
+        assert any("dòng 1+2" in d for d in thirty["detail"])
+
+    def test_a_case_with_no_roster_is_pending_not_clean(self, tmp_path, monkeypatch):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+
+        body = c.get(f"/api/cases/{cid}/summary").json()
+
+        assert body["counts"]["ok"] == 0
+        assert "rosterRows" in body["missing"]
+        assert body["rosterName"] is None
+
+    def test_the_purchase_listing_total_is_used_when_the_case_has_one(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        appmod.store.set_purchase_total(cid, {"gross": 10_000_000})
+
+        body = c.get(f"/api/cases/{cid}/summary").json()
+        twenty = next(x for x in body["criteria"] if x["stt"] == 20)
+
+        assert twenty["status"] == "ok"
+        assert "purchaseTotal" not in body["missing"]

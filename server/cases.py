@@ -292,6 +292,20 @@ class CaseStore:
         self._write(case)
         return case
 
+    def set_purchase_total(self, cid: str, totals: dict | None) -> dict | None:
+        """Persist the Gross/PIT/Net printed on the Bảng Kê Thu Mua.
+
+        On real submissions the bảng kê Excel carries no total row -- the total
+        is printed on the purchase listing instead -- so criterion #20 needs
+        this to resolve rather than sit pending.
+        """
+        case = self._idx.get(cid)
+        if case is None:
+            return None
+        case["purchaseTotal"] = totals
+        self._write(case)
+        return case
+
     def delete(self, cid: str) -> None:
         case_dir = os.path.join(self.root, cid)
         if os.path.isdir(case_dir):
