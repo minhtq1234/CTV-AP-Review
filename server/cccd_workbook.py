@@ -68,6 +68,13 @@ class ExtractionResult:
 _REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
+# Excel anchors a picture either across a cell range (twoCellAnchor) or at a
+# single origin with a pixel extent (oneCellAnchor). Real CCCD workbooks use
+# both -- exports converted by some tools emit only the latter.
+_ANCHOR_TAGS = (
+    f"{_DRAWING_NS}twoCellAnchor",
+    f"{_DRAWING_NS}oneCellAnchor",
+)
 _DOC_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _DRAWING_REL_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
@@ -155,29 +162,41 @@ def _drawing_records(
         byte_budget,
     ) as drawing_stream:
         for _, element in ET.iterparse(drawing_stream, events=("end",)):
-            if element.tag != f"{_DRAWING_NS}twoCellAnchor":
+            if element.tag not in _ANCHOR_TAGS:
                 continue
+            one_cell = element.tag == f"{_DRAWING_NS}oneCellAnchor"
             instance_count += 1
             if instance_count > remaining_capacity:
                 raise CccdWorkbookError("drawing-limit")
             drawing_id = f"drawing-{next_id + instance_count - 1:04d}"
             try:
+                from_row = _anchor_value(element, "from", "row")
+                from_col = _anchor_value(element, "from", "col")
                 anchor = Anchor(
                     sheet_name,
-                    _anchor_value(element, "from", "row"),
-                    _anchor_value(element, "from", "col"),
-                    _anchor_value(element, "to", "row"),
-                    _anchor_value(element, "to", "col"),
+                    from_row,
+                    from_col,
+                    # A oneCellAnchor pins an origin plus a pixel extent and has
+                    # no "to" cell at all. Treat it as spanning its own cell so
+                    # the spatial front/back pairing still gets a comparable
+                    # box; the offsets that would describe the extent in EMU are
+                    # not convertible to rows/cols without column widths.
+                    from_row + 1 if one_cell else _anchor_value(
+                        element, "to", "row"
+                    ),
+                    from_col + 1 if one_cell else _anchor_value(
+                        element, "to", "col"
+                    ),
                     from_row_offset=_anchor_value(
                         element, "from", "rowOff", default=0
                     ),
                     from_col_offset=_anchor_value(
                         element, "from", "colOff", default=0
                     ),
-                    to_row_offset=_anchor_value(
+                    to_row_offset=0 if one_cell else _anchor_value(
                         element, "to", "rowOff", default=0
                     ),
-                    to_col_offset=_anchor_value(
+                    to_col_offset=0 if one_cell else _anchor_value(
                         element, "to", "colOff", default=0
                     ),
                 )

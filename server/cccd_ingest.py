@@ -224,8 +224,10 @@ def plan_candidate_mappings(
             _append_issue(issues, "missing-front")
             target_packet_index = None
         if candidate.back is None:
+            # Recorded so the reviewer knows the back is absent, but a front
+            # alone is still evidence worth showing -- it no longer blocks
+            # attachment. A missing FRONT still does (above).
             _append_issue(issues, "missing-back")
-            target_packet_index = None
         mapping = {
             "candidateId": candidate.id,
             "front": _serialize_side(candidate.front, case_dir),
@@ -452,7 +454,7 @@ def _reconcile_manifest_owned_evidence(
         return False
 
 
-def _reconcile_owned_evidence(
+def reconcile_owned_evidence(
     manifest_paths: dict[int, str],
     case_dir: str,
     mappings: list[dict],
@@ -490,19 +492,32 @@ def _cleanup_attempt_files(paths: list[str]) -> bool:
     return failed
 
 
+# States whose plan may write card evidence into a packet. "exact" is the
+# automatic resolver's unique-roster-hit; "assigned" is a reviewer naming the
+# packet by eye (see cccd_manual). Both attach identically -- `matchMethod`
+# records which one it was, so the provenance stays visible.
+_ATTACHABLE_STATES = frozenset({"exact", "assigned"})
+
+
 def _is_exact_attachment_plan(plan: PlannedMapping) -> bool:
     target = plan.target_packet_index
+    sides_present = [
+        side
+        for side in ("front", "back")
+        if getattr(plan.candidate, side) is not None
+    ]
     return (
         isinstance(target, int)
         and not isinstance(target, bool)
         and target >= 0
-        and getattr(plan.resolution, "state", None) == "exact"
+        and getattr(plan.resolution, "state", None) in _ATTACHABLE_STATES
         and isinstance(plan.mapping, dict)
-        and plan.mapping.get("state") == "exact"
-        and plan.candidate.front is not None
-        and plan.candidate.back is not None
-        and isinstance(plan.mapping.get("front"), dict)
-        and isinstance(plan.mapping.get("back"), dict)
+        and plan.mapping.get("state") in _ATTACHABLE_STATES
+        and bool(sides_present)
+        and all(
+            isinstance(plan.mapping.get(side), dict)
+            for side in sides_present
+        )
     )
 
 
@@ -542,7 +557,7 @@ def _reconciled_error_result(
     manifest_paths: dict[int, str],
     case_dir: str,
 ) -> CccdIngestResult:
-    if not _reconcile_owned_evidence(manifest_paths, case_dir, []):
+    if not reconcile_owned_evidence(manifest_paths, case_dir, []):
         error_code = "attachment-failed"
     return _error_result(packets, error_code)
 
@@ -570,8 +585,18 @@ def ingest_cccd_workbook(
     packet_manifest_paths: dict[int, str],
     assets_dir: str,
     progress_cb: ProgressCallback,
+    analyze=None,
 ) -> CccdIngestResult:
-    """Run local CCCD ingestion and preserve partial usable results."""
+    """Run CCCD ingestion and preserve partial usable results.
+
+    `analyze` reads one card. It defaults to the local Tesseract reader; pass
+    `cccd_idp.reader(...)` to use GreenNode IDP instead. Everything downstream
+    -- pairing, roster resolution, conflict detection, attachment and
+    reconciliation -- is unchanged either way, because both speak CccdImageOcr.
+    """
+    # Resolved here, not as a default argument, so the module attribute stays
+    # monkeypatchable in tests.
+    analyze = analyze or analyze_drawing
     manifest_paths = (
         packet_manifest_paths
         if isinstance(packet_manifest_paths, dict)
@@ -605,7 +630,7 @@ def ingest_cccd_workbook(
             analyzed.append(
                 AnalyzedDrawing(
                     drawing,
-                    analyze_drawing(drawing, evidence_budget),
+                    analyze(drawing, evidence_budget),
                 )
             )
         except Exception:
@@ -665,7 +690,7 @@ def ingest_cccd_workbook(
         mappings.append(mapping)
         _report_progress(progress_cb, done, len(plans))
 
-    reconciliation_failed = not _reconcile_owned_evidence(
+    reconciliation_failed = not reconcile_owned_evidence(
         manifest_paths,
         case_dir,
         mappings,
@@ -808,37 +833,47 @@ def attach_planned_mapping(
             )
         ] + new_docs
         cccd_field = next(
-            field
-            for field in fields
-            if (
-                isinstance(field, dict)
-                and field.get("key") == "cccd"
-            )
-        )
-        sources = cccd_field.get("sources", [])
-        if not isinstance(sources, list):
-            raise ValueError("CCCD sources are invalid")
-        cccd_field["sources"] = [
-            source
-            for source in sources
-            if not (
-                isinstance(source, dict)
-                and source.get("docId") in owned_ids
-            )
-        ]
-        front = plan.candidate.front
-        if front is None or front.ocr.number_bbox is None:
-            raise ValueError("exact attachment requires located front")
-        cccd_field["sources"].append({
-            "docId": _owned_doc_id(
-                plan.candidate.id,
-                "front",
+            (
+                field
+                for field in fields
+                if (
+                    isinstance(field, dict)
+                    and field.get("key") == "cccd"
+                )
             ),
-            "page": 0,
-            "value": front.ocr.cccd,
-            "bbox": front.ocr.number_bbox,
-            "confidence": front.ocr.cccd_confidence,
-        })
+            None,
+        )
+        if cccd_field is not None:
+            sources = cccd_field.get("sources", [])
+            if not isinstance(sources, list):
+                raise ValueError("CCCD sources are invalid")
+            cccd_field["sources"] = [
+                source
+                for source in sources
+                if not (
+                    isinstance(source, dict)
+                    and source.get("docId") in owned_ids
+                )
+            ]
+        front = plan.candidate.front
+        located = front is not None and front.ocr.number_bbox is not None
+        if plan.mapping.get("state") == "exact" and not located:
+            # An automatic match is only "exact" because a number was read out
+            # of a located region -- without that there is nothing exact about
+            # it. A reviewer's manual assignment rests on their eyes instead,
+            # so it attaches the card as evidence and claims no read.
+            raise ValueError("exact attachment requires located front")
+        if cccd_field is not None and located:
+            cccd_field["sources"].append({
+                "docId": _owned_doc_id(
+                    plan.candidate.id,
+                    "front",
+                ),
+                "page": 0,
+                "value": front.ocr.cccd,
+                "bbox": front.ocr.number_bbox,
+                "confidence": front.ocr.cccd_confidence,
+            })
         _atomic_json_write(manifest_path, updated)
     except Exception:
         failure = _attachment_failure(plan)

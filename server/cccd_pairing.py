@@ -123,6 +123,20 @@ def _horizontal_start(image: AnalyzedDrawing) -> tuple[int, int]:
     return anchor.from_col, anchor.from_col_offset
 
 
+def _reads_as_front(image: AnalyzedDrawing) -> bool:
+    """Whether an unlabelled image is a card front, on number evidence.
+
+    The 12-digit CCCD number is printed on the front face only, so a complete
+    12-digit read out of a *located* number region identifies the side even
+    when the keyword classifier could not. Positive evidence, not a guess.
+    """
+    ocr = image.ocr
+    if ocr.number_bbox is None:
+        return False
+    digits = "".join(c for c in (ocr.cccd or "") if c.isdigit())
+    return len(digits) == 12
+
+
 def _single_candidate(
     image: AnalyzedDrawing,
     issue: str | None = None,
@@ -140,6 +154,13 @@ def _single_candidate(
             None,
             image,
             (issue or "missing-front",),
+        )
+    if _reads_as_front(image):
+        return CardCandidate(
+            f"card-{image.drawing.id}",
+            image,
+            None,
+            (issue or "missing-back", "side-inferred-front"),
         )
     return CardCandidate(
         f"card-{image.drawing.id}",

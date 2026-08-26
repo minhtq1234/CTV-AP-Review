@@ -285,3 +285,74 @@ def test_total_image_budget_is_enforced_before_writing_next_image(
     assert sorted(path.name for path in (tmp_path / "out").iterdir()) == [
         "drawing-0001.png",
     ]
+
+
+def _one_cell_drawing(rel_id, from_col, from_row):
+    """A picture anchored at one cell with a pixel extent -- no <to> element.
+
+    This is what the converted July workbook emits, and what the extractor used
+    to skip silently, reporting "no supported images" for a file full of them.
+    """
+    return (
+        '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/'
+        'spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/'
+        'drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships">'
+        '<xdr:oneCellAnchor><xdr:from>'
+        f'<xdr:col>{from_col}</xdr:col><xdr:colOff>9525</xdr:colOff>'
+        f'<xdr:row>{from_row}</xdr:row><xdr:rowOff>19050</xdr:rowOff>'
+        '</xdr:from><xdr:ext cx="2857500" cy="1809750"/>'
+        '<xdr:pic><xdr:blipFill>'
+        f'<a:blip r:embed="{rel_id}"/>'
+        '</xdr:blipFill></xdr:pic></xdr:oneCellAnchor></xdr:wsDr>'
+    )
+
+
+def test_one_cell_anchored_pictures_are_extracted(tmp_path):
+    book = tmp_path / "one-cell.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [("rId1", "xl/media/image1.png", (3, 2, 4, 3), _PNG)])],
+    )
+    _replace_zip_part(
+        book,
+        "xl/drawings/drawing1.xml",
+        _one_cell_drawing("rId1", from_col=2, from_row=3),
+    )
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert len(result.drawings) == 1
+    anchor = result.drawings[0].anchor
+    assert (anchor.sheet, anchor.from_row, anchor.from_col) == ("Cards", 3, 2)
+    # No "to" cell exists, so the picture spans its own cell.
+    assert (anchor.to_row, anchor.to_col) == (4, 3)
+    assert (anchor.from_row_offset, anchor.from_col_offset) == (19050, 9525)
+    assert (anchor.to_row_offset, anchor.to_col_offset) == (0, 0)
+
+
+def test_one_and_two_cell_anchors_coexist_in_one_sheet(tmp_path):
+    book = tmp_path / "mixed.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [
+            ("rId1", "xl/media/image1.png", (0, 0, 1, 1), _PNG),
+            ("rId2", "xl/media/image2.png", (5, 0, 6, 1), _PNG),
+        ])],
+    )
+    two_cell = (
+        '<xdr:twoCellAnchor><xdr:from>'
+        '<xdr:col>0</xdr:col><xdr:row>0</xdr:row></xdr:from><xdr:to>'
+        '<xdr:col>1</xdr:col><xdr:row>1</xdr:row></xdr:to>'
+        '<xdr:pic><xdr:blipFill><a:blip r:embed="rId1"/>'
+        '</xdr:blipFill></xdr:pic></xdr:twoCellAnchor>'
+    )
+    mixed = _one_cell_drawing("rId2", from_col=0, from_row=5).replace(
+        "<xdr:oneCellAnchor>", two_cell + "<xdr:oneCellAnchor>", 1
+    )
+    _replace_zip_part(book, "xl/drawings/drawing1.xml", mixed)
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert len(result.drawings) == 2
+    assert [d.anchor.from_row for d in result.drawings] == [0, 5]
