@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PacketMeta, PacketReview } from '../upload/api'
 import {
   attentionReasons,
+  boundaryNote,
   filterPackets,
   packetDashboardCounts,
   packetDashboardStatus,
@@ -166,5 +167,39 @@ describe('dashboard counts, filters, and ordering', () => {
     expect(prioritizeAttention(base).map(p => p.index)).toEqual([1, 3, 0, 2])
     expect(base.map(p => p.index)).toEqual([0, 1, 2, 3])
     expect(filterPackets(base, 'all').map(p => p.index)).toEqual([0, 1, 2, 3])
+  })
+})
+
+describe('boundaryNote', () => {
+  it('says nothing when the boundaries were already right', () => {
+    // February: the covers already sat on the packet starts.
+    expect(boundaryNote({ found: 32, roster_n: 32, matched: 32, auto_merged: 0,
+                          boundaries_offset: 0, boundaries_snapped: 0 })).toBe('')
+  })
+
+  it('says how far the boundaries moved', () => {
+    // July: every packet re-cut three pages earlier.
+    expect(boundaryNote({ found: 36, roster_n: 41, matched: 36, auto_merged: 0,
+                          boundaries_offset: 3, boundaries_snapped: 36 }))
+      .toBe('36 gói được cắt lại sớm hơn 3 trang')
+  })
+
+  it('says when the boundaries could not be verified', () => {
+    expect(boundaryNote({ found: 25, roster_n: 25, matched: 25, auto_merged: 0,
+                          boundaries_offset: null, boundaries_snapped: 0,
+                          boundaries_reason: 'inconsistent-offsets: {0: 6, 4: 19}' }))
+      .toBe('Chưa xác nhận được ranh giới gói — cần kiểm tra trang đầu mỗi gói')
+  })
+
+  it('says nothing for a case ingested before this existed', () => {
+    expect(boundaryNote({ found: 36, roster_n: 41, matched: 36, auto_merged: 0 }))
+      .toBe('')
+  })
+
+  it('names how many packets took an inferred offset', () => {
+    expect(boundaryNote({ found: 10, roster_n: 10, matched: 10, auto_merged: 0,
+                          boundaries_offset: 3, boundaries_snapped: 10,
+                          boundaries_inferred: 2 }))
+      .toBe('10 gói được cắt lại sớm hơn 3 trang (2 gói suy ra theo số còn lại)')
   })
 })

@@ -90,6 +90,15 @@ export interface CaseResultSummary {
   roster_n: number | null
   matched: number
   auto_merged: number
+  /** Packets whose boundary the splitter moved to the page a document starts on. */
+  boundaries_snapped?: number
+  /** Pages every boundary moved back by; 0 when they were already right, null
+   *  when the offsets disagreed and nothing moved. Absent on older cases. */
+  boundaries_offset?: number | null
+  /** Why nothing moved, when nothing did. */
+  boundaries_reason?: string
+  /** Packets that took the offset from the others rather than finding it. */
+  boundaries_inferred?: number
 }
 
 export interface CaseSummary {

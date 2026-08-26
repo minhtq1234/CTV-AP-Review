@@ -3,6 +3,7 @@ import type { CaseDetail as CaseDetailT, PacketMeta } from '../upload/api'
 import { caseProgressLabel, packetNeedsResubmit } from '../upload/api'
 import {
   attentionReasons,
+  boundaryNote,
   filterPackets,
   PACKET_DASHBOARD_LABELS,
   packetDashboardCounts,
@@ -36,6 +37,7 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
   const mergedTxt = summary?.auto_merged
     ? ` · ${summary.auto_merged} ranh giới gộp tự động — cần xác nhận`
     : ''
+  const boundaryTxt = summary ? boundaryNote(summary) : ''
 
   return (
     <div className="split-result">
@@ -59,6 +61,7 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
             {summary.matched}/{summary.found} đã khớp tên · {caseProgressLabel(detail.progress)}
             {mergedTxt}
           </span>
+          {boundaryTxt && <span className="case-boundary-note">{boundaryTxt}</span>}
         </div>
       )}
 

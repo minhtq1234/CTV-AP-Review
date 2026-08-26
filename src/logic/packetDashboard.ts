@@ -1,4 +1,4 @@
-import type { PacketMeta } from '../upload/api'
+import type { CaseResultSummary, PacketMeta } from '../upload/api'
 
 export type PacketDashboardStatus =
   | 'unseen'
@@ -106,4 +106,28 @@ export function prioritizeAttention<
     ...packets.filter(packet => attentionReasons(packet).length > 0),
     ...packets.filter(packet => attentionReasons(packet).length === 0),
   ]
+}
+
+
+/**
+ * How the splitter cut this submission's packets, in one line — or '' when
+ * there is nothing to say.
+ *
+ * The recurring page the splitter finds is not always a packet's first, so the
+ * boundaries get moved to where a document actually starts. That changes which
+ * pages belong to whom, so the reviewer should be told it happened.
+ */
+export function boundaryNote(summary: CaseResultSummary): string {
+  const offset = summary.boundaries_offset
+  if (offset === undefined) return ''        // ingested before this existed
+  if (offset === null) {
+    return 'Chưa xác nhận được ranh giới gói — cần kiểm tra trang đầu mỗi gói'
+  }
+  const moved = summary.boundaries_snapped ?? 0
+  if (!offset || !moved) return ''
+  const inferred = summary.boundaries_inferred ?? 0
+  const tail = inferred
+    ? ` (${inferred} gói suy ra theo số còn lại)`
+    : ''
+  return `${moved} gói được cắt lại sớm hơn ${offset} trang${tail}`
 }

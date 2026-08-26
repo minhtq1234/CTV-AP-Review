@@ -1041,3 +1041,4 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .criterion-card-note { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.case-boundary-note { color: var(--text-muted); font-size: 11.5px; }
