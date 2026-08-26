@@ -342,8 +342,22 @@ def _bang_ke_bytes(people=((1, "079303009457", 10_000_000, 1_000_000, 9_000_000)
     return content.getvalue()
 
 
+def _fake_pipeline_matched(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+    """As `_fake_pipeline`, but the packet matched a roster row — which is what
+    the criteria matrix needs in order to have a reference column."""
+    cb("done", 1, 1, "")
+    return {"summary": {"found": 1, "roster_n": 1, "matched": 1,
+                        "auto_merged": 0},
+            "packets": [{"index": 0, "name": "Người 1", "pages": [8, 15],
+                         "confidence": "green", "flags": [], "labels": [],
+                         "matchedBy": "cccd",
+                         "rosterIdentity": {"cccd": "079303009457",
+                                            "name": "Người 1"}}],
+            "cccdWorkbook": None}
+
+
 def _case_with_roster(monkeypatch, tmp_path, roster_bytes):
-    monkeypatch.setattr(appmod, "run_pipeline", _fake_pipeline)
+    monkeypatch.setattr(appmod, "run_pipeline", _fake_pipeline_matched)
     monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
     c = TestClient(app)
     r = c.post(
@@ -417,3 +431,87 @@ class TestSummaryEndpoint:
 
         assert twenty["status"] == "ok"
         assert "purchaseTotal" not in body["missing"]
+
+
+def _write_manifest(tmp_path, cid, index, name_in_contract="Người 1"):
+    """A packet manifest on disk, as the pipeline would have written it."""
+    packet_dir = tmp_path / cid / "packets" / str(index)
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "id": "p", "name": "Người 1", "product": "",
+        "docs": [{"id": "contract-0", "kind": "contract",
+                  "label": "Hợp đồng dịch vụ", "pages": []}],
+        "fields": [{"key": "hoten", "expected": "Người 1", "sources": [
+            {"docId": "contract-0", "page": 0, "value": name_in_contract,
+             "confidence": 0.95,
+             "bbox": {"x": 1, "y": 2, "width": 3, "height": 4}},
+        ]}],
+    }
+    with open(packet_dir / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False)
+
+
+class TestCriteriaEndpoint:
+    def test_unknown_case_is_not_found(self):
+        assert TestClient(app).get(
+            "/api/cases/nope/packets/0/criteria",
+        ).status_code == 404
+
+    def test_unknown_packet_is_not_found(self, tmp_path, monkeypatch):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+        assert c.get(f"/api/cases/{cid}/packets/99/criteria").status_code == 404
+
+    def test_it_returns_the_matrix_for_a_packet(self, tmp_path, monkeypatch):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0)
+
+        body = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+
+        assert len(body["criteria"]) == 25
+        assert body["documents"][0] == "Excel"
+        assert sum(body["counts"].values()) == 25
+
+    def test_it_reads_the_roster_row_the_packet_matched(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0)
+
+        body = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        name = next(x for x in body["criteria"] if x["stt"] == 1)
+        excel = next(x for x in name["cells"] if x["document"] == "Excel")
+
+        assert body["matchedRoster"] is True
+        assert excel["value"] == "Người 1"
+
+    def test_a_packet_matching_nobody_still_returns_a_matrix(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+        _write_manifest(tmp_path, cid, 0)
+
+        body = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+
+        assert body["matchedRoster"] is False
+        assert body["counts"]["ok"] == 0
+        assert len(body["criteria"]) == 25
+
+    def test_a_packet_with_no_manifest_yet_is_not_found(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+        assert c.get(f"/api/cases/{cid}/packets/0/criteria").status_code == 404
+
+    def test_the_findings_carry_both_values(self, tmp_path, monkeypatch):
+        """A document naming a different CTV must state what it says and what
+        the bảng kê says."""
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, name_in_contract="Ai Đó Khác")
+
+        body = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        name = next(x for x in body["criteria"] if x["stt"] == 1)
+        contract = next(x for x in name["cells"] if x["document"] == "Hợp đồng")
+
+        assert contract["status"] == "no"
+        assert contract["value"] == "Ai Đó Khác"
+        assert "Người 1" in contract["note"]

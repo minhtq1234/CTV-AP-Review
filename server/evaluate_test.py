@@ -477,3 +477,64 @@ class TestTheNoteHelpsTriage:
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[1]
         assert "chữ số" not in cells_by_doc(result)[cr.BBNT].note
+
+
+class TestDocumentOrder:
+    def test_the_reference_column_comes_first(self):
+        # The reviewer reads the Excel value, then checks the scans against it.
+        assert ev.DOCUMENT_ORDER[0] == cr.EXCEL
+
+    def test_every_document_any_criterion_names_has_a_column(self):
+        named = {d for c in cr.CRITERIA for d in c.docs}
+        assert named <= set(ev.DOCUMENT_ORDER)
+
+    def test_the_order_has_no_documents_nobody_uses(self):
+        named = {d for c in cr.CRITERIA for d in c.docs}
+        assert set(ev.DOCUMENT_ORDER) == named
+
+
+class TestPayload:
+    def test_it_serialises_to_json(self):
+        import json
+
+        payload = ev.as_payload(full_packet(), ROSTER)
+        assert json.loads(json.dumps(payload)) == payload
+
+    def test_it_carries_the_matrix_columns_and_every_criterion(self):
+        payload = ev.as_payload(full_packet(), ROSTER)
+
+        assert payload["documents"] == list(ev.DOCUMENT_ORDER)
+        assert len(payload["criteria"]) == len(cr.CRITERIA)
+
+    def test_each_criterion_carries_accs_instruction_and_its_group(self):
+        for item in ev.as_payload(full_packet(), ROSTER)["criteria"]:
+            assert len(item["how"]) > 40, item["stt"]
+            assert item["groupLabel"]
+            assert item["render"] in ("matrix", "card")
+
+    def test_the_counts_are_by_criterion(self):
+        payload = ev.as_payload(full_packet(), ROSTER)
+        assert sum(payload["counts"].values()) == len(cr.CRITERIA)
+
+    def test_group_counts_add_up_to_the_group_sizes(self):
+        payload = ev.as_payload(full_packet(), ROSTER)
+        for code, group in payload["groups"].items():
+            assert sum(group["counts"].values()) == cr.group_counts()[code]
+            assert group["label"] == cr.GROUPS[code]
+
+    def test_evidence_reaches_the_payload_in_json_shape(self):
+        payload = ev.as_payload(full_packet(), ROSTER)
+        cccd = next(c for c in payload["criteria"] if c["stt"] == 2)
+        cell = next(c for c in cccd["cells"] if c["document"] == cr.CONTRACT)
+
+        assert cell["evidence"][0]["documentId"] == "contract-0"
+        assert cell["evidence"][0]["provenance"] == "ocr"
+        assert cell["evidence"][0]["bbox"]["width"] == 100
+
+    def test_a_cell_for_a_document_outside_the_criterion_is_absent(self):
+        """A criterion that does not span a document has no cell there — the
+        matrix renders a static dash, not a clickable `na`."""
+        payload = ev.as_payload(full_packet(), ROSTER)
+        net = next(c for c in payload["criteria"] if c["stt"] == 16)
+
+        assert [c["document"] for c in net["cells"]] == [cr.EXCEL]

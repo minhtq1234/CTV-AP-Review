@@ -581,3 +581,78 @@ _FORMULAS = {
     "money_agreement": _money_agreement,
     "day_span": _day_span,
 }
+
+
+# --- serialisation -----------------------------------------------------------
+
+#: Matrix column order. The Excel reference comes first because that is the
+#: value the reviewer reads and the scans are checked against; the rest follow
+#: the order a packet is assembled in.
+DOCUMENT_ORDER: tuple[str, ...] = (
+    cr.EXCEL,
+    cr.CCCD,
+    cr.CONTRACT,
+    cr.APPENDIX,
+    cr.BBNT,
+    cr.COMMITMENT,
+    cr.MST_LOOKUP,
+    cr.PURCHASE,
+)
+
+
+def _evidence_dict(evidence: Evidence) -> dict:
+    return {
+        "documentId": evidence.document_id,
+        "page": evidence.page,
+        "bbox": evidence.bbox,
+        "value": evidence.value,
+        "confidence": evidence.confidence,
+        "provenance": evidence.provenance,
+    }
+
+
+def _cell_dict(cell: Cell) -> dict:
+    return {
+        "document": cell.document,
+        "status": cell.status.value,
+        "value": cell.value,
+        "note": cell.note,
+        "evidence": [_evidence_dict(e) for e in cell.evidence],
+    }
+
+
+def as_dict(result: CriterionResult) -> dict:
+    """One criterion's row, plus the metadata the matrix renders it with."""
+    criterion = cr.BY_STT[result.stt]
+    return {
+        "stt": result.stt,
+        "code": result.code,
+        "label": criterion.label,
+        "group": criterion.group,
+        "groupLabel": cr.GROUPS[criterion.group],
+        "kind": criterion.kind.value,
+        "render": criterion.render,
+        "how": criterion.how,
+        "status": result.status.value,
+        "note": result.note,
+        "cells": [_cell_dict(c) for c in result.cells],
+    }
+
+
+def as_payload(manifest: dict, roster_row: dict | None) -> dict:
+    """One packet's whole matrix, ready to serve."""
+    results = evaluate_packet(manifest, roster_row)
+    by_group: dict[str, dict[str, Status]] = {}
+    for result in results:
+        group = cr.BY_STT[result.stt].group
+        by_group.setdefault(group, {})[result.stt] = result.status
+    return {
+        "documents": list(DOCUMENT_ORDER),
+        "criteria": [as_dict(r) for r in results],
+        "counts": summarise(results),
+        "groups": {
+            code: {"label": cr.GROUPS[code], "counts": cr.summarise(statuses)}
+            for code, statuses in sorted(by_group.items())
+        },
+        "matchedRoster": bool(roster_row),
+    }

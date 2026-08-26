@@ -41,6 +41,7 @@ from roster_workbook import (
     load_roster_rows,
     preflight_roster_workbook,
 )
+from evaluate import as_payload as criteria_payload
 from summary_criteria import as_payload as summary_payload
 
 app = FastAPI()
@@ -276,6 +277,62 @@ async def get_summary(cid: str):
         summary_payload, rows, case["packets"], case.get("purchaseTotal"),
     )
     payload["rosterName"] = case.get("rosterName")
+    return payload
+
+
+def _roster_row_for(cid: str, packet: dict) -> dict | None:
+    """The bảng kê row this packet was matched to, by CCCD then name."""
+    identity = packet.get("rosterIdentity") or {}
+    if not identity:
+        return None
+    import roster_checks
+
+    rows = _roster_rows(cid)
+    if not rows:
+        return None
+    columns, first_data = roster_checks.locate_columns(rows)
+    people, _ = roster_checks.read_people(rows, columns, first_data)
+    wanted = roster_checks.digits(identity.get("cccd", ""))
+    if wanted:
+        for person in people:
+            if roster_checks.digits(person.get("cccd", "")) == wanted:
+                return person
+    name = _norm(identity.get("name", ""))
+    if name:
+        for person in people:
+            if _norm(person.get("name", "")) == name:
+                return person
+    return None
+
+
+def _norm(value: str) -> str:
+    from ocr_extract import norm
+
+    return norm(value or "").strip()
+
+
+@app.get("/api/cases/{cid}/packets/{i}/criteria")
+async def get_criteria(cid: str, i: int):
+    """Acc's 25-criterion matrix for one packet, computed from its manifest.
+
+    The matrix used to be hand-typed; this is the engine's output. Every cell
+    carries the value read, why it got its status, and the evidence behind it.
+    """
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    packet = next((p for p in case["packets"] if p["index"] == i), None)
+    if packet is None:
+        raise HTTPException(status_code=404, detail="packet not found")
+    path = os.path.join(store.case_dir(cid), "packets", str(i), "manifest.json")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="manifest not found")
+    with open(path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    row = await run_in_threadpool(_roster_row_for, cid, packet)
+    payload = await run_in_threadpool(criteria_payload, manifest, row)
+    payload["packet"] = i
+    payload["name"] = packet.get("name") or ""
     return payload
 
 
