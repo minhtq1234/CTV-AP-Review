@@ -316,3 +316,69 @@ class TestDetailIsWhatToLookAt:
             for cell in sc.assess(rows, packets, total):
                 docs = set(sc.BY_STT[cell.stt].docs)
                 assert not (set(cell.detail) & docs), (cell.stt, cell.detail)
+
+
+class TestTheListingReadFeedsTwenty:
+    """`purchaseTotal` now arrives from `pipeline.read_purchase_total`, which
+    carries the read's provenance alongside the amount."""
+
+    RICH = {"gross": 10_000_000, "page": 7,
+            "reason": "digits-and-words-agree", "digitsRepaired": False}
+
+    def test_the_richer_shape_resolves_it(self):
+        cells = by_stt(sc.assess(sheet([GOOD]), purchase_total=self.RICH))
+
+        assert cells[20].status is Status.OK
+        assert "Gross khớp" in cells[20].message
+
+    def test_a_repaired_digit_read_is_disclosed(self):
+        repaired = {**self.RICH, "digitsRepaired": True}
+        cells = by_stt(sc.assess(sheet([GOOD]), purchase_total=repaired))
+
+        assert cells[20].status is Status.OK
+        # the reviewer should eyeball the printed digits themselves
+        assert "chữ số bị mờ" in cells[20].message
+
+    def test_an_unreadable_total_is_pending_not_a_mismatch(self):
+        """`gross: None` means the listing was found but not read. Comparing
+        against None would report a bogus discrepancy against the roster."""
+        unread = {"gross": None, "page": 7,
+                  "reason": "digits-and-words-disagree", "digitsRepaired": False}
+
+        cells = by_stt(sc.assess(sheet([GOOD]), purchase_total=unread))
+
+        assert cells[20].status is Status.PENDING
+        assert "lệch" not in cells[20].message
+        assert "trang 8" in cells[20].message
+
+    def test_it_says_which_way_the_read_failed(self):
+        for reason, expected in (
+            ("digits-and-words-disagree", "chữ số và chữ không khớp"),
+            ("front-matter-too-long", "chưa tìm được Bảng Kê Thu Mua"),
+        ):
+            cells = by_stt(sc.assess(
+                sheet([GOOD]),
+                purchase_total={"gross": None, "page": None, "reason": reason,
+                                "digitsRepaired": False},
+            ))
+            assert expected in cells[20].message, reason
+
+    def test_the_page_is_named_so_the_reviewer_can_open_it(self):
+        cells = by_stt(sc.assess(sheet([GOOD]), purchase_total=self.RICH))
+        assert "trang 8" in cells[20].message
+
+    def test_a_real_mismatch_still_reports_the_gap(self):
+        cells = by_stt(sc.assess(
+            sheet([GOOD]), purchase_total={**self.RICH, "gross": 9_000_000},
+        ))
+
+        assert cells[20].status is Status.NO
+        assert "lệch 1,000,000" in cells[20].message
+
+    def test_an_unread_total_still_counts_as_a_gap(self):
+        payload = sc.as_payload(
+            sheet([GOOD]),
+            purchase_total={"gross": None, "page": 7, "reason": "x",
+                            "digitsRepaired": False},
+        )
+        assert "purchaseTotal" in payload["missing"]

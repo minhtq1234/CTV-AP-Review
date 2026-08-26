@@ -1,4 +1,6 @@
 import json, os, tempfile
+
+import cases
 from cases import (
     CaseStore,
     case_status,
@@ -318,3 +320,46 @@ if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f): f(); print(f"  ok {n}")
     print("ALL OK")
+
+
+class TestPurchaseTotal:
+    def test_set_result_persists_the_listing_total(self, tmp_path):
+        store = cases.CaseStore(str(tmp_path))
+        cid = store.create("c", "in.pdf", "roster.xlsx", now="2026-08-26T00:00:00Z")
+
+        store.set_result(cid, summary=None, packets=[],
+                         purchase_total={"gross": 240_305_556,
+                                         "reason": "digits-and-words-agree"})
+
+        assert store.get(cid)["purchaseTotal"]["gross"] == 240_305_556
+
+    def test_it_survives_a_reload_from_disk(self, tmp_path):
+        store = cases.CaseStore(str(tmp_path))
+        cid = store.create("c", "in.pdf", None, now="2026-08-26T00:00:00Z")
+        store.set_result(cid, summary=None, packets=[],
+                         purchase_total={"gross": 1_000})
+
+        assert cases.CaseStore(str(tmp_path)).get(cid)["purchaseTotal"] == {
+            "gross": 1_000,
+        }
+
+    def test_a_case_with_no_listing_records_none(self, tmp_path):
+        store = cases.CaseStore(str(tmp_path))
+        cid = store.create("c", "in.pdf", None, now="2026-08-26T00:00:00Z")
+        store.set_result(cid, summary=None, packets=[])
+
+        assert store.get(cid)["purchaseTotal"] is None
+
+    def test_an_older_case_on_disk_gains_the_field(self, tmp_path):
+        """Cases written before this existed must not KeyError."""
+        import json
+        import os
+
+        os.makedirs(tmp_path / "old", exist_ok=True)
+        with open(tmp_path / "old" / "case.json", "w", encoding="utf-8") as f:
+            json.dump({"id": "old", "name": "c", "createdAt": None,
+                       "status": "ready", "pdfName": "in.pdf",
+                       "rosterName": None, "summary": None, "error": None,
+                       "packets": []}, f)
+
+        assert cases.CaseStore(str(tmp_path)).get("old")["purchaseTotal"] is None

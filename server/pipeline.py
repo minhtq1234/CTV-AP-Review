@@ -23,6 +23,7 @@ if _SPLITTER_DIR not in sys.path:
 import detect_packets as dp  # noqa: E402
 import ocr_extract as oc  # noqa: E402
 from cccd_ingest import ingest_cccd_workbook  # noqa: E402
+from purchase_listing import read_total  # noqa: E402
 from roster_workbook import load_roster_rows  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,57 @@ def flag_duplicate_identities(packets_out: list[dict]) -> list[dict]:
     return packets_out
 
 
+#: The Bảng Kê Thu Mua sits in the batch-level front matter, before the first
+#: packet. On the real submissions that is pages 1-11 (July) and 1-7
+#: (February); the PUBGm nghiệm thu submission has 32 front pages and no
+#: listing at all. This bounds the scan so a pathological front matter cannot
+#: stall an ingest -- and when it bites, the result says so rather than
+#: reporting "no listing".
+MAX_FRONT_MATTER_PAGES = 40
+
+
+def read_purchase_total(
+    pdf_path: str,
+    front_pages: int,
+    ocr=None,
+    detect_rotation=None,
+    progress_cb=None,
+) -> dict | None:
+    """The total printed on the purchase listing, for criterion #20.
+
+    Scans the `front_pages` pages before the first packet **backwards**: the
+    total is the last thing on the listing, so counting down reaches it without
+    OCRing the rows above it. Returns None when there is no listing to find,
+    and a result with `gross: None` plus a `reason` when a page carries a total
+    it could not read -- the two are different findings for the reviewer.
+    """
+    if front_pages <= 0:
+        return None
+    ocr = ocr or oc.ocr_words
+    detect_rotation = detect_rotation or oc.detect_page_rotation
+
+    capped = min(front_pages, MAX_FRONT_MATTER_PAGES)
+    scanned = 0
+    for page in range(front_pages - 1, front_pages - capped - 1, -1):
+        if progress_cb is not None:
+            progress_cb("listing", scanned, capped, f"trang {page + 1}")
+        words, _ = ocr(pdf_path, page, rotation=detect_rotation(pdf_path, page))
+        scanned += 1
+        read = read_total({page: words})
+        if read.reason == "not-found":
+            continue
+        return {
+            "gross": read.amount,
+            "page": read.page,
+            "reason": read.reason,
+            "digitsRepaired": read.digits_repaired,
+        }
+    if capped < front_pages:
+        return {"gross": None, "page": None, "reason": "front-matter-too-long",
+                "digitsRepaired": False, "pagesScanned": scanned}
+    return None
+
+
 def _card_reader():
     base_url = os.environ.get("GREENNODE_IDP_URL", "").strip()
     api_key = os.environ.get("GREENNODE_API_KEY", "").strip()
@@ -357,6 +409,12 @@ def run_pipeline(
             if DUPLICATE_IDENTITY_FLAG in p["flags"]
         ),
     }
+    purchase_total = read_purchase_total(
+        pdf_path,
+        min((p.start for p in packets), default=0),
+        progress_cb=progress_cb,
+    )
+
     cccd_workbook = None
     if cccd_xlsx_path is not None:
         progress_cb("cccd", 0, 0, "")
@@ -385,4 +443,5 @@ def run_pipeline(
         "summary": summary,
         "packets": packets_out,
         "cccdWorkbook": cccd_workbook,
+        "purchaseTotal": purchase_total,
     }

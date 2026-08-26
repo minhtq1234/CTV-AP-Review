@@ -156,6 +156,9 @@ class CaseStore:
             if "cccdWorkbook" not in case:
                 case["cccdWorkbook"] = None
                 changed = True
+            if "purchaseTotal" not in case:
+                case["purchaseTotal"] = None
+                changed = True
             for i, p in enumerate(case.get("packets", [])):
                 had_review = "review" in p
                 normalized = _ensure_packet_defaults(p)
@@ -210,6 +213,7 @@ class CaseStore:
             "cccdName": cccd_name,
             "summary": None,
             "cccdWorkbook": None,
+            "purchaseTotal": None,
             "error": None,
             "packets": [],
         }
@@ -249,6 +253,7 @@ class CaseStore:
         summary: dict | None,
         packets: list[dict],
         cccd_workbook: dict | None = None,
+        purchase_total: dict | None = None,
     ) -> None:
         case = self._idx.get(cid)
         if case is None:
@@ -257,6 +262,7 @@ class CaseStore:
         case["summary"] = summary
         case["packets"] = filled
         case["cccdWorkbook"] = cccd_workbook
+        case["purchaseTotal"] = purchase_total
         case["status"] = case_status("ready", filled)
         self._write(case)
 

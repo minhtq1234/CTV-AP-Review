@@ -311,3 +311,143 @@ def test_three_packets_all_reference_each_other():
     pl.flag_duplicate_identities(packets)
 
     assert packets[1]["duplicateOf"] == [0, 2]
+
+
+# ---------------------------------------------------------------------------
+# Bảng Kê Thu Mua total — the batch-level front matter, scanned for criterion
+# #20's other half.
+# ---------------------------------------------------------------------------
+
+def _words(text, y):
+    out, x = [], 300
+    for token in text.split():
+        out.append({"text": token, "x": x, "y": y, "w": len(token) * 20,
+                    "h": 30, "conf": 95.0})
+        x += len(token) * 20 + 20
+    return out
+
+
+_TOTAL_LINE = _words(
+    "Tổng giá trị hàng hóa, dịch vụ mua vào: 240.305.556VNĐ "
+    "(Số tiền bằng chữ : Hai trăm bốn mươi triệu ba trăm lẻ năm nghìn "
+    "năm trăm năm mươi sáu đồng).", 500,
+)
+
+
+def _pages(**by_index):
+    """A fake OCR reader over `{page_index: words}`."""
+    pages = {int(k.lstrip("p")): v for k, v in by_index.items()}
+
+    def read(pdf_path, page, **kwargs):
+        return pages.get(page, []), 1.0
+    return read
+
+
+def _upright(*args, **kwargs):
+    """Rotation detection needs a real PDF; these tests scan word lists."""
+    return 0
+
+
+def _scan(front_pages, ocr):
+    return pl.read_purchase_total(
+        "x.pdf", front_pages=front_pages, ocr=ocr, detect_rotation=_upright,
+    )
+
+
+class TestPurchaseTotal:
+    def test_finds_the_total_in_the_front_matter(self):
+        read = _scan(8, _pages(p7=_TOTAL_LINE))
+
+        assert read["gross"] == 240_305_556
+        assert read["page"] == 7
+        assert read["reason"] == "digits-and-words-agree"
+
+    def test_it_scans_backwards_so_the_last_page_is_reached_first(self):
+        """The total is the last thing on the listing, so counting down finds
+        it without OCRing the rows above it."""
+        seen = []
+
+        def ocr(pdf_path, page, **kwargs):
+            seen.append(page)
+            return (_TOTAL_LINE if page == 7 else []), 1.0
+
+        _scan(11, ocr)
+
+        assert seen == [10, 9, 8, 7]
+
+    def test_no_front_matter_means_no_listing(self):
+        calls = []
+
+        def ocr(pdf_path, page, **kwargs):
+            calls.append(page)
+            return [], 1.0
+
+        assert _scan(0, ocr) is None
+        assert calls == []
+
+    def test_a_submission_with_no_listing_returns_none(self):
+        # The PUBGm nghiệm thu submission: 32 front pages, no purchase listing.
+        read = _scan(32, _pages())
+        assert read is None
+
+    def test_it_reports_a_repaired_digit_read(self):
+        page = _words("Tổng giá trị hàng hóa mua vào: 25§.638.890VND "
+                      "(Bằng chữ: Hai trăm năm mươi tám triệu sáu trăm ba "
+                      "mươi tám nghìn tám trăm chín mươi đồng).", 500)
+
+        read = _scan(7, _pages(p6=page))
+
+        assert read["gross"] == 258_638_890
+        assert read["digitsRepaired"] is True
+
+    def test_a_contradictory_page_yields_no_amount_and_says_why(self):
+        page = _words("Tổng giá trị hàng hóa mua vào: 240.305.558VNĐ "
+                      "(Số tiền bằng chữ : Một triệu đồng).", 500)
+
+        read = _scan(7, _pages(p6=page))
+
+        assert read is not None
+        assert read["gross"] is None
+        assert read["reason"] == "digits-and-words-disagree"
+        assert read["page"] == 6
+
+    def test_the_scan_is_capped_and_says_when_the_cap_bit(self):
+        scanned = []
+
+        def ocr(pdf_path, page, **kwargs):
+            scanned.append(page)
+            return [], 1.0
+
+        read = _scan(pl.MAX_FRONT_MATTER_PAGES + 5, ocr)
+
+        assert len(scanned) == pl.MAX_FRONT_MATTER_PAGES
+        assert read == {"gross": None, "page": None,
+                        "reason": "front-matter-too-long",
+                        "digitsRepaired": False,
+                        "pagesScanned": pl.MAX_FRONT_MATTER_PAGES}
+
+
+class TestRunPipelineCarriesTheTotal:
+    def test_the_total_reaches_the_result(self, tmp_path, monkeypatch):
+        _install_fake_detection(monkeypatch)
+        monkeypatch.setattr(pl.dp, "packets_from_covers",
+                            lambda cover_pages, n: [(2, 3), (4, 5)])
+        monkeypatch.setattr(pl.oc, "ocr_words", _pages(p1=_TOTAL_LINE))
+        monkeypatch.setattr(pl.oc, "detect_page_rotation", lambda *a, **k: 0)
+
+        result = pl.run_pipeline(
+            str(tmp_path / "input.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert result["purchaseTotal"]["gross"] == 240_305_556
+
+    def test_a_packet_starting_on_page_one_has_no_front_matter(
+        self, tmp_path, monkeypatch,
+    ):
+        _install_fake_detection(monkeypatch)
+
+        result = pl.run_pipeline(
+            str(tmp_path / "input.pdf"), None, str(tmp_path), lambda *a: None,
+        )
+
+        assert result["purchaseTotal"] is None

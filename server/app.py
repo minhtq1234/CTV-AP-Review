@@ -179,6 +179,7 @@ def _run_case(
             summary=result.get("summary"),
             packets=result.get("packets", []),
             cccd_workbook=result.get("cccdWorkbook"),
+            purchase_total=result.get("purchaseTotal"),
         )
     except Exception as e:  # noqa: BLE001 - surfaced to the caller via case["error"]
         store.set_error(cid, str(e))

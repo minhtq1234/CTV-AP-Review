@@ -224,32 +224,69 @@ def _total_cell(rows, report, by_code, purchase_total) -> SummaryCell:
     # No total row in the Excel -- fall back to the purchase listing's printed
     # total, which is where it actually lives on real submissions.
     sums = _column_sums(rows, report)
-    if not purchase_total:
-        return _cell(
-            20, Status.PENDING,
-            "Bảng kê không có dòng tổng. Cần tổng trên Bảng Kê Thu Mua để đối "
-            f"chiếu (tổng Gross cộng được: {sums.get('gross', 0):,} đ).",
-        )
+    stated = {
+        key: (purchase_total or {}).get(key)
+        for key in ("gross", "pit", "net")
+        if (purchase_total or {}).get(key) is not None
+    }
+    if not stated:
+        return _cell(20, Status.PENDING, _no_total_message(purchase_total, sums))
 
+    where = _listing_label(purchase_total)
     gaps = [
         f"{label}: cộng dòng = {sums.get(key, 0):,}, "
-        f"{PURCHASE} = {purchase_total[key]:,}, "
-        f"lệch {sums.get(key, 0) - purchase_total[key]:,}"
-        for key, label in (("gross", "Gross"), ("pit", "PIT"), ("net", "Net"))
-        if key in purchase_total and sums.get(key, 0) != purchase_total[key]
+        f"{where} = {stated[key]:,}, "
+        f"lệch {sums.get(key, 0) - stated[key]:,}"
+        for key, label in _MONEY_COLUMNS
+        if key in stated and sums.get(key, 0) != stated[key]
     ]
     if gaps:
         return _cell(20, Status.NO, "; ".join(gaps))
-    checked = ", ".join(
-        label for key, label in
-        (("gross", "Gross"), ("pit", "PIT"), ("net", "Net"))
-        if key in purchase_total
-    )
+    checked = ", ".join(label for key, label in _MONEY_COLUMNS if key in stated)
     return _cell(
         20, Status.OK,
-        f"{checked} khớp giữa bảng kê ({report.people} dòng) và "
-        f"{PURCHASE}."
+        f"{checked} khớp giữa bảng kê ({report.people} dòng) và {where}.",
     )
+
+
+_MONEY_COLUMNS = (("gross", "Gross"), ("pit", "PIT"), ("net", "Net"))
+
+#: Why the listing's total could not be read, in the reviewer's terms. Keys are
+#: `pipeline.read_purchase_total`'s reasons.
+_READ_FAILURES = {
+    "digits-and-words-disagree":
+        "chữ số và chữ không khớp — cần người đọc lại",
+    "words-only": "chỉ đọc được số tiền bằng chữ",
+    "front-matter-too-long":
+        "chưa tìm được Bảng Kê Thu Mua trong phần đầu hồ sơ",
+    "not-found": "không tìm thấy dòng tổng trên Bảng Kê Thu Mua",
+}
+
+
+def _listing_label(purchase_total: dict | None) -> str:
+    """`Bảng Kê Thu Mua`, naming the page and any digit repair."""
+    page = (purchase_total or {}).get("page")
+    notes = []
+    if page is not None:
+        notes.append(f"trang {page + 1}")
+    if (purchase_total or {}).get("digitsRepaired"):
+        # The reviewer should eyeball the printed digits: they only resolved
+        # because the spelled-out amount agreed with a repaired reading.
+        notes.append("chữ số bị mờ, đã đối chiếu với số tiền bằng chữ")
+    return PURCHASE + (f" ({', '.join(notes)})" if notes else "")
+
+
+def _no_total_message(purchase_total: dict | None, sums: dict) -> str:
+    """Why #20 cannot resolve, and the sum it computed regardless."""
+    computed = f" (tổng Gross cộng được: {sums.get('gross', 0):,} đ)"
+    if not purchase_total:
+        return ("Bảng kê không có dòng tổng. Cần tổng trên Bảng Kê Thu Mua để "
+                f"đối chiếu{computed}.")
+    reason = _READ_FAILURES.get(
+        purchase_total.get("reason", ""), "chưa đọc được số tổng",
+    )
+    return (f"Bảng kê không có dòng tổng, và {_listing_label(purchase_total)}: "
+            f"{reason}{computed}.")
 
 
 def _column_sums(rows, report) -> dict[str, int]:
@@ -384,7 +421,10 @@ def as_payload(
     missing = [
         name for name, present in (
             ("rosterRows", bool(report.people)),
-            ("purchaseTotal", bool(purchase_total)),
+            ("purchaseTotal", any(
+                (purchase_total or {}).get(key) is not None
+                for key in ("gross", "pit", "net")
+            )),
             ("packets", bool(packets)),
         )
         if not present
