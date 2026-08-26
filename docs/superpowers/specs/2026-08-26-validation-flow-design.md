@@ -302,6 +302,37 @@ is on **page 8 of the Bảng Kê Thu Mua**: `240.305.556 VNĐ` — which reconci
 exactly with the sum of the July roster's 41 Gross values. That reconciliation
 runs today and passes.
 
+### 8.1 Three false-clean results the tab exposed
+
+Wiring these five criteria to real data found three places where "nothing
+evaluated" was rendering as "everything fine" — the exact inversion §1.1 exists
+to prevent. All three are fixed and regression-tested:
+
+1. **An unreadable roster passed #30.** With no rows or no identity columns the
+   check reported *"Không trùng CCCD/MST/tài khoản trên 0 dòng"*. Nothing to
+   compare is not nothing colliding; it is now `pending`.
+2. **Packets that matched nobody passed #31.** A packet with no `rosterIdentity`
+   has no identity to collide with, so a set of unmatched packets was reported
+   as clean. Now `pending`, naming how many are unmatched.
+3. **#31 trusted a persisted flag.** It read `flags` for
+   `duplicate-roster-identity`, but every stored case predates
+   `flag_duplicate_identities`, so the July submission — nine CCCDs on two
+   packets each — reported clean. The collision is now recomputed from the
+   identities, keyed exactly as the pipeline keys it. July reports 9 CTV / 18
+   gói; February stays clean.
+
+A criterion whose answer depends on when a case was ingested is not a criterion.
+
+Two further notes from the build:
+
+- **#20 falls back rather than passing.** With no total row and no
+  `purchaseTotal` on the case it stays `pending`, names the Bảng Kê Thu Mua, and
+  still shows the sum it computed so the number is not lost. `store.set_purchase_total`
+  is the hook step 4's parser fills in.
+- **The payload reports its own gaps.** `missing` lists the inputs the tab could
+  not reach (`rosterRows`, `purchaseTotal`, `packets`), so a pending criterion
+  explains itself instead of leaving the reviewer to guess.
+
 Findings render in Acc's own vocabulary, per the workbook's stated principle:
 *"Không chỉ báo 'Không khớp'; phải nêu trường sai, giá trị tại từng chứng từ,
 chênh lệch và nội dung cần kiểm tra lại."* `roster_checks.Finding` already
@@ -376,11 +407,13 @@ Note this document is **batch-level, not per-packet** — one listing covering a
 
 ## 12. Order of work
 
-1. **Criteria registry + status model + aggregation.** No new extraction; wires
-   the 25 criteria to what the pipeline already produces and computes the
-   summary the prototype hand-types.
-2. **Tổng hợp tab.** Three of five criteria are already built and tested; this is
-   mostly presentation.
+1. ~~**Criteria registry + status model + aggregation.**~~ **Done** (`server/criteria.py`).
+   No new extraction; wires the 25 criteria to what the pipeline already
+   produces and computes the summary the prototype hand-types.
+2. ~~**Tổng hợp tab.**~~ **Done** — `server/summary_criteria.py`,
+   `GET /api/cases/{cid}/summary`, `src/components/SummaryTab.tsx`. It was less
+   "mostly presentation" than this spec assumed: building the tab surfaced three
+   false-clean results the per-criterion tests had not (see §8).
 3. **`compare` and `compute` evaluators.** The engine proper — the point at which
    the matrix stops being hand-typed.
 4. **Bảng Kê Thu Mua parser**, checksum-gated. Unlocks #14's third column, #27
