@@ -1,0 +1,388 @@
+# Validation flow — design
+
+**Status:** design, not yet implemented
+**Sources:** `Checklist_Binhnt10.xlsx` sheet *Requirement CTV Remove* (24 per-CTV
+criteria + #28) · `LOGIC.md` / `ctv-detail-phuong.html` (artifact
+`57fdbb0b`) · this repo's pipeline
+
+---
+
+## 1. What this bridges
+
+The prototype and this codebase are complementary halves of the same product.
+
+**The prototype supplies the target:** 25 per-CTV criteria in five display
+groups, the matrix-versus-card presentation, a five-state result vocabulary,
+evidence-on-click, and the split of five roster-level criteria into a separate
+Tổng hợp tab. Its own §0 states that everything computational in it is
+hand-typed — `META / VALUES / ISSUES / IMG_MAP` are constants, and §5.4 says
+outright that the comparison functions do not exist yet.
+
+**This codebase supplies those functions:** packet splitting, document
+classification, field location with bounding boxes, roster parsing, GreenNode
+IDP card reading at 40/41, duplicate-identity detection, roster validation,
+persistence, reporting.
+
+So the work is not "build the prototype". It is **put the engine behind the
+prototype's UI**, and in doing so replace hand-typed results with computed ones.
+
+### 1.1 The one inversion that matters most
+
+`LOGIC.md` §6.2 documents its own most dangerous property:
+
+```
+cellStatus(stt, doc):
+    if ISSUES[key] exists:  return ISSUES[key].status
+    else if VALUES[stt] !== undefined:  return 'ok'     ← default
+    else: return 'pending'
+```
+
+and warns: *"'Có giá trị trong VALUES' không có nghĩa là 'đã được xác minh
+khớp'."* A value existing and nobody having flagged it yields `ok`.
+
+**In v2 that default inverts.** A cell is `ok` only when a comparator ran and
+matched. No comparator, no value, or a comparator that could not decide →
+never `ok`. Silence must not read as agreement; that is the false-clear path
+the whole product is built to avoid.
+
+---
+
+## 2. Criteria registry
+
+One record per criterion, in code, keyed by Acc's STT so the numbering stays
+traceable to the source workbook.
+
+```python
+@dataclass(frozen=True)
+class Criterion:
+    stt: int
+    label: str            # as Acc writes it
+    group: str            # display section 01-05
+    docs: tuple[str, ...] # which documents it compares across
+    how: str              # Acc's natural-language rule, verbatim
+    kind: Kind            # which evaluator runs it
+    render: Render        # "matrix" | "card"
+    params: dict          # kind-specific (format, parts, inputs, formula)
+```
+
+`render` is stored, not derived. The prototype made editorial judgements no rule
+reproduces — folding #19 into #14's card, #29 into #09's row, #15–#17 into one
+PIT card, lifting #06 and #12 out of the matrix. Those choices are good and
+should be preserved as data.
+
+`how` is carried verbatim and shown to the reviewer. It is the instruction a
+human follows when the tool abstains, and it is what makes an abstention
+actionable rather than a dead end.
+
+---
+
+## 3. Five evaluator kinds cover all 25 criteria
+
+Derived from Acc's own `Loại kiểm tra` column.
+
+| Kind | Criteria | What it does |
+|---|---|---|
+| `compare` | 01 02 03 04 05 07 08 09 10 11 13 27 | one value must agree across `docs`; optional format rule and required-parts rule |
+| `compute` | 12 14 15 16 17 | recompute from named inputs and compare against what the documents state |
+| `presence` | 21 22 23 24 25 28 | signature / seal / content present — the tool navigates, the human decides |
+| `external` | 06 | an artefact the reviewer supplies answers it (MST lookup screenshot) |
+| `conditional` | 18 | applies only if a document exists; its absence is itself an input to another criterion |
+
+Twelve + five + six + one + one = 25.
+
+### 3.1 `compare`
+
+```python
+def compare(criterion, extracted: dict[str, Value], reference: Value) -> dict[str, Cell]
+```
+
+`extracted` is per-document; `reference` is the bảng kê value, which the
+prototype shows verbatim in its Excel column rather than as a tick — keep that,
+it gives the reviewer something to read rather than trust.
+
+Comparison is kind-aware, reusing what already exists in `src/logic/verdict.ts`
+and extended there on 2026-08-25: personal names compare with diacritics folded
+but **word count significant**, so `Lê Thị Thu Hà` ≠ `Lê Thị Thu Hà Vy`;
+organisation names keep the looser containment rule. A tone-mark-only difference
+resolves to `rv`, never `ok` — Tesseract drops Vietnamese diacritics constantly,
+but so does the gap between two real people.
+
+`params.format` validates shape: #02 twelve digits (or an 8-character passport
+for the foreign branch), #03 `dd/mm/yyyy`, #05 ten or twelve digits, #07
+digits-only preserving leading zeros.
+
+`params.parts` handles the two criteria whose rule is "must contain N things":
+#08 bank name / branch / province, #13 amount / payment term / start point /
+method / receiving account.
+
+### 3.2 `compute`
+
+Never trust a displayed formula. `LOGIC.md` #17 is explicit: *"Tính lại cho từng
+CTV, không chỉ kiểm tra công thức hiển thị trong Excel."*
+
+- **#17** `Gross − PIT = Net`, recomputed; state the gap when it differs
+- **#14** Gross agreement across Hợp đồng / BBNT / Bảng Kê Thu Mua / Excel
+- **#12** day count from #10 and #11, one number, not per-document; `≥ 1 month`
+  raises a warning and never a conclusion
+- **#15** the PIT rule — see §7, this one is **not** ours to decide
+- **#16** Net positive and equal to the requested payment
+
+`server/roster_checks.py` already implements #17, #16 and the #15 zero-without-
+basis case at roster level, with header-based column location so it handles both
+the February and July layouts.
+
+### 3.3 `presence` — never automatically `ok`
+
+Six criteria concern signatures and seals. Acc's checklist types them
+`Chữ ký + dấu` and the product's stance has always been locate-and-look: the
+tool navigates to the block, the reviewer confirms. It does not judge
+authenticity, signer authority, or whether a *giáp lai* is correct.
+
+So a `presence` cell starts at **`rv`** and only becomes `ok` or `no` through a
+human decision recorded as an override (§6). Six of 25 criteria therefore open
+amber on every packet. That is correct, not a defect — the prototype showed them
+green because a person had already looked.
+
+### 3.4 `external`
+
+#06 needs the MST's active status. Earlier scoping marked this out of reach
+because it implied a live call to `tracuunnt.gdt.gov.vn`. The prototype resolves
+it neatly: *kết quả tra cứu MST* is one of the seven documents the reviewer
+supplies. So the criterion reads a supplied artefact — no live lookup, no
+network dependency in the pipeline.
+
+### 3.5 `conditional`
+
+#18 applies only when a `Cam kết 08/CK-TNCN` is in the packet. Its **absence is
+an answer**, and it feeds #15: no commitment means the withholding rule applies.
+The prototype models this correctly — #18 as `na` with a stated reason, and the
+PIT card citing it as its input.
+
+---
+
+## 4. Status model
+
+Adopt the prototype's vocabulary; it is better than what this codebase has,
+because it distinguishes *not applicable* from *document absent* from *needs a
+human* — distinctions that `review` / `unread` currently collapse.
+
+| Status | Glyph | Meaning | Reached when |
+|---|---|---|---|
+| `ok` | ✓ | agrees | a comparator ran and matched |
+| `no` | ✕ | does not agree | a comparator ran and differed |
+| `rv` | ! | needs a human | ambiguous compare, low confidence, or any `presence` criterion |
+| `na` | – | not applicable to this packet | `conditional` unmet, or document not in `criterion.docs` |
+| `missing` | ⊘ | document should be here and is not | required document absent from the packet |
+| `pending` | ? | not evaluated | no value extracted, or no comparator for this pair |
+
+Two notes carried from the prototype's own findings. `missing` exists in its CSS
+and `openEvidence()` but no data uses it (§16 item 9) — in v2 it becomes live,
+because packets genuinely arrive incomplete: 24 of 32 February packets have no
+cam kết. And a cell for a document not listed in `criterion.docs` renders as a
+static dash and is **not clickable**, distinct from a clickable `na` that can
+explain itself.
+
+### 4.1 Aggregation — resolves Open Question #8
+
+**Count by criterion, not by cell.** The prototype's own header proves this is
+the intent: `23 Khớp / 1 Cần review / 1 Không áp dụng` sums to 25, its criterion
+count. Counting cells would make a criterion spanning five documents five times
+as important as one spanning a single document.
+
+Per criterion, **worst wins**, in this order:
+
+```
+no  >  missing  >  rv  >  pending  >  ok        (na excluded from the rollup)
+```
+
+`missing` outranks `rv` because an absent document is a gate failure, not a
+question. `na` is counted and displayed separately — "not applicable" is
+sometimes the finding, as with 24 of 32 packets lacking a cam kết.
+
+---
+
+## 5. Evidence
+
+Every non-`na` cell must be able to answer "where did you get that?". The
+prototype's rule — *"Bấm vào ô ma trận hoặc giá trị có gạch chấm để xem đúng
+trang chứng từ gốc"* — is the product's core promise, and the pipeline already
+produces what it needs: page index plus bounding box per located field.
+
+```python
+@dataclass(frozen=True)
+class Evidence:
+    document_id: str
+    page: int
+    bbox: Bbox | None       # None when the field was never located
+    value: str              # what was read; "" when illegible
+    confidence: float | None
+    provenance: str         # "ocr" | "idp" | "roster" | "override"
+```
+
+`provenance` is not decoration. A value read by IDP at 0.97 and a value read by
+Tesseract at 0.0-with-a-box are different kinds of claim, and the reviewer
+should see which they are looking at. `bbox=None` with a value present is a
+legitimate state — located nothing, read something elsewhere — and must be
+labelled rather than smoothed over.
+
+---
+
+## 6. Override and audit — resolves Open Questions #3 and #4
+
+A reviewer may change any computed status. The record:
+
+```python
+@dataclass(frozen=True)
+class Override:
+    stt: int
+    document: str
+    from_status: Status     # what the engine computed
+    to_status: Status       # what the human decided
+    reason: str             # required, free text
+    at: str                 # ISO timestamp
+    by: str                 # reviewer identity when auth exists; "" until then
+```
+
+Overrides layer above computed status and always win, matching the prototype's
+`ISSUES` precedence. But unlike the prototype, the computed value is retained —
+so `from_status` records what the engine thought.
+
+**That field is the most valuable data this product can generate.** An override
+of `ok → no` means the engine was wrong in the dangerous direction. Recorded
+from day one, these accumulate into the labelled corpus this project does not
+otherwise have, at no marginal cost. An override of `pending → ok` is the
+opposite signal: coverage the engine lacked but a human supplied easily.
+
+Who may override, and whether a second confirmation is required, needs a
+decision (§8).
+
+---
+
+## 7. The PIT rule is not ours to decide
+
+`LOGIC.md` §16 item 10 flags the withholding threshold as undocumented text with
+no legal citation. That caution is correct and this design keeps it.
+
+`compute` for #15 therefore does **not** hardcode a rate. It evaluates only what
+the checklist actually asserts: *"Nếu PIT bằng 0, phải xác định có cam kết hoặc
+căn cứ miễn/không khấu trừ phù hợp."* Zero PIT without a stated basis is a
+finding; a non-zero PIT is reported with its effective rate for a human to judge.
+
+This is not hypothetical. `roster_checks` run against the real July bảng kê
+found **14 rows with Gross = exactly 2.000.000, `Bản cam kết` = "không", and
+PIT = 0**. The prototype's stated rule is `≥ 2.000.000đ/lần → khấu trừ 10%`, and
+`2.000.000 ≥ 2.000.000` holds — so under that rule each row should carry 200.000,
+about 2.8M unwithheld on one batch. February is clean.
+
+Either the threshold is exclusive rather than inclusive, or those rows are wrong.
+The tool must surface the question and must not answer it.
+
+---
+
+## 8. Tổng hợp tab
+
+The five roster-level criteria the prototype defers. Their STTs were unknown to
+it (its Open Question #2); the other checklist file's `Cấp độ` column resolves
+them, and they match its `.scope-note` list in order:
+
+| STT | Criterion | Status here |
+|---|---|---|
+| #20 | Tổng Gross/PIT/Net toàn bảng kê | **built** — `roster_checks`, plus the cross-document total below |
+| #26 | 2 Bảng kê signed by preparer and approver, with seal | `presence`, batch level — human |
+| #30 | No CCCD / MST / account shared between CTVs | **built** — `roster_checks` |
+| #31 | No duplicate payment (same CTV + amount + period) | **built** — `flag_duplicate_identities` |
+| #32 | Document signing dates in a sensible sequence | not built — needs dates across documents |
+
+#19 is **not** one of the five: it is *Phí dịch vụ khớp giữa các chứng từ*, which
+the prototype correctly folds into #14's card.
+
+**#20 spans two documents, which is why it looked unbuildable.** None of the
+three rosters carries a total row, so an Excel-only check cannot run. The total
+is on **page 8 of the Bảng Kê Thu Mua**: `240.305.556 VNĐ` — which reconciles
+exactly with the sum of the July roster's 41 Gross values. That reconciliation
+runs today and passes.
+
+Findings render in Acc's own vocabulary, per the workbook's stated principle:
+*"Không chỉ báo 'Không khớp'; phải nêu trường sai, giá trị tại từng chứng từ,
+chênh lệch và nội dung cần kiểm tra lại."* `roster_checks.Finding` already
+carries `criterion / code / message / rows` for exactly this.
+
+---
+
+## 9. Documents
+
+Seven, against the five this codebase models today.
+
+| Document | `EvidenceKind` | Reader |
+|---|---|---|
+| Bảng kê thanh toán (Excel) | — (roster) | `roster_workbook` |
+| CCCD / Passport | `id_front` `id_back` | **IDP** `ID` / `PP` |
+| Hợp đồng dịch vụ | `contract` | local OCR; `Document to Text` untested |
+| BBNT | `bbnt` | as above |
+| Phụ lục / KPI | `appendix` | as above |
+| Kết quả tra cứu MST | `pit` (existing) | local OCR |
+| **Bảng Kê Thu Mua** (mẫu 02/TNDN) | **new kind needed** | see below |
+
+**Bảng Kê Thu Mua needs an in-house parser.** IDP's `GET_TABLE` was tested on it
+four times — as a 6-page PDF and as upright single-page images, twice each. It
+classifies the form confidently once rotation is corrected
+(`is_correct_classification` False → True) but returns
+`ocr_data: None, schema.table: []` every time. Zero rows.
+
+Our own OCR reads the same page at **288 words, mean confidence 83**, with
+money tokens in two tight columns (x≈1900, x≈2100) and identity numbers in one
+(x≈1000). Recall is incomplete — 5 detected rows on a page holding more — but
+the listing has a **checksum**: rows must sum to the stated total. Parse, sum,
+and route the page to a human when it does not reconcile.
+
+Note this document is **batch-level, not per-packet** — one listing covering all
+41 CTVs, which is why #28 concerns a single preparer signature. It sits at pages
+3–8 of the submission, outside every packet.
+
+---
+
+## 10. Out of scope
+
+- **Signature or seal authenticity**, signer authority, fraud. `presence`
+  navigates; it never concludes.
+- **A hardcoded PIT rate.** §7.
+- **Live MST lookup.** #06 reads a supplied artefact.
+- **Approve / reject.** The reviewer flags and sends back; the tool has never
+  had an approve action and does not gain one here.
+- **Batch-level packet navigation changes.** Out of this spec.
+
+---
+
+## 11. Open questions
+
+1. **PIT threshold** (§7) — inclusive or exclusive at 2.000.000, and the legal
+   citation. 14 real rows depend on the answer. Carries forward the prototype's
+   own Open Question #7.
+2. **Who may override**, and whether `ok → no` needs a second confirmation.
+   Prototype Open Questions #3 and #4.
+3. **`presence` default.** This spec says `rv`. The alternative is `pending`,
+   which reads as "not looked at" rather than "needs you". `rv` is proposed
+   because six criteria would otherwise sit indistinguishable from unevaluated
+   ones.
+4. **`Document to Text` code** — unknown `doc_type` values return HTTP 500, so
+   it cannot be found by guessing. One dropdown switch in the playground's API
+   tab settles it, and it decides whether the three contract-family documents
+   get a better reader.
+5. **#32 date sequencing** — needs signing dates extracted from four document
+   types. Deferred until the contract-family reader is settled.
+6. **Auth.** Overrides want an author. Prototype Open Question #1.
+
+---
+
+## 12. Order of work
+
+1. **Criteria registry + status model + aggregation.** No new extraction; wires
+   the 25 criteria to what the pipeline already produces and computes the
+   summary the prototype hand-types.
+2. **Tổng hợp tab.** Three of five criteria are already built and tested; this is
+   mostly presentation.
+3. **`compare` and `compute` evaluators.** The engine proper — the point at which
+   the matrix stops being hand-typed.
+4. **Bảng Kê Thu Mua parser**, checksum-gated. Unlocks #14's third column, #27
+   and #28.
+5. **Override and audit.** Needs the auth decision first.
