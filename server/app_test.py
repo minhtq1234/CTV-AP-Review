@@ -720,3 +720,161 @@ class TestRecordingADecisionOverHttp:
 
         assert found, "the reviewer's finding is missing from the report"
         assert "BBNT thiếu chữ ký CTV" in body["markdown"]
+
+
+class TestCandidatesAreReportedSeparately:
+    """Acc's rule: `cần gửi lại` counts what a person decided; the engine's own
+    findings are candidates, surfaced separately so the two never contradict."""
+
+    def _ready(self, monkeypatch, tmp_path, **kw):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, **kw)
+        return c, cid
+
+    def test_a_packet_the_engine_flags_is_a_candidate_not_a_resubmit(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["progress"]["flagged"] == 0
+        assert body["progress"]["candidates"] == 1
+
+    def test_the_packet_carries_its_own_finding_count(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+
+        packet = c.get(f"/api/cases/{cid}").json()["packets"][0]
+
+        assert packet["findingCount"] >= 1
+
+    def test_a_decision_moves_it_into_the_resubmit_count(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        c.put(f"/api/cases/{cid}/packets/0/criteria/23:BBNT",
+              json={"toStatus": "no"})
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["progress"]["flagged"] == 1
+
+    def test_clearing_a_cell_does_not_count_as_resubmit(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        c.put(f"/api/cases/{cid}/packets/0/criteria/21:Hợp đồng",
+              json={"toStatus": "ok"})
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["progress"]["flagged"] == 0
+
+    def test_a_case_with_no_roster_reports_no_candidates(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["progress"]["candidates"] == 0
+        assert body["packets"][0]["findingCount"] == 0
+
+    def test_findings_and_resubmits_are_independent(self, tmp_path, monkeypatch):
+        """This packet holds only a contract, so the engine legitimately finds
+        15 absent documents — and none of them is a resubmission, because nobody
+        has decided anything. That independence is the whole point of the split."""
+        c, cid = self._ready(monkeypatch, tmp_path)
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["packets"][0]["findingCount"] > 0
+        assert body["progress"]["candidates"] == 1
+        assert body["progress"]["flagged"] == 0
+
+    def test_the_list_endpoint_carries_it_too(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+
+        row = next(x for x in c.get("/api/cases").json() if x["id"] == cid)
+
+        assert "candidates" in row["progress"]
+
+
+class TestACandidateStopsBeingOneOnceDecided:
+    """A candidate is a finding *nobody has decided on*. Counting a decided one
+    in both places would make the two numbers move together, which defeats
+    separating them."""
+
+    def _ready(self, monkeypatch, tmp_path, **kw):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, **kw)
+        return c, cid
+
+    def _counts(self, c, cid):
+        body = c.get(f"/api/cases/{cid}").json()
+        return body["progress"], body["packets"][0]["findingCount"]
+
+    def test_confirming_the_engine_moves_a_finding_across(
+        self, tmp_path, monkeypatch,
+    ):
+        """The reviewer agrees with a computed `no`. That is a conclusion, so it
+        becomes a resubmission and stops being a candidate."""
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+        before, findings_before = self._counts(c, cid)
+        assert before["flagged"] == 0
+
+        r = c.put(f"/api/cases/{cid}/packets/0/criteria/01:Hợp đồng",
+                  json={"toStatus": "no"})
+        assert r.status_code == 200
+        assert r.json()["override"]["fromStatus"] == "no"   # a confirmation
+
+        after, findings_after = self._counts(c, cid)
+        assert after["flagged"] == 1
+        assert findings_after == findings_before - 1
+
+    def test_clearing_a_finding_also_removes_it_as_a_candidate(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+        _, findings_before = self._counts(c, cid)
+
+        c.put(f"/api/cases/{cid}/packets/0/criteria/01:Hợp đồng",
+              json={"toStatus": "ok"})
+
+        after, findings_after = self._counts(c, cid)
+        assert after["flagged"] == 0          # cleared, not sent back
+        assert findings_after == findings_before - 1
+
+    def test_a_packet_stays_a_candidate_while_findings_remain(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+        c.put(f"/api/cases/{cid}/packets/0/criteria/01:Hợp đồng",
+              json={"toStatus": "no"})
+
+        after, findings = self._counts(c, cid)
+
+        assert findings > 0
+        assert after["candidates"] == 1
+
+    def test_the_two_counts_do_not_move_together(self, tmp_path, monkeypatch):
+        """The point of the split: deciding something raises one and lowers the
+        other, rather than raising both."""
+        c, cid = self._ready(monkeypatch, tmp_path,
+                             name_in_contract="Ai Đó Khác")
+        before, findings_before = self._counts(c, cid)
+
+        c.put(f"/api/cases/{cid}/packets/0/criteria/01:Hợp đồng",
+              json={"toStatus": "no"})
+        after, findings_after = self._counts(c, cid)
+
+        assert after["flagged"] > before["flagged"]
+        assert findings_after < findings_before

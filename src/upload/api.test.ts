@@ -61,24 +61,31 @@ describe('case helpers', () => {
   })
 })
 
-test('packetNeedsResubmit: field flag or weak match', () => {
-  const base = {
-    matchedBy: 'cccd',
-    review: { done: true, fields: {}, rejection: null },
-  } as any
+test('packetNeedsResubmit: only what a person decided', () => {
+  // Mirrors server/cases.py. A weak roster match is the machine's observation,
+  // reported as a candidate instead — see progress.candidates.
+  const base = { index: 0, name: 'A', pages: [0, 7] as [number, number],
+    confidence: 'green' as const, flags: [], labels: [],
+    matchedBy: 'cccd' as const,
+    ocrIdentity: { cccd: '1', name: 'A' }, rosterIdentity: null,
+    reviewFieldCount: 0,
+    review: { done: false, fields: {}, rejection: null } }
   expect(packetNeedsResubmit(base)).toBe(false)
-  expect(packetNeedsResubmit({ ...base, matchedBy: 'name' })).toBe(true)
+  expect(packetNeedsResubmit({ ...base, matchedBy: 'name' })).toBe(false)
+  expect(packetNeedsResubmit({ ...base, matchedBy: 'unmatched' })).toBe(false)
   expect(packetNeedsResubmit({ ...base, review: { done: true,
-    fields: { cccd: { seen: true, flag: { reason: 'sai', note: '' } } },
+    fields: { a: { seen: true, flag: { reason: 'x', note: '' } } },
     rejection: null } })).toBe(true)
-  expect(packetNeedsResubmit({
-    ...base,
-    review: {
-      done: true,
-      fields: {},
-      rejection: { reasons: ['missing_documents'], note: '' },
-    },
-  })).toBe(true)
+  expect(packetNeedsResubmit({ ...base, review: { done: false, fields: {},
+    rejection: { reasons: ['missing_documents'], note: '' } } })).toBe(true)
+  const decision = (toStatus: 'no' | 'ok') => ({ stt: 23, document: 'BBNT',
+    fromStatus: 'rv' as const, toStatus, reason: '', at: 't', by: '' })
+  expect(packetNeedsResubmit({ ...base, review: { done: false, fields: {},
+    rejection: null, overrides: { '23:BBNT': [decision('no')] } } })).toBe(true)
+  // reversed: the standing decision is what counts
+  expect(packetNeedsResubmit({ ...base, review: { done: false, fields: {},
+    rejection: null,
+    overrides: { '23:BBNT': [decision('no'), decision('ok')] } } })).toBe(false)
 })
 
 test('normalizePacketReview adds the additive legacy default', () => {

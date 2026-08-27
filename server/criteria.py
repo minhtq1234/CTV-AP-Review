@@ -352,12 +352,22 @@ class Override:
             # `na` says the document is outside the criterion -- a fact about
             # the checklist, not a judgment, so there is nothing to decide.
             raise ValueError("na is not a decidable status")
-        if self.from_status is self.to_status:
-            raise ValueError("an override to the same status records nothing")
 
     @property
     def key(self) -> str:
         return override_key(self.stt, self.document)
+
+    @property
+    def confirms(self) -> bool:
+        """A decision that agrees with the engine.
+
+        Recording one is not a no-op: it is a person putting their name and a
+        timestamp to the machine's finding, which is what lets `cần gửi lại`
+        count conclusions rather than candidates. Without it a reviewer who
+        agrees with a computed `no` has no way to say so, and the count that is
+        supposed to be the primary number would sit at zero forever.
+        """
+        return self.from_status is self.to_status
 
     def as_dict(self) -> dict:
         return {

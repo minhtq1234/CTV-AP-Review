@@ -236,10 +236,16 @@ class TestTheOverrideRecord:
             with _pytest.raises(ValueError, match="stt"):
                 self._override(stt=stt, document=cr.EXCEL)
 
-    def test_a_no_op_override_is_refused(self):
-        import pytest as _pytest
-        with _pytest.raises(ValueError, match="same"):
-            self._override(from_status=Status.OK, to_status=Status.OK)
+    def test_a_same_status_record_is_a_confirmation(self):
+        """Not a no-op: a person putting a timestamp to the engine's finding is
+        what lets `cần gửi lại` count conclusions rather than candidates."""
+        o = self._override(from_status=Status.NO, to_status=Status.NO)
+        assert o.confirms is True
+        assert o.to_status is Status.NO
+
+    def test_a_change_is_not_a_confirmation(self):
+        assert self._override(from_status=Status.OK,
+                              to_status=Status.NO).confirms is False
 
     def test_na_cannot_be_overridden_to_or_from(self):
         """`na` means the document is outside the criterion — a fact about the
@@ -250,12 +256,10 @@ class TestTheOverrideRecord:
         with _pytest.raises(ValueError, match="na"):
             self._override(from_status=Status.NOT_APPLICABLE)
 
-    def test_every_other_transition_is_allowed(self):
+    def test_every_transition_between_decidable_statuses_is_allowed(self):
         decidable = [s for s in Status if s is not Status.NOT_APPLICABLE]
         for a in decidable:
             for b in decidable:
-                if a is b:
-                    continue
                 self._override(from_status=a, to_status=b)   # must not raise
 
 

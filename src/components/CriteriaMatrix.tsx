@@ -11,6 +11,7 @@ import {
   cardRows,
   cellFor,
   choicesFor,
+  confirms,
   criteriaHeadline,
   groupsInOrder,
   isDecided,
@@ -264,10 +265,13 @@ function CellDecision({ row, cell, onDecide }: {
         <button
           key={to}
           type="button"
-          className={`criteria-decide-btn ${SUMMARY_STATUS_PRESENTATION[to].tone}`}
+          className={`criteria-decide-btn ${SUMMARY_STATUS_PRESENTATION[to].tone}`
+            + (confirms(cell, to) ? ' confirming' : '')}
           onClick={() => onDecide(cell.document, to)}
         >
-          {SUMMARY_STATUS_PRESENTATION[to].label}
+          {confirms(cell, to)
+            ? `Xác nhận: ${SUMMARY_STATUS_PRESENTATION[to].label}`
+            : SUMMARY_STATUS_PRESENTATION[to].label}
         </button>
       ))}
     </span>

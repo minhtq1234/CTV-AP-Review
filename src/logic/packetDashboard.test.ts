@@ -3,6 +3,7 @@ import type { PacketMeta, PacketReview } from '../upload/api'
 import {
   attentionReasons,
   boundaryNote,
+  findingsNote,
   filterPackets,
   packetDashboardCounts,
   packetDashboardStatus,
@@ -224,5 +225,44 @@ describe('boundaryNote with inserted boundaries', () => {
     expect(boundaryNote({ found: 32, roster_n: 32, matched: 32, auto_merged: 0,
                           boundaries_offset: 0, boundaries_snapped: 0,
                           boundaries_inserted: 0 })).toBe('')
+  })
+})
+
+describe('resubmits and candidates are separate counts', () => {
+  // Acc's rule: `cần gửi lại` counts what a person decided; the engine's own
+  // findings are candidates. Before this the report said 34 and the dashboard
+  // said 0 on the same case.
+  const progress = (over = {}) => ({
+    done: 0, total: 41, flagged: 0, candidates: 0, ...over,
+  })
+
+  it('says nothing when neither has anything', () => {
+    expect(findingsNote(progress())).toBe('')
+  })
+
+  it('reports candidates on their own', () => {
+    expect(findingsNote(progress({ candidates: 34 })))
+      .toBe('34 gói có phát hiện cần xem')
+  })
+
+  it('reports what a person decided on its own', () => {
+    expect(findingsNote(progress({ flagged: 3 })))
+      .toBe('3 gói cần gửi lại')
+  })
+
+  it('reports both, decisions first', () => {
+    // What a person concluded outranks what the machine proposed.
+    expect(findingsNote(progress({ flagged: 3, candidates: 34 })))
+      .toBe('3 gói cần gửi lại · 34 gói có phát hiện cần xem')
+  })
+
+  it('omits the candidate count on a case with no roster', () => {
+    expect(findingsNote(progress({ flagged: 2, candidates: 0 })))
+      .toBe('2 gói cần gửi lại')
+  })
+
+  it('tolerates an older payload with no candidate key', () => {
+    expect(findingsNote({ done: 0, total: 4, flagged: 1 } as never))
+      .toBe('1 gói cần gửi lại')
   })
 })

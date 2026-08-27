@@ -26,9 +26,12 @@ def test_needs_resubmit_on_field_flag():
     assert needs_resubmit(_pkt(0, flags=["cccd"])) is True
     assert needs_resubmit(_pkt(0)) is False
 
-def test_needs_resubmit_on_weak_match():
-    assert needs_resubmit(_pkt(0, matched_by="name")) is True
-    assert needs_resubmit(_pkt(0, matched_by="unmatched")) is True
+def test_a_weak_match_is_a_candidate_not_a_resubmit():
+    # Superseded by Acc's rule: `cần gửi lại` counts what a person decided, and
+    # a weak roster match is something the machine noticed. It is reported as a
+    # candidate instead -- see TestOnlyAPersonsDecisionCountsAsResubmit.
+    assert needs_resubmit(_pkt(0, matched_by="name")) is False
+    assert needs_resubmit(_pkt(0, matched_by="unmatched")) is False
     assert needs_resubmit(_pkt(0, matched_by="cccd")) is False
 
 def test_case_status_from_done_count():
@@ -40,7 +43,8 @@ def test_case_status_from_done_count():
 
 def test_progress_counts_done_and_flagged():
     pkts = [_pkt(0, done=True, flags=["cccd"]), _pkt(1, done=True), _pkt(2)]
-    assert progress_of(pkts) == {"done": 2, "total": 3, "flagged": 1}
+    assert progress_of(pkts) == {"done": 2, "total": 3, "flagged": 1,
+                                 "candidates": 0}
 
 def test_rejection_counts_as_completed_and_needs_resubmission_once():
     rejection = {"reasons": ["missing_documents"], "note": ""}
@@ -49,9 +53,11 @@ def test_rejection_counts_as_completed_and_needs_resubmission_once():
         1, done=True, flags=["cccd"], rejection=rejection,
     )
     assert needs_resubmit(rejected) is True
-    assert progress_of([rejected]) == {"done": 1, "total": 1, "flagged": 1}
+    assert progress_of([rejected]) == {"done": 1, "total": 1, "flagged": 1,
+                                       "candidates": 0}
     assert progress_of([rejected_with_flag]) == {
         "done": 1, "total": 1, "flagged": 1,
+        "candidates": 0,
     }
 
 def test_new_packet_review_defaults_include_null_rejection():
@@ -512,3 +518,97 @@ class TestTheEffectiveDecision:
             manifest, None, overrides=cases.effective_overrides(review))}
 
         assert results[21].status is _Status.OK
+
+
+class TestOnlyAPersonsDecisionCountsAsResubmit:
+    """Acc's rule: `cần gửi lại` counts what a *person* decided; the engine's
+    findings are candidates shown separately.
+
+    Before this, the report counted 34 packets on the July case while the
+    dashboard said 0 — and, in the other direction, a weak roster match counted
+    as needing resubmission even though it is something the machine noticed, not
+    something anyone decided.
+    """
+
+    def _packet(self, **kw):
+        base = {"index": 0, "name": "A", "pages": [0, 7],
+                "matchedBy": "cccd", "flags": [], "labels": [],
+                "review": cases.normalize_review({})}
+        return {**base, **kw}
+
+    def _review(self, **kw):
+        return cases.normalize_review(kw)
+
+    def test_a_rejection_counts(self):
+        p = self._packet(review=self._review(rejection={
+            "reasons": ["missing_documents"], "note": ""}))
+        assert cases.needs_resubmit(p) is True
+
+    def test_a_field_a_person_flagged_counts(self):
+        p = self._packet(review=self._review(fields={
+            "cccd": {"seen": True, "flag": {"reason": "sai", "note": ""}}}))
+        assert cases.needs_resubmit(p) is True
+
+    def test_a_cell_a_person_decided_is_wrong_counts(self):
+        o = _override(stt=23, document=_cr.BBNT, frm=_Status.REVIEW,
+                      to=_Status.NO)
+        p = self._packet(review=self._review(overrides={o.key: [o.as_dict()]}))
+        assert cases.needs_resubmit(p) is True
+
+    def test_a_cell_a_person_decided_is_missing_counts(self):
+        o = _override(stt=23, document=_cr.BBNT, frm=_Status.REVIEW,
+                      to=_Status.MISSING)
+        p = self._packet(review=self._review(overrides={o.key: [o.as_dict()]}))
+        assert cases.needs_resubmit(p) is True
+
+    def test_a_cell_a_person_cleared_does_not_count(self):
+        o = _override(stt=21, document=_cr.CONTRACT, frm=_Status.REVIEW,
+                      to=_Status.OK)
+        p = self._packet(review=self._review(overrides={o.key: [o.as_dict()]}))
+        assert cases.needs_resubmit(p) is False
+
+    def test_only_the_latest_decision_on_a_cell_counts(self):
+        first = _override(stt=23, document=_cr.BBNT, frm=_Status.REVIEW,
+                          to=_Status.NO, at="t1")
+        second = _override(stt=23, document=_cr.BBNT, frm=_Status.NO,
+                           to=_Status.OK, at="t2")
+        p = self._packet(review=self._review(overrides={
+            first.key: [first.as_dict(), second.as_dict()]}))
+        assert cases.needs_resubmit(p) is False
+
+    def test_a_weak_roster_match_is_no_longer_a_resubmit(self):
+        """It is something the machine noticed, not something a person decided,
+        so it belongs with the candidates. This changes an existing count."""
+        for matched in ("name", "unmatched"):
+            assert cases.needs_resubmit(self._packet(matchedBy=matched)) is False
+
+    def test_a_clean_packet_does_not_count(self):
+        assert cases.needs_resubmit(self._packet()) is False
+
+    def test_progress_counts_only_decided_packets(self):
+        o = _override(stt=23, document=_cr.BBNT, frm=_Status.REVIEW,
+                      to=_Status.NO)
+        packets = [
+            self._packet(index=0, review=self._review(overrides={
+                o.key: [o.as_dict()]})),
+            self._packet(index=1, matchedBy="unmatched"),
+            self._packet(index=2),
+        ]
+        assert cases.progress_of(packets)["flagged"] == 1
+
+
+class TestWhatAPersonHasDecided:
+    """The helper the resubmit gate reads, exposed so the API can report it."""
+
+    def test_it_lists_the_cells_decided_against(self):
+        bad = _override(stt=23, document=_cr.BBNT, frm=_Status.REVIEW,
+                        to=_Status.NO)
+        good = _override(stt=21, document=_cr.CONTRACT, frm=_Status.REVIEW,
+                         to=_Status.OK)
+        review = cases.normalize_review({"overrides": {
+            bad.key: [bad.as_dict()], good.key: [good.as_dict()]}})
+
+        assert cases.decided_against(review) == [bad.key]
+
+    def test_no_decisions_is_empty(self):
+        assert cases.decided_against(cases.normalize_review({})) == []

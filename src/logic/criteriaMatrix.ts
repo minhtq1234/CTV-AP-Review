@@ -99,11 +99,22 @@ export function decisionKey(stt: number, document: string): string {
 }
 
 /**
- * What this cell can be decided to. Never its current status — an override to
- * the same status records nothing and the server refuses it — and nothing at all
- * for a cell outside the criterion or marked `na`.
+ * What this cell can be decided to — including its current status, which records
+ * a *confirmation*.
+ *
+ * Confirming is not a no-op. Without it a reviewer who agrees with a computed
+ * `no` has no way to say so, and `cần gửi lại` — which counts conclusions, not
+ * candidates — would sit at zero forever.
+ *
+ * Nothing at all for a cell outside the criterion or marked `na`: that states a
+ * fact about the checklist, not a judgment.
  */
 export function choicesFor(cell: CriterionCell | null): SummaryStatus[] {
   if (!cell || cell.status === 'na') return []
-  return DECIDABLE_STATUSES.filter(s => s !== cell.status)
+  return DECIDABLE_STATUSES
+}
+
+/** Whether choosing `to` on this cell records agreement rather than a change. */
+export function confirms(cell: CriterionCell, to: SummaryStatus): boolean {
+  return cell.status === to
 }

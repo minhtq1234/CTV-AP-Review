@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { CaseDetail as CaseDetailT, PacketMeta } from '../upload/api'
-import { caseProgressLabel, packetNeedsResubmit } from '../upload/api'
+import { caseProgressLabel } from '../upload/api'
 import {
   attentionReasons,
   boundaryNote,
+  findingsNote,
   filterPackets,
   PACKET_DASHBOARD_LABELS,
   packetDashboardCounts,
@@ -38,6 +39,9 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
     ? ` · ${summary.auto_merged} ranh giới gộp tự động — cần xác nhận`
     : ''
   const boundaryTxt = summary ? boundaryNote(summary) : ''
+  // Two counts, deliberately apart: `cần gửi lại` is what a person decided, and
+  // the engine's own findings are candidates to look at.
+  const findingsTxt = findingsNote(detail.progress)
 
   return (
     <div className="split-result">
@@ -91,7 +95,11 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
       ) : (
         <>
       <div className="case-summary">
-        <span>{packets.length} gói · {packets.filter(packetNeedsResubmit).length} cần gửi lại · {packets.reduce((n, p) => n + Object.values(p.review?.fields ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề</span>
+        <span>
+          {packets.length} gói
+          {findingsTxt && <> · {findingsTxt}</>}
+          {' '}· {packets.reduce((n, p) => n + Object.values(p.review?.fields ?? {}).filter(f => f.flag).length, 0)} trường có vấn đề
+        </span>
         <button className="btn primary" onClick={onExport}>Xuất báo cáo gửi lại</button>
       </div>
 

@@ -4,6 +4,7 @@ import {
   DECIDABLE_STATUSES,
   cellFor,
   choicesFor,
+  confirms,
   decisionKey,
   isDecided,
   criteriaHeadline,
@@ -165,10 +166,16 @@ describe('recording a decision', () => {
     expect(decisionKey(7, 'Excel')).toBe('07:Excel')
   })
 
-  it('will not offer the status a cell already has', () => {
-    // An override to the same status records nothing, and the server refuses it.
-    expect(choicesFor(cell('Excel', 'ok'))).toEqual(
-      ['no', 'rv', 'missing', 'pending'])
+  it('offers the current status too, as a confirmation', () => {
+    // Without it a reviewer who agrees with a computed `no` cannot say so, and
+    // `cần gửi lại` — which counts conclusions — stays at zero forever.
+    expect(choicesFor(cell('Excel', 'ok'))).toEqual(DECIDABLE_STATUSES)
+  })
+
+  it('knows which choice is agreement rather than a change', () => {
+    const c = cell('Excel', 'no')
+    expect(confirms(c, 'no')).toBe(true)
+    expect(confirms(c, 'ok')).toBe(false)
   })
 
   it('offers nothing for a cell outside the criterion', () => {

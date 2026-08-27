@@ -1059,3 +1059,5 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .criteria-decide-btn.good:hover { border-color: var(--success); color: var(--success); }
 .criteria-decide-btn.bad:hover { border-color: #c5221f; color: #a5201d; }
 .criteria-decide-btn.attention:hover { border-color: #d69b28; color: #8d5b00; }
+/* confirming the engine is a decision too, and reads as the settled choice */
+.criteria-decide-btn.confirming { border-style: dashed; font-weight: 600; }

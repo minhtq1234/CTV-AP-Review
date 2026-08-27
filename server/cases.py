@@ -69,15 +69,39 @@ def effective_overrides(review: dict | None) -> dict:
     return {key: history[-1] for key, history in stored.items() if history}
 
 
+#: A decision in these directions says the CTV team has something to fix. A
+#: decision the other way (to `ok`, `rv`, `pending`) is a reviewer working
+#: through the list, not a finding to send back.
+_RESUBMIT_STATUSES = ("no", "missing")
+
+
+def decided_against(review: dict | None) -> list[str]:
+    """Cells a person has decided are wrong: `["23:BBNT", ...]`.
+
+    Only the standing decision per cell counts -- a reviewer who reversed
+    themselves has not left a finding.
+    """
+    return sorted(
+        key for key, record in effective_overrides(review).items()
+        if record.get("toStatus") in _RESUBMIT_STATUSES
+    )
+
+
 def needs_resubmit(packet: dict) -> bool:
-    """A packet needs resubmission if any field is flagged, or its roster
-    match is weak (matched by name only, or unmatched)."""
+    """Whether a *person* has decided this packet has something to send back.
+
+    Acc's rule: `cần gửi lại` counts what a reviewer decided; the engine's own
+    findings are candidates, surfaced separately. So a rejection, a flagged
+    field, or a cell decided `no`/`missing` counts -- and a weak roster match no
+    longer does, because that is something the machine noticed rather than
+    anything anyone decided.
+    """
     review = packet.get("review") or {"fields": {}}
     if review.get("rejection"):
         return True
     if any(f.get("flag") for f in review.get("fields", {}).values()):
         return True
-    return packet.get("matchedBy") in ("name", "unmatched")
+    return bool(decided_against(review))
 
 
 def case_status(base_status: str, packets: list[dict]) -> str:
@@ -105,6 +129,9 @@ def progress_of(packets: list[dict]) -> dict:
         "done": sum(1 for p in packets if (p.get("review") or {}).get("done")),
         "total": len(packets),
         "flagged": sum(1 for p in packets if needs_resubmit(p)),
+        # Filled in by the API when it has the roster to evaluate against; the
+        # list endpoint reports 0 rather than paying for 12 cases of evaluation.
+        "candidates": 0,
     }
 
 

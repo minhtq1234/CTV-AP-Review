@@ -100,11 +100,57 @@ def _review_field_count(cid: str, index: int) -> int:
         return 0
 
 
-def _packet_for_response(cid: str, packet: dict) -> dict:
+def _packet_for_response(cid: str, packet: dict, findings: int = 0) -> dict:
     return {
         **packet,
         "reviewFieldCount": _review_field_count(cid, packet["index"]),
+        # What the engine found and nobody has decided on yet. A candidate for
+        # resubmission, not a resubmission -- see cases.needs_resubmit.
+        "findingCount": findings,
     }
+
+
+#: Statuses the engine produces that a reviewer would want to look at. `rv` is
+#: not among them: six criteria open `rv` on every packet by construction, so
+#: counting those would make every packet a candidate and say nothing.
+_FINDING_STATUSES = ("no", "missing")
+
+
+def _finding_counts(cid: str, case: dict) -> dict[int, int]:
+    """`{packet_index: findings}` from the engine, fresh.
+
+    Measured at ~40ms for the 41-packet July case including the roster read, so
+    it is computed per request rather than persisted -- one less thing that can
+    go stale against a re-ingest.
+    """
+    rows = _roster_rows(cid)
+    if not rows:
+        return {}
+    import evaluate as ev
+
+    out: dict[int, int] = {}
+    for packet in case["packets"]:
+        path = os.path.join(store.case_dir(cid), "packets",
+                            str(packet["index"]), "manifest.json")
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            continue
+        decided = effective_overrides(packet.get("review"))
+        results = ev.evaluate_packet(
+            manifest, _roster_row_for(cid, packet), decided,
+        )
+        touched = {int(key.split(":", 1)[0]) for key in decided}
+        # A finding a person has decided on is no longer a candidate -- it has
+        # been looked at. Counting it in both places would make the two numbers
+        # move together, which defeats separating them.
+        out[packet["index"]] = sum(
+            1 for r in results
+            if r.status.value in _FINDING_STATUSES and r.stt not in touched)
+    return out
 
 
 def _upload_size(upload: UploadFile) -> int:
@@ -243,10 +289,15 @@ async def get_case(cid: str):
     out["cccdSummary"] = compact_cccd_summary(
         case.get("cccdWorkbook"),
     )
+    findings = await run_in_threadpool(_finding_counts, cid, case)
     out["packets"] = [
-        _packet_for_response(cid, packet) for packet in case["packets"]
+        _packet_for_response(cid, packet, findings.get(packet["index"], 0))
+        for packet in case["packets"]
     ]
-    out["progress"] = progress_of(case["packets"])
+    out["progress"] = {
+        **progress_of(case["packets"]),
+        "candidates": sum(1 for n in findings.values() if n),
+    }
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]
     return out

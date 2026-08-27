@@ -61,12 +61,16 @@ export interface PacketReview {
   done: boolean
   fields: Record<string, FieldReview>
   rejection: PacketRejection | null
+  /** Criteria-cell decisions, append-only: `{key: [record, ...]}`. */
+  overrides?: Record<string, CriterionDecision[]>
 }
 
 export interface CaseProgress {
   done: number
   total: number
   flagged: number
+  /** Packets the engine found something in that nobody has decided on. */
+  candidates?: number
 }
 
 export interface PacketMeta {
@@ -84,6 +88,8 @@ export interface PacketMeta {
   rosterIdentity: Identity | null
   review: PacketReview
   reviewFieldCount: number
+  /** What the engine found here and nobody has decided on yet. */
+  findingCount?: number
 }
 
 // The pipeline's split/OCR summary — key names mirror server/pipeline.py's
@@ -293,12 +299,22 @@ export function reportUrls(caseId: string) {
   }
 }
 
+/**
+ * Whether a *person* decided this packet has something to send back.
+ *
+ * Mirrors `server/cases.py`'s `needs_resubmit`. A weak roster match is no longer
+ * counted: that is something the machine noticed, and the engine's findings are
+ * reported separately as candidates (`progress.candidates`, `findingCount`).
+ * Prefer the server's `progress.flagged` where it is available — this exists for
+ * per-packet rendering, and the two must not drift.
+ */
 export function packetNeedsResubmit(p: PacketMeta): boolean {
-  const flagged = Object.values(p.review?.fields ?? {}).some(f => f.flag)
-  return Boolean(p.review?.rejection)
-    || flagged
-    || p.matchedBy === 'name'
-    || p.matchedBy === 'unmatched'
+  if (p.review?.rejection) return true
+  if (Object.values(p.review?.fields ?? {}).some(f => f.flag)) return true
+  return Object.values(p.review?.overrides ?? {}).some(history => {
+    const standing = history[history.length - 1]
+    return standing?.toStatus === 'no' || standing?.toStatus === 'missing'
+  })
 }
 
 export async function deleteCase(caseId: string): Promise<void> {

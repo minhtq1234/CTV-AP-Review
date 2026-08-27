@@ -1,4 +1,4 @@
-import type { CaseResultSummary, PacketMeta } from '../upload/api'
+import type { CaseProgress, CaseResultSummary, PacketMeta } from '../upload/api'
 
 export type PacketDashboardStatus =
   | 'unseen'
@@ -132,5 +132,23 @@ export function boundaryNote(summary: CaseResultSummary): string {
   }
   const split = summary.boundaries_inserted ?? 0
   if (split) parts.push(`${split} gói bị gộp đã tách ra`)
+  return parts.join(' · ')
+}
+
+
+/**
+ * The two counts, in one line — or '' when there is nothing to say.
+ *
+ * `cần gửi lại` is what a *person* decided; the engine's own findings are
+ * candidates. Keeping them apart is what stops the packet list and the exported
+ * report contradicting each other, which they did: 0 against 34 on the same case.
+ */
+export function findingsNote(progress: CaseProgress): string {
+  const parts: string[] = []
+  if (progress.flagged) parts.push(`${progress.flagged} gói cần gửi lại`)
+  // Decisions first: what a person concluded outranks what the machine proposed.
+  if (progress.candidates) {
+    parts.push(`${progress.candidates} gói có phát hiện cần xem`)
+  }
   return parts.join(' · ')
 }

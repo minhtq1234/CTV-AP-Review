@@ -58,12 +58,17 @@ describe('the decision picker', () => {
     expect(render(row(), false)).not.toContain('criteria-decide')
   })
 
-  it('offers every status except the one the cell already has', () => {
+  it('offers every status a person can decide', () => {
     const html = render(row(), true)
     for (const label of ['Đạt', 'Không khớp', 'Thiếu chứng từ',
                          'Chưa kiểm tra được']) {
       expect(html).toContain(label)
     }
+  })
+
+  it('offers the current status as a confirmation', () => {
+    // The cell is `rv`; agreeing with that is a decision the reviewer can record.
+    expect(render(row(), true)).toContain('Xác nhận: Cần người kiểm tra')
   })
 
   it('does not offer a second confirmation step', () => {
