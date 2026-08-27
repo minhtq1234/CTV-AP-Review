@@ -1216,8 +1216,12 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
   padding: 5px 11px; border: 0.5px solid var(--border); border-radius: 8px;
   background: transparent; cursor: pointer; font-size: 13px;
 }
-.cccd-card-viewer-images { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
-.cccd-card-viewer-images img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+/* align-items: center overrides flex's default stretch -- without it every
+   image would be forced to the container's full width, upscaling a side
+   that is naturally narrower than min(900px, 92vw). Natural size, capped
+   only when the image itself is the larger of the two. */
+.cccd-card-viewer-images { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 16px; }
+.cccd-card-viewer-images img { display: block; max-width: 100%; height: auto; }
 .cccd-summary-link {
   margin-left: 10px; background: none; border: 0; padding: 0;
   color: var(--accent); cursor: pointer; text-decoration: underline;
