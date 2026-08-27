@@ -1,7 +1,7 @@
 // src/logic/cccdReview.test.ts
 import { describe, expect, it } from 'vitest'
 import type { CccdCard, PacketMeta } from '../upload/api'
-import { buildCccdReview, CCCD_ISSUE_LABELS, CCCD_STATE_LABELS, describeCard } from './cccdReview'
+import { buildCccdReview, CCCD_ISSUE_LABELS, CCCD_STATE_LABELS, cccdReviewSeenKey, describeCard, shouldOpenCccdReview } from './cccdReview'
 
 function packet(index: number, name: string | null,
                 overrides: Partial<PacketMeta> = {}): PacketMeta {
@@ -166,5 +166,25 @@ describe('describeCard', () => {
   it('labels every issue code actually seen in real case data', () => {
     const missing = CODES_SEEN_IN_REAL_CASES.filter(code => !(code in CCCD_ISSUE_LABELS))
     expect(missing).toEqual([])
+  })
+})
+
+describe('shouldOpenCccdReview', () => {
+  const summary = { status: 'partial' as const, candidates: 42, attached: 40, unresolved: 2 }
+
+  it('opens for a case that has a workbook and has not been seen', () => {
+    expect(shouldOpenCccdReview(summary, false)).toBe(true)
+  })
+
+  it('skips a case whose step was already dismissed', () => {
+    expect(shouldOpenCccdReview(summary, true)).toBe(false)
+  })
+
+  it('skips a case uploaded without a CCCD workbook', () => {
+    expect(shouldOpenCccdReview(null, false)).toBe(false)
+  })
+
+  it('keys the dismissal per case', () => {
+    expect(cccdReviewSeenKey('abc123')).toBe('cccd-reviewed:abc123')
   })
 })

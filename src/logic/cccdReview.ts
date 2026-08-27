@@ -2,7 +2,7 @@
 // The CCCD review step's model. The API lists CARDS (each knowing which packet
 // claimed it); this screen is about PACKETS (each needing a card). That
 // inversion is the only real logic here, so it lives in one pure function.
-import type { CccdCard, PacketMeta } from '../upload/api'
+import type { CccdCard, CccdSummary, PacketMeta } from '../upload/api'
 // The name-fallback chain lives in packetTable.ts so this screen and the
 // packet table cannot silently disagree about what a packet is called.
 import { packetDisplayName } from './packetTable'
@@ -132,4 +132,18 @@ export function describeCard(card: CccdCard): string {
     CCCD_STATE_LABELS[card.state] ?? card.state,
     ...card.issues.map(issue => CCCD_ISSUE_LABELS[issue] ?? issue),
   ].join(' · ')
+}
+
+/** Per-case, per-browser: the step is shown once and then dismissed. */
+export function cccdReviewSeenKey(caseId: string): string {
+  return `cccd-reviewed:${caseId}`
+}
+
+/** A case with no workbook has nothing to review, and a dismissed one has been
+ *  looked at. Everything else opens on the step. */
+export function shouldOpenCccdReview(
+  cccdSummary: CccdSummary | null,
+  seen: boolean,
+): boolean {
+  return cccdSummary !== null && !seen
 }
