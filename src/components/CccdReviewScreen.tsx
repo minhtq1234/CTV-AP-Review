@@ -197,35 +197,42 @@ export default function CccdReviewScreen({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const cancelledRef = useRef(false)
+  // Which case the screen is live on — null once unmounted. Every response is
+  // checked against the case it was asked for, so an unmount or a `caseId` swap
+  // mid-flight retires the answer instead of rendering one case's cards over
+  // another's. A shared boolean cannot express the swap: the effect that re-arms
+  // it runs in the same commit as the cleanup that set it.
+  const liveCaseIdRef = useRef<string | null>(null)
 
   const load = useCallback(async () => {
     setCards(null)
     setError(null)
     try {
       const result = await listCccdCards(caseId)
-      if (!cancelledRef.current) setCards(result)
+      if (liveCaseIdRef.current === caseId) setCards(result)
     } catch {
-      if (!cancelledRef.current) setError(LOAD_ERROR)
+      if (liveCaseIdRef.current === caseId) setError(LOAD_ERROR)
     }
   }, [caseId])
 
   useEffect(() => {
-    cancelledRef.current = false
+    liveCaseIdRef.current = caseId
     void load()
-    return () => { cancelledRef.current = true }
-  }, [load])
+    return () => { liveCaseIdRef.current = null }
+  }, [caseId, load])
 
   const detach = async (cardId: string) => {
     setBusy(true)
     setError(null)
     try {
       const result = await assignCccdCard(caseId, cardId, null)
-      setCards(result.cards)
+      if (liveCaseIdRef.current === caseId) setCards(result.cards)
     } catch (caught) {
       const code = caught instanceof Error ? caught.message : ''
-      setError(ERROR_TEXT[code] ?? MUTATE_ERROR)
+      if (liveCaseIdRef.current === caseId) setError(ERROR_TEXT[code] ?? MUTATE_ERROR)
     } finally {
+      // Unguarded on purpose: `busy` tracks this mutation, not the case. Skipping
+      // it after a swap would leave the new case's buttons disabled for good.
       setBusy(false)
     }
   }

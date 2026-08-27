@@ -66,17 +66,30 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function mount(onContinue = () => {}) {
+// Re-rendering into the same root keeps the same instance, so `caseId` changes
+// in place — what UploadFlow's render branch does, since it carries no `key`.
+async function render(caseId: string, onContinue = () => {}) {
   await act(async () => {
     root.render(
       <CccdReviewScreen
-        caseId="case-1"
+        caseId={caseId}
         caseName="FA-SYNTHETIC.pdf"
         packets={packets}
         onContinue={onContinue}
       />,
     )
   })
+}
+
+async function mount(onContinue = () => {}) {
+  await render('case-1', onContinue)
+}
+
+// A response the test lands by hand, after the screen has moved on.
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(res => { resolve = res })
+  return { promise, resolve }
 }
 
 function button(text: string): HTMLButtonElement {
@@ -149,5 +162,49 @@ describe('CccdReviewScreen', () => {
     await mount()
     await act(async () => { button('Gỡ').click() })
     expect(host.textContent).toContain('Không tìm thấy ảnh này.')
+  })
+
+  // Both cases below swap `caseId` on a mounted screen while a request for the
+  // old case is still in flight. Its response describes a case the reviewer is
+  // no longer looking at, so it must not be rendered.
+  it('drops a detach response that arrives after the screen moved to another case', async () => {
+    listCccdCards.mockImplementation((cid: string) => Promise.resolve(
+      cid === 'case-1' ? [card('card-00', 0), card('card-01', 1)] : [],
+    ))
+    const detached = deferred<{ cards: CccdCard[] }>()
+    assignCccdCard.mockReturnValue(detached.promise)
+
+    await render('case-1')
+    await act(async () => { button('Gỡ').click() })
+
+    await render('case-2')
+    expect(host.textContent).toContain('2 gói chưa có thẻ')
+
+    await act(async () => {
+      detached.resolve({ cards: [card('card-00', 0), card('card-01', null)] })
+      await detached.promise
+    })
+
+    expect(host.textContent).toContain('2 gói chưa có thẻ')
+    expect(host.textContent).not.toContain('1 gói chưa có thẻ')
+  })
+
+  it('drops a load response that arrives after the screen moved to another case', async () => {
+    const first = deferred<CccdCard[]>()
+    listCccdCards.mockImplementation((cid: string) => (
+      cid === 'case-1' ? first.promise : Promise.resolve([])
+    ))
+
+    await render('case-1')
+    await render('case-2')
+    expect(host.textContent).toContain('2 gói chưa có thẻ')
+
+    await act(async () => {
+      first.resolve([card('card-00', 0), card('card-01', 1)])
+      await first.promise
+    })
+
+    expect(host.textContent).toContain('2 gói chưa có thẻ')
+    expect(host.textContent).not.toContain('0 gói chưa có thẻ')
   })
 })
