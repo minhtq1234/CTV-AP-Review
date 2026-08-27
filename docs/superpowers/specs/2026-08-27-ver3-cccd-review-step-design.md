@@ -214,7 +214,10 @@ Green before commit, as always: `cd server && python3 -m pytest`, `node_modules/
 - Roster/identity correction and page-boundary confirmation (decision 2)
 - Any criteria-engine change, including the Tier 4 criteria that render empty and the #15
   PIT threshold defect — both tracked in `handoff-ver3.md`, neither belongs in this step
-- Edits to `CaseDetail`, `PacketTable`, `FolderReview` or `SummaryTab`
+- Edits to `PacketTable`, `FolderReview` or `SummaryTab`. **`CaseDetail` came off this list**:
+  it gained one optional `onOpenCccd` prop rendering a `Xem thẻ CCCD` button inside the CCCD
+  banner it already showed, because that banner was the only honest home for the way back to the
+  step. Nine lines, additive, and optional so existing callers are unaffected.
 - A persisted "this person has no card" marker
 - Re-ingest, re-OCR, or any change to the GreenNode IDP path
 
@@ -260,5 +263,29 @@ Case `68ddc1f0` (`-idp-namefix`, newest), read from `case.json` on 2026-08-27:
 
 The frozen fallback `87844b89` (`-idp`) sits at 38 `exact` + 1 `manual` + 1 `suggested` +
 2 `conflict` = 39 attached, which exercises `suggested` in the UI. The pre-IDP baseline
-`fixed0boundaries0jul2026000000001` has 24 `exact` + 18 `manual`, i.e. 18 rows needing
-action — a useful worst case for the exceptions section's layout.
+`fixed0boundaries0jul2026000000001` has 24 `exact` + 18 `manual` — which is **35** rows needing
+action, not 18. Corrected after the final review recomputed the join against the real
+`case.json`: 41 packets less 24 attached leaves 17 packets with no card, and the 18 unattached
+manual cards each get a row on top of that. The original figure counted the cards and forgot the
+packets, understating the uncollapsed worst case roughly twofold. It changes no decision — 35
+list items need no virtualisation — but it is the number the layout has to hold, and 18 of those
+rows carry a thumbnail.
+
+## Deliberately not done
+
+- **`ERROR_TEXT` is duplicated, not shared.** The four `CccdManualError` codes map to identical
+  Vietnamese strings in both `CccdReviewScreen.tsx` and `CccdCardPicker.tsx`. The final review
+  argued it belongs beside the state and issue label maps in `src/logic/cccdReview.ts`, and it is
+  right in principle — duplication held in step by discipline is exactly how Task 2's vocabulary
+  came to cover 7 of 22 codes. It stays duplicated because centralising it means editing
+  `CccdCardPicker`, which `FolderReview` also renders, for a refactor rather than a fix at the end
+  of a build. Four entries, no drift across ten tasks. Worth folding into the next change that
+  touches that file for its own reasons.
+- **A one-frame stale pairing on a `caseId` swap.** React commits the new `caseId` and `packets`
+  before the effect nulls `cards`, so a single intermediate paint can join the previous case's
+  cards to the new case's packets. It self-corrects on the next frame, and no test can observe it
+  because `act()` coalesces the render, the effect and the correction into one step. Same root as
+  the swap costs above; not separately guarded.
+- **`UploadFlow.openCase` has no in-flight lock**, and `CaseList` does not disable a clicked row.
+  That is what makes a `caseId` swap reachable at all. It predates this work and affects the
+  detail and review screens identically, so it belongs to its own change rather than this one.
