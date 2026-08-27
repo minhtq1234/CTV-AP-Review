@@ -100,13 +100,20 @@ def _review_field_count(cid: str, index: int) -> int:
         return 0
 
 
-def _packet_for_response(cid: str, packet: dict, findings: int = 0) -> dict:
+def _packet_for_response(cid: str, packet: dict, rollup: dict | None = None) -> dict:
+    rollup = rollup or {}
     return {
         **packet,
         "reviewFieldCount": _review_field_count(cid, packet["index"]),
         # What the engine found and nobody has decided on yet. A candidate for
         # resubmission, not a resubmission -- see cases.needs_resubmit.
-        "findingCount": findings,
+        "findingCount": rollup.get("findings", 0),
+        # The engine's own rollup for this packet, so a list column and the
+        # 25-criterion matrix cannot disagree. Absent when there is no roster to
+        # compare against -- the list must not imply a verdict it cannot support.
+        "aiStatus": rollup.get("aiStatus"),
+        "documents": rollup.get("documents"),
+        "hasCommitment": rollup.get("hasCommitment"),
     }
 
 
@@ -116,19 +123,42 @@ def _packet_for_response(cid: str, packet: dict, findings: int = 0) -> dict:
 _FINDING_STATUSES = ("no", "missing")
 
 
-def _finding_counts(cid: str, case: dict) -> dict[int, int]:
-    """`{packet_index: findings}` from the engine, fresh.
+#: The bảng kê column. It is the reference being compared against, not a
+#: document the CTV submits, so it never counts toward document completeness.
+_ROSTER_COLUMN = "Excel"
 
-    Measured at ~40ms for the 41-packet July case including the roster read, so
-    it is computed per request rather than persisted -- one less thing that can
-    go stale against a re-ingest.
+
+def _packet_rollups(cid: str, case: dict) -> dict[int, dict]:
+    """`{packet_index: {findings, aiStatus, documents, hasCommitment}}`, fresh.
+
+    One loop, because reading each manifest and evaluating every criterion was
+    already being done here for the finding count alone; the rollup, the document
+    span and the commitment check are all derived from results already in hand,
+    and measured at 0ms on top.
+
+    Measured on the 41-packet July case: 13ms to load the manifests, 12ms to
+    evaluate all 41 packets. The whole list request is ~0.5s warm, dominated by
+    the roster .xlsx read rather than by anything here -- worth knowing before
+    optimising the wrong half. Stays per-request rather than persisted: one less
+    thing that can go stale against a re-ingest.
+
+    `aiStatus` is the engine's own worst-wins rollup (`criteria.roll_up`) over
+    the packet's criteria, so the list column and the 25-criterion matrix cannot
+    disagree about the same packet.
+
+    Document completeness comes from the engine too, rather than from a
+    hand-written "required documents" list: a criterion whose document is absent
+    already yields `missing` cells naming that document, so the span is the
+    documents the criteria actually reach for this packet and `missing` is the
+    subset that is not there.
     """
     rows = _roster_rows(cid)
     if not rows:
         return {}
+    import criteria as cr
     import evaluate as ev
 
-    out: dict[int, int] = {}
+    out: dict[int, dict] = {}
     for packet in case["packets"]:
         path = os.path.join(store.case_dir(cid), "packets",
                             str(packet["index"]), "manifest.json")
@@ -147,9 +177,22 @@ def _finding_counts(cid: str, case: dict) -> dict[int, int]:
         # A finding a person has decided on is no longer a candidate -- it has
         # been looked at. Counting it in both places would make the two numbers
         # move together, which defeats separating them.
-        out[packet["index"]] = sum(
-            1 for r in results
-            if r.status.value in _FINDING_STATUSES and r.stt not in touched)
+        cells = [c for r in results for c in r.cells if c.document != _ROSTER_COLUMN]
+        span = {c.document for c in cells if c.status is not cr.Status.NOT_APPLICABLE}
+        out[packet["index"]] = {
+            "findings": sum(
+                1 for r in results
+                if r.status.value in _FINDING_STATUSES and r.stt not in touched),
+            "aiStatus": cr.roll_up([r.status for r in results]).value,
+            "documents": {
+                "span": len(span),
+                "missing": sorted(
+                    {c.document for c in cells if c.status is cr.Status.MISSING}),
+            },
+            "hasCommitment": any(
+                (d or {}).get("kind") == "commitment"
+                for d in (manifest.get("docs") or [])),
+        }
     return out
 
 
@@ -289,14 +332,14 @@ async def get_case(cid: str):
     out["cccdSummary"] = compact_cccd_summary(
         case.get("cccdWorkbook"),
     )
-    findings = await run_in_threadpool(_finding_counts, cid, case)
+    rollups = await run_in_threadpool(_packet_rollups, cid, case)
     out["packets"] = [
-        _packet_for_response(cid, packet, findings.get(packet["index"], 0))
+        _packet_for_response(cid, packet, rollups.get(packet["index"]))
         for packet in case["packets"]
     ]
     out["progress"] = {
         **progress_of(case["packets"]),
-        "candidates": sum(1 for n in findings.values() if n),
+        "candidates": sum(1 for r in rollups.values() if r.get("findings")),
     }
     if case["status"] == "processing" and cid in _progress:
         out["liveProgress"] = _progress[cid]
