@@ -735,6 +735,21 @@ git commit -m "feat(cccd): the review step's view — exceptions first, attached
 
 ## Task 4: The container — load the cards
 
+> **AMENDED AFTER REVIEW.** Two changes on top of the code below, both mine:
+> 1. **`review` is `CccdReview | null`.** As originally written the container passed
+>    `buildCccdReview(packets, cards ?? [])`, so before the fetch resolved — and forever after a
+>    failed one — the screen rendered "N gói chưa có thẻ" and listed every packet as needing a
+>    card. On the real 41-packet case that is a visible flash of a false screen on every mount,
+>    and a permanent lie after a network failure. `null` now means "not loaded": the view renders
+>    the header, `Đang tải…` instead of counts, the error if any, and `Tiếp tục` — but neither
+>    bucket. A `Thử lại` button (`onRetry`, never disabled) is the way out of a failed load.
+> 2. **The effect carries a `cancelled` guard**, matching `CccdCardPicker.tsx`'s handling of the
+>    identical fetch-by-id shape. The hazard is unreachable through today's `UploadFlow`, which
+>    clears `caseId` before opening another case, but the guard costs three lines and does not
+>    depend on a future task preserving that discipline.
+>
+> `CccdReviewViewProps` therefore gained `onRetry: () => void` and widened `review`.
+
 **Files:**
 - Modify: `src/components/CccdReviewScreen.tsx`
 - Create: `src/components/CccdReviewScreen.interaction.test.tsx`
@@ -1145,9 +1160,10 @@ import CccdCardPicker from './CccdCardPicker'
       <CccdReviewView
         caseId={caseId}
         caseName={caseName}
-        review={buildCccdReview(packets, cards ?? [])}
+        review={cards === null ? null : buildCccdReview(packets, cards)}
         busy={busy || cards === null}
         error={error}
+        onRetry={() => { setError(null); void load() }}
         onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}
         onDetach={cardId => { void detach(cardId) }}
         onContinue={onContinue}
