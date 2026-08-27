@@ -27,7 +27,36 @@ v1 convention, so the number lives in the repo rather than in conversation.
 
 ## 2. What ver 2 adds
 
-Exactly two things.
+A prerequisite fix, then two features.
+
+### 2.0 Prerequisite — stop discarding reads the pipeline already made
+
+`server/checklist.py` picks one source per value check by **document routing**, without
+checking whether that source has a value:
+
+```python
+src = next((s for s in sources if s and s.get("docId") == routed), None) or (sources[0] if sources else None)
+```
+
+Measured on the February case: **139 of the 175 checks reported as unread had a readable
+value that OCR had already extracted** on another document in the same packet. Only 36 were
+genuinely unread. Example, packet 0:
+
+| check | checklist picked | available but ignored |
+|---|---|---|
+| `A1` Số CCCD | `contract-0`, `''`, conf 0.0 | `bbnt-0`, `079189016370`, conf 0.91 |
+| `B1` Họ tên | `contract-0`, `''`, conf 0.0 | `bbnt-0`, `Huỳnh Thị Thúy Phượng`, conf 0.95 |
+
+Routing itself is legitimate — "Số CCCD khớp giữa chứng từ" wants the CCCD *as it appears on
+the contract*. The defect is preferring an **empty** routed source over a **readable**
+non-routed one, and then reporting the field as unread.
+
+Fix shape: prefer a readable source on the routed document; fall back to a readable source on
+another document **and attribute which document it came from**, so the reviewer is told
+"the contract's value couldn't be read; the BBNT here reads X" rather than "nothing was read".
+
+**Do this before 2.1.** Otherwise IDP will extract values that this same routing rule
+discards, and the cost buys nothing for those 139 fields.
 
 ### 2.1 GreenNode IDP for document-field extraction
 
@@ -80,28 +109,30 @@ drawer (ported from ver1)"*).
 
 ## 4. Measurements that shaped this scope
 
-Taken 2026-08-27 against the live pipelines. **The two numbers differ by codebase — do not
-mix them up.**
+Taken 2026-08-27 against the live pipelines. All rows below use **one** metric —
+`fields[].sources[]`, i.e. did OCR read a value for this field anywhere in the packet.
 
-**`stable`, July case (41 packets) — Tesseract only:**
+| batch | code | fields read | `phi` | `cccd` | median conf | below `LOW_CONF` |
+|---|---|---|---|---|---|---|
+| July (41 packets) | current stable | **235/246 (96%)** | 32/41 (78%) | 41/41 (100%) | 0.93 | 91/426 (21%) |
+| February (32 packets) | current stable | **149/192 (78%)** | **0/32 (0%)** | 25/32 (78%) | 0.92 | 28/158 (18%) |
+| February (32 packets) | old code, ingested 28 Jul | 150/192 (78%) | 0/32 | 26/32 | 0.94 | 29/174 (17%) |
 
-    235 / 246 field slots read   (96%)      median confidence 0.93
-      hoten 41/41   cccd 41/41   mst 41/41   tk 41/41
-      ngaysinh 39/41 (95%)       phi 32/41 (78%)
-    reads at/above LOW_CONF 0.7: 335/426
+**February is a genuinely harder submission**, and stable's August OCR fixes closed none of
+that gap (149 vs 150 is noise). `phi` — a payment amount — is unread across all 32 packets.
 
-**`main`, February case (32 packets) — older pipeline, lacks stable's OCR + splitter fixes:**
+**Beware the metric.** An earlier claim that February read at "9%" and that extraction was the
+bottleneck was an artifact of measuring `checks[].source.value` instead. Same case, same code:
 
-    17 / 192 value checks read   (9%)
-    autostatus: 175 review · 11 match · 6 mismatch
+    fields[].sources[]        156/192  (81%)
+    checks[].source.value      17/192   (9%)
 
-`main`'s 9% is **not** representative of `stable`. An earlier claim that "extraction is the
-bottleneck" was based on it and is wrong for the shipping codebase.
+The gap between those two numbers is not OCR quality — it is the routing defect in §2.0.
 
-**Why the escalation shape:** at 96%, IDP has ~4% of fields to gain outright, plus the
-low-confidence tail (91 of 426 reads below `LOW_CONF`). `phi` at 78% is the clear
-beneficiary. Spending an IDP call on every field to win that would be poor value and would
-send far more packet data off the workstation than necessary.
+**Why IDP is still an escalation, but a substantial one:** on July the trigger (unread, or
+below `LOW_CONF`) would fire on ~20% of fields; on February, ~35–40%. That is real work rather
+than marginal work, and it justifies IDP — but it does not justify replacing Tesseract, which
+reads 78–96% correctly and keeps that data on the workstation.
 
 **Prior evidence IDP does help where Tesseract struggles** — recorded in
 `server/pipeline.py` for CCCD cards: *26 of 41 people resolved locally versus 40 of 41 via
@@ -117,16 +148,19 @@ disagreement when the read behind it was confident.
 ## 5. Open questions
 
 1. **IDP mode not finally decided.** §2.1 records a recommendation, not a decision.
-2. **Does a poor submission still read badly on `stable`?** The February batch has not been
-   measured on `stable` — only on `main`. If February reads ~96% on `stable` too, IDP's
-   remaining value is mostly `phi` and the low-confidence tail; if it reads badly, IDP earns
-   a wider role. **Measure this before building 2.1.**
-3. **Governance for sending payment documents to GreenNode.** CCCD-only IDP was one thing;
+2. ~~Does a poor submission still read badly on `stable`?~~ **Answered 2026-08-27** — yes.
+   February reads 78% vs July's 96%, `phi` 0/32, and the August fixes did not help it. IDP
+   earns a wider role than July alone suggested. See §4. Re-ingested as case
+   `8ee0c3a88104466cad20cccbfbf0b25a` (~7 min for 32 packets) if the numbers need rechecking.
+3. **Why is `phi` 0/32 on February but 32/41 on July?** Unknown, and worth an hour before
+   spending IDP calls on it — a labelling or layout difference may be cheaper to fix than a
+   network call per field. `phi` is the highest-value field in the packet.
+4. **Governance for sending payment documents to GreenNode.** CCCD-only IDP was one thing;
    document-field IDP sends contracts and BBNT off the workstation. The original brief
    allowed GreenNode processing *"subject to confirmation of internal logging, retention and
    access controls."* Current standing instruction is to make it work first and settle
    privacy later — recorded here so the decision is explicit, not assumed.
-4. **What discriminating columns does the table need?** Unanswered; it decides whether 2.2 is
+5. **What discriminating columns does the table need?** Unanswered; it decides whether 2.2 is
    worth doing. See the `ver1` defect in §2.2.
 
 ## 6. Out of scope
