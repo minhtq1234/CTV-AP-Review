@@ -3,7 +3,9 @@
 // claimed it); this screen is about PACKETS (each needing a card). That
 // inversion is the only real logic here, so it lives in one pure function.
 import type { CccdCard, PacketMeta } from '../upload/api'
-import { NO_NAME } from './packetTable'
+// The name-fallback chain lives in packetTable.ts so this screen and the
+// packet table cannot silently disagree about what a packet is called.
+import { packetDisplayName } from './packetTable'
 
 export interface CccdPacketRow {
   kind: 'packet'
@@ -20,6 +22,11 @@ export interface CccdCardRow {
 
 export type CccdReviewRow = CccdPacketRow | CccdCardRow
 
+/** A packet row in the `attached` bucket: the card is there by construction. */
+export interface CccdAttachedRow extends CccdPacketRow {
+  card: CccdCard
+}
+
 export interface CccdReviewCounts {
   candidates: number
   attached: number
@@ -30,16 +37,8 @@ export interface CccdReviewCounts {
 export interface CccdReview {
   /** Packets missing a card first, then cards nothing has claimed. */
   needsAction: CccdReviewRow[]
-  attached: CccdPacketRow[]
+  attached: CccdAttachedRow[]
   counts: CccdReviewCounts
-}
-
-/** The same fallback chain the packet table uses, so the two screens agree. */
-export function packetDisplayName(packet: PacketMeta): string {
-  return packet.rosterIdentity?.name
-    || packet.name
-    || packet.ocrIdentity?.name
-    || NO_NAME
 }
 
 export function buildCccdReview(
@@ -59,16 +58,16 @@ export function buildCccdReview(
 
   const ordered = [...packets].sort((a, b) => a.index - b.index)
   const needsAction: CccdReviewRow[] = []
-  const attached: CccdPacketRow[] = []
+  const attached: CccdAttachedRow[] = []
   for (const packet of ordered) {
-    const row: CccdPacketRow = {
-      kind: 'packet',
+    const card = byPacket.get(packet.index) ?? null
+    const base = {
+      kind: 'packet' as const,
       packetIndex: packet.index,
       name: packetDisplayName(packet),
-      card: byPacket.get(packet.index) ?? null,
     }
-    if (row.card) attached.push(row)
-    else needsAction.push(row)
+    if (card) attached.push({ ...base, card })
+    else needsAction.push({ ...base, card: null })
   }
   for (const card of floating) needsAction.push({ kind: 'card', card })
 

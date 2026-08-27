@@ -46,6 +46,19 @@ export interface PacketRow {
 /** The unmatched-packet placeholder, so a row is never blank. */
 export const NO_NAME = 'chưa khớp bảng kê'
 
+/**
+ * The name-fallback chain for a packet: roster name, then the packet's own
+ * name, then the OCR name, then the placeholder. This is the single
+ * definition — both this table's rows and the CCCD review screen call it,
+ * so the two cannot silently disagree about what a packet is called.
+ */
+export function packetDisplayName(packet: PacketMeta): string {
+  return packet.rosterIdentity?.name
+    || packet.name
+    || packet.ocrIdentity?.name
+    || NO_NAME
+}
+
 export function packetRow(packet: PacketMeta): PacketRow {
   const ai = packet.aiStatus ?? null
   const presentation = ai ? SUMMARY_STATUS_PRESENTATION[ai] : null
@@ -55,7 +68,7 @@ export function packetRow(packet: PacketMeta): PacketRow {
   return {
     index: packet.index,
     stt: String(packet.index + 1).padStart(2, '0'),
-    name: packet.rosterIdentity?.name || packet.name || packet.ocrIdentity?.name || NO_NAME,
+    name: packetDisplayName(packet),
     ai,
     aiLabel: presentation ? presentation.label : 'Chưa đối chiếu được',
     aiTone: presentation ? presentation.tone : 'muted',

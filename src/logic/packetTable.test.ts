@@ -7,6 +7,7 @@ import {
   documentsLabel,
   filterRows,
   isFiltering,
+  packetDisplayName,
   packetRow,
   packetRows,
   statusCounts,
@@ -28,6 +29,26 @@ function P(over: Partial<PacketMeta> = {}): PacketMeta {
     ...over,
   } as PacketMeta
 }
+
+describe('packetDisplayName', () => {
+  it('prefers the roster name, then the packet name, then the OCR name', () => {
+    expect(packetDisplayName(P({
+      rosterIdentity: { cccd: '1', name: 'Tên Trên Bảng Kê' },
+      ocrIdentity: { cccd: '1', name: 'Tên Đọc Từ Scan' },
+    }))).toBe('Tên Trên Bảng Kê')
+    expect(packetDisplayName(P({ rosterIdentity: null, name: 'Tên Gói Hồ Sơ',
+                                 ocrIdentity: { cccd: '', name: 'Tên Đọc Từ Scan' } })))
+      .toBe('Tên Gói Hồ Sơ')
+    expect(packetDisplayName(P({ rosterIdentity: null, name: null,
+                                 ocrIdentity: { cccd: '', name: 'Đọc Từ Scan' } })))
+      .toBe('Đọc Từ Scan')
+  })
+
+  it('falls back to the same unmatched label the packet table uses', () => {
+    expect(packetDisplayName(P({ rosterIdentity: null, name: null,
+                                 ocrIdentity: { cccd: '', name: '' } }))).toBe(NO_NAME)
+  })
+})
 
 describe('packetRow', () => {
   it('numbers rows from 1, zero-padded', () => {

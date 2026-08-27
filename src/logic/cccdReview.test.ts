@@ -1,7 +1,7 @@
 // src/logic/cccdReview.test.ts
 import { describe, expect, it } from 'vitest'
 import type { CccdCard, PacketMeta } from '../upload/api'
-import { buildCccdReview, packetDisplayName } from './cccdReview'
+import { buildCccdReview } from './cccdReview'
 
 function packet(index: number, name: string | null,
                 overrides: Partial<PacketMeta> = {}): PacketMeta {
@@ -93,24 +93,9 @@ describe('buildCccdReview', () => {
       counts: { candidates: 0, attached: 0, packetsWithoutCard: 0, unattachedCards: 0 },
     })
   })
-})
 
-describe('packetDisplayName', () => {
-  it('prefers the roster name, then the packet name, then the OCR name', () => {
-    expect(packetDisplayName(packet(0, 'Packet Name'))).toBe('Packet Name')
-    expect(packetDisplayName(packet(0, 'Packet Name', {
-      rosterIdentity: { cccd: 'x', name: 'Roster Name' },
-    }))).toBe('Roster Name')
-    expect(packetDisplayName(packet(0, null, {
-      rosterIdentity: null,
-      ocrIdentity: { cccd: 'x', name: 'Ocr Name' },
-    }))).toBe('Ocr Name')
-  })
-
-  it('falls back to the same unmatched label the packet table uses', () => {
-    expect(packetDisplayName(packet(0, null, {
-      rosterIdentity: null,
-      ocrIdentity: { cccd: '', name: '' },
-    }))).toBe('chưa khớp bảng kê')
+  it('exposes the attached bucket\'s card without a null check', () => {
+    const review = buildCccdReview([packet(0, 'Synthetic A')], [card('card-00', 0)])
+    expect(review.attached.map(row => row.card.cardId)).toEqual(['card-00'])
   })
 })
