@@ -1,8 +1,10 @@
 // Ver 3 step 1: the reviewer confirms which CCCD card belongs to which packet
 // before opening the packet list. Exceptions first; everything already attached
 // sits behind a collapsed section, so a wrong automatic match is still findable.
-import { cccdCardImageUrl } from '../upload/api'
-import type { CccdCard } from '../upload/api'
+import { useCallback, useEffect, useState } from 'react'
+import { cccdCardImageUrl, listCccdCards } from '../upload/api'
+import type { CccdCard, PacketMeta } from '../upload/api'
+import { buildCccdReview } from '../logic/cccdReview'
 import {
   describeCard,
   type CccdAttachedRow,
@@ -150,5 +152,47 @@ export function CccdReviewView({
         </button>
       </div>
     </div>
+  )
+}
+
+const LOAD_ERROR = 'Không tải được danh sách ảnh.'
+
+interface Props {
+  caseId: string
+  caseName: string
+  packets: PacketMeta[]
+  onContinue: () => void
+}
+
+export default function CccdReviewScreen({
+  caseId,
+  caseName,
+  packets,
+  onContinue,
+}: Props) {
+  const [cards, setCards] = useState<CccdCard[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      setCards(await listCccdCards(caseId))
+    } catch {
+      setError(LOAD_ERROR)
+    }
+  }, [caseId])
+
+  useEffect(() => { void load() }, [load])
+
+  return (
+    <CccdReviewView
+      caseId={caseId}
+      caseName={caseName}
+      review={buildCccdReview(packets, cards ?? [])}
+      busy={cards === null}
+      error={error}
+      onAssign={() => {}}
+      onDetach={() => {}}
+      onContinue={onContinue}
+    />
   )
 }
