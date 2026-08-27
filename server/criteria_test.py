@@ -172,3 +172,113 @@ class TestAnUnevaluatedPacketIsHonest:
         assert counts["rv"] == 6
         assert counts["pending"] == 19
         assert sum(counts.values()) == 25
+
+
+class TestTheOverrideRecord:
+    """Spec §6. A reviewer may change any computed status, and the record keeps
+    what the engine thought — `from_status` is the labelled corpus this project
+    does not otherwise have, accumulated at no marginal cost.
+    """
+
+    def _override(self, **kw):
+        base = dict(stt=1, document=cr.CONTRACT, from_status=Status.OK,
+                    to_status=Status.NO, reason="tên trên hợp đồng là người khác",
+                    at="2026-08-27T00:00:00+00:00", by="")
+        return cr.Override(**{**base, **kw})
+
+    def test_it_carries_what_the_engine_thought_and_what_the_human_decided(self):
+        o = self._override()
+        assert o.from_status is Status.OK
+        assert o.to_status is Status.NO
+
+    def test_it_is_frozen(self):
+        import dataclasses
+        import pytest as _pytest
+        with _pytest.raises(dataclasses.FrozenInstanceError):
+            self._override().stt = 2
+
+    def test_an_author_is_empty_until_auth_exists(self):
+        # Spec §6: `by: str  # reviewer identity when auth exists; "" until then`
+        assert self._override().by == ""
+
+    def test_a_reason_is_required(self):
+        import pytest as _pytest
+        for blank in ("", "   ", "\n"):
+            with _pytest.raises(ValueError, match="reason"):
+                self._override(reason=blank)
+
+    def test_the_document_must_be_one_the_criterion_spans(self):
+        import pytest as _pytest
+        # #01 spans Excel/CCCD/Hợp đồng/BBNT/Bảng Kê Thu Mua, never the cam kết
+        with _pytest.raises(ValueError, match="document"):
+            self._override(stt=1, document=cr.COMMITMENT)
+
+    def test_an_unknown_criterion_is_refused(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="stt"):
+            self._override(stt=99)
+
+    def test_a_roster_level_criterion_is_refused_here(self):
+        """#20/#26/#30/#31/#32 hang off no packet and have no document axis, so
+        they cannot be keyed this way. Overriding them is separate work."""
+        import pytest as _pytest
+        for stt in cr.ROSTER_LEVEL_STT:
+            with _pytest.raises(ValueError, match="stt"):
+                self._override(stt=stt, document=cr.EXCEL)
+
+    def test_a_no_op_override_is_refused(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="same"):
+            self._override(from_status=Status.OK, to_status=Status.OK)
+
+    def test_na_cannot_be_overridden_to_or_from(self):
+        """`na` means the document is outside the criterion — a fact about the
+        checklist, not a judgment, so there is nothing for a person to decide."""
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="na"):
+            self._override(to_status=Status.NOT_APPLICABLE)
+        with _pytest.raises(ValueError, match="na"):
+            self._override(from_status=Status.NOT_APPLICABLE)
+
+    def test_every_other_transition_is_allowed(self):
+        decidable = [s for s in Status if s is not Status.NOT_APPLICABLE]
+        for a in decidable:
+            for b in decidable:
+                if a is b:
+                    continue
+                self._override(from_status=a, to_status=b)   # must not raise
+
+
+class TestTheOverrideKey:
+    """A record needs to identify one cell of one packet. `stt` + `document`
+    alone cannot: July has 41 packets."""
+
+    def test_a_cell_is_addressed_by_criterion_and_document(self):
+        assert cr.override_key(1, cr.CONTRACT) == "01:Hợp đồng"
+
+    def test_the_key_is_stable_across_the_two_digit_form(self):
+        assert cr.override_key(7, cr.EXCEL) == "07:Excel"
+        assert cr.override_key(27, cr.BBNT) == "27:BBNT"
+
+    def test_a_record_knows_its_own_key(self):
+        o = cr.Override(stt=7, document=cr.EXCEL, from_status=Status.OK,
+                        to_status=Status.NO, reason="x", at="t", by="")
+        assert o.key == cr.override_key(7, cr.EXCEL)
+
+    def test_it_round_trips_through_a_dict(self):
+        o = cr.Override(stt=7, document=cr.EXCEL, from_status=Status.NO,
+                        to_status=Status.OK, reason="đã đối chiếu bản scan",
+                        at="2026-08-27T01:00:00+00:00", by="")
+        assert cr.Override.from_dict(o.as_dict()) == o
+
+    def test_the_dict_is_json_serialisable(self):
+        import json
+        o = cr.Override(stt=7, document=cr.EXCEL, from_status=Status.NO,
+                        to_status=Status.OK, reason="x", at="t", by="")
+        assert json.loads(json.dumps(o.as_dict())) == o.as_dict()
+
+    def test_the_statuses_serialise_as_their_wire_values(self):
+        o = cr.Override(stt=7, document=cr.EXCEL, from_status=Status.NO,
+                        to_status=Status.OK, reason="x", at="t", by="")
+        assert o.as_dict()["fromStatus"] == "no"
+        assert o.as_dict()["toStatus"] == "ok"

@@ -302,6 +302,86 @@ class Cell:
     reason: str = ""
 
 
+def override_key(stt: int, document: str) -> str:
+    """Address one cell of the matrix: `"01:Hợp đồng"`.
+
+    Two-digit STT so keys sort the way Acc writes them, and the document name
+    verbatim from the module constants -- not an index, which would silently
+    re-point if the criteria registry were ever reordered.
+    """
+    return f"{stt:02d}:{document}"
+
+
+@dataclass(frozen=True)
+class Override:
+    """A reviewer's decision on one cell, with what the engine thought.
+
+    `from_status` is retained deliberately. An override of `ok -> no` says the
+    engine was wrong in the dangerous direction; `pending -> ok` says a human
+    supplied coverage the engine lacked. Recorded from day one these accumulate
+    into the labelled corpus this project does not otherwise have, at no
+    marginal cost -- see the spec's §6.
+
+    `by` stays empty until there is auth to fill it. That is the spec's own
+    allowance, and it means every record made before then is unattributable;
+    worth knowing rather than pretending otherwise.
+    """
+
+    stt: int
+    document: str
+    from_status: Status
+    to_status: Status
+    reason: str
+    at: str
+    by: str = ""
+
+    def __post_init__(self) -> None:
+        if self.stt in ROSTER_LEVEL_STT or self.stt not in BY_STT:
+            # The roster-level five hang off no packet and have no document
+            # axis, so they cannot be addressed this way at all.
+            raise ValueError(
+                f"stt {self.stt} is not a per-CTV criterion")
+        if not applies(BY_STT[self.stt], self.document):
+            raise ValueError(
+                f"document {self.document!r} is not in criterion "
+                f"#{self.stt:02d}'s scope")
+        if Status.NOT_APPLICABLE in (self.from_status, self.to_status):
+            # `na` says the document is outside the criterion -- a fact about
+            # the checklist, not a judgment, so there is nothing to decide.
+            raise ValueError("na is not a decidable status")
+        if self.from_status is self.to_status:
+            raise ValueError("an override to the same status records nothing")
+        if not self.reason.strip():
+            raise ValueError("a reason is required")
+
+    @property
+    def key(self) -> str:
+        return override_key(self.stt, self.document)
+
+    def as_dict(self) -> dict:
+        return {
+            "stt": self.stt,
+            "document": self.document,
+            "fromStatus": self.from_status.value,
+            "toStatus": self.to_status.value,
+            "reason": self.reason,
+            "at": self.at,
+            "by": self.by,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "Override":
+        return cls(
+            stt=int(raw["stt"]),
+            document=raw["document"],
+            from_status=Status(raw["fromStatus"]),
+            to_status=Status(raw["toStatus"]),
+            reason=raw["reason"],
+            at=raw["at"],
+            by=raw.get("by", ""),
+        )
+
+
 def applies(criterion: Criterion, document: str) -> bool:
     """Whether this document is in scope for this criterion.
 

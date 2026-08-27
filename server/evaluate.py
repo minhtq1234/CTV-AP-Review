@@ -22,7 +22,7 @@ fills in as extraction grows rather than as this file grows.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import compare_values as cv
 import criteria as cr
@@ -90,6 +90,16 @@ class Cell:
     value: str
     note: str
     evidence: tuple[Evidence, ...] = ()
+    #: What the engine computed, when a reviewer's override replaced it. Equal to
+    #: `status` otherwise. Retained deliberately: an override of `ok -> no` says
+    #: the engine was wrong in the dangerous direction, and `pending -> ok` says
+    #: a human supplied coverage it lacked. See the spec's §6.
+    computed_status: Status | None = None
+
+    @property
+    def computed(self) -> Status:
+        return self.computed_status if self.computed_status is not None \
+            else self.status
 
 
 @dataclass(frozen=True)
@@ -104,10 +114,71 @@ class CriterionResult:
         return f"{self.stt:02d}"
 
 
-def evaluate_packet(manifest: dict, roster_row: dict | None) -> list[CriterionResult]:
-    """Every criterion's status for one packet, with the evidence behind it."""
+def evaluate_packet(
+    manifest: dict,
+    roster_row: dict | None,
+    overrides: dict | None = None,
+) -> list[CriterionResult]:
+    """Every criterion's status for one packet, with the evidence behind it.
+
+    `overrides` is `{criteria.override_key(...): Override | dict}` -- a
+    reviewer's recorded decisions. They are applied as one pass over the
+    assembled cells rather than threaded through each of the two dozen Cell
+    construction sites: the precedence needed is only "an override wins unless
+    the cell is `na`", which `criteria.cell_status` already states, and one
+    chokepoint cannot silently move a status the way two dozen edits could.
+    """
     context = _Context(manifest, roster_row)
-    return [_evaluate(criterion, context) for criterion in cr.CRITERIA]
+    results = [_evaluate(criterion, context) for criterion in cr.CRITERIA]
+    if not overrides:
+        return results
+    return [_with_overrides(r, overrides) for r in results]
+
+
+def _with_overrides(result: CriterionResult, overrides: dict) -> CriterionResult:
+    """Layer a reviewer's decisions over one criterion's cells."""
+    criterion = cr.BY_STT[result.stt]
+    cells = []
+    changed = False
+    for cell in result.cells:
+        raw = overrides.get(cr.override_key(result.stt, cell.document))
+        if raw is None:
+            cells.append(cell)
+            continue
+        override = raw if isinstance(raw, cr.Override) \
+            else cr.Override.from_dict(raw)
+        # One source of truth for the precedence, including refusing to touch a
+        # cell whose document is outside the criterion.
+        decided = cr.cell_status(criterion, cell.document, cell.status,
+                                 override.to_status)
+        if decided is cell.status:
+            cells.append(cell)
+            continue
+        changed = True
+        cells.append(replace(
+            cell,
+            status=decided,
+            computed_status=cell.status,
+            note=(f"{cell.note} Người kiểm tra đổi thành "
+                  f"\"{_STATUS_WORDS.get(decided.value, decided.value)}\": "
+                  f"{override.reason}").strip(),
+            evidence=cell.evidence + (Evidence(
+                "override", 0, None, override.reason, None, "override"),),
+        ))
+    if not changed:
+        return result
+    return CriterionResult(
+        result.stt, cr.roll_up([c.status for c in cells]), tuple(cells),
+        result.note,
+    )
+
+
+#: How a status reads in a note, so an override explains itself in Vietnamese
+#: rather than leaking a wire value.
+_STATUS_WORDS = {
+    "ok": "Đạt", "no": "Không khớp", "rv": "Cần người kiểm tra",
+    "missing": "Thiếu chứng từ", "pending": "Chưa kiểm tra được",
+}
 
 
 def summarise(results: list[CriterionResult]) -> dict[str, int]:
@@ -623,6 +694,8 @@ def _cell_dict(cell: Cell) -> dict:
     return {
         "document": cell.document,
         "status": cell.status.value,
+        #: Equal to `status` unless a reviewer overrode it.
+        "computedStatus": cell.computed.value,
         "value": cell.value,
         "note": cell.note,
         "evidence": [_evidence_dict(e) for e in cell.evidence],
@@ -647,9 +720,10 @@ def as_dict(result: CriterionResult) -> dict:
     }
 
 
-def as_payload(manifest: dict, roster_row: dict | None) -> dict:
+def as_payload(manifest: dict, roster_row: dict | None,
+               overrides: dict | None = None) -> dict:
     """One packet's whole matrix, ready to serve."""
-    results = evaluate_packet(manifest, roster_row)
+    results = evaluate_packet(manifest, roster_row, overrides)
     by_group: dict[str, dict[str, Status]] = {}
     for result in results:
         group = cr.BY_STT[result.stt].group

@@ -589,3 +589,151 @@ class TestTheNoteMustBeTrue:
         note = cells_by_doc(
             by_stt(ev.evaluate_packet(full_packet(), ROSTER))[1])[cr.CONTRACT].note
         assert "khác nhau" not in note
+
+
+class TestOverridesLayerOverTheComputedStatus:
+    """Spec §6: overrides always win, and the computed value is retained.
+
+    Applied as one pass over the assembled cells rather than threaded through
+    each of the 23 Cell construction sites — the precedence I need is only
+    "an override wins unless the cell is `na`", and `criteria.cell_status`
+    already states it. One chokepoint cannot silently move a status the way
+    twenty-three edits could.
+    """
+
+    def _override(self, stt, document, frm, to, reason="đã đối chiếu bản scan"):
+        return cr.Override(stt=stt, document=document, from_status=frm,
+                           to_status=to, reason=reason,
+                           at="2026-08-27T00:00:00+00:00", by="")
+
+    def test_no_overrides_changes_nothing(self):
+        plain = ev.evaluate_packet(full_packet(), ROSTER)
+        same = ev.evaluate_packet(full_packet(), ROSTER, overrides={})
+
+        assert [(r.stt, r.status) for r in plain] == [(r.stt, r.status) for r in same]
+
+    def test_an_override_wins_over_the_computed_status(self):
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[21])[cr.CONTRACT]
+
+        assert cell.status is Status.OK
+
+    def test_the_computed_status_is_retained(self):
+        """The most valuable data this product generates: what the engine
+        thought, beside what the human decided."""
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[21])[cr.CONTRACT]
+
+        assert cell.computed_status is Status.REVIEW
+        assert cell.status is Status.OK
+
+    def test_the_criterion_rolls_up_from_the_overridden_cells(self):
+        # #21's only document is the contract, so overriding it settles the row.
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+
+        assert results[21].status is Status.OK
+
+    def test_the_note_carries_the_reviewer_s_reason(self):
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK,
+                           reason="đã xem chữ ký, đúng CTV")
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[21])[cr.CONTRACT]
+
+        assert "đã xem chữ ký, đúng CTV" in cell.note
+
+    def test_the_override_appears_as_evidence_with_its_own_provenance(self):
+        """Spec §5 lists "override" as a provenance value; nothing produced it
+        until now. A reviewer's decision is a claim like any other."""
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[21])[cr.CONTRACT]
+
+        provenances = [e.provenance for e in cell.evidence]
+        assert "override" in provenances
+
+    def test_a_cell_outside_the_criterion_cannot_be_overridden(self):
+        """`na` is a fact about the checklist, not a judgment. `cell_status`
+        already refuses this, and routing through it keeps one source of truth."""
+        # #16 Net spans only Excel; force a stray override at another document
+        stray = {cr.override_key(16, cr.BBNT): self._override(
+            14, cr.BBNT, Status.OK, Status.NO)}
+        results = by_stt(ev.evaluate_packet(full_packet(), ROSTER,
+                                            overrides=stray))
+
+        assert [c.document for c in results[16].cells] == [cr.EXCEL]
+        assert results[16].status is Status.OK      # untouched
+
+    def test_an_override_for_another_document_leaves_this_cell_alone(self):
+        o = self._override(1, cr.BBNT, Status.OK, Status.NO)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cells = cells_by_doc(results[1])
+
+        assert cells[cr.BBNT].status is Status.NO
+        assert cells[cr.CONTRACT].status is Status.OK
+
+    def test_a_plain_dict_override_is_accepted(self):
+        """What comes back off disk is JSON, not a dataclass."""
+        o = self._override(21, cr.CONTRACT, Status.REVIEW, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o.as_dict()}))
+
+        assert cells_by_doc(results[21])[cr.CONTRACT].status is Status.OK
+
+    def test_a_downgrade_is_recorded_the_same_way(self):
+        o = self._override(2, cr.CONTRACT, Status.OK, Status.NO,
+                           reason="số trên scan khác, đã kiểm tra")
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[2])[cr.CONTRACT]
+
+        assert cell.status is Status.NO
+        assert cell.computed_status is Status.OK
+        assert results[2].status is Status.NO
+
+
+class TestTheOverrideReachesThePayload:
+    def test_the_cell_carries_both_statuses(self):
+        o = cr.Override(stt=21, document=cr.CONTRACT,
+                        from_status=Status.REVIEW, to_status=Status.OK,
+                        reason="đã xem", at="t", by="")
+        payload = ev.as_payload(full_packet(), ROSTER, overrides={o.key: o})
+        row = next(c for c in payload["criteria"] if c["stt"] == 21)
+        cell = next(c for c in row["cells"] if c["document"] == cr.CONTRACT)
+
+        assert cell["status"] == "ok"
+        assert cell["computedStatus"] == "rv"
+
+    def test_it_serialises_to_json(self):
+        import json
+        o = cr.Override(stt=21, document=cr.CONTRACT,
+                        from_status=Status.REVIEW, to_status=Status.OK,
+                        reason="đã xem", at="t", by="")
+        payload = ev.as_payload(full_packet(), ROSTER, overrides={o.key: o})
+        assert json.loads(json.dumps(payload)) == payload
+
+    def test_a_cell_with_no_override_reports_no_difference(self):
+        payload = ev.as_payload(full_packet(), ROSTER)
+        row = next(c for c in payload["criteria"] if c["stt"] == 1)
+        cell = next(c for c in row["cells"] if c["document"] == cr.CONTRACT)
+
+        assert cell["computedStatus"] == cell["status"]
+
+    def test_the_payload_counts_the_overridden_statuses(self):
+        o = cr.Override(stt=21, document=cr.CONTRACT,
+                        from_status=Status.REVIEW, to_status=Status.OK,
+                        reason="đã xem", at="t", by="")
+        before = ev.as_payload(full_packet(), ROSTER)["counts"]
+        after = ev.as_payload(full_packet(), ROSTER,
+                              overrides={o.key: o})["counts"]
+
+        assert after["ok"] == before["ok"] + 1
+        assert after["rv"] == before["rv"] - 1
