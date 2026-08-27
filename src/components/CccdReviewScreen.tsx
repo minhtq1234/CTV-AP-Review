@@ -212,11 +212,17 @@ export default function CccdReviewScreen({
     // whole screen for a one-row change.
     if (clearFirst) setCards(null)
     setError(null)
+    // A refetch holds `busy` too. Without it, a refresh that deliberately keeps
+    // the rows on screen also keeps the buttons live, and a detach started
+    // mid-refetch races it — last write wins, silently.
+    setBusy(true)
     try {
       const result = await listCccdCards(caseId)
       if (liveCaseIdRef.current === caseId) setCards(result)
     } catch {
       if (liveCaseIdRef.current === caseId) setError(LOAD_ERROR)
+    } finally {
+      setBusy(false)
     }
   }, [caseId])
 

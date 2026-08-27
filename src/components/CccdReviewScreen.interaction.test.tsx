@@ -282,4 +282,23 @@ describe('CccdReviewScreen', () => {
     // Left open, this picker would post case-1's packetIndex against case-2.
     expect(host.querySelector('[data-testid="picker"]')).toBeNull()
   })
+
+  it('disables the rows while an assignment refetches', async () => {
+    const second = deferred<CccdCard[]>()
+    listCccdCards
+      .mockResolvedValueOnce([card('card-00', 0)])
+      .mockReturnValueOnce(second.promise)
+    await mount()
+    await act(async () => { button('Gán thẻ').click() })
+    await act(async () => { button('mock-assigned').click() })
+    // Rows still on screen (the flicker fix), but not actionable — a detach
+    // started here would race the refetch's write.
+    expect(host.textContent).toContain('Synthetic B')
+    expect(button('Gỡ').disabled).toBe(true)
+    await act(async () => {
+      second.resolve([card('card-00', 0), card('card-09', 1)])
+      await second.promise
+    })
+    expect(button('Gỡ').disabled).toBe(false)
+  })
 })
