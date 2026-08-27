@@ -10,6 +10,7 @@ import {
   type CccdAttachedRow,
   type CccdReview,
 } from '../logic/cccdReview'
+import CccdCardPicker from './CccdCardPicker'
 
 export interface CccdReviewViewProps {
   caseId: string
@@ -196,6 +197,7 @@ export default function CccdReviewScreen({
   const [cards, setCards] = useState<CccdCard[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [picking, setPicking] = useState<{ packetIndex: number; label: string } | null>(null)
 
   // Which case the screen is live on — null once unmounted. Every response is
   // checked against the case it was asked for, so an unmount or a `caseId` swap
@@ -238,16 +240,32 @@ export default function CccdReviewScreen({
   }
 
   return (
-    <CccdReviewView
-      caseId={caseId}
-      caseName={caseName}
-      review={cards === null ? null : buildCccdReview(packets, cards)}
-      busy={busy || cards === null}
-      error={error}
-      onAssign={() => {}}
-      onDetach={cardId => { void detach(cardId) }}
-      onRetry={() => { void load() }}
-      onContinue={onContinue}
-    />
+    <>
+      <CccdReviewView
+        caseId={caseId}
+        caseName={caseName}
+        review={cards === null ? null : buildCccdReview(packets, cards)}
+        busy={busy || cards === null}
+        error={error}
+        onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}
+        onDetach={cardId => { void detach(cardId) }}
+        onRetry={() => { void load() }}
+        onContinue={onContinue}
+      />
+
+      {picking && (
+        <CccdCardPicker
+          caseId={caseId}
+          packetIndex={picking.packetIndex}
+          packetLabel={picking.label}
+          onCancel={() => setPicking(null)}
+          onAssigned={() => {
+            // The picker keeps its own response, so reload rather than guess.
+            setPicking(null)
+            void load()
+          }}
+        />
+      )}
+    </>
   )
 }

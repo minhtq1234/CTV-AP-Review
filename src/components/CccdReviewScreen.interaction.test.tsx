@@ -17,6 +17,21 @@ vi.mock('../upload/api', () => ({
   ),
 }))
 
+vi.mock('./CccdCardPicker', () => ({
+  default: ({ packetIndex, packetLabel, onAssigned, onCancel }: {
+    packetIndex: number
+    packetLabel: string
+    onAssigned: () => void
+    onCancel: () => void
+  }) => (
+    <div data-testid="picker">
+      <span>{`picker:${packetIndex}:${packetLabel}`}</span>
+      <button type="button" onClick={onAssigned}>mock-assigned</button>
+      <button type="button" onClick={onCancel}>mock-cancel</button>
+    </div>
+  ),
+}))
+
 const CccdReviewScreen = (await import('./CccdReviewScreen')).default
 
 function packet(index: number, name: string): PacketMeta {
@@ -206,5 +221,33 @@ describe('CccdReviewScreen', () => {
 
     expect(host.textContent).toContain('2 gói chưa có thẻ')
     expect(host.textContent).not.toContain('0 gói chưa có thẻ')
+  })
+
+  it('opens the picker for the packet whose row was clicked', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    await act(async () => { button('Gán thẻ').click() })
+    expect(host.textContent).toContain('picker:1:Synthetic B')
+  })
+
+  it('refetches after the picker reports an assignment, and closes it', async () => {
+    listCccdCards
+      .mockResolvedValueOnce([card('card-00', 0)])
+      .mockResolvedValueOnce([card('card-00', 0), card('card-09', 1)])
+    await mount()
+    await act(async () => { button('Gán thẻ').click() })
+    await act(async () => { button('mock-assigned').click() })
+    expect(listCccdCards).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[data-testid="picker"]')).toBeNull()
+    expect(host.textContent).toContain('0 gói chưa có thẻ')
+  })
+
+  it('closes the picker on cancel without refetching', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    await act(async () => { button('Gán thẻ').click() })
+    await act(async () => { button('mock-cancel').click() })
+    expect(host.querySelector('[data-testid="picker"]')).toBeNull()
+    expect(listCccdCards).toHaveBeenCalledOnce()
   })
 })
