@@ -128,4 +128,26 @@ describe('CccdReviewScreen', () => {
     expect(host.textContent).toContain('Synthetic B')
     expect(host.textContent).toContain('1 gói chưa có thẻ')
   })
+
+  it('detaches with a null packetIndex and re-renders from the response', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0), card('card-01', 1)])
+    assignCccdCard.mockResolvedValue({
+      cards: [card('card-00', 0), card('card-01', null)],
+      cccdSummary: { status: 'partial', candidates: 2, attached: 1, unresolved: 1 },
+    })
+    await mount()
+    await act(async () => { button('Gỡ').click() })
+    expect(assignCccdCard).toHaveBeenCalledWith('case-1', 'card-00', null)
+    expect(host.textContent).toContain('1 gói chưa có thẻ')
+    // The response is authoritative — no second GET.
+    expect(listCccdCards).toHaveBeenCalledOnce()
+  })
+
+  it('translates a rejected detach into its Vietnamese message', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    assignCccdCard.mockRejectedValue(new Error('card-not-found'))
+    await mount()
+    await act(async () => { button('Gỡ').click() })
+    expect(host.textContent).toContain('Không tìm thấy ảnh này.')
+  })
 })

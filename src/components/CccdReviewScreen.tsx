@@ -2,7 +2,7 @@
 // before opening the packet list. Exceptions first; everything already attached
 // sits behind a collapsed section, so a wrong automatic match is still findable.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { cccdCardImageUrl, listCccdCards } from '../upload/api'
+import { assignCccdCard, cccdCardImageUrl, listCccdCards } from '../upload/api'
 import type { CccdCard, PacketMeta } from '../upload/api'
 import { buildCccdReview } from '../logic/cccdReview'
 import {
@@ -170,6 +170,16 @@ export function CccdReviewView({
 
 const LOAD_ERROR = 'Không tải được danh sách ảnh.'
 
+// Same codes CccdCardPicker maps, same wording — one vocabulary for one API.
+const ERROR_TEXT: Record<string, string> = {
+  'packet-already-has-card': 'Gói này đã có ảnh CCCD. Gỡ ảnh cũ trước.',
+  'card-not-found': 'Không tìm thấy ảnh này.',
+  'unknown-packet': 'Không tìm thấy gói hồ sơ.',
+  'no-cccd-workbook': 'Hồ sơ này không có file CCCD.',
+}
+
+const MUTATE_ERROR = 'Không cập nhật được ảnh. Vui lòng thử lại.'
+
 interface Props {
   caseId: string
   caseName: string
@@ -185,6 +195,7 @@ export default function CccdReviewScreen({
 }: Props) {
   const [cards, setCards] = useState<CccdCard[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const cancelledRef = useRef(false)
 
@@ -205,15 +216,29 @@ export default function CccdReviewScreen({
     return () => { cancelledRef.current = true }
   }, [load])
 
+  const detach = async (cardId: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await assignCccdCard(caseId, cardId, null)
+      setCards(result.cards)
+    } catch (caught) {
+      const code = caught instanceof Error ? caught.message : ''
+      setError(ERROR_TEXT[code] ?? MUTATE_ERROR)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <CccdReviewView
       caseId={caseId}
       caseName={caseName}
       review={cards === null ? null : buildCccdReview(packets, cards)}
-      busy={cards === null}
+      busy={busy || cards === null}
       error={error}
       onAssign={() => {}}
-      onDetach={() => {}}
+      onDetach={cardId => { void detach(cardId) }}
       onRetry={() => { void load() }}
       onContinue={onContinue}
     />
