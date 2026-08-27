@@ -35,6 +35,8 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 
 CANDIDATES = ["GENERAL", "DOCUMENT", "DOC", "OCR", "TEXT", "FULL_TEXT", "OTHER", "ID"]
 
@@ -123,7 +125,6 @@ def main(argv: list[str]) -> int:
             print("Every doc_type returned 404 -- including ID, which is known to work")
             print("against the real IDP service. That means the URL is wrong, not the")
             print("doc_type. Checking what this host actually serves:\n")
-            import urllib.error
             for probe_path in ("/ocr/ingest", "/chat/completions", "/models"):
                 try:
                     with urllib.request.urlopen(base_url + probe_path, timeout=20) as r:
