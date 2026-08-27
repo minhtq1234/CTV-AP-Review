@@ -1,7 +1,7 @@
 import pytest
 
 from cccd_idp import IdpError
-from idp_words import http_transport, parse_words, read_page, reader
+from idp_words import as_jpeg, http_transport, parse_words, read_page, reader
 
 
 def envelope(items, status="SUCCESS"):
@@ -146,3 +146,52 @@ def test_the_transport_sends_the_configured_doc_type():
     assert "imagebytes" in body
     assert sent["auth"] == "Bearer secret"
     assert sent["url"] == "http://idp.example/v1/ocr/ingest"
+
+
+def test_the_file_part_matches_the_one_shape_known_to_work(tmp_path):
+    """JPEG bytes, .jpg name, Content-Type image/jpeg.
+
+    cccd_idp -- the transport verified against the live API -- sends image/jpeg,
+    and the endpoint's own curl example posts a .jpg. The pipeline renders pages
+    as PNG, so declaring image/png would send a type this service has never been
+    observed to accept.
+    """
+    from PIL import Image
+    png = tmp_path / "pg1.png"
+    Image.new("RGB", (12, 8), (255, 255, 255)).save(png, format="PNG")
+
+    sent = {}
+    import urllib.request as u
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"data":{"request_id":"r"}}'
+    def fake_urlopen(request, timeout=0):
+        sent["body"] = request.data
+        return FakeResponse()
+    original, u.urlopen = u.urlopen, fake_urlopen
+    try:
+        submit, _ = http_transport("http://idp.example/v1", "k", "ID")
+        submit(png.read_bytes(), "pg1.png")
+    finally:
+        u.urlopen = original
+    body = sent["body"]
+    assert b"Content-Type: image/jpeg" in body
+    assert b'filename="pg1.jpg"' in body
+    assert b"\xff\xd8\xff" in body            # JPEG SOI, i.e. it really converted
+    assert b"\x89PNG" not in body
+
+
+def test_as_jpeg_converts_a_png_and_leaves_a_jpeg_alone(tmp_path):
+    from PIL import Image
+    import io
+    png = io.BytesIO(); Image.new("RGB", (8, 8), (1, 2, 3)).save(png, format="PNG")
+    jpg = io.BytesIO(); Image.new("RGB", (8, 8), (1, 2, 3)).save(jpg, format="JPEG")
+    converted = as_jpeg(png.getvalue())
+    assert converted.startswith(b"\xff\xd8\xff")
+    assert as_jpeg(jpg.getvalue()) == jpg.getvalue()      # already JPEG: untouched
+
+
+def test_as_jpeg_passes_undecodable_bytes_through():
+    # A transport must not be the thing that fails an ingest.
+    assert as_jpeg(b"not-an-image") == b"not-an-image"

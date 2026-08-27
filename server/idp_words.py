@@ -154,17 +154,47 @@ def read_page(
     return parse_words(payload)
 
 
+def as_jpeg(image_bytes: bytes) -> bytes:
+    """`image_bytes` as JPEG, converting if it is not already.
+
+    The pipeline renders pages as PNG, but the only multipart shape ever known
+    to work against this API sends `Content-Type: image/jpeg` with a `.jpg`
+    (see `cccd_idp.http_transport`, and the curl example the endpoint's own docs
+    give). Rather than declare a type the service may not accept, every call is
+    normalised to the known-good one. JPEG is also a smaller upload.
+
+    Returns the input untouched if Pillow is unavailable or the bytes cannot be
+    decoded -- a transport should not be the thing that fails an ingest.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as image:
+            if (image.format or "").upper() in {"JPEG", "JPG"}:
+                return image_bytes
+            buffer = _io.BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=92)
+            return buffer.getvalue()
+    except Exception:
+        return image_bytes
+
+
 def http_transport(base_url: str, api_key: str, doc_type: str = ""):
     """(submit, fetch) bound to a live IDP endpoint, for a page image.
 
     Mirrors `cccd_idp.http_transport` -- same endpoint, auth and multipart
-    layout -- differing only in `doc_type`, which is the part that selects a
-    general page read instead of the ID model.
+    layout, and the same `image/jpeg` file part -- differing only in `doc_type`,
+    which is the part that selects a general page read instead of the ID model.
     """
     ingest = f"{base_url.rstrip('/')}/ocr/ingest"
     doc_type = doc_type or DEFAULT_DOC_TYPE
 
     def submit(image_bytes: bytes, filename: str) -> dict:
+        # Normalise to the one shape known to work: JPEG bytes, .jpg name,
+        # Content-Type image/jpeg. A PNG page would otherwise declare a type
+        # this service has never been observed to accept.
+        image_bytes = as_jpeg(image_bytes)
+        filename = os.path.splitext(filename)[0] + ".jpg"
         boundary = "----ctvapreview-boundary"
         parts = []
         for name, value in (
@@ -181,7 +211,7 @@ def http_transport(base_url: str, api_key: str, doc_type: str = ""):
         parts.append(
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="file"; '
-            f'filename="{filename}"\r\nContent-Type: image/png\r\n\r\n'.encode()
+            f'filename="{filename}"\r\nContent-Type: image/jpeg\r\n\r\n'.encode()
         )
         parts.append(image_bytes)
         parts.append(f"\r\n--{boundary}--\r\n".encode())
