@@ -1647,8 +1647,22 @@ git commit -m "feat(cccd): reach the review step again from the case's CCCD bann
 The interaction suite reads `src/styles.css` (`FolderReview.interaction.test.tsx:12`), so classes
 that exist in markup but not in CSS are a real gap here, not a cosmetic one.
 
+> **AMENDED BEFORE IMPLEMENTATION.** The grid below is wrong for one of the three row kinds,
+> and it is my error. `.cccd-review-row` declares six columns, which fits the attached row
+> (stt, name, thumbnail, number, state, button) and — via its own override — the five-child
+> orphan row. But the needs-a-card row has only **four** children (stt, name, state, button),
+> so its state text would land in the 96px thumbnail column and its button in the 140px number
+> column. Fixed by letting that row's state span the columns it has no content for, which also
+> keeps its button aligned with the attached rows' `Gỡ`:
+>
+> - add `cccd-review-needs` to the needs-a-card `<li>`'s className in `CccdReviewScreen.tsx`
+> - add `.cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }` to the CSS
+>
+> So this task touches `src/components/CccdReviewScreen.tsx` as well as `src/styles.css`.
+
 **Files:**
 - Modify: `src/styles.css`
+- Modify: `src/components/CccdReviewScreen.tsx` (one className, per the amendment above)
 
 - [ ] **Step 1: Add the styles**
 
@@ -1670,6 +1684,9 @@ Append to `src/styles.css`:
   border-bottom: 1px solid var(--line, #e4e4e7);
 }
 .cccd-review-orphan { grid-template-columns: 96px 140px minmax(160px, 1fr) 120px auto; }
+/* The needs-a-card row has no thumbnail or number, so its state spans those
+   columns — keeping stt, name and the action aligned with the attached rows. */
+.cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }
 .cccd-review-stt { color: #6b7280; font-variant-numeric: tabular-nums; }
 .cccd-review-name { font-weight: 600; }
 .cccd-review-number { font-variant-numeric: tabular-nums; }
@@ -1712,7 +1729,8 @@ cd server && python3 -m pytest -q; cd ..
 node_modules/.bin/tsc -b
 node_modules/.bin/vitest run
 ```
-Expected: 775 passed in `server/`; `tsc -b` exits 0; vitest 239 + ~24 new tests passing, 0 failures
+Expected: 775 passed in `server/`; `tsc -b` exits 0; vitest green with no failures — the suite
+started this plan at 239 and each task's own step records its running total.
 
 - [ ] **Step 4: Commit**
 

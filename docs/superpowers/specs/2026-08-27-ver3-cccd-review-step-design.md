@@ -225,6 +225,22 @@ Green before commit, as always: `cd server && python3 -m pytest`, `node_modules/
 - **A genuinely missing card never clears.** If a collaborator never submitted a card, that
   packet stays in "Cần xử lý" for good, because nothing in this scope can record its
   absence. Visible, not silent — and the reviewer can always continue past it.
+- **Some container state survives a `caseId` swap on a mounted screen.** The swap itself is
+  reachable: `UploadFlow.openCase` has no in-flight lock and `CaseList` does not disable a row
+  after a click, so two quick clicks on different ready cases reconcile the same element with a
+  new `caseId` rather than remounting it. Every *response* is guarded — `liveCaseIdRef` keys each
+  in-flight read and the detach write to the case it was issued for — and the open picker is
+  closed on the swap, because it would otherwise post the previous case's `packetIndex`
+  (an attach to the wrong packet, the failure this feature exists to prevent). Two pieces of
+  state are deliberately left: `busy` stays set until the old case's mutation settles, so the new
+  case's buttons read disabled for that moment; and the `Đã gán` `<details>` open/closed state is
+  uncontrolled DOM state on a reused node, so it persists. Both are cosmetic, self-clearing, and
+  carry no stale identifier into any request. **Not** recorded as unreachable — that framing is
+  what let an earlier cancellation guard be trusted while it was inert.
+- **An error message can be cleared by an unrelated success.** Every card refetch clears `error`,
+  so assigning a card after a failed detach also clears the detach's message and its `Thử lại`
+  button. That loses an explanation, not correctness — a failed detach never mutated `cards`.
+  Accepted rather than building an error-lifecycle policy into this screen.
 - **Two cards claiming one packet would hide one of them.** `buildCccdReview` indexes attached
   cards into a `Map` keyed by packet, so a second card claiming the same `attachedPacketIndex`
   would overwrite the first: the loser appears in neither bucket while still counting toward
