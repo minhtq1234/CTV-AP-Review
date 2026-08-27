@@ -1161,3 +1161,40 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .pt-pill.fa-reviewing { background: #eef3fb; color: #2f6db3; }
 .pt-pill.fa-completed { background: #e7f3ea; color: var(--success); }
 .pt-pill.fa-flagged { background: #fce8e6; color: #c5221f; }
+
+/* Ver 3 step 1 — the CCCD review step. Rows are a fixed grid so the STT, name,
+   thumbnail and action line up down the page in both sections. */
+.cccd-review { padding: 16px 20px 32px; }
+.cccd-review-section { margin-top: 18px; }
+.cccd-review-section > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.cccd-review-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.cccd-review-row {
+  display: grid;
+  grid-template-columns: 40px minmax(160px, 1fr) 96px 140px minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.cccd-review-orphan { grid-template-columns: 96px 140px minmax(160px, 1fr) 120px auto; }
+/* The needs-a-card row has no thumbnail or number, so its state spans those
+   columns — keeping stt, name and the action aligned with the attached rows. */
+.cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }
+.cccd-review-stt { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cccd-review-name { font-weight: 600; }
+.cccd-review-number { font-variant-numeric: tabular-nums; }
+.cccd-review-state { color: var(--text-muted); }
+.cccd-review-cardid { color: var(--text-muted); font-size: 12px; }
+.cccd-review-hint { color: var(--text-muted); font-size: 12px; }
+.cccd-review-thumb {
+  width: 96px; height: 60px; object-fit: cover;
+  border: 1px solid var(--border); border-radius: 4px; background: #f4f4f5;
+}
+.cccd-review-nothumb { color: var(--text-muted); font-size: 12px; }
+.cccd-review-empty { color: var(--text-muted); margin: 8px 0 0; }
+.cccd-review-error { color: var(--danger); margin: 10px 0 0; }
+.cccd-review-foot { margin-top: 22px; display: flex; justify-content: flex-end; }
+.cccd-summary-link {
+  margin-left: 10px; background: none; border: 0; padding: 0;
+  color: var(--accent); cursor: pointer; text-decoration: underline;
+}

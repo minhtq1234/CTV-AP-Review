@@ -107,7 +107,7 @@ export function CccdReviewView({
               {review.needsAction.map(row => (
                 row.kind === 'packet' ? (
                   <li
-                    className="cccd-review-row"
+                    className="cccd-review-row cccd-review-needs"
                     aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
                     key={`packet-${row.packetIndex}`}
                   >
