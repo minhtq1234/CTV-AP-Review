@@ -71,6 +71,11 @@ describe('CccdReviewView', () => {
     ])
     expect(html).toContain('Xung đột · Trùng số CCCD')
     expect(html).toContain('card-09')
+    const orphan = html.match(
+      /<li class="cccd-review-row cccd-review-orphan"[\s\S]*?<\/li>/,
+    )?.[0] ?? ''
+    expect(orphan).toContain('card-09')
+    expect(orphan).not.toContain('<button')
   })
 
   it('renders attached packets inside a collapsed details element', () => {
@@ -79,6 +84,7 @@ describe('CccdReviewView', () => {
     expect(html).not.toContain('<details open')
     expect(html).toContain('Đã gán (2)')
     expect(html).toContain('Gỡ')
+    expect(html).toContain('width="1059"')
   })
 
   it('says so plainly when nothing needs action', () => {

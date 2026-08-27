@@ -28,6 +28,8 @@ function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
       className="cccd-review-thumb"
       src={cccdCardImageUrl(caseId, card.cardId, front.side)}
       alt={`Ảnh CCCD ${card.cardId}`}
+      width={front.width}
+      height={front.height}
       loading="lazy"
     />
   )
@@ -41,7 +43,10 @@ function AttachedRow({ caseId, row, busy, onDetach }: {
 }) {
   const card = row.card
   return (
-    <li className="cccd-review-row">
+    <li
+      className="cccd-review-row"
+      aria-label={`Gói ${row.packetIndex + 1} ${row.name}: ${describeCard(card)}`}
+    >
       <span className="cccd-review-stt">{row.packetIndex + 1}</span>
       <span className="cccd-review-name">{row.name}</span>
       <CardThumb caseId={caseId} card={card} />
@@ -87,7 +92,11 @@ export function CccdReviewView({
         <ul className="cccd-review-list">
           {needsAction.map(row => (
             row.kind === 'packet' ? (
-              <li className="cccd-review-row" key={`packet-${row.packetIndex}`}>
+              <li
+                className="cccd-review-row"
+                aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
+                key={`packet-${row.packetIndex}`}
+              >
                 <span className="cccd-review-stt">{row.packetIndex + 1}</span>
                 <span className="cccd-review-name">{row.name}</span>
                 <span className="cccd-review-state">Chưa có thẻ CCCD</span>
@@ -100,7 +109,11 @@ export function CccdReviewView({
                 </button>
               </li>
             ) : (
-              <li className="cccd-review-row cccd-review-orphan" key={`card-${row.card.cardId}`}>
+              <li
+                className="cccd-review-row cccd-review-orphan"
+                aria-label={`Ảnh ${row.card.cardId}: ${describeCard(row.card)}`}
+                key={`card-${row.card.cardId}`}
+              >
                 <CardThumb caseId={caseId} card={row.card} />
                 <span className="cccd-review-number">
                   {row.card.number || 'Không đọc được số'}
