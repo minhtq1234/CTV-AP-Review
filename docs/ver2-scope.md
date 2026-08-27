@@ -72,15 +72,58 @@ fields go through `pytesseract.image_to_data(lang="vie")` in `server/ocr_extract
 
 Ver 2 extends IDP to those document fields.
 
-**Recommended shape — escalation, not replacement** (see §4 for why):
+**Shape — escalation, not replacement** (see §4 for why): Tesseract runs first; IDP is called
+only where the local read is unusable; Tesseract stays primary, so there is no "network is
+down" mode to design and most packet data never leaves the workstation.
 
-- Tesseract runs first on every field.
-- IDP is called **only** where Tesseract returned no value, or returned one below
-  `LOW_CONF` (0.7, `src/logic/verdict.ts`).
-- Tesseract stays the primary reader, so there is no "what if the network is down" mode to
-  design, and most packet data never leaves the workstation.
+**Built — everything except the transport's one unknown.**
 
-**Not yet decided** — see §5.
+| piece | where | status |
+|---|---|---|
+| escalation policy | `server/field_escalation.py` | done, 27 tests |
+| IDP-as-OCR reader | `server/idp_words.py` | done, 15 tests; `parse_words` unverified |
+| re-read loop | `ocr_extract._escalate_weak_fields` | done, 9 tests |
+| pipeline wiring | `pipeline._page_reader` | done, off by default |
+| doc_type discovery | `server/idp_probe.py` | **needs a live run** |
+
+IDP is used as a **better OCR engine at the `words_by_page` seam**, not as a contract
+understander: it returns text with boxes and the existing anchor/pattern logic does the rest.
+That reuses all the Vietnamese-contract knowledge in `locate_field` instead of duplicating it,
+and one escalated page serves every field on it rather than one call per field. The page sent
+is the **display PNG already on disk**, so the returned boxes are already in display space —
+no scale factor to get wrong, and they line up with the reviewer's highlight.
+
+Targeting: a weak field carries the `docId`/`page`/`bbox` of the slot its value sits in
+(that is what the located-but-unread hit is for), so escalation re-reads exactly those pages.
+Measured cost on the real batches:
+
+| batch | packets needing a 2nd read | pages sent to IDP |
+|---|---|---|
+| July | 25/41 | 50 of 362 doc-pages (**14%**) |
+| February | 29/32 | 81 of 286 doc-pages (**28%**) |
+
+Merge is **replacement per escalated page, not a union** — a union would leave a local garbage
+read beside a good escalated one for the same page, and two readable copies that disagree is
+exactly what `evaluate._compare_reads` treats as worst-wins, so it would turn a field the
+escalation just fixed into a false mismatch.
+
+Fallbacks: a reader that raises, returns nothing, or is pointed at a missing page all leave the
+local read in place. A network problem must never make an ingest worse than not having called.
+
+**The one open unknown.** `doc_type=ID` is the only value this codebase has ever sent, and it
+selects the CCCD model — wrong for a contract page. Which `doc_type` gives a general page read,
+and whether that mode returns **text runs** (what `parse_words` assumes) or **named fields**
+(which would need a small mapper instead), cannot be established without a live credential.
+`server/idp_probe.py` settles both in one run:
+
+```
+export GREENNODE_IDP_URL=...  GREENNODE_API_KEY=...
+python3 server/idp_probe.py <a-contract-fee-page>.png
+```
+
+It tries a list of candidate doc_types, reports which return items with coordinates, and prints
+the `export IDP_DOC_TYPE=` line to use. Until it has been run, IDP for document fields is wired
+but unproven and stays off.
 
 ### 2.1a Cheap extraction fixes that come BEFORE spending IDP calls
 

@@ -123,7 +123,10 @@ _ROSTER_ROWS = [
 _FAKE_BOUNDS = [(0, 2), (3, 5)]  # 2 packets, 3 pages each, 6 pages total
 
 
-def _fake_ocr_packet(pdf_path, start, end, out_dir):
+#: `page_reader` mirrors the real ocr_packet signature: the pipeline threads the
+#: IDP escalation reader through, and it is None unless IDP is configured.
+def _fake_ocr_packet(pdf_path, start, end, out_dir, page_reader=None, **kwargs):
+    _fake_ocr_packet.page_readers.append(page_reader)
     os.makedirs(out_dir, exist_ok=True)
     identity = (
         {"cccd": "048091001309", "name": "Nguyễn Văn A"} if start == 0
@@ -131,6 +134,9 @@ def _fake_ocr_packet(pdf_path, start, end, out_dir):
     )
     fields = [{"key": "hoten", "expected": "", "sources": []}]
     return {"folder": {"docs": [], "fields": fields}, "identity": identity}
+
+
+_fake_ocr_packet.page_readers = []
 
 
 def _install_fake_detection(monkeypatch):
@@ -721,3 +727,19 @@ class TestMatchingOnTheMst:
         row, how = pl.match_roster("060203014847", "", by_cccd, by_name)
 
         assert how == "cccd"
+
+
+def test_the_ingest_is_local_only_unless_idp_is_configured(monkeypatch, tmp_path):
+    """No packet page leaves the workstation by default.
+
+    The escalation reader is threaded through to ocr_packet, and it is None
+    unless GREENNODE_IDP_URL and GREENNODE_API_KEY are both set -- so enabling
+    IDP is a deliberate deployment choice, not a default.
+    """
+    for var in ("GREENNODE_IDP_URL", "GREENNODE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    assert pl._page_reader() is None
+
+    monkeypatch.setenv("GREENNODE_IDP_URL", "http://idp.example/v1")
+    monkeypatch.setenv("GREENNODE_API_KEY", "not-a-real-key")
+    assert callable(pl._page_reader())

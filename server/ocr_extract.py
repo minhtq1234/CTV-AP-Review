@@ -1065,6 +1065,57 @@ def _best_value(field: dict) -> str:
     return max(candidates, key=lambda s: s["confidence"])["value"]
 
 
+def _escalate_weak_fields(
+    fields: list[dict],
+    page_reader,
+    words_by_doc: dict[str, dict[int, list[dict]]],
+    page_of: dict[tuple[str, int], int],
+    pages: list[dict],
+) -> list[dict]:
+    """Re-read the pages whose fields the local reader could not resolve.
+
+    Sends the DISPLAY png that is already rendered on disk, not a fresh
+    high-dpi render: the returned boxes are then already in display space --
+    the same space `words_by_page` holds and the same one the reviewer's
+    highlight is drawn in -- so there is no scale factor to get wrong, and it
+    is a smaller upload.
+
+    Local words stay the fallback at every step. A page the reader fails on, a
+    page it returns nothing for, and a reader that raises are all left with
+    their local read, because a network problem must never make an ingest worse
+    than not having called at all.
+    """
+    from field_escalation import merge_sources, plan   # local: keeps import light
+
+    decision = plan(fields)
+    if not decision.worth_calling:
+        return fields
+
+    reread: dict[tuple[str, int], list[dict]] = {}
+    for doc_id, doc_page in decision.pages:
+        pk = page_of.get((doc_id, doc_page))
+        if pk is None or pk >= len(pages):
+            continue
+        src = pages[pk].get("src") or ""
+        if not src or not os.path.exists(src):
+            continue
+        try:
+            with open(src, "rb") as handle:
+                words = page_reader(handle.read(), os.path.basename(src))
+        except Exception:
+            continue
+        if words:
+            reread[(doc_id, doc_page)] = words
+
+    if not reread:
+        return fields
+
+    swapped = {doc: dict(by_page) for doc, by_page in words_by_doc.items()}
+    for (doc_id, doc_page), words in reread.items():
+        swapped.setdefault(doc_id, {})[doc_page] = words
+    return merge_sources(fields, extract_fields(swapped, {}), set(reread))
+
+
 def ocr_packet(
     pdf_path: str,
     start: int,
@@ -1072,6 +1123,7 @@ def ocr_packet(
     out_dir: str,
     display_dpi: int = 150,
     ocr_dpi: int = 300,
+    page_reader=None,
 ) -> dict:
     """Render + OCR + segment one packet's page range.
 
@@ -1085,6 +1137,12 @@ def ocr_packet(
     known until the caller matches `identity` against the roster
     (`pipeline.match_roster`) and fills expected values in
     (`pipeline.fill_expected`) before writing the manifest.
+
+    `page_reader`, when given, is a `(image_bytes, filename) -> words` callable
+    (see `idp_words.reader`) used to RE-READ only the pages whose fields the
+    local reader could not resolve -- see `_escalate_weak_fields`. None means
+    local-only, which is the default: no page leaves the workstation unless a
+    caller supplies a reader.
 
     #010: each page's rotation is detected once (`detect_page_rotation`) and
     applied consistently to BOTH the served display PNG and the OCR image,
@@ -1112,6 +1170,9 @@ def ocr_packet(
 
     docs: list[dict] = []
     words_by_doc: dict[str, dict[int, list[dict]]] = {}
+    #: (docId, page-within-doc) -> page index within the packet, so an
+    #: escalation can find the rendered PNG for a page a field points at.
+    page_of: dict[tuple[str, int], int] = {}
     kind_counts: dict[str, int] = {}
     for seg in segments:
         n = kind_counts.get(seg["kind"], 0)
@@ -1126,8 +1187,13 @@ def ocr_packet(
         words_by_doc[doc_id] = {
             j: words_by_page[pk] for j, pk in enumerate(seg["pages"])
         }
+        page_of.update({(doc_id, j): pk for j, pk in enumerate(seg["pages"])})
 
     fields = extract_fields(words_by_doc, {})
+    if page_reader is not None:
+        fields = _escalate_weak_fields(
+            fields, page_reader, words_by_doc, page_of, pages,
+        )
     by_key = {f["key"]: f for f in fields}
     identity = {
         "cccd": _best_value(by_key["cccd"]),

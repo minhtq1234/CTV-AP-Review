@@ -329,6 +329,18 @@ def read_purchase_total(
     return None
 
 
+def _page_reader():
+    """The document-field escalation reader, or None when IDP is not configured.
+
+    Deliberately the same two variables as `_card_reader` -- enabling IDP is one
+    deployment decision, not two -- plus `IDP_DOC_TYPE`, whose correct value for
+    a general page read is not yet established (see `idp_words`).
+    """
+    from idp_words import page_reader_from_env   # lazy: only when enabled
+
+    return page_reader_from_env()
+
+
 def _card_reader():
     base_url = os.environ.get("GREENNODE_IDP_URL", "").strip()
     api_key = os.environ.get("GREENNODE_API_KEY", "").strip()
@@ -432,11 +444,19 @@ def run_pipeline(
         ]
 
     progress_cb("ocr", 0, len(packets), "")
+    # Which reader re-reads a page the local OCR could not resolve. None unless
+    # GreenNode IDP is configured, so the default ingest is local-only and no
+    # packet page leaves the workstation. Escalation is per page, not per
+    # field: measured over the real batches it covers 14% of July's doc-pages
+    # and 28% of February's, so it buys the handwritten and low-confidence tail
+    # without putting the other 70-86% on the wire.
+    page_reader = _page_reader()
     packets_out = []
     matched = 0
     for p in packets:
         out_dir = os.path.join(job_dir, "packets", str(p.index))
-        result = oc.ocr_packet(pdf_path, p.start, p.end, out_dir)
+        result = oc.ocr_packet(pdf_path, p.start, p.end, out_dir,
+                               page_reader=page_reader)
         identity = result["identity"]
 
         # Align by OCR'd identity (CCCD, name fallback), not by packet
