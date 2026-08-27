@@ -76,7 +76,11 @@ describe('CccdReviewView', () => {
       /<li class="cccd-review-row cccd-review-orphan"[\s\S]*?<\/li>/,
     )?.[0] ?? ''
     expect(orphan).toContain('card-09')
-    expect(orphan).not.toContain('<button')
+    // The only button here opens the full-size viewer -- assigning this card
+    // still has to go through the packet's own "Gán thẻ" row, not this one.
+    const orphanButtons = orphan.match(/<button[\s\S]*?<\/button>/g) ?? []
+    expect(orphanButtons).toHaveLength(1)
+    expect(orphanButtons[0]).toContain('Xem ảnh CCCD card-09 ở kích thước đầy đủ')
   })
 
   it('renders attached packets inside a collapsed details element', () => {
@@ -86,6 +90,26 @@ describe('CccdReviewView', () => {
     expect(html).toContain('Đã gán (2)')
     expect(html).toContain('Gỡ')
     expect(html).toContain('width="1059"')
+  })
+
+  it('renders every thumbnail inside a button with an accessible label, in both sections', () => {
+    const html = render([
+      card('card-00', 0),
+      card('card-09', null, { state: 'conflict', issues: ['duplicate-cccd'] }),
+    ])
+    for (const cardId of ['card-00', 'card-09']) {
+      const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
+      expect(html).toContain(`aria-label="${label}"`)
+      const button = html.match(
+        new RegExp(`<button[^>]*aria-label="${label}"[^>]*>[\\s\\S]*?<\\/button>`),
+      )?.[0] ?? ''
+      expect(button).toContain('class="cccd-review-thumb"')
+    }
+  })
+
+  it('does not render the full-size card dialog until a thumbnail is clicked', () => {
+    const html = render([card('card-00', 0)])
+    expect(html).not.toContain('role="dialog"')
   })
 
   it('says so plainly when nothing needs action', () => {

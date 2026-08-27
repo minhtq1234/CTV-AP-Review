@@ -27,17 +27,79 @@ export interface CccdReviewViewProps {
 }
 
 function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
+  // Whether the full-size viewer is open for THIS card. Pure UI state: it
+  // never reads or writes card data, so it lives here rather than in the
+  // container that owns cards/error/busy.
+  const [open, setOpen] = useState(false)
   const front = card.sides.find(side => side.side === 'front') ?? card.sides[0]
   if (!front) return <span className="cccd-review-nothumb">Không có ảnh</span>
   return (
-    <img
-      className="cccd-review-thumb"
-      src={cccdCardImageUrl(caseId, card.cardId, front.side)}
-      alt={`Ảnh CCCD ${card.cardId}`}
-      width={front.width}
-      height={front.height}
-      loading="lazy"
-    />
+    <>
+      <button
+        type="button"
+        className="cccd-review-thumb-btn"
+        aria-label={`Xem ảnh CCCD ${card.cardId} ở kích thước đầy đủ`}
+        onClick={() => setOpen(true)}
+      >
+        <img
+          className="cccd-review-thumb"
+          src={cccdCardImageUrl(caseId, card.cardId, front.side)}
+          alt={`Ảnh CCCD ${card.cardId}`}
+          width={front.width}
+          height={front.height}
+          loading="lazy"
+        />
+      </button>
+      {open && (
+        <CccdCardViewer caseId={caseId} card={card} onClose={() => setOpen(false)} />
+      )}
+    </>
+  )
+}
+
+// The row thumbnail is barely big enough to place a face at a glance -- the
+// reviewer decides by eye, so seeing the card at full size has to be one
+// click away. View-only: no assign, no detach, nothing that mutates.
+// Reuses CccdCardPicker's backdrop (.cccd-picker-backdrop) for the dim /
+// centering and its backdrop-click + Escape pattern; the panel below is a
+// sibling class, not the picker's, since this always shows exactly one
+// card's own sides rather than a grid of candidates to choose from.
+function CccdCardViewer({ caseId, card, onClose }: {
+  caseId: string
+  card: CccdCard
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="cccd-picker-backdrop"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <section
+        className="cccd-card-viewer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Ảnh CCCD ${card.cardId}`}
+        onKeyDown={event => { if (event.key === 'Escape') onClose() }}
+      >
+        <header className="cccd-card-viewer-head">
+          <h2>Ảnh CCCD {card.cardId}</h2>
+          <button type="button" onClick={onClose}>Đóng</button>
+        </header>
+        <div className="cccd-card-viewer-images">
+          {card.sides.map(side => (
+            <img
+              key={side.side}
+              src={cccdCardImageUrl(caseId, card.cardId, side.side)}
+              alt={`Ảnh CCCD ${card.cardId} mặt ${side.side}`}
+              width={side.width}
+              height={side.height}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
   )
 }
 

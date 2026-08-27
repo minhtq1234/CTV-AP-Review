@@ -114,6 +114,13 @@ function button(text: string): HTMLButtonElement {
   return found as HTMLButtonElement
 }
 
+function thumbButton(cardId: string): HTMLButtonElement {
+  const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
+  const found = host.querySelector(`button[aria-label="${label}"]`)
+  if (!found) throw new Error(`no thumbnail button for ${cardId}: ${host.textContent}`)
+  return found as HTMLButtonElement
+}
+
 describe('CccdReviewScreen', () => {
   it('loads the cards for the case and renders the buckets', async () => {
     listCccdCards.mockResolvedValue([card('card-00', 0), card('card-09', null)])
@@ -322,5 +329,84 @@ describe('CccdReviewScreen', () => {
 
     // B's detach is still in flight — its rows must stay disabled.
     expect(button('Gỡ').disabled).toBe(true)
+  })
+
+  // The full-size card viewer is view-only UI state that lives in the
+  // presentational view (CardThumb), not the container — so opening it must
+  // never touch the network, and must work for a card already attached
+  // (nested inside the collapsed "Đã gán" <details>), which is the harder of
+  // the two spots it appears in.
+  it('opens the full-size viewer for an attached row, showing every side', async () => {
+    const twoSided: CccdCard = {
+      cardId: 'card-00',
+      state: 'exact',
+      attachedPacketIndex: 0,
+      number: '',
+      issues: [],
+      sides: [
+        { side: 'front', width: 1059, height: 668 },
+        { side: 'back', width: 1059, height: 668 },
+      ],
+    }
+    listCccdCards.mockResolvedValue([twoSided])
+    await mount()
+    await act(async () => { thumbButton('card-00').click() })
+
+    const dialog = host.querySelector('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+    const srcs = [...(dialog?.querySelectorAll('img') ?? [])].map(img => img.getAttribute('src'))
+    expect(srcs).toEqual([
+      '/api/cases/case-1/cccd-cards/card-00/image/front',
+      '/api/cases/case-1/cccd-cards/card-00/image/back',
+    ])
+  })
+
+  it('also opens the full-size viewer from an unattached card row', async () => {
+    listCccdCards.mockResolvedValue([card('card-09', null)])
+    await mount()
+    await act(async () => { thumbButton('card-09').click() })
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
+  it('closes the full-size viewer on Escape', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    await act(async () => { thumbButton('card-00').click() })
+    const dialog = host.querySelector('[role="dialog"]') as HTMLElement
+    expect(dialog).not.toBeNull()
+
+    await act(async () => {
+      dialog.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }))
+    })
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('closes the full-size viewer on a backdrop click', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    await act(async () => { thumbButton('card-00').click() })
+    const backdrop = host.querySelector('.cccd-picker-backdrop') as HTMLElement
+    expect(backdrop).not.toBeNull()
+
+    await act(async () => {
+      backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    })
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('opening the full-size viewer makes no new list or assign call', async () => {
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    expect(listCccdCards).toHaveBeenCalledTimes(1)
+    expect(assignCccdCard).not.toHaveBeenCalled()
+
+    await act(async () => { thumbButton('card-00').click() })
+
+    expect(listCccdCards).toHaveBeenCalledTimes(1)
+    expect(assignCccdCard).not.toHaveBeenCalled()
   })
 })
