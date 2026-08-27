@@ -1187,7 +1187,10 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-cardid { color: var(--text-muted); font-size: 12px; }
 .cccd-review-hint { color: var(--text-muted); font-size: 12px; }
 .cccd-review-thumb {
-  width: 160px; height: 101px; object-fit: cover;
+  /* width/height reserve the box without trusting the recorded side
+     dimensions (transposed on any case ingested before fccded7);
+     aspect-ratio is belt-and-braces alongside the explicit height. */
+  width: 160px; height: 101px; aspect-ratio: 1.585; object-fit: cover;
   border: 1px solid var(--border); border-radius: 4px; background: #f4f4f5;
 }
 /* Zero-chrome wrapper so the trigger button hugs the thumbnail exactly --
@@ -1216,12 +1219,13 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
   padding: 5px 11px; border: 0.5px solid var(--border); border-radius: 8px;
   background: transparent; cursor: pointer; font-size: 13px;
 }
-/* align-items: center overrides flex's default stretch -- without it every
-   image would be forced to the container's full width, upscaling a side
-   that is naturally narrower than min(900px, 92vw). Natural size, capped
-   only when the image itself is the larger of the two. */
-.cccd-card-viewer-images { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 16px; }
-.cccd-card-viewer-images img { display: block; max-width: 100%; height: auto; }
+/* The recorded side dimensions are transposed on any case ingested before
+   fccded7, so the images carry no width/height attributes -- fill the panel
+   width instead, same convention as .cccd-card-images img on the picker
+   (styles.css:828): these cards are small evidence to begin with, so an
+   undersized side scaling up to the panel width is more readable, not less. */
+.cccd-card-viewer-images { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.cccd-card-viewer-images img { display: block; width: 100%; height: auto; }
 .cccd-summary-link {
   margin-left: 10px; background: none; border: 0; padding: 0;
   color: var(--accent); cursor: pointer; text-decoration: underline;

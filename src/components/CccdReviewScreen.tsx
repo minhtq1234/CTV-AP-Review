@@ -41,12 +41,16 @@ function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
         aria-label={`Xem ảnh CCCD ${card.cardId} ở kích thước đầy đủ`}
         onClick={() => setOpen(true)}
       >
+        {/* No width/height attributes: the recorded side dimensions are
+            transposed on any case ingested before fccded7 (the JPEG parser
+            returned header order, height before width), and every existing
+            case predates that fix. The image file is the only trustworthy
+            source of its own size, so the box is reserved by CSS
+            (width/height/aspect-ratio on .cccd-review-thumb) instead. */}
         <img
           className="cccd-review-thumb"
           src={cccdCardImageUrl(caseId, card.cardId, front.side)}
           alt={`Ảnh CCCD ${card.cardId}`}
-          width={front.width}
-          height={front.height}
           loading="lazy"
         />
       </button>
@@ -88,13 +92,17 @@ function CccdCardViewer({ caseId, card, onClose }: {
           <button type="button" onClick={onClose}>Đóng</button>
         </header>
         <div className="cccd-card-viewer-images">
+          {/* No width/height attributes here either, and no CSS box to
+              reserve one at: the recorded side dimensions are transposed on
+              any case ingested before fccded7, so only the image file's own
+              (loaded) size is trustworthy. .cccd-card-viewer-images img
+              fills the panel width instead, same convention as the picker's
+              .cccd-card-images img. */}
           {card.sides.map(side => (
             <img
               key={side.side}
               src={cccdCardImageUrl(caseId, card.cardId, side.side)}
               alt={`Ảnh CCCD ${card.cardId} mặt ${side.side}`}
-              width={side.width}
-              height={side.height}
             />
           ))}
         </div>

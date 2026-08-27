@@ -89,7 +89,18 @@ describe('CccdReviewView', () => {
     expect(html).not.toContain('<details open')
     expect(html).toContain('Đã gán (2)')
     expect(html).toContain('Gỡ')
-    expect(html).toContain('width="1059"')
+  })
+
+  // The recorded side dimensions are transposed on any case ingested before
+  // fccded7 (the JPEG parser returned header order, height before width) --
+  // only the image file itself knows its real size, so the thumbnail must
+  // not assert a width/height that came from that untrustworthy manifest.
+  it('does not put the recorded (possibly transposed) dimensions on the thumbnail', () => {
+    const html = render([card('card-00', 0)])
+    const thumb = html.match(/<img[^>]*class="cccd-review-thumb"[^>]*>/)?.[0] ?? ''
+    expect(thumb).not.toBe('')
+    expect(thumb).not.toMatch(/\bwidth=/)
+    expect(thumb).not.toMatch(/\bheight=/)
   })
 
   it('renders every thumbnail inside a button with an accessible label, in both sections', () => {

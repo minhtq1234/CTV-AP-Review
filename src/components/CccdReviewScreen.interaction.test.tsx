@@ -354,11 +354,20 @@ describe('CccdReviewScreen', () => {
 
     const dialog = host.querySelector('[role="dialog"]')
     expect(dialog).not.toBeNull()
-    const srcs = [...(dialog?.querySelectorAll('img') ?? [])].map(img => img.getAttribute('src'))
+    const imgs = [...(dialog?.querySelectorAll('img') ?? [])]
+    const srcs = imgs.map(img => img.getAttribute('src'))
     expect(srcs).toEqual([
       '/api/cases/case-1/cccd-cards/card-00/image/front',
       '/api/cases/case-1/cccd-cards/card-00/image/back',
     ])
+    // The recorded side dimensions are transposed on any case ingested before
+    // fccded7 (the JPEG parser returned header order, height before width) --
+    // only the image file itself knows its real size, so the viewer must not
+    // assert a width/height that came from that untrustworthy manifest.
+    for (const img of imgs) {
+      expect(img.hasAttribute('width')).toBe(false)
+      expect(img.hasAttribute('height')).toBe(false)
+    }
   })
 
   it('also opens the full-size viewer from an unattached card row', async () => {
