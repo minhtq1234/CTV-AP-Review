@@ -225,6 +225,14 @@ Green before commit, as always: `cd server && python3 -m pytest`, `node_modules/
 - **A genuinely missing card never clears.** If a collaborator never submitted a card, that
   packet stays in "Cần xử lý" for good, because nothing in this scope can record its
   absence. Visible, not silent — and the reviewer can always continue past it.
+- **Two cards claiming one packet would hide one of them.** `buildCccdReview` indexes attached
+  cards into a `Map` keyed by packet, so a second card claiming the same `attachedPacketIndex`
+  would overwrite the first: the loser appears in neither bucket while still counting toward
+  `counts.candidates`. Three separate reviewers raised this independently, so it is recorded
+  rather than left implicit. **Accepted**, because the state is unreachable through the API —
+  `cccd_manual.assign_card` scans the other mappings and raises `packet-already-has-card`
+  before attaching, and ingest attaches at most one card per packet. Worth revisiting only if
+  a future path can write mappings without going through `assign_card`.
 
 ## Measured state this is designed against
 

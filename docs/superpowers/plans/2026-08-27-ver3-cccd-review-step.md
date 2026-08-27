@@ -435,6 +435,16 @@ git commit -m "feat(cccd): Vietnamese labels for card state and issues"
 `CccdReviewView` takes everything as props so it can be static-rendered, the way
 `CaseDetail.tsx` exports `PacketCard` and `PacketDashboardView` for its own tests.
 
+> **AMENDED AFTER REVIEW.** Three gaps in the code below, all mine, fixed on top of it:
+> 1. `CardThumb`'s `<img>` gained `width={front.width} height={front.height}`. `CccdCardSide`
+>    already carries both as required fields and `EvidenceViewer.tsx` sets them the same way;
+>    without them a real ~1059×668 card renders unconstrained between Task 4 and Task 10.
+> 2. Each of the three row kinds gained a summarising `aria-label` — the rows are otherwise a
+>    flat run of unlabelled `<span>`s.
+> 3. The test named "…and no assign button of its own" did not assert the absence. It now
+>    isolates the orphan `<li>` by regex and asserts both that the match is non-empty and that
+>    it contains no `<button>`.
+
 **Files:**
 - Create: `src/components/CccdReviewScreen.tsx`
 - Create: `src/components/cccdReviewScreen.test.tsx`
