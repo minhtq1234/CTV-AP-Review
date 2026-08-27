@@ -496,8 +496,75 @@ from day one, these accumulate into the labelled corpus this project does not
 otherwise have, at no marginal cost. An override of `pending → ok` is the
 opposite signal: coverage the engine lacked but a human supplied easily.
 
-Who may override, and whether a second confirmation is required, needs a
-decision (§8).
+### 6.1 The decisions, settled
+
+Acc answered on 2026-08-27:
+
+- **No written reason is required.** A decision is one click. `reason` stays on
+  the record, optional, for a reviewer who wants to say why. Requiring one on
+  each of 322 `rv` cells would have been a different product.
+- **No second confirmation**, including for a downgrade. `ok → no` is one click
+  like any other.
+- **A cleared finding stays in the report, marked** *người kiểm tra đã xác
+  nhận*. The export is the record of what the engine found *and what a person
+  did about it*, not only of what is still outstanding.
+
+Still open: **who** may override. `by` stays `""` until there is auth, which the
+spec already allows — but every record made before then is unattributable, and
+that is worth knowing rather than glossing over.
+
+### 6.2 As built
+
+- `criteria.Override` — the §6 record, with validators: a roster-level criterion
+  cannot be keyed this way (the five hang off no packet and have no document
+  axis), a document outside the criterion's scope is refused, `na` is not
+  decidable (it states a fact about the checklist, not a judgment), and a no-op
+  override records nothing.
+- `criteria.override_key(stt, document)` → `"21:Hợp đồng"` — the addressing key
+  §6 lacked. Two-digit STT, document name verbatim, never an index.
+- **Append-only.** `review["overrides"]` is `{key: [record, ...]}`, and
+  `cases.effective_overrides` gives the engine the latest per cell. A reviewer
+  who changes their mind leaves both records, and what the engine originally
+  thought stays recoverable as the first record's `fromStatus`.
+- `PUT /api/cases/{cid}/packets/{i}/criteria/{stt}:{document}`. `fromStatus` is
+  taken from a **fresh evaluation**, not from the client: a stale matrix must not
+  be able to write a wrong provenance into the audit trail.
+- Applied as one pass over the assembled cells (`evaluate._with_overrides`),
+  which calls `cell_status` — its first production caller — rather than routing
+  all 23 `Cell` construction sites through it. Verified as a true no-op: every
+  status, value and note across all 367 packets on disk hashes to `e1cd8718`
+  both before and after.
+- The cell payload carries `computedStatus` beside `status`, and an override
+  appears as `Evidence` with `provenance: "override"` — the value §5 named and
+  nothing produced until now.
+- `normalize_review` was silently destructive: it returns a complete literal, so
+  a stored decision would have been dropped **and the deletion persisted** on the
+  next load. `overrides` is named there, ahead of any writer.
+
+### 6.3 The resubmit gate now disagrees with itself
+
+`cases.needs_resubmit` reads human flags, rejections and a weak roster match. It
+knows nothing about criteria findings. `report._needs_resubmit` now does. On the
+July case that reads:
+
+| | count |
+|---|---|
+| packets in the exported report | **34** |
+| dashboard `cần gửi lại` | **0** |
+| case status | `ready` |
+
+A reviewer sees a green case and a clean packet list, then exports 34 packets of
+findings. That is worse than either answer alone, and closing it needs a product
+decision, not a technical one: **does an engine finding mean a packet needs
+resubmission?**
+
+Saying yes marks 34 of 41 packets before a human has looked at any of them, which
+makes the dashboard useless — everything is red. Saying no leaves the export and
+the screen contradicting each other. The likely shape is a third state: the
+engine's findings are *candidates* a reviewer triages, and `cần gửi lại` counts
+only what a **person** has decided (an override to `no`/`missing`, a field flag,
+or a rejection) — with the candidates surfaced separately. That is a design
+choice about what the dashboard is for, so it is Acc's.
 
 ---
 

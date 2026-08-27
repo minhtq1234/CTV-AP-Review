@@ -394,10 +394,9 @@ class TestTheReviewerSDecisionsReachTheReport:
 
     A reviewer who *adds* a finding (`rv → no`) has found a problem, and sending
     problems back is what the report is for. A reviewer who *clears* a computed
-    finding (`no → ok`) has validated it — and whether the report should then
-    stay silent is a product decision, not a technical one. Until it is made the
-    finding stays in, marked as cleared: keeping information a reviewer can see
-    and remove is recoverable, silently dropping it from an export is not.
+    finding (`no → ok`) has validated it, and Acc's decision is that it stays in
+    the report, marked: the export is the record of what the engine found and
+    what a person did about it, not only of what is still outstanding.
     """
 
     def _decided(self, stt, document, frm, to, reason):

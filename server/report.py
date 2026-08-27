@@ -99,10 +99,10 @@ def _criteria_for(
                      "criteria": []},
                 )
                 entry["criteria"].append(result.stt)
-        # A cell the reviewer cleared (`no` -> `ok`) still belongs in the export,
-        # marked. Whether it should instead go silent is a product decision; a
-        # finding kept and visible can be removed later, one dropped from an
-        # export cannot be recovered.
+        # A cell the reviewer cleared (`no` -> `ok`) stays in the export, marked
+        # -- Acc's decision. The report is the record of what the engine found
+        # and what a person did about it, not only of what is still outstanding,
+        # so a cleared finding is evidence of review rather than noise to drop.
         cleared = [c for c in item["cells"]
                    if c["status"] != "no" and c["computedStatus"] == "no"]
         carrying = [c for c in item["cells"] if c["status"] == "no"]
