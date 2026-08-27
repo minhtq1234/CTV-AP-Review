@@ -515,3 +515,48 @@ class TestCriteriaEndpoint:
         assert contract["status"] == "no"
         assert contract["value"] == "Ai Đó Khác"
         assert "Người 1" in contract["note"]
+
+
+class TestTheReportCarriesTheEngineFindings:
+    def test_the_report_includes_the_roster_level_section(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, name_in_contract="Ai Đó Khác")
+
+        body = c.post(f"/api/cases/{cid}/report").json()
+
+        assert [x["stt"] for x in body["summary"]["criteria"]] == [20, 26, 30, 31, 32]
+
+    def test_an_engine_finding_reaches_the_report_with_no_human_flag(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, name_in_contract="Ai Đó Khác")
+
+        body = c.post(f"/api/cases/{cid}/report").json()
+
+        assert len(body["groups"]) == 1
+        names = [c_["label"] for c_ in body["groups"][0]["criteria"]]
+        assert "Họ và tên" in names
+        assert "Ai Đó Khác" in body["markdown"]
+
+    def test_a_case_with_no_roster_still_reports(self, tmp_path, monkeypatch):
+        c, cid = _ready_case(monkeypatch, tmp_path)
+
+        body = c.post(f"/api/cases/{cid}/report").json()
+
+        assert "summary" not in body
+        assert "markdown" in body
+
+    def test_the_markdown_download_carries_the_findings(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0, name_in_contract="Ai Đó Khác")
+        c.post(f"/api/cases/{cid}/report")
+
+        text = c.get(f"/api/cases/{cid}/report.md").text
+
+        assert "Kiểm tra toàn bảng kê" in text
+        assert "Ai Đó Khác" in text

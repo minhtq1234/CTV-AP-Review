@@ -389,7 +389,13 @@ async def post_report(cid: str):
         raise HTTPException(status_code=404, detail="case not found")
     manifests = _load_manifests(cid, case["packets"])
     now = datetime.now(timezone.utc).isoformat()
-    report = build_report(case, manifests, generated_at=now)
+    # With the roster, the report carries the criteria engine's own findings and
+    # the roster-level section -- not only what a reviewer flagged by hand.
+    rows = await run_in_threadpool(_roster_rows, cid)
+    report = await run_in_threadpool(
+        build_report, case, manifests, now, rows or None,
+        case.get("purchaseTotal"),
+    )
     case_dir = store.case_dir(cid)
     with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(report["markdown"])
