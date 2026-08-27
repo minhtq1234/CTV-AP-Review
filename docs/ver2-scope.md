@@ -82,7 +82,42 @@ Ver 2 extends IDP to those document fields.
 
 **Not yet decided** — see §5.
 
-### 2.2 Table view for the packet list
+### 2.1a Cheap extraction fixes that come BEFORE spending IDP calls
+
+Investigating `phi` (§5.3) showed the field's failures have **two independent causes**, and
+only one of them is an IDP problem.
+
+**Cause 1 — the anchor matches the section heading, and the lookahead is one line.**
+`phi`'s anchor is `"phi dich vu"`. In a contract that phrase appears twice: the section
+heading `ĐIỀU 2. PHÍ DỊCH VỤ VÀ THANH TOÁN`, and the clause `2.1. Phí dịch vụ: N đồng.`
+OCR reliably reads the big bold heading but routinely drops "vụ" from the clause
+(`Phí dịch 8.888.889 đồng.`), so **only the heading anchors** — and the heading has no number.
+`locate_field` then searches the line, its reassembled row, and only `lines[idx + 1]`.
+
+So a success depends on the fee happening to be the very next line:
+
+| July page | anchor line | `idx+1` | result |
+|---|---|---|---|
+| p9 (packet 0) | `ĐIỀU 2. PHÍ DỊCH VỤ VÀ THANH TOÁN` | `Bộ 1; Phí dịch 8.888.889 đồng.` | reads — **by luck** |
+| p17 (packet 1) | same heading | `IÍ` (an OCR fragment) | fails |
+
+Measured over July's 9 failures, the fee sits 2–3 lines below the anchor. **Widening the
+lookahead to 3 lines recovers 7 of 9** — July goes 32/41 → **39/41 (95%)** for free. It also
+makes the existing 32 robust instead of accidental. Note the line grouping happens in
+*display* space (`scale_words` then `group_lines`, `y_tol=8`), so "lines" here are
+display-space lines, not OCR-space ones.
+
+Remaining tail: packets 35 and 38 have a different layout where `ĐIỀU 2` falls on a later page
+than the anchor hit. Unresolved, 2 of 41.
+
+**Cause 2 — the value is handwritten.** This is all 32 February packets. The anchor finds the
+right clause (`2:Ì.. Phí dịch vụ:`), but the amount is written in blue pen on a ruled blank and
+Tesseract's `vie` model returns nothing for it — the following line is handwriting noise
+(`t_ ‹lam “=`). No anchor or lookahead change touches this. **Only a handwriting-capable
+reader fixes it**, which is the genuine IDP case.
+
+**Order of work:** do Cause 1 first — it is a local change to `locate_field`, costs no network
+calls, and shrinks what IDP has to cover. Then scope IDP against what is actually left.
 
 The packet list is currently a card grid (`src/components/CaseDetail.tsx`). Ver 2 replaces
 it with a table, as `ver1` has. `ver1`'s columns were:
@@ -160,9 +195,11 @@ disagreement when the read behind it was confident.
    February reads 78% vs July's 96%, `phi` 0/32, and the August fixes did not help it. IDP
    earns a wider role than July alone suggested. See §4. Re-ingested as case
    `8ee0c3a88104466cad20cccbfbf0b25a` (~7 min for 32 packets) if the numbers need rechecking.
-3. **Why is `phi` 0/32 on February but 32/41 on July?** Unknown, and worth an hour before
-   spending IDP calls on it — a labelling or layout difference may be cheaper to fix than a
-   network call per field. `phi` is the highest-value field in the packet.
+3. ~~Why is `phi` 0/32 on February but 32/41 on July?~~ **Answered 2026-08-27** — two separate
+   causes, see §2.1a. February's fee is **handwritten** (a real IDP case); July's 9 failures
+   are an **anchor/lookahead defect** that a 3-line lookahead fixes for free, taking July to
+   39/41. The hour was worth it: part of what looked like an IDP requirement is a local code
+   fix. Still open within it: packets 35 and 38 (different contract layout).
 4. **Governance for sending payment documents to GreenNode.** CCCD-only IDP was one thing;
    document-field IDP sends contracts and BBNT off the workstation. The original brief
    allowed GreenNode processing *"subject to confirmation of internal logging, retention and
