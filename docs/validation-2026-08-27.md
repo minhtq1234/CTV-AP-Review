@@ -6,7 +6,8 @@ page at the bbox the tool recorded, with that box outlined. 48 claims over packe
 0, 3, 24, 34, 39 of the July batch, plus 9, 31, 35 (the high-confidence name disagreements),
 then a batch-wide count over all 41.
 
-**Headline: 4 of 41 packets carry a false `no`.** `no` drives `cần gửi lại`, so the tool would
+**Headline: 4 of 41 packets carry a false `no`.** Three (the name column) are fixed in
+`afac45f`; packet 34's remains open. `no` drives `cần gửi lại`, so the tool would
 send four valid packets back to the CTV. Both causes are extraction defects, and neither is
 visible to the tool itself.
 
@@ -33,6 +34,35 @@ packets are correctly matched and only the name is wrong.
 
 Packet 9 has a second, independent defect: its BBNT name reads `Nhan Kiến`, the correct name
 **truncated** from three tokens to two.
+
+### Fixed — `afac45f`, verified across the batch
+
+Party is now decided by the block's printed column header, geometrically (the LEFT
+header does not survive OCR — it reads as the bare logo word `VNG` on all three pages, so a
+both-headers rule would have been a no-op). The gutter classifies words; it never cuts a line,
+so `group_lines` is untouched.
+
+Batch diff over every `hoten` source in all 41 packets, old extraction vs new:
+
+| | |
+|---|---|
+| sources unchanged | **89 of 96** — inert where it should be |
+| sources changed | 7, every one an improvement |
+| moves into `no` | **none** |
+
+    p9  contract-0  'Trần Lê Hoài Anh'  -> 'Nhan Kiến Phát'         no      -> ok
+    p9  bbnt-0      'Nhan Kiến'         -> 'Nhan Kiến Phát'         no      -> ok
+    p31 contract-0  'Trịnh Đức Minh'    -> 'Phan Tắn Tài'           no      -> rv
+    p35 bbnt-0      'Văn Họ'            -> 'Hoàng Nguyễn Hải Đăng'  no      -> ok
+    p10 contract-0  ''                  -> 'Nguyễn Quang Bảo'       pending -> ok
+    p15 pit-0       ''                  -> 'Bùi Nam Khánh'          pending -> ok
+    p16 pit-0       ''                  -> 'Phạm Phương Vy'         pending -> ok
+
+The last three were not part of the bug: row reassembly recovered names that had been unread,
+all three matching the roster. p31 lands on `rv` rather than `ok` because OCR reads `Tắn` for
+`Tấn` — a genuine question for a reviewer, and no longer a rejection.
+
+Takes effect at ingest, so a case keeps its extraction until re-ingested.
 
 ## 2. Confidence measures legibility, not correctness
 
