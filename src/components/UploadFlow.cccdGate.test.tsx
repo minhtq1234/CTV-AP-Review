@@ -88,6 +88,11 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
+  // Guarantees any Storage.prototype spy from a throwing-storage test is torn
+  // down even when the test's own assertions fail first — a mockRestore() at
+  // the tail of a test body only runs on the pass path, and a still-throwing
+  // spy would otherwise leak into (and break) the next test.
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -127,5 +132,28 @@ describe('the CCCD gate', () => {
     await act(async () => { go.click() })
     expect(host.textContent).toContain('DETAIL')
     expect(window.localStorage.getItem('cccd-reviewed:case-1')).not.toBeNull()
+  })
+
+  it('still opens on the review step when reading the dismissal flag throws', async () => {
+    // jsdom's localStorage is a "legacy platform object" — spying on the
+    // instance (window.localStorage.getItem) never intercepts real calls;
+    // the spy must sit on Storage.prototype. Restored in the shared afterEach.
+    vi.spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => { throw new Error('blocked') })
+    getCase.mockResolvedValue(caseDetail(workbook))
+    await openTheCase()
+    expect(host.textContent).toContain('CCCD-STEP')
+    expect(host.textContent).not.toContain('Không kết nối được')
+  })
+
+  it('still reaches the case detail when recording the dismissal flag throws', async () => {
+    vi.spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => { throw new Error('blocked') })
+    getCase.mockResolvedValue(caseDetail(workbook))
+    await openTheCase()
+    const go = [...host.querySelectorAll('button')]
+      .find(el => el.textContent === 'continue') as HTMLButtonElement
+    await act(async () => { go.click() })
+    expect(host.textContent).toContain('DETAIL')
   })
 })

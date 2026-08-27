@@ -27,6 +27,25 @@ type Screen = 'list' | 'upload' | 'cccd' | 'detail' | 'review'
 
 const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8002).'
 
+// localStorage throws outright in some locked-down browsers. The CCCD step's
+// dismissal is a convenience, not data: on failure show the step once more
+// rather than mistake a storage fault for a backend one.
+function cccdReviewSeen(caseId: string): boolean {
+  try {
+    return window.localStorage.getItem(cccdReviewSeenKey(caseId)) !== null
+  } catch {
+    return false
+  }
+}
+
+function markCccdReviewSeen(caseId: string): void {
+  try {
+    window.localStorage.setItem(cccdReviewSeenKey(caseId), new Date().toISOString())
+  } catch {
+    // Nothing else depends on this; the step simply shows again next time.
+  }
+}
+
 // The "Tải hồ sơ" flow. After an upload we return straight to the case list —
 // processing happens in the background and shows as an inline progress bar on the
 // case's own row (no blocking full-screen spinner). Opening a case → case detail
@@ -75,7 +94,7 @@ export default function UploadFlow() {
       setCaseId(id); setDetail(d)
       // Ver 3 step 1: confirm the CCCD mapping before the packet list. Shown
       // once per case per browser — a case with no workbook never sees it.
-      const seen = window.localStorage.getItem(cccdReviewSeenKey(id)) !== null
+      const seen = cccdReviewSeen(id)
       setScreen(shouldOpenCccdReview(d.cccdSummary, seen) ? 'cccd' : 'detail')
     } catch { setErr(CONN_ERR) }
   }
@@ -218,7 +237,7 @@ export default function UploadFlow() {
         caseName={detail.name}
         packets={detail.packets}
         onContinue={() => {
-          window.localStorage.setItem(cccdReviewSeenKey(caseId), new Date().toISOString())
+          markCccdReviewSeen(caseId)
           setScreen('detail')
         }}
       />
