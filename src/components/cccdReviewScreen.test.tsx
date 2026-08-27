@@ -93,16 +93,35 @@ describe('CccdReviewView', () => {
 
   // The recorded side dimensions are transposed on any case ingested before
   // fccded7 (the JPEG parser returned header order, height before width) --
-  // only the image file itself knows its real size, so the thumbnail must
-  // not assert a width/height that came from that untrustworthy manifest.
-  it('does not put the recorded (possibly transposed) dimensions on the thumbnail', () => {
-    const html = render([card('card-00', 0)])
+  // only the image file itself knows its real size, so neither the row
+  // thumbnail (Cần xử lý) nor the tile image (Đã gán) may assert a
+  // width/height that came from that untrustworthy manifest. Re-targeted
+  // from a single "the thumbnail" test into one per section, since an
+  // attached card no longer renders a `.cccd-review-thumb` at all.
+  it('does not put the recorded (possibly transposed) dimensions on the row thumbnail', () => {
+    const html = render([card('card-09', null)])
     const thumb = html.match(/<img[^>]*class="cccd-review-thumb"[^>]*>/)?.[0] ?? ''
     expect(thumb).not.toBe('')
     expect(thumb).not.toMatch(/\bwidth=/)
     expect(thumb).not.toMatch(/\bheight=/)
   })
 
+  it('does not put the recorded (possibly transposed) dimensions on the tile image', () => {
+    const html = render([card('card-00', 0)])
+    const tileButton = html.match(
+      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    expect(tileButton).not.toBe('')
+    const img = tileButton.match(/<img[^>]*>/)?.[0] ?? ''
+    expect(img).not.toBe('')
+    expect(img).not.toMatch(/\bwidth=/)
+    expect(img).not.toMatch(/\bheight=/)
+  })
+
+  // Re-targeted: this used to check both sections' thumbnails for the same
+  // `cccd-review-thumb` class. Đã gán's tile image now fills the tile
+  // instead (no fixed 160x101 box), so the two sections are checked for
+  // their own, separate classes rather than one shared one.
   it('renders every thumbnail inside a button with an accessible label, in both sections', () => {
     const html = render([
       card('card-00', 0),
@@ -111,11 +130,27 @@ describe('CccdReviewView', () => {
     for (const cardId of ['card-00', 'card-09']) {
       const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
       expect(html).toContain(`aria-label="${label}"`)
-      const button = html.match(
-        new RegExp(`<button[^>]*aria-label="${label}"[^>]*>[\\s\\S]*?<\\/button>`),
-      )?.[0] ?? ''
-      expect(button).toContain('class="cccd-review-thumb"')
     }
+    // Cần xử lý keeps the small, fixed-size row thumbnail.
+    const orphanButton = html.match(
+      /<button[^>]*aria-label="Xem ảnh CCCD card-09[^"]*"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    expect(orphanButton).toContain('class="cccd-review-thumb"')
+    // Đã gán's tile image fills the tile -- a different class, and the
+    // fixed-size row thumbnail class must not leak onto it.
+    const tileButton = html.match(
+      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    expect(tileButton).toContain('class="cccd-review-tile-image"')
+    expect(tileButton).not.toContain('cccd-review-thumb')
+  })
+
+  // A future change must not silently merge the two sections' markup back
+  // together -- Cần xử lý is an unchanged list, Đã gán is now a tile grid.
+  it('keeps the exceptions list and the attached grid as separate structures', () => {
+    const html = render([card('card-00', 0), card('card-09', null)])
+    expect(html).toContain('<ul class="cccd-review-list">')
+    expect(html).toContain('<ul class="cccd-review-grid">')
   })
 
   it('does not render the full-size card dialog until a thumbnail is clicked', () => {

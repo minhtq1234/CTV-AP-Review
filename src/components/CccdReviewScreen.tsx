@@ -26,7 +26,16 @@ export interface CccdReviewViewProps {
   onContinue: () => void
 }
 
-function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
+// `variant` picks the visual treatment only -- the state, the button, the
+// viewer and its label are identical either way. 'row' is the small,
+// fixed-160x101 thumbnail (Cần xử lý, unchanged); 'tile' is Đã gán's
+// tile-filling image, sized entirely by CSS on .cccd-review-tile-image so
+// the row's fixed box never applies to it.
+function CardThumb({ caseId, card, variant = 'row' }: {
+  caseId: string
+  card: CccdCard
+  variant?: 'row' | 'tile'
+}) {
   // Whether the full-size viewer is open for THIS card. Pure UI state: it
   // never reads or writes card data, so it lives here rather than in the
   // container that owns cards/error/busy.
@@ -37,7 +46,7 @@ function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
     <>
       <button
         type="button"
-        className="cccd-review-thumb-btn"
+        className={variant === 'tile' ? 'cccd-review-tile-image' : 'cccd-review-thumb-btn'}
         aria-label={`Xem ảnh CCCD ${card.cardId} ở kích thước đầy đủ`}
         onClick={() => setOpen(true)}
       >
@@ -45,10 +54,12 @@ function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
             transposed on any case ingested before fccded7 (the JPEG parser
             returned header order, height before width), and every existing
             case predates that fix. The image file is the only trustworthy
-            source of its own size, so the box is reserved by CSS
-            (width/height/aspect-ratio on .cccd-review-thumb) instead. */}
+            source of its own size, so the box is reserved by CSS instead
+            (width/height/aspect-ratio on .cccd-review-thumb for the row;
+            .cccd-review-tile-image img's width: 100%; height: auto for the
+            tile, uncapped since these crops are not a uniform shape). */}
         <img
-          className="cccd-review-thumb"
+          className={variant === 'tile' ? undefined : 'cccd-review-thumb'}
           src={cccdCardImageUrl(caseId, card.cardId, front.side)}
           alt={`Ảnh CCCD ${card.cardId}`}
           loading="lazy"
@@ -111,7 +122,12 @@ function CccdCardViewer({ caseId, card, onClose }: {
   )
 }
 
-function AttachedRow({ caseId, row, busy, onDetach }: {
+// Đã gán is a scan for a wrong automatic match, not a data table, so it is a
+// tile rather than a row: head line (identity), then the image big enough to
+// place a face, then a foot line with the OCR number, the match reason and
+// the one action this section offers. Cần xử lý (below, in CccdReviewView)
+// is untouched and still uses the row grid.
+function AttachedTile({ caseId, row, busy, onDetach }: {
   caseId: string
   row: CccdAttachedRow
   busy: boolean
@@ -120,15 +136,19 @@ function AttachedRow({ caseId, row, busy, onDetach }: {
   const card = row.card
   return (
     <li
-      className="cccd-review-row"
+      className="cccd-review-tile"
       aria-label={`Gói ${row.packetIndex + 1} ${row.name}: ${describeCard(card)}`}
     >
-      <span className="cccd-review-stt">{row.packetIndex + 1}</span>
-      <span className="cccd-review-name">{row.name}</span>
-      <CardThumb caseId={caseId} card={card} />
-      <span className="cccd-review-number">{card.number || 'Không đọc được số'}</span>
-      <span className="cccd-review-state">{describeCard(card)}</span>
-      <button type="button" disabled={busy} onClick={() => onDetach(card.cardId)}>Gỡ</button>
+      <div className="cccd-review-tile-head">
+        <span className="cccd-review-tile-stt">{row.packetIndex + 1}</span>
+        <span className="cccd-review-tile-name">{row.name}</span>
+      </div>
+      <CardThumb caseId={caseId} card={card} variant="tile" />
+      <div className="cccd-review-tile-foot">
+        <span className="cccd-review-tile-number">{card.number || 'Không đọc được số'}</span>
+        <span className="cccd-review-tile-state">{describeCard(card)}</span>
+        <button type="button" disabled={busy} onClick={() => onDetach(card.cardId)}>Gỡ</button>
+      </div>
     </li>
   )
 }
@@ -215,9 +235,9 @@ export function CccdReviewView({
 
           <details className="cccd-review-section">
             <summary>Đã gán ({review.attached.length})</summary>
-            <ul className="cccd-review-list">
+            <ul className="cccd-review-grid">
               {review.attached.map(row => (
-                <AttachedRow
+                <AttachedTile
                   key={`attached-${row.packetIndex}`}
                   caseId={caseId}
                   row={row}

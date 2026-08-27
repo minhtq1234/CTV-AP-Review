@@ -1203,6 +1203,42 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-error { color: var(--danger); margin: 10px 0 0; }
 .cccd-review-foot { margin-top: 22px; display: flex; justify-content: flex-end; }
 
+/* Đã gán only -- Cần xử lý keeps the row list above untouched. This section
+   is a scan for a wrong automatic match, so the card has to be big enough to
+   recognise a face. Tiles, not rows: two columns at a desktop width,
+   collapsing to one when there is not room, rather than overflowing.
+   Own classes throughout (not .cccd-review-row/-stt/etc.) so the row grid
+   and the tile grid cannot fight. */
+.cccd-review-grid {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+}
+/* Shell modelled on .cccd-card (styles.css:821). */
+.cccd-review-tile {
+  border: 0.5px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--bg); display: flex; flex-direction: column;
+}
+.cccd-review-tile-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.cccd-review-tile-stt { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cccd-review-tile-name { font-weight: 600; }
+/* The viewer-opening button IS the image's sizing container -- no separate
+   wrapper element needed. */
+.cccd-review-tile-image {
+  display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer;
+}
+/* height: auto, not a fixed aspect, and no object-fit: cover: these crops
+   are not a uniform shape (the real card measured 622x288 on the front,
+   607x360 on the back), so cropping to a fixed ratio would cut real card
+   content. Let the tile be as tall as its own image needs. */
+.cccd-review-tile-image img { display: block; width: 100%; height: auto; }
+.cccd-review-tile-foot {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 13px;
+}
+.cccd-review-tile-number { font-variant-numeric: tabular-nums; }
+.cccd-review-tile-state { color: var(--text-muted); }
+.cccd-review-tile-foot button { margin-left: auto; }
+
 /* Card viewer: click a row thumbnail to see that card's sides at full size.
    Reuses .cccd-picker-backdrop for the dim/centering (see styles.css:796);
    this panel is a sibling of .cccd-picker, not a replacement for it -- the
