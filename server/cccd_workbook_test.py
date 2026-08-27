@@ -356,3 +356,47 @@ def test_one_and_two_cell_anchors_coexist_in_one_sheet(tmp_path):
 
     assert len(result.drawings) == 2
     assert [d.anchor.from_row for d in result.drawings] == [0, 5]
+
+
+# --- image dimensions ------------------------------------------------------
+
+def _jpeg_bytes(width: int, height: int) -> bytes:
+    """A minimal JPEG whose SOF0 declares `height` lines x `width` samples."""
+    sof = (b"\xff\xc0" + (11).to_bytes(2, "big") + b"\x08"
+           + height.to_bytes(2, "big") + width.to_bytes(2, "big")
+           + b"\x03\x01\x11\x00")
+    return b"\xff\xd8" + sof + b"\xff\xd9"
+
+
+def test_jpeg_size_returns_width_then_height_not_header_order():
+    """SOF declares HEIGHT before WIDTH; returning header order transposes.
+
+    This transposed every CCCD card in the manifest -- 280x419 recorded for a
+    419x280 image -- and since the evidence viewer maps a field's bbox through
+    those dimensions, every card highlight landed in the wrong place.
+    """
+    from cccd_workbook import _jpeg_size
+    assert _jpeg_size(_jpeg_bytes(width=622, height=288)) == (622, 288)
+    assert _jpeg_size(_jpeg_bytes(width=288, height=622)) == (288, 622)
+
+
+def test_jpeg_size_matches_a_landscape_card_shape():
+    # Real CCCD cards are landscape; the bug was invisible on a square image.
+    from cccd_workbook import _jpeg_size
+    width, height = _jpeg_size(_jpeg_bytes(width=505, height=319))
+    assert width > height, "a landscape card must not come back portrait"
+
+
+def test_png_size_was_already_correct():
+    # PNG's IHDR really does put width first, so only the JPEG path was wrong.
+    import struct, zlib
+    from cccd_workbook import _png_size
+    def chunk(tag, data):
+        return (len(data).to_bytes(4, "big") + tag + data
+                + (zlib.crc32(tag + data) & 0xFFFFFFFF).to_bytes(4, "big"))
+    w, h = 622, 288
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00" * w for _ in range(h))
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    assert _png_size(png) == (w, h)

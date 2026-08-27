@@ -486,10 +486,17 @@ def _jpeg_size(content):
             or 0xC9 <= marker <= 0xCB
             or 0xCD <= marker <= 0xCF
         ):
-            return (
-                int.from_bytes(content[offset + 3:offset + 5], "big"),
-                int.from_bytes(content[offset + 5:offset + 7], "big"),
-            )
+            # SOF field order is precision, NUMBER OF LINES (height), then
+            # SAMPLES PER LINE (width) -- height first. Returning them in
+            # header order as (width, height) transposed every CCCD card: the
+            # manifest recorded 280x419 for a 419x280 image, and since the
+            # evidence viewer maps a field's bbox through those dimensions,
+            # every card highlight landed in the wrong place (measured: all 78
+            # card page records on the July batch, and no PDF page, which goes
+            # through PyMuPDF instead).
+            height = int.from_bytes(content[offset + 3:offset + 5], "big")
+            width = int.from_bytes(content[offset + 5:offset + 7], "big")
+            return (width, height)
         offset += length
     raise ValueError("missing jpeg dimensions")
 
