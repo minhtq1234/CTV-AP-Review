@@ -551,3 +551,92 @@ describe('FolderReview package grid', () => {
     expect(container.querySelector('.packet-evidence-drawer')).not.toBeNull()
   })
 })
+
+describe('field hotkeys stay out of the criteria view', () => {
+  // The grid and the document panes both show a field selection, so the arrow
+  // and `F` hotkeys belong to both. The criteria view shows no field list at
+  // all — but `viewMode` was in the effects' dependency arrays and never read in
+  // their bodies, so ArrowDown there still marked an invisible field as seen and
+  // `F` still flagged one.
+
+  const renderWithCriteria = (review = emptyReview) => {
+    const onReview = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        packet: 0, name: 'CTV', documents: ['Excel'], criteria: [],
+        counts: { ok: 0, no: 0, rv: 0, na: 0, missing: 0, pending: 0 },
+        groups: {}, matchedRoster: true,
+      }),
+    })))
+    act(() => {
+      root.render(
+        <FolderReview
+          folder={folder}
+          review={review}
+          onReview={onReview}
+          onCommitReview={async () => undefined}
+          caseId="case-1"
+          packetIndex={0}
+        />,
+      )
+    })
+    return onReview
+  }
+
+  const openTab = (label: string) => {
+    const button = Array.from(
+      container.querySelectorAll('.package-view-toggle button'),
+    ).find(b => b.textContent === label)
+    if (!button) throw new Error(`no view-toggle button labelled ${label}`)
+    click(button)
+  }
+
+  it('arrow keys do not write while the criteria view is open', () => {
+    const onReview = renderWithCriteria()
+    press('ArrowDown')                 // select a field in the grid
+    openTab('25 tiêu chí')
+    onReview.mockClear()
+
+    press('ArrowDown')
+    press('ArrowUp')
+
+    expect(onReview).not.toHaveBeenCalled()
+  })
+
+  it('F does not flag a field while the criteria view is open', () => {
+    const onReview = renderWithCriteria()
+    press('ArrowDown')
+    openTab('25 tiêu chí')
+    onReview.mockClear()
+
+    press('f')
+
+    expect(onReview).not.toHaveBeenCalled()
+  })
+
+  it('the hotkeys come back when the grid does', () => {
+    const onReview = renderWithCriteria()
+    press('ArrowDown')
+    openTab('25 tiêu chí')
+    onReview.mockClear()
+    press('ArrowDown')
+    expect(onReview).not.toHaveBeenCalled()
+
+    openTab('Dạng bảng')
+    press('ArrowDown')
+
+    expect(onReview).toHaveBeenCalled()
+  })
+
+  it('the document panes keep their hotkeys', () => {
+    // Arrow navigation beside the scan is the core review loop, not a leak.
+    const onReview = renderWithCriteria()
+    openTab('Xem chứng từ')
+    onReview.mockClear()
+
+    press('ArrowDown')
+
+    expect(onReview).toHaveBeenCalled()
+  })
+})

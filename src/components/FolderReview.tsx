@@ -154,7 +154,13 @@ export default function FolderReview({
     else { setActiveDocId(id); setActivePage(0); setFocusBbox(null) }
   }
 
+  // These hotkeys act on a field selection, which the grid and the document panes
+  // both show. The criteria view does not: it has no field list, so ArrowDown
+  // there marked an invisible field as seen and `F` flagged one. `viewMode` was
+  // in the dependency array but never read in the body, so the listeners stayed
+  // live in a view that has nothing for them to act on.
   useEffect(() => {
+    if (viewMode === 'criteria') return
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
       const fromOverviewControl = !!el?.closest('.overview-selection-control')
@@ -194,6 +200,7 @@ export default function FolderReview({
   // above, same input-focus guard, plus skipping modified keystrokes so browser/OS shortcuts
   // (e.g. ⌘F find) pass through untouched.
   useEffect(() => {
+    if (viewMode === 'criteria') return
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
       if (el && (
