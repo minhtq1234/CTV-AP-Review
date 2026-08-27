@@ -233,6 +233,26 @@ describe('packet dashboard presentation', () => {
 })
 
 describe('CCCD aggregate summary', () => {
+  const baseDetail: CaseDetailT = {
+    id: 'synthetic-case',
+    name: 'Synthetic Case',
+    createdAt: null,
+    status: 'ready',
+    pdfName: 'packet.pdf',
+    rosterName: 'roster.xlsx',
+    cccdName: null,
+    cccdSummary: null,
+    summary: {
+      found: packets.length,
+      roster_n: packets.length,
+      matched: packets.length,
+      auto_merged: 0,
+    },
+    error: null,
+    packets,
+    progress: { done: 1, total: packets.length, flagged: 2 },
+  }
+
   it('renders aggregate counts without changing v1 dashboard controls', () => {
     const detail: CaseDetailT = {
       id: 'synthetic-case',
@@ -271,6 +291,25 @@ describe('CCCD aggregate summary', () => {
     expect(html).toContain('CCCD: 2 đã gắn · 1 chưa ghép')
     expect(html).toContain('Cần chú ý trước')
     expect(html).toContain('Xuất báo cáo gửi lại')
+  })
+
+  it('offers a way back to the CCCD step only when a handler is given', () => {
+    const detail: CaseDetailT = {
+      ...baseDetail,
+      cccdName: 'CCCD_T2.xlsx',
+      cccdSummary: { status: 'partial', candidates: 42, attached: 40, unresolved: 2 },
+    }
+    const without = renderToStaticMarkup(
+      <CaseDetail detail={detail} onOpenPacket={() => {}} onBack={() => {}}
+        onExport={() => {}} />,
+    )
+    expect(without).not.toContain('Xem thẻ CCCD')
+
+    const with_ = renderToStaticMarkup(
+      <CaseDetail detail={detail} onOpenPacket={() => {}} onBack={() => {}}
+        onExport={() => {}} onOpenCccd={() => {}} />,
+    )
+    expect(with_).toContain('Xem thẻ CCCD')
   })
 })
 

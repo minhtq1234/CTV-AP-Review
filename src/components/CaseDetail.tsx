@@ -22,12 +22,14 @@ interface Props {
   onOpenPacket: (index: number) => void
   onBack: () => void
   onExport: () => void
+  /** Ver 3: back to the CCCD review step. Absent in contexts without one. */
+  onOpenCccd?: () => void
 }
 
 // The case-detail screen: header (name + case status + review progress) over the
 // same packet-card grid the splitter's own result view uses (see SplitResultScreen),
 // with each card now also carrying its derived review status badge.
-export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: Props) {
+export default function CaseDetail({ detail, onOpenPacket, onBack, onExport, onOpenCccd }: Props) {
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
@@ -70,6 +72,11 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport }: P
       {detail.cccdName && detail.cccdSummary && (
         <div className={`cccd-summary ${detail.cccdSummary.status}`}>
           {formatCccdSummary(detail.cccdSummary)}
+          {onOpenCccd && (
+            <button type="button" className="cccd-summary-link" onClick={onOpenCccd}>
+              Xem thẻ CCCD
+            </button>
+          )}
         </div>
       )}
 

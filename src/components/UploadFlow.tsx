@@ -248,7 +248,8 @@ export default function UploadFlow() {
     return (
       <>
         <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList}
-          onExport={() => setShowReport(true)} />
+          onExport={() => setShowReport(true)}
+          onOpenCccd={detail.cccdSummary ? () => setScreen('cccd') : undefined} />
         {showReport && caseId && <ReportPanel caseId={caseId} onClose={() => setShowReport(false)} />}
       </>
     )
