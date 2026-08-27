@@ -211,6 +211,19 @@ export default function UploadFlow() {
     applyReviewResult(context, res, true)
   }
 
+  // Attaching or detaching a card rewrites the affected packets' manifests
+  // server-side, so the case's summary AND its per-packet criteria rollups can
+  // both have moved. Refetch once on the way out rather than patching the one
+  // number we happen to have. A failed refresh still lets the reviewer through
+  // with what we already had — the step is done either way.
+  const continueFromCccdReview = async (id: string) => {
+    markCccdReviewSeen(id)
+    try {
+      setDetail(await getCase(id))
+    } catch { /* keep the stale detail rather than trapping the reviewer */ }
+    setScreen('detail')
+  }
+
   if (err) {
     return (
       <div className="upload-screen">
@@ -236,10 +249,7 @@ export default function UploadFlow() {
         caseId={caseId}
         caseName={detail.name}
         packets={detail.packets}
-        onContinue={() => {
-          markCccdReviewSeen(caseId)
-          setScreen('detail')
-        }}
+        onContinue={() => { void continueFromCccdReview(caseId) }}
       />
     )
   }

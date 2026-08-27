@@ -39,7 +39,11 @@ vi.mock('./CaseList', () => ({
   ),
 }))
 
-vi.mock('./CaseDetail', () => ({ default: () => <p>DETAIL</p> }))
+vi.mock('./CaseDetail', () => ({
+  default: ({ detail }: { detail: CaseDetailT }) => (
+    <p>{`DETAIL attached=${detail.cccdSummary?.attached ?? 'none'}`}</p>
+  ),
+}))
 
 vi.mock('./CccdReviewScreen', () => ({
   default: ({ onContinue }: { onContinue: () => void }) => (
@@ -155,5 +159,33 @@ describe('the CCCD gate', () => {
       .find(el => el.textContent === 'continue') as HTMLButtonElement
     await act(async () => { go.click() })
     expect(host.textContent).toContain('DETAIL')
+  })
+
+  it('refreshes the case on the way out, so the packet list is not stale', async () => {
+    getCase
+      .mockResolvedValueOnce(caseDetail(workbook))                                  // 40 attached
+      .mockResolvedValueOnce(caseDetail({ ...workbook, attached: 41, unresolved: 1 }))
+    await openTheCase()
+    expect(host.textContent).toContain('CCCD-STEP')
+
+    const go = [...host.querySelectorAll('button')]
+      .find(el => el.textContent === 'continue') as HTMLButtonElement
+    await act(async () => { go.click() })
+
+    expect(getCase).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('DETAIL attached=41')
+  })
+
+  it('still lets the reviewer through when the refresh fails', async () => {
+    getCase
+      .mockResolvedValueOnce(caseDetail(workbook))
+      .mockRejectedValueOnce(new Error('offline'))
+    await openTheCase()
+    const go = [...host.querySelectorAll('button')]
+      .find(el => el.textContent === 'continue') as HTMLButtonElement
+    await act(async () => { go.click() })
+
+    expect(host.textContent).toContain('DETAIL attached=40')   // the stale value, deliberately
+    expect(host.textContent).not.toContain('Không kết nối được')
   })
 })
