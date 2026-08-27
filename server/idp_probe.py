@@ -6,7 +6,9 @@ run rather than something the pipeline does: nothing in this repo should be
 holding your API key, and the value it prints is the one fact
 `idp_words.parse_words` is currently guessing at.
 
-    export GREENNODE_IDP_URL=...          # same value the CCCD reader uses
+    export GREENNODE_IDP_URL=...   # TENANT-NAMESPACED, ends in /v1:
+                                   #   https://<maas-host>/maas/<user-id>/greennode/idp/v1
+                                   # NOT <maas-host>/v1 -- that is the LLM endpoint
     export GREENNODE_API_KEY=...
     python3 idp_probe.py PAGE.png                 # try the default candidates
     python3 idp_probe.py PAGE.png GENERAL DOC OCR # or your own list

@@ -19,6 +19,16 @@ polling must wait for CONTENT. The result envelope is
 `data.documents[].ocr_data[].value[]`, whose items carry `extracted_value`,
 `extracted_prob` and `coordinates`.
 
+GREENNODE_IDP_URL is TENANT-NAMESPACED, and getting this wrong wastes a probe
+run. IDP does not sit at the root of the MaaS host: it lives under
+
+    https://<maas-host>/maas/<user-id>/greennode/idp/v1
+
+so `<maas-host>/v1/ocr/ingest` is a 404 while `<maas-host>/v1/chat/completions`
+answers 401 -- the same host serves the LLM endpoint at the root and IDP only
+under that per-user prefix. If every doc_type 404s, the URL is wrong, not the
+doc_type; `idp_probe.py` now detects and says exactly that.
+
 NOT known, and NOT verifiable from here: which `doc_type` selects a general
 document read rather than the ID model, and whether that mode's items are text
 runs or named fields. `doc_type=ID` is the only value this codebase has ever
