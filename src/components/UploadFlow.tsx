@@ -14,14 +14,16 @@ import {
   createReviewSaveQueue,
   type ReviewSaveContext,
 } from '../logic/reviewSaveQueue'
+import { cccdReviewSeenKey, shouldOpenCccdReview } from '../logic/cccdReview'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
 import CaseDetail from './CaseDetail'
+import CccdReviewScreen from './CccdReviewScreen'
 import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
 import ReviewHeader from './ReviewHeader'
 
-type Screen = 'list' | 'upload' | 'detail' | 'review'
+type Screen = 'list' | 'upload' | 'cccd' | 'detail' | 'review'
 
 const CONN_ERR = 'Không kết nối được máy chủ xử lý (chạy backend ở cổng 8002).'
 
@@ -70,7 +72,11 @@ export default function UploadFlow() {
       // A still-processing case has nothing to review yet — keep it on the list,
       // where its row shows live progress.
       if (d.status === 'processing') { setScreen('list'); refreshList(); return }
-      setCaseId(id); setDetail(d); setScreen('detail')
+      setCaseId(id); setDetail(d)
+      // Ver 3 step 1: confirm the CCCD mapping before the packet list. Shown
+      // once per case per browser — a case with no workbook never sees it.
+      const seen = window.localStorage.getItem(cccdReviewSeenKey(id)) !== null
+      setScreen(shouldOpenCccdReview(d.cccdSummary, seen) ? 'cccd' : 'detail')
     } catch { setErr(CONN_ERR) }
   }
 
@@ -203,6 +209,20 @@ export default function UploadFlow() {
 
   if (screen === 'upload') {
     return <UploadScreen onStart={onStart} busy={busy} />
+  }
+
+  if (screen === 'cccd' && detail && caseId) {
+    return (
+      <CccdReviewScreen
+        caseId={caseId}
+        caseName={detail.name}
+        packets={detail.packets}
+        onContinue={() => {
+          window.localStorage.setItem(cccdReviewSeenKey(caseId), new Date().toISOString())
+          setScreen('detail')
+        }}
+      />
+    )
   }
 
   if (screen === 'detail' && detail) {
