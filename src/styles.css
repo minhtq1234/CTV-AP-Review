@@ -1042,3 +1042,20 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .case-boundary-note { color: var(--text-muted); font-size: 11.5px; }
+/* a criteria cell is a control, and a decided one says so */
+.criteria-mark { border: 0; font: inherit; cursor: pointer; }
+.criteria-mark:hover { outline: 1px solid var(--accent); }
+.criteria-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.criteria-mark.decided { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.criteria-decide { display: inline-flex; align-items: center; flex-wrap: wrap;
+  gap: 4px; margin-left: 4px; }
+.criteria-computed { color: var(--text-muted); font-size: 11px;
+  padding: 1px 6px; border-radius: 9px; background: #ebebe8; }
+.criteria-decide-btn { padding: 1px 7px; border: 0.5px solid var(--border);
+  border-radius: 9px; background: var(--surface); color: var(--text-muted);
+  font: inherit; font-size: 11px; cursor: pointer; }
+.criteria-decide-btn:hover { border-color: var(--accent); color: var(--text); }
+.criteria-decide-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.criteria-decide-btn.good:hover { border-color: var(--success); color: var(--success); }
+.criteria-decide-btn.bad:hover { border-color: #c5221f; color: #a5201d; }
+.criteria-decide-btn.attention:hover { border-color: #d69b28; color: #8d5b00; }

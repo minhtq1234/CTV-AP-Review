@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { CriteriaPayload, CriterionRow, SummaryStatus } from '../upload/api'
 import {
+  DECIDABLE_STATUSES,
   cellFor,
+  choicesFor,
+  decisionKey,
+  isDecided,
   criteriaHeadline,
   groupsInOrder,
   matrixRows,
@@ -128,5 +132,55 @@ describe('criteriaHeadline', () => {
       matchedRoster: false,
     })
     expect(parts[0]).toBe('chưa khớp bảng kê')
+  })
+})
+
+describe('recording a decision', () => {
+  const cell = (
+    document: string,
+    status: SummaryStatus,
+    computedStatus: SummaryStatus = status,
+  ) => ({ document, status, computedStatus, value: '', note: '', evidence: [] })
+
+  it('offers every status a person can decide', () => {
+    // `na` is excluded: it says the document is outside the criterion — a fact
+    // about the checklist, not a judgment.
+    expect(DECIDABLE_STATUSES).toEqual(['ok', 'no', 'rv', 'missing', 'pending'])
+    expect(DECIDABLE_STATUSES).not.toContain('na')
+  })
+
+  it('knows when a reviewer has changed a cell', () => {
+    expect(isDecided(cell('Excel', 'ok', 'rv'))).toBe(true)
+    expect(isDecided(cell('Excel', 'ok'))).toBe(false)
+  })
+
+  it('treats a missing computedStatus as undecided', () => {
+    // Older payloads have no such field.
+    expect(isDecided({ document: 'Excel', status: 'ok', value: '', note: '',
+                       evidence: [] } as never)).toBe(false)
+  })
+
+  it('addresses a cell the way the server keys it', () => {
+    expect(decisionKey(21, 'Hợp đồng')).toBe('21:Hợp đồng')
+    expect(decisionKey(7, 'Excel')).toBe('07:Excel')
+  })
+
+  it('will not offer the status a cell already has', () => {
+    // An override to the same status records nothing, and the server refuses it.
+    expect(choicesFor(cell('Excel', 'ok'))).toEqual(
+      ['no', 'rv', 'missing', 'pending'])
+  })
+
+  it('offers nothing for a cell outside the criterion', () => {
+    expect(choicesFor(null)).toEqual([])
+  })
+
+  it('offers nothing for an `na` cell', () => {
+    expect(choicesFor(cell('Excel', 'na'))).toEqual([])
+  })
+
+  it('still offers the computed status back to a decided cell', () => {
+    // Undoing a decision means deciding it back to what the engine said.
+    expect(choicesFor(cell('Excel', 'ok', 'rv'))).toContain('rv')
   })
 })

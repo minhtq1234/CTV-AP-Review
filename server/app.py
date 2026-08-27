@@ -314,10 +314,14 @@ def _norm(value: str) -> str:
 
 
 class CriterionDecisionBody(BaseModel):
-    """A reviewer's decision on one criteria cell."""
+    """A reviewer's decision on one criteria cell.
+
+    No reason and no second confirmation, per Acc: a decision is one click.
+    `reason` stays available for a reviewer who wants to record why.
+    """
 
     toStatus: str
-    reason: str = Field(min_length=1)
+    reason: str = ""
 
 
 def _parse_override_key(key: str) -> tuple[int, str]:

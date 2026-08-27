@@ -331,8 +331,11 @@ class Override:
     document: str
     from_status: Status
     to_status: Status
-    reason: str
     at: str
+    #: Optional. Acc's call: a decision is one click, so requiring a written
+    #: reason on each of 322 `rv` cells would be a different product. The field
+    #: stays for a reviewer who wants to say why.
+    reason: str = ""
     by: str = ""
 
     def __post_init__(self) -> None:
@@ -351,8 +354,6 @@ class Override:
             raise ValueError("na is not a decidable status")
         if self.from_status is self.to_status:
             raise ValueError("an override to the same status records nothing")
-        if not self.reason.strip():
-            raise ValueError("a reason is required")
 
     @property
     def key(self) -> str:

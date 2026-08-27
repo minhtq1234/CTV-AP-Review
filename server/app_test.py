@@ -640,10 +640,27 @@ class TestRecordingADecisionOverHttp:
         assert body["history"][0]["toStatus"] == "ok"
         assert body["history"][1]["toStatus"] == "no"
 
-    def test_a_reason_is_required(self, tmp_path, monkeypatch):
+    def test_a_decision_needs_no_reason(self, tmp_path, monkeypatch):
         c, cid = self._ready(monkeypatch, tmp_path)
-        r = self._decide(c, cid, reason="   ")
-        assert r.status_code == 422
+
+        r = c.put(f"/api/cases/{cid}/packets/0/criteria/21:Hợp đồng",
+                  json={"toStatus": "ok"})
+
+        assert r.status_code == 200
+        assert r.json()["override"]["reason"] == ""
+
+    def test_the_note_closes_cleanly_with_no_reason(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        c.put(f"/api/cases/{cid}/packets/0/criteria/21:Hợp đồng",
+              json={"toStatus": "ok"})
+
+        after = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        note = next(x for x in next(r for r in after["criteria"]
+                                    if r["stt"] == 21)["cells"]
+                    if x["document"] == "Hợp đồng")["note"]
+
+        assert note.rstrip().endswith('"Đạt".')
+        assert ": ." not in note
 
     def test_an_unknown_status_is_refused(self, tmp_path, monkeypatch):
         c, cid = self._ready(monkeypatch, tmp_path)

@@ -438,10 +438,24 @@ export interface CriterionEvidence {
 export interface CriterionCell {
   document: string
   status: SummaryStatus
+  /** What the engine computed. Differs from `status` when a reviewer decided. */
+  computedStatus?: SummaryStatus
   /** What was read here, verbatim. */
   value: string
   note: string
   evidence: CriterionEvidence[]
+}
+
+/** One reviewer decision, as the server records it. */
+export interface CriterionDecision {
+  stt: number
+  document: string
+  fromStatus: SummaryStatus
+  toStatus: SummaryStatus
+  reason: string
+  at: string
+  /** Empty until there is auth to fill it. */
+  by: string
 }
 
 export interface CriterionRow {
@@ -476,5 +490,37 @@ export async function fetchPacketCriteria(
 ): Promise<CriteriaPayload> {
   const res = await fetch(`${API_BASE}/api/cases/${caseId}/packets/${index}/criteria`)
   if (!res.ok) throw new Error(`fetchPacketCriteria: HTTP ${res.status}`)
+  return res.json()
+}
+
+/**
+ * Record a reviewer's decision on one criteria cell.
+ *
+ * One click: no reason and no confirmation, per Acc. `reason` stays available
+ * for a reviewer who wants to record why.
+ */
+export async function decideCriterionCell(
+  caseId: string,
+  index: number,
+  stt: number,
+  document: string,
+  toStatus: SummaryStatus,
+  reason = '',
+): Promise<{
+  override: CriterionDecision
+  history: CriterionDecision[]
+  packet: PacketMeta
+  status: CaseState
+}> {
+  const key = `${String(stt).padStart(2, '0')}:${document}`
+  const res = await fetch(
+    `${API_BASE}/api/cases/${caseId}/packets/${index}/criteria/${encodeURIComponent(key)}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ toStatus, reason }),
+    },
+  )
+  if (!res.ok) throw new Error(`decideCriterionCell: HTTP ${res.status}`)
   return res.json()
 }

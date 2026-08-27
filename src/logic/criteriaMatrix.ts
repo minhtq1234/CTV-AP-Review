@@ -78,3 +78,32 @@ export function criteriaHeadline(payload: CriteriaPayload): string[] {
       .map(([status, word]) => `${payload.counts[status]} ${word}`),
   ]
 }
+
+/**
+ * The statuses a person can decide. `na` is absent on purpose: it says the
+ * document is outside the criterion — a fact about the checklist, not a
+ * judgment, so there is nothing to decide.
+ */
+export const DECIDABLE_STATUSES: SummaryStatus[] = [
+  'ok', 'no', 'rv', 'missing', 'pending',
+]
+
+/** Whether a reviewer's decision is standing on this cell. */
+export function isDecided(cell: CriterionCell): boolean {
+  return !!cell.computedStatus && cell.computedStatus !== cell.status
+}
+
+/** Address a cell the way the server keys it: `21:Hợp đồng`. */
+export function decisionKey(stt: number, document: string): string {
+  return `${String(stt).padStart(2, '0')}:${document}`
+}
+
+/**
+ * What this cell can be decided to. Never its current status — an override to
+ * the same status records nothing and the server refuses it — and nothing at all
+ * for a cell outside the criterion or marked `na`.
+ */
+export function choicesFor(cell: CriterionCell | null): SummaryStatus[] {
+  if (!cell || cell.status === 'na') return []
+  return DECIDABLE_STATUSES.filter(s => s !== cell.status)
+}

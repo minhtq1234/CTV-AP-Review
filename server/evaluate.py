@@ -159,9 +159,7 @@ def _with_overrides(result: CriterionResult, overrides: dict) -> CriterionResult
             cell,
             status=decided,
             computed_status=cell.status,
-            note=(f"{cell.note} Người kiểm tra đổi thành "
-                  f"\"{_STATUS_WORDS.get(decided.value, decided.value)}\": "
-                  f"{override.reason}").strip(),
+            note=_override_note(cell.note, decided, override.reason),
             evidence=cell.evidence + (Evidence(
                 "override", 0, None, override.reason, None, "override"),),
         ))
@@ -171,6 +169,17 @@ def _with_overrides(result: CriterionResult, overrides: dict) -> CriterionResult
         result.stt, cr.roll_up([c.status for c in cells]), tuple(cells),
         result.note,
     )
+
+
+def _override_note(existing: str, decided: Status, reason: str) -> str:
+    """The cell's note with the reviewer's decision appended.
+
+    A reason is optional, so the sentence has to close cleanly without one
+    rather than trailing a bare colon.
+    """
+    word = _STATUS_WORDS.get(decided.value, decided.value)
+    said = f": {reason.strip()}" if reason.strip() else "."
+    return f"{existing} Người kiểm tra đổi thành \"{word}\"{said}".strip()
 
 
 #: How a status reads in a note, so an override explains itself in Vietnamese

@@ -1,15 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  decideCriterionCell,
   fetchPacketCriteria,
   type CriteriaPayload,
   type CriterionCell,
   type CriterionRow,
+  type SummaryStatus,
 } from '../upload/api'
 import {
   cardRows,
   cellFor,
+  choicesFor,
   criteriaHeadline,
   groupsInOrder,
+  isDecided,
   matrixRows,
   visibleColumns,
 } from '../logic/criteriaMatrix'
@@ -20,6 +24,8 @@ interface Props {
   packetIndex: number
 }
 
+const SAVE_ERROR = 'Không lưu được quyết định. Vui lòng thử lại.'
+
 // Acc's 25 criteria for one packet, computed rather than hand-typed. Rows are in
 // checklist order inside their sections, because a reviewer works the list; the
 // worst-first ordering belongs to the packet list, not to the checklist itself.
@@ -27,16 +33,38 @@ export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
   const [payload, setPayload] = useState<CriteriaPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openStt, setOpenStt] = useState<number | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  // Which packet the visible matrix belongs to. A decision enqueued just before
+  // a Prev/Next click must not be applied to the next packet's matrix.
+  const shownRef = useRef<string>('')
 
   useEffect(() => {
     let live = true
+    const token = `${caseId}:${packetIndex}`
+    shownRef.current = token
     setPayload(null)
     setError(null)
+    setSaveError(null)
     fetchPacketCriteria(caseId, packetIndex)
       .then(next => { if (live) setPayload(next) })
       .catch(e => { if (live) setError(String(e)) })
     return () => { live = false }
   }, [caseId, packetIndex])
+
+  const decide = async (
+    row: CriterionRow, document: string, to: SummaryStatus,
+  ) => {
+    const token = `${caseId}:${packetIndex}`
+    setSaveError(null)
+    try {
+      await decideCriterionCell(caseId, packetIndex, row.stt, document, to)
+      const fresh = await fetchPacketCriteria(caseId, packetIndex)
+      // The reviewer may have navigated while this was in flight.
+      if (shownRef.current === token) setPayload(fresh)
+    } catch {
+      if (shownRef.current === token) setSaveError(SAVE_ERROR)
+    }
+  }
 
   if (error) {
     return (
@@ -69,6 +97,10 @@ export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
         </div>
       </div>
 
+      {saveError && (
+        <p className="criteria-warning" role="alert">{saveError}</p>
+      )}
+
       {!payload.matchedRoster && (
         <p className="criteria-warning">
           Gói hồ sơ chưa khớp dòng nào trên bảng kê, nên không có giá trị tham
@@ -95,6 +127,7 @@ export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
                 columns={columns}
                 open={openStt === row.stt}
                 onToggle={() => setOpenStt(openStt === row.stt ? null : row.stt)}
+                onDecide={(document, to) => void decide(row, document, to)}
               />
             ))}
           </tbody>
@@ -110,16 +143,18 @@ export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
   )
 }
 
-function MatrixRow({
+export function MatrixRow({
   row,
   columns,
   open,
   onToggle,
+  onDecide,
 }: {
   row: CriterionRow
   columns: string[]
   open: boolean
   onToggle: () => void
+  onDecide: (document: string, to: SummaryStatus) => void
 }) {
   const status = SUMMARY_STATUS_PRESENTATION[row.status]
 
@@ -148,7 +183,10 @@ function MatrixRow({
               </td>
             )
           }
-          return <MatrixCell key={document} row={row} cell={cell} />
+          return (
+            <MatrixCell key={document} row={row} cell={cell} open={open}
+                        onOpen={onToggle} />
+          )
         })}
       </tr>
       {open && (
@@ -161,6 +199,7 @@ function MatrixRow({
                   <b>{cell.document}</b>
                   {cell.value && <span className="criteria-read">{cell.value}</span>}
                   <span>{cell.note}</span>
+                  <CellDecision row={row} cell={cell} onDecide={onDecide} />
                 </li>
               ))}
             </ul>
@@ -171,19 +210,31 @@ function MatrixRow({
   )
 }
 
-function MatrixCell({ row, cell }: { row: CriterionRow; cell: CriterionCell }) {
+function MatrixCell({ row, cell, open, onOpen }: {
+  row: CriterionRow
+  cell: CriterionCell
+  open: boolean
+  onOpen: () => void
+}) {
   const status = SUMMARY_STATUS_PRESENTATION[cell.status]
   const located = cell.evidence.some(e => e.bbox)
+  const decided = isDecided(cell)
 
   return (
     <td className={`criteria-cell ${status.tone}`}>
-      <span
-        className="criteria-mark"
+      {/* Opens the detail row, not a popover: the table scrolls horizontally so
+          a popover anchored to a cell would clip — and a reviewer should read
+          the note and the value before deciding, not decide from a glyph. */}
+      <button
+        type="button"
+        className={`criteria-mark${decided ? ' decided' : ''}`}
         title={cell.note}
+        aria-expanded={open}
         aria-label={`${row.label} · ${cell.document}: ${status.label}`}
+        onClick={onOpen}
       >
         <span aria-hidden="true">{status.icon}</span>
-      </span>
+      </button>
       {cell.value && (
         <span className={`criteria-value${located ? ' located' : ''}`}>
           {cell.value}
@@ -192,6 +243,37 @@ function MatrixCell({ row, cell }: { row: CriterionRow; cell: CriterionCell }) {
     </td>
   )
 }
+
+function CellDecision({ row, cell, onDecide }: {
+  row: CriterionRow
+  cell: CriterionCell
+  onDecide: (document: string, to: SummaryStatus) => void
+}) {
+  const choices = choicesFor(cell)
+  if (!choices.length) return null
+
+  return (
+    <span className="criteria-decide" role="group"
+          aria-label={`Quyết định cho ${row.label} · ${cell.document}`}>
+      {isDecided(cell) && cell.computedStatus && (
+        <span className="criteria-computed">
+          Công cụ: {SUMMARY_STATUS_PRESENTATION[cell.computedStatus].label}
+        </span>
+      )}
+      {choices.map(to => (
+        <button
+          key={to}
+          type="button"
+          className={`criteria-decide-btn ${SUMMARY_STATUS_PRESENTATION[to].tone}`}
+          onClick={() => onDecide(cell.document, to)}
+        >
+          {SUMMARY_STATUS_PRESENTATION[to].label}
+        </button>
+      ))}
+    </span>
+  )
+}
+
 
 function CriterionCard({ row }: { row: CriterionRow }) {
   const status = SUMMARY_STATUS_PRESENTATION[row.status]

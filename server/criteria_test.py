@@ -201,11 +201,21 @@ class TestTheOverrideRecord:
         # Spec §6: `by: str  # reviewer identity when auth exists; "" until then`
         assert self._override().by == ""
 
-    def test_a_reason_is_required(self):
-        import pytest as _pytest
+    def test_no_reason_is_needed(self):
+        """Acc's call: a decision is one click. Requiring a written reason on
+        each of 322 `rv` cells would be a different product."""
         for blank in ("", "   ", "\n"):
-            with _pytest.raises(ValueError, match="reason"):
-                self._override(reason=blank)
+            assert self._override(reason=blank).reason == blank
+
+    def test_a_reason_is_kept_when_one_is_given(self):
+        o = self._override(reason="đã xem chữ ký trang 1")
+        assert o.reason == "đã xem chữ ký trang 1"
+        assert o.as_dict()["reason"] == "đã xem chữ ký trang 1"
+
+    def test_the_default_is_no_reason(self):
+        o = cr.Override(stt=1, document=cr.CONTRACT, from_status=Status.OK,
+                        to_status=Status.NO, at="t")
+        assert o.reason == "" and o.by == ""
 
     def test_the_document_must_be_one_the_criterion_spans(self):
         import pytest as _pytest
