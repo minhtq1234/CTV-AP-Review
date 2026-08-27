@@ -1061,3 +1061,76 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .criteria-decide-btn.attention:hover { border-color: #d69b28; color: #8d5b00; }
 /* confirming the engine is a decision too, and reads as the settled choice */
 .criteria-decide-btn.confirming { border-style: dashed; font-weight: 600; }
+
+/* --- packet table (ver 2 §2.2) --------------------------------------------
+   Column sizing is the load-bearing part. `table-layout: auto` plus a
+   min-width on the NAME column and fixed widths on the status columns, so the
+   name is the last thing to lose space. The design mock did the reverse --
+   fixed widths on five status columns, name unspecified, `table-layout: fixed`
+   -- and the name collapsed to 0px below ~500px of container while the pills
+   survived. A reviewer scans names, not pills. */
+.packet-table-counters { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.packet-table-counter { display: flex; align-items: baseline; gap: 7px; cursor: pointer;
+  border: 0.5px solid var(--border); border-left-width: 3px; border-radius: 8px;
+  padding: 7px 12px; background: var(--surface); font: inherit; font-size: 12px;
+  color: var(--text-muted); }
+.packet-table-counter b { font-size: 16px; font-weight: 600; color: var(--text);
+  font-variant-numeric: tabular-nums; }
+.packet-table-counter:hover { background: #faf9f6; }
+.packet-table-counter.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.packet-table-counter.bad { border-left-color: #c5221f; }
+.packet-table-counter.attention { border-left-color: #d69b28; }
+.packet-table-counter.unknown { border-left-color: #9aa0a6; }
+.packet-table-counter.good { border-left-color: var(--success); }
+.packet-table-counter.muted { border-left-color: var(--border); }
+
+.packet-table-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin: 0 0 10px; }
+.packet-table-search { flex: 1 1 200px; min-width: 160px; padding: 7px 10px; font: inherit;
+  font-size: 13px; border: 0.5px solid var(--border); border-radius: 8px; background: var(--surface); }
+.packet-table-filters select { padding: 7px 8px; font: inherit; font-size: 12.5px;
+  border: 0.5px solid var(--border); border-radius: 8px; background: var(--surface);
+  color: var(--text-muted); }
+.packet-table-showing { margin-left: auto; font-size: 12px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
+
+.packet-table-wrap { overflow-x: auto; border: 0.5px solid var(--border); border-radius: 10px;
+  background: var(--surface); }
+.packet-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.packet-table thead th { text-align: left; font-size: 10.5px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--text-muted); font-weight: 600; padding: 9px 10px;
+  background: #faf9f6; border-bottom: 0.5px solid var(--border); white-space: nowrap; }
+.packet-table td { padding: 9px 10px; border-bottom: 0.5px solid var(--border);
+  vertical-align: top; }
+.packet-table tbody tr:last-child td { border-bottom: none; }
+.packet-table-row { cursor: pointer; }
+.packet-table-row:hover { background: #faf9f6; }
+.packet-table-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.packet-table .pt-stt { width: 42px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
+.packet-table .pt-name { min-width: 180px; }          /* flexible, never collapses */
+.packet-table .pt-camket { width: 96px; }
+.packet-table .pt-docs { width: 168px; }
+.packet-table .pt-ai { width: 168px; }
+.packet-table .pt-fa { width: 132px; }
+.packet-table .pt-pages { width: 104px; color: var(--text-muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.pt-name-text { display: block; font-weight: 500; overflow-wrap: anywhere; }
+.pt-attention { display: block; margin-top: 3px; font-size: 11px; color: #b9770e; }
+.pt-missing { display: block; margin-top: 3px; font-size: 11px; color: #c5221f;
+  overflow-wrap: anywhere; }
+.pt-sub { display: block; margin-top: 3px; font-size: 11px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; }
+
+.pt-pill { display: inline-block; font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+  white-space: nowrap; border: 0.5px solid transparent; }
+.pt-pill.good { background: #e7f3ea; color: var(--success); }
+.pt-pill.bad { background: #fce8e6; color: #c5221f; }
+.pt-pill.attention { background: #fffbf0; color: #b9770e; }
+.pt-pill.unknown { background: #f4f4f2; color: #6b6a66; }
+.pt-pill.muted { background: #f4f4f2; color: var(--text-muted); }
+.pt-pill.fa-unseen { background: #f4f4f2; color: var(--text-muted); }
+.pt-pill.fa-reviewing { background: #eef3fb; color: #2f6db3; }
+.pt-pill.fa-completed { background: #e7f3ea; color: var(--success); }
+.pt-pill.fa-flagged { background: #fce8e6; color: #c5221f; }

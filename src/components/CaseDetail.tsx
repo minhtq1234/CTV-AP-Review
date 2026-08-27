@@ -9,13 +9,11 @@ import {
   PACKET_DASHBOARD_LABELS,
   packetDashboardCounts,
   packetDashboardStatus,
-  packetFlagCount,
-  packetSeenCount,
+  packetStatusSummary,
   prioritizeAttention,
   type PacketDashboardFilter,
-  type PacketDashboardStatus,
 } from '../logic/packetDashboard'
-import { PACKET_REJECTION_OPTIONS } from '../logic/packetRejection'
+import PacketTable from './PacketTable'
 import { formatCccdSummary } from '../upload/cccd'
 import SummaryTab from './SummaryTab'
 
@@ -189,15 +187,7 @@ export function PacketDashboardView({
       </div>
 
       {visible.length > 0 ? (
-        <div className="packet-grid">
-          {visible.map(packet => (
-            <PacketCard
-              key={packet.index}
-              packet={packet}
-              onOpen={onOpenPacket}
-            />
-          ))}
-        </div>
+        <PacketTable packets={visible} onOpenPacket={onOpenPacket} />
       ) : (
         <div className="packet-grid-empty">
           Không có gói hồ sơ ở trạng thái này.
@@ -248,25 +238,4 @@ export function PacketCard({
       )}
     </button>
   )
-}
-
-function packetStatusSummary(
-  packet: PacketMeta,
-  status: PacketDashboardStatus,
-): string | null {
-  if (status === 'reviewing') {
-    const seen = packetSeenCount(packet)
-    return packet.reviewFieldCount > 0
-      ? `${seen}/${packet.reviewFieldCount} đã xem`
-      : `${seen} trường đã xem`
-  }
-  if (status !== 'flagged') return null
-  if (packet.review.rejection) {
-    const selected = new Set(packet.review.rejection.reasons)
-    const labels = PACKET_REJECTION_OPTIONS
-      .filter(option => selected.has(option.value))
-      .map(option => option.label)
-    return `Đã từ chối · ${labels.join('; ')}`
-  }
-  return `${packetFlagCount(packet)} trường đã đánh dấu`
 }

@@ -1,4 +1,5 @@
 import type { CaseProgress, CaseResultSummary, PacketMeta } from '../upload/api'
+import { PACKET_REJECTION_OPTIONS } from './packetRejection'
 
 export type PacketDashboardStatus =
   | 'unseen'
@@ -151,4 +152,35 @@ export function findingsNote(progress: CaseProgress): string {
     parts.push(`${progress.candidates} gói có phát hiện cần xem`)
   }
   return parts.join(' · ')
+}
+
+
+/**
+ * The one-line detail under a packet's lifecycle status: how far a review got,
+ * or why it is flagged. Shared by the card and the table so the wording cannot
+ * drift between them.
+ *
+ * The `reviewFieldCount > 0` branch matters: a packet whose field count has not
+ * been resolved yet still reports how many fields were seen, rather than
+ * silently showing nothing.
+ */
+export function packetStatusSummary(
+  packet: Pick<PacketMeta, 'review' | 'reviewFieldCount'>,
+  status: PacketDashboardStatus,
+): string | null {
+  if (status === 'reviewing') {
+    const seen = packetSeenCount(packet)
+    return packet.reviewFieldCount > 0
+      ? `${seen}/${packet.reviewFieldCount} đã xem`
+      : `${seen} trường đã xem`
+  }
+  if (status !== 'flagged') return null
+  if (packet.review.rejection) {
+    const selected = new Set(packet.review.rejection.reasons)
+    const labels = PACKET_REJECTION_OPTIONS
+      .filter(option => selected.has(option.value))
+      .map(option => option.label)
+    return `Đã từ chối · ${labels.join('; ')}`
+  }
+  return `${packetFlagCount(packet)} trường đã đánh dấu`
 }
