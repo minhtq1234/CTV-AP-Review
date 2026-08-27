@@ -1176,7 +1176,14 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
-.cccd-review-orphan { grid-template-columns: 160px 140px minmax(160px, 1fr) 120px auto; }
+/* 320px, not the 160px the row template above still uses -- an unattached
+   card has no name or packet beside it, so the reviewer is identifying it
+   from scratch rather than confirming a match they already have a name
+   for, and that needs more scrutiny than a glance. This overrides the whole
+   column list (not just one track), so .cccd-review-row's own template --
+   and the grid-column: 3/6 span below, which reads from THAT template, not
+   this one -- is untouched by the number here. */
+.cccd-review-orphan { grid-template-columns: 320px 140px minmax(160px, 1fr) 120px auto; }
 /* The needs-a-card row has no thumbnail or number, so its state spans those
    columns — keeping stt, name and the action aligned with the attached rows. */
 .cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }
@@ -1186,16 +1193,19 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-state { color: var(--text-muted); }
 .cccd-review-cardid { color: var(--text-muted); font-size: 12px; }
 .cccd-review-hint { color: var(--text-muted); font-size: 12px; }
-.cccd-review-thumb {
-  /* width/height reserve the box without trusting the recorded side
-     dimensions (transposed on any case ingested before fccded7);
-     aspect-ratio is belt-and-braces alongside the explicit height. */
-  width: 160px; height: 101px; aspect-ratio: 1.585; object-fit: cover;
+/* Orphan-card row only (confirmed by grep -- nothing else references this
+   class since the tile grid took over Đã gán), so it is named for what it
+   actually is rather than the generic "thumb" it used to share. 320px wide,
+   height: auto, no object-fit, no fixed aspect: same reasoning as the tile
+   image -- the real crops are not a uniform shape (622x288 front, 607x360
+   back), so cropping to a fixed ratio would cut card content. */
+.cccd-review-orphan-thumb {
+  width: 320px; height: auto;
   border: 1px solid var(--border); border-radius: 4px; background: #f4f4f5;
 }
 /* Zero-chrome wrapper so the trigger button hugs the thumbnail exactly --
    the grid column width above is sized to the image, not to a button. */
-.cccd-review-thumb-btn {
+.cccd-review-orphan-thumb-btn {
   display: block; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0;
 }
 .cccd-review-nothumb { color: var(--text-muted); font-size: 12px; }

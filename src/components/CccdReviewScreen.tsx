@@ -27,14 +27,16 @@ export interface CccdReviewViewProps {
 }
 
 // `variant` picks the visual treatment only -- the state, the button, the
-// viewer and its label are identical either way. 'row' is the small,
-// fixed-160x101 thumbnail (Cần xử lý, unchanged); 'tile' is Đã gán's
-// tile-filling image, sized entirely by CSS on .cccd-review-tile-image so
-// the row's fixed box never applies to it.
-function CardThumb({ caseId, card, variant = 'row' }: {
+// viewer and its label are identical either way. 'orphan' is Cần xử lý's
+// unattached-card row (320px wide, height: auto -- enlarged because an
+// unattached card has no name or packet beside it, so identifying it is
+// scrutiny from scratch); 'tile' is Đã gán's tile-filling image, sized
+// entirely by CSS on .cccd-review-tile-image so neither box applies to the
+// other variant.
+function CardThumb({ caseId, card, variant = 'orphan' }: {
   caseId: string
   card: CccdCard
-  variant?: 'row' | 'tile'
+  variant?: 'orphan' | 'tile'
 }) {
   // Whether the full-size viewer is open for THIS card. Pure UI state: it
   // never reads or writes card data, so it lives here rather than in the
@@ -46,7 +48,7 @@ function CardThumb({ caseId, card, variant = 'row' }: {
     <>
       <button
         type="button"
-        className={variant === 'tile' ? 'cccd-review-tile-image' : 'cccd-review-thumb-btn'}
+        className={variant === 'tile' ? 'cccd-review-tile-image' : 'cccd-review-orphan-thumb-btn'}
         aria-label={`Xem ảnh CCCD ${card.cardId} ở kích thước đầy đủ`}
         onClick={() => setOpen(true)}
       >
@@ -55,11 +57,12 @@ function CardThumb({ caseId, card, variant = 'row' }: {
             returned header order, height before width), and every existing
             case predates that fix. The image file is the only trustworthy
             source of its own size, so the box is reserved by CSS instead
-            (width/height/aspect-ratio on .cccd-review-thumb for the row;
-            .cccd-review-tile-image img's width: 100%; height: auto for the
-            tile, uncapped since these crops are not a uniform shape). */}
+            (width: 320px; height: auto on .cccd-review-orphan-thumb for the
+            orphan row; .cccd-review-tile-image img's width: 100%; height:
+            auto for the tile) -- neither is capped to a fixed aspect, since
+            these crops are not a uniform shape. */}
         <img
-          className={variant === 'tile' ? undefined : 'cccd-review-thumb'}
+          className={variant === 'tile' ? undefined : 'cccd-review-orphan-thumb'}
           src={cccdCardImageUrl(caseId, card.cardId, front.side)}
           alt={`Ảnh CCCD ${card.cardId}`}
           loading="lazy"

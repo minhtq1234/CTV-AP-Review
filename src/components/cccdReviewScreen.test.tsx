@@ -93,14 +93,14 @@ describe('CccdReviewView', () => {
 
   // The recorded side dimensions are transposed on any case ingested before
   // fccded7 (the JPEG parser returned header order, height before width) --
-  // only the image file itself knows its real size, so neither the row
-  // thumbnail (Cần xử lý) nor the tile image (Đã gán) may assert a
+  // only the image file itself knows its real size, so neither the orphan
+  // row's image (Cần xử lý) nor the tile image (Đã gán) may assert a
   // width/height that came from that untrustworthy manifest. Re-targeted
   // from a single "the thumbnail" test into one per section, since an
-  // attached card no longer renders a `.cccd-review-thumb` at all.
-  it('does not put the recorded (possibly transposed) dimensions on the row thumbnail', () => {
+  // attached card no longer renders a `.cccd-review-orphan-thumb` at all.
+  it('does not put the recorded (possibly transposed) dimensions on the orphan row image', () => {
     const html = render([card('card-09', null)])
-    const thumb = html.match(/<img[^>]*class="cccd-review-thumb"[^>]*>/)?.[0] ?? ''
+    const thumb = html.match(/<img[^>]*class="cccd-review-orphan-thumb"[^>]*>/)?.[0] ?? ''
     expect(thumb).not.toBe('')
     expect(thumb).not.toMatch(/\bwidth=/)
     expect(thumb).not.toMatch(/\bheight=/)
@@ -120,7 +120,8 @@ describe('CccdReviewView', () => {
 
   // Re-targeted: this used to check both sections' thumbnails for the same
   // `cccd-review-thumb` class. Đã gán's tile image now fills the tile
-  // instead (no fixed 160x101 box), so the two sections are checked for
+  // instead (no fixed box at all), and Cần xử lý's own box grew from
+  // 160x101 to 320 wide/auto tall, so the two sections are checked for
   // their own, separate classes rather than one shared one.
   it('renders every thumbnail inside a button with an accessible label, in both sections', () => {
     const html = render([
@@ -131,18 +132,36 @@ describe('CccdReviewView', () => {
       const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
       expect(html).toContain(`aria-label="${label}"`)
     }
-    // Cần xử lý keeps the small, fixed-size row thumbnail.
+    // Cần xử lý keeps its own, enlarged row image.
     const orphanButton = html.match(
       /<button[^>]*aria-label="Xem ảnh CCCD card-09[^"]*"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? ''
-    expect(orphanButton).toContain('class="cccd-review-thumb"')
+    expect(orphanButton).toContain('class="cccd-review-orphan-thumb"')
     // Đã gán's tile image fills the tile -- a different class, and the
-    // fixed-size row thumbnail class must not leak onto it.
+    // orphan row's box must not leak onto it.
     const tileButton = html.match(
       /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? ''
     expect(tileButton).toContain('class="cccd-review-tile-image"')
-    expect(tileButton).not.toContain('cccd-review-thumb')
+    expect(tileButton).not.toContain('cccd-review-orphan-thumb')
+  })
+
+  // Pin that the orphan row's enlarged image is not the old shared
+  // .cccd-review-thumb (160x101, fixed aspect, object-fit: cover) reapplied
+  // under a new name that something else also uses -- it is its own class,
+  // used nowhere else, so the 320px/height:auto rule on it cannot be
+  // silently shared with (or overridden by) another element's box.
+  it('gives the orphan row its own image class, not shared with the tile image', () => {
+    const html = render([card('card-00', 0), card('card-09', null)])
+    const orphanButton = html.match(
+      /<button[^>]*aria-label="Xem ảnh CCCD card-09[^"]*"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    const tileButton = html.match(
+      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    expect(orphanButton).toContain('class="cccd-review-orphan-thumb"')
+    expect(tileButton).not.toContain('cccd-review-orphan-thumb')
+    expect(orphanButton).not.toContain('cccd-review-tile-image"')
   })
 
   // A future change must not silently merge the two sections' markup back
