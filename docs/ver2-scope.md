@@ -214,8 +214,21 @@ disagreement when the read behind it was confident.
 1. **IDP mode not finally decided.** §2.1 records a recommendation, not a decision.
 2. ~~Does a poor submission still read badly on `stable`?~~ **Answered 2026-08-27** — yes.
    February reads 78% vs July's 96%, `phi` 0/32, and the August fixes did not help it. IDP
-   earns a wider role than July alone suggested. See §4. Re-ingested as case
-   `8ee0c3a88104466cad20cccbfbf0b25a` (~7 min for 32 packets) if the numbers need rechecking.
+   earns a wider role than July alone suggested. See §4.
+
+   The re-ingests behind §4 and §2.1a were deleted afterwards (446 MB). To recreate one, POST
+   an existing case's own source files back through the API — **include `cccd.xlsx`**, or
+   `cccd` will read low for the reason given in §2.1a:
+
+   ```
+   cd server/data/cases/<an-existing-case-id>
+   curl -X POST http://127.0.0.1:8002/api/cases \
+     -F "pdf=@input.pdf" -F "roster=@roster.xlsx" -F "cccd=@cccd.xlsx"
+   ```
+
+   Allow ~7 min for 32 packets, ~11 for 41, and restart the API first if server code changed —
+   uvicorn here runs without `--reload`, so an in-memory old module will silently measure the
+   old behaviour.
 3. ~~Why is `phi` 0/32 on February but 32/41 on July?~~ **Answered and fixed 2026-08-27** —
    two separate causes, see §2.1a. February's fee is **handwritten** (a real IDP case); July's
    9 failures were an **anchor/lookahead defect**, fixed in `b7e2994`, taking July's `phi` to
