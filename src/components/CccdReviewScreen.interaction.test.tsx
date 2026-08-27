@@ -250,4 +250,23 @@ describe('CccdReviewScreen', () => {
     expect(host.querySelector('[data-testid="picker"]')).toBeNull()
     expect(listCccdCards).toHaveBeenCalledOnce()
   })
+
+  it('keeps the current rows on screen while an assignment refetches', async () => {
+    const second = deferred<CccdCard[]>()
+    listCccdCards
+      .mockResolvedValueOnce([card('card-00', 0)])
+      .mockReturnValueOnce(second.promise)
+    await mount()
+    await act(async () => { button('Gán thẻ').click() })
+    await act(async () => { button('mock-assigned').click() })
+    // The refetch is in flight: the list the reviewer was reading must still be
+    // there, not replaced by the loading state.
+    expect(host.textContent).toContain('Synthetic B')
+    expect(host.textContent).not.toContain('Đang tải…')
+    await act(async () => {
+      second.resolve([card('card-00', 0), card('card-09', 1)])
+      await second.promise
+    })
+    expect(host.textContent).toContain('0 gói chưa có thẻ')
+  })
 })

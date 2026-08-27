@@ -206,8 +206,11 @@ export default function CccdReviewScreen({
   // it runs in the same commit as the cleanup that set it.
   const liveCaseIdRef = useRef<string | null>(null)
 
-  const load = useCallback(async () => {
-    setCards(null)
+  const fetchCards = useCallback(async (clearFirst: boolean) => {
+    // `clearFirst` is the difference between "we know nothing yet" and "we have
+    // rows and are updating them". Nulling `cards` mid-update would collapse the
+    // whole screen for a one-row change.
+    if (clearFirst) setCards(null)
     setError(null)
     try {
       const result = await listCccdCards(caseId)
@@ -216,6 +219,9 @@ export default function CccdReviewScreen({
       if (liveCaseIdRef.current === caseId) setError(LOAD_ERROR)
     }
   }, [caseId])
+
+  const load = useCallback(() => fetchCards(true), [fetchCards])
+  const refresh = useCallback(() => fetchCards(false), [fetchCards])
 
   useEffect(() => {
     liveCaseIdRef.current = caseId
@@ -260,9 +266,10 @@ export default function CccdReviewScreen({
           packetLabel={picking.label}
           onCancel={() => setPicking(null)}
           onAssigned={() => {
-            // The picker keeps its own response, so reload rather than guess.
+            // The picker keeps its own response, so refresh rather than guess —
+            // but keep today's rows on screen while that GET is in flight.
             setPicking(null)
-            void load()
+            void refresh()
           }}
         />
       )}
