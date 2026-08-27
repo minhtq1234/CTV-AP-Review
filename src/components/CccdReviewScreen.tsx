@@ -225,6 +225,9 @@ export default function CccdReviewScreen({
 
   useEffect(() => {
     liveCaseIdRef.current = caseId
+    // A picker opened against the previous case would submit that case's
+    // packetIndex to this one — a silent attach to the wrong packet. Close it.
+    setPicking(null)
     void load()
     return () => { liveCaseIdRef.current = null }
   }, [caseId, load])

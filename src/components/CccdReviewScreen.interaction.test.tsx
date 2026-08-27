@@ -269,4 +269,17 @@ describe('CccdReviewScreen', () => {
     })
     expect(host.textContent).toContain('0 gói chưa có thẻ')
   })
+
+  it('closes a picker opened against the previous case', async () => {
+    listCccdCards.mockImplementation((cid: string) => Promise.resolve(
+      cid === 'case-1' ? [card('card-00', 0)] : [],
+    ))
+    await render('case-1')
+    await act(async () => { button('Gán thẻ').click() })
+    expect(host.querySelector('[data-testid="picker"]')).not.toBeNull()
+
+    await render('case-2')
+    // Left open, this picker would post case-1's packetIndex against case-2.
+    expect(host.querySelector('[data-testid="picker"]')).toBeNull()
+  })
 })
