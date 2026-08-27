@@ -315,6 +315,15 @@ git commit -m "feat(cccd): invert the card list into packet-shaped review rows"
 The API's `state` and `issues` are codes. The screen must say why a card did not attach, and an
 unrecognised code must render as itself rather than vanish.
 
+> **AMENDED AFTER REVIEW.** The implementer traced the real data flow and found this task's
+> `CCCD_ISSUE_LABELS` covered only 7 of the codes the server can emit; issues are appended in
+> `cccd_pairing.py` and `cccd_ingest.py` as well as `cccd_matching.py`. Measured against
+> `mapping["issues"]` in all 13 cases under `server/data/cases`, twelve codes occur in real data
+> and eight of them were unlabelled — so most exception rows would have shown raw English. The
+> map now carries **22** entries; see the corrected tables in the spec. The pinning test keeps
+> its tripwire role with the full key set, and a second test asserts the twelve measured codes
+> are all labelled. `CCCD_STATE_LABELS` was already complete at 5.
+
 **Files:**
 - Modify: `src/logic/cccdReview.ts`
 - Modify: `src/logic/cccdReview.test.ts`
@@ -409,7 +418,8 @@ export function describeCard(card: CccdCard): string {
 ```bash
 node_modules/.bin/vitest run src/logic/cccdReview.test.ts
 ```
-Expected: PASS (**11 passed** — 7 from Task 1 as amended, plus this task's 4)
+Expected: PASS (**12 passed** — 7 from Task 1 as amended, plus this task's 4, plus the
+measured-vocabulary test added by the amendment)
 
 - [ ] **Step 5: Commit**
 
@@ -1240,7 +1250,7 @@ export function shouldOpenCccdReview(
 ```bash
 node_modules/.bin/vitest run src/logic/cccdReview.test.ts
 ```
-Expected: PASS (**15 passed** — 11 after Task 2, plus this task's 4)
+Expected: PASS (**16 passed** — 12 after Task 2 as amended, plus this task's 4)
 
 - [ ] **Step 5: Commit**
 

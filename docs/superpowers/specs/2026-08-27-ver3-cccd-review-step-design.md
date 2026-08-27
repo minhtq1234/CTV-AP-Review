@@ -122,15 +122,56 @@ no refetch, no chance of the two disagreeing.
 | `manual` | Cần gán tay |
 | `conflict` | Xung đột |
 
+**Corrected 2026-08-27** after implementation review. This table first listed seven codes,
+taken from `cccd_matching.py` alone. Issues are in fact appended in three modules, and reading
+`mapping["issues"]` out of all 13 real cases in `server/data/cases` found **twelve** distinct
+codes in use, of which eight were unlabelled — including `packet-target-not-found` (27
+occurrences) and `non-unique-packet-target` (10), the second and fourth most common. Three of
+the original seven (`duplicate-cccd`, `duplicate-name`, `ambiguous-pair`) never occur in real
+data at all. Unlabelled codes fall through to raw English, so the first version would have put
+`packet-target-not-found` in front of a Vietnamese reviewer on most exception rows.
+
+Sides and pairing — `cccd_pairing.py`:
+
+| issue | label |
+|---|---|
+| `missing-front` | Thiếu ảnh mặt trước |
+| `missing-back` | Thiếu ảnh mặt sau |
+| `unknown-side` | Không xác định được mặt thẻ |
+| `side-inferred-front` | Mặt trước được suy đoán |
+| `layout-side-conflict` | Bố cục hai mặt không khớp |
+| `ambiguous-pair` | Không ghép được mặt trước/sau |
+
+Reading and identity — `cccd_matching.py`:
+
 | issue | label |
 |---|---|
 | `no-front` | Không có mặt trước |
-| `unreadable-identity` | Không đọc được số |
 | `no-number-region` | Không tìm được vùng số |
+| `unreadable-identity` | Không đọc được số |
+| `low-cccd-confidence` | Số CCCD đọc được với độ tin cậy thấp |
+| `non-12-digit-cccd` | Số trên thẻ không đủ 12 chữ số |
 | `no-exact-roster-match` | Số không khớp bảng kê |
+| `conflicting-identity` | Danh tính trên thẻ không thống nhất |
+| `competing-candidate` | Có ảnh khác cùng tranh gói này |
 | `duplicate-cccd` | Trùng số CCCD |
 | `duplicate-name` | Trùng họ tên |
-| `ambiguous-pair` | Không ghép được mặt trước/sau |
+
+Attaching to a packet — `cccd_ingest.py`:
+
+| issue | label |
+|---|---|
+| `packet-target-not-found` | Không tìm được gói tương ứng |
+| `non-unique-packet-target` | Nhiều gói cùng khớp |
+| `invalid-roster-key` | Khóa bảng kê không hợp lệ |
+| `non-12-digit-roster-cccd` | Số trong bảng kê không đủ 12 chữ số |
+| `attachment-failed` | Gắn ảnh vào gói thất bại |
+| `cleanup-failed` | Dọn ảnh cũ thất bại |
+
+The eight codes raised as `CccdManualError` (`card-not-found`, `packet-already-has-card`,
+`unknown-packet`, `no-cccd-workbook`, `side-not-found`, `card-has-no-image`, `attach-failed`,
+`reconcile-failed`) are **API errors, not card issues** — they belong to the error map in the
+screen, not here.
 
 An unrecognised code renders as itself rather than being swallowed, so a new backend issue
 shows up instead of disappearing.
