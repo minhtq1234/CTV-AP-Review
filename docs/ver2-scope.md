@@ -135,8 +135,10 @@ Tesseract's `vie` model returns nothing for it — the following line is handwri
 (`t_ ‹lam “=`). No anchor or lookahead change touches this. **Only a handwriting-capable
 reader fixes it**, which is the genuine IDP case.
 
-**Order of work:** do Cause 1 first — it is a local change to `locate_field`, costs no network
-calls, and shrinks what IDP has to cover. Then scope IDP against what is actually left.
+**Order of work:** Cause 1 is done. Scope IDP (§2.1) against what is actually left, which is
+Cause 2 — the handwritten batches — plus the sub-`LOW_CONF` tail.
+
+### 2.2 Table view for the packet list
 
 The packet list is currently a card grid (`src/components/CaseDetail.tsx`). Ver 2 replaces
 it with a table, as `ver1` has. `ver1`'s columns were:
