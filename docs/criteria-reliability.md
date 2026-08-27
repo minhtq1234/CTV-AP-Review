@@ -91,3 +91,37 @@ Open a Tier 1 criterion in the matrix, show a decided cell and its located evide
 scan, then show a Tier 3 signature row as work the tool deliberately hands over. That is a
 true account of what exists: **six criteria that reconcile documents against the bảng kê, six
 that route judgement to a person, and seven that are not built yet.**
+
+## Document segmentation — sound structurally, imperfect semantically
+
+Measured on the same 41 packets.
+
+**What is solid.** No page is lost or double-counted: `sum(doc pages) == n_pages` on **41 of
+41**. Coverage cross-checks against three independent surfaces — `id_front`/`id_back` on 40
+packets matches `CCCD: 40 đã gắn`; `appendix` on 20 matches criteria #9–#13 being `missing` on
+exactly 21 (= 41−20); `commitment` on 7 matches both `hasCommitment` and #15's 7 `ok`.
+
+**What is wrong.** 16 of 41 packets (39%) carry the same document label twice, and the page
+counts show these are not genuine duplicates:
+
+- **A BBNT split in two** — the `[1, 2]` signature on p2, p22, p23, p24, p27, p31, p33. One
+  3-page biên bản broken into a 1-page and a 2-page document. A real second BBNT would not
+  reliably be 1-page-then-2.
+- **A 1-page contract followed by a 3-page `Tra cứu thuế`** (p8, p15, p16, p30, p32, p35, p38).
+  Contracts run 3–4 pages, so the contract's body pages are being classified as a tax lookup.
+
+**Why it does not bite today.** Packets with a 1-page contract score the same as the rest:
+
+| | ok | no | pending | missing |
+|---|---|---|---|---|
+| contract ≥3 pages (34 packets) | 3.1 | 0.6 | 9.1 | 2.7 |
+| contract <3 pages (7 packets) | 3.4 | 0.6 | 9.7 | 2.7 |
+
+Because every Tier 1 field — name, CCCD, MST, account, date, fee — sits on the contract's
+**first** page, which is always present, and the criteria that would need the body pages
+(#9–#13) are the ones not built.
+
+**When it will bite.** The moment #9–#13 are implemented: Nội dung dịch vụ, the start/end
+dates and the payment terms live in the contract body, and on those 7 packets those pages are
+labelled `Tra cứu thuế`. Likewise the signature criteria (#21–#24) route to a named document,
+so a BBNT split in two makes "the BBNT" ambiguous. Fix segmentation before building either.
