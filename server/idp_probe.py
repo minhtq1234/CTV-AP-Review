@@ -108,6 +108,16 @@ def main(argv: list[str]) -> int:
     for doc_type in doc_types:
         try:
             result = probe(base_url, api_key, image, os.path.basename(path), doc_type)
+        except urllib.error.HTTPError as exc:
+            # The BODY is the point. A 4xx/5xx from this API usually carries the
+            # real message -- often naming the valid doc_type values -- and
+            # reporting only the status code throws that away (it did, twice).
+            try:
+                body = exc.read().decode("utf-8", "replace")[:600]
+            except Exception:
+                body = "<unreadable>"
+            result = {"doc_type": doc_type, "error": f"HTTP {exc.code}",
+                      "response_body": body}
         except Exception as exc:                      # a refused doc_type is data
             result = {"doc_type": doc_type, "error": f"{type(exc).__name__}: {exc}"}
         results.append(result)
@@ -122,6 +132,14 @@ def main(argv: list[str]) -> int:
         # that 404s too then this host simply has no /ocr/ingest. Distinguish
         # the two before blaming the doc_type, since the message is otherwise
         # actively misleading (it was, once).
+        all_500 = results and all("500" in str(r.get("error") or "") for r in results)
+        if all_500:
+            print("Every doc_type returned 500 -- the URL, path and key are fine")
+            print("(a wrong URL gives 404, a bad key 401), so the service is")
+            print("rejecting these doc_type VALUES. Check response_body above for the")
+            print("real message, and whether ID -- the one value known to work -- is")
+            print("the only model this account is provisioned for.")
+            return 1
         all_404 = results and all("404" in str(r.get("error") or "") for r in results)
         if all_404:
             print("Every doc_type returned 404 -- including ID, which is known to work")
