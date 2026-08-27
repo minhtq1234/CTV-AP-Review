@@ -26,6 +26,7 @@ with `server/` as the cwd because server modules import by bare name.
 |---|---|
 | `src/logic/cccdReview.ts` **(create)** | Pure: invert cards→packets, bucket rows, count, label states and issues, and the gate predicate. No IO, no React. |
 | `src/logic/cccdReview.test.ts` **(create)** | Unit tests for all of the above (node env). |
+| `src/logic/packetTable.ts` **(modify)** | Gains `packetDisplayName` (the shared name-fallback chain, beside the `NO_NAME` it already owns); `packetRow` calls it. Its two tests live in `packetTable.test.ts`. |
 | `src/components/CccdReviewScreen.tsx` **(create)** | Exports `CccdReviewView` (presentational, pure props) and default `CccdReviewScreen` (fetches cards, owns assign/detach). Mirrors how `CaseDetail.tsx` exports its inner views for static tests. |
 | `src/components/cccdReviewScreen.test.tsx` **(create)** | Static-render tests of `CccdReviewView` (node env). |
 | `src/components/CccdReviewScreen.interaction.test.tsx` **(create)** | jsdom tests of the container: assign, detach, error, continue. |
@@ -58,6 +59,21 @@ back, the styles, and a full green run.
 **Files:**
 - Create: `src/logic/cccdReview.ts`
 - Create: `src/logic/cccdReview.test.ts`
+- Modify: `src/logic/packetTable.ts`, `src/logic/packetTable.test.ts` (amendment below)
+
+> **AMENDED AFTER REVIEW — implemented in `26bccbb` then `464051c`.** The committed code is
+> the source of truth; the two code blocks below are the original text, kept for the record.
+> Code review changed two things, and **later tasks assume the amended shape**:
+>
+> 1. **`packetDisplayName` moved to `src/logic/packetTable.ts`**, beside `NO_NAME`, and
+>    `packetRow` now calls it — the chain had been duplicated rather than shared. `cccdReview.ts`
+>    imports it and no longer imports `NO_NAME`. Its two tests moved to `packetTable.test.ts`.
+> 2. **`CccdAttachedRow extends CccdPacketRow { card: CccdCard }` added**, and
+>    `CccdReview.attached` is now `CccdAttachedRow[]`. The row loop builds a shared `base`
+>    object and branches on the card so it compiles with no cast. This removes the dead
+>    `if (!card) return null` branch from Task 3's `AttachedRow`, which is already updated below.
+>
+> Resulting counts: `cccdReview.test.ts` 7 tests, `packetTable.test.ts` 27, full suite 248.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -282,7 +298,8 @@ export function buildCccdReview(
 ```bash
 node_modules/.bin/vitest run src/logic/cccdReview.test.ts
 ```
-Expected: PASS (8 passed)
+Expected: PASS — 8 as originally written, **7 after the amendment above** (two
+`packetDisplayName` tests move to `packetTable.test.ts`, one narrowing test is added)
 
 - [ ] **Step 5: Commit**
 
@@ -392,7 +409,7 @@ export function describeCard(card: CccdCard): string {
 ```bash
 node_modules/.bin/vitest run src/logic/cccdReview.test.ts
 ```
-Expected: PASS (12 passed)
+Expected: PASS (**11 passed** — 7 from Task 1 as amended, plus this task's 4)
 
 - [ ] **Step 5: Commit**
 
@@ -544,7 +561,7 @@ import { cccdCardImageUrl } from '../upload/api'
 import type { CccdCard } from '../upload/api'
 import {
   describeCard,
-  type CccdPacketRow,
+  type CccdAttachedRow,
   type CccdReview,
 } from '../logic/cccdReview'
 
@@ -574,12 +591,11 @@ function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
 
 function AttachedRow({ caseId, row, busy, onDetach }: {
   caseId: string
-  row: CccdPacketRow
+  row: CccdAttachedRow
   busy: boolean
   onDetach: (cardId: string) => void
 }) {
   const card = row.card
-  if (!card) return null
   return (
     <li className="cccd-review-row">
       <span className="cccd-review-stt">{row.packetIndex + 1}</span>
@@ -1224,7 +1240,7 @@ export function shouldOpenCccdReview(
 ```bash
 node_modules/.bin/vitest run src/logic/cccdReview.test.ts
 ```
-Expected: PASS (16 passed)
+Expected: PASS (**15 passed** — 11 after Task 2, plus this task's 4)
 
 - [ ] **Step 5: Commit**
 
