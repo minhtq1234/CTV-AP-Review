@@ -245,19 +245,26 @@ def reader(base_url: str, api_key: str, doc_type: str = "", **kwargs):
 
 
 def page_reader_from_env():
-    """The escalation reader, or None when IDP is not configured.
+    """The escalation reader, or None when document-field IDP is not configured.
 
-    Same two variables the CCCD reader uses (`pipeline._card_reader`), plus
-    `IDP_DOC_TYPE`, so enabling document-field IDP is a deployment choice and
-    the default stays local-only -- no packet page leaves the workstation
-    unless someone sets these.
+    Needs the two IDP variables AND an explicit `IDP_DOC_TYPE`. The doc_type is
+    a deliberate third gate rather than a defaulted guess, because the CCCD path
+    and this one are NOT equally ready: `doc_type=ID` works (42 cards read, 39
+    attached), while GENERAL / DOCUMENT / DOC / OCR / TEXT / FULL_TEXT / OTHER
+    all return HTTP 500 on the account we have.
+
+    Without this gate, switching IDP on for CCCD cards -- which is worth doing
+    today -- would also fire one doomed request per escalated page: ~50 on the
+    July batch, ~81 on February. They are harmless (`_escalate_weak_fields`
+    keeps the local read when the reader raises) but pointless.
+
+    So the unknown IS the switch: the moment GreenNode names a working value,
+    setting IDP_DOC_TYPE turns document-field escalation on, and nothing else
+    has to change.
     """
     base_url = os.environ.get("GREENNODE_IDP_URL", "").strip()
     api_key = os.environ.get("GREENNODE_API_KEY", "").strip()
-    if not base_url or not api_key:
+    doc_type = os.environ.get("IDP_DOC_TYPE", "").strip()
+    if not base_url or not api_key or not doc_type:
         return None
-    return reader(
-        base_url.rstrip("/").removesuffix("/ocr/ingest"),
-        api_key,
-        os.environ.get("IDP_DOC_TYPE", "").strip(),
-    )
+    return reader(base_url.rstrip("/").removesuffix("/ocr/ingest"), api_key, doc_type)

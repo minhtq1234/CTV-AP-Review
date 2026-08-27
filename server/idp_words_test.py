@@ -195,3 +195,36 @@ def test_as_jpeg_converts_a_png_and_leaves_a_jpeg_alone(tmp_path):
 def test_as_jpeg_passes_undecodable_bytes_through():
     # A transport must not be the thing that fails an ingest.
     assert as_jpeg(b"not-an-image") == b"not-an-image"
+
+
+def test_document_field_idp_needs_an_explicit_doc_type(monkeypatch):
+    """The doc_type is a third gate, not a defaulted guess.
+
+    doc_type=ID works for CCCD cards, but every candidate for a general page
+    read returns HTTP 500 on this account. Without this gate, enabling IDP for
+    cards -- worth doing today -- would also fire one doomed request per
+    escalated page (~50 on July, ~81 on February).
+    """
+    from idp_words import page_reader_from_env
+    monkeypatch.setenv("GREENNODE_IDP_URL", "http://idp.example/v1")
+    monkeypatch.setenv("GREENNODE_API_KEY", "not-a-real-key")
+
+    monkeypatch.delenv("IDP_DOC_TYPE", raising=False)
+    assert page_reader_from_env() is None, "must stay off without an explicit doc_type"
+
+    monkeypatch.setenv("IDP_DOC_TYPE", "   ")
+    assert page_reader_from_env() is None, "whitespace is not a doc_type"
+
+    monkeypatch.setenv("IDP_DOC_TYPE", "GENERAL")
+    assert callable(page_reader_from_env()), "explicit doc_type turns it on"
+
+
+def test_cccd_idp_is_unaffected_by_the_doc_type_gate(monkeypatch):
+    # The card reader must still enable on the two variables alone -- that path
+    # is proven and is the one worth switching on now.
+    import pipeline as pl
+    monkeypatch.setenv("GREENNODE_IDP_URL", "http://idp.example/v1")
+    monkeypatch.setenv("GREENNODE_API_KEY", "not-a-real-key")
+    monkeypatch.delenv("IDP_DOC_TYPE", raising=False)
+    assert callable(pl._card_reader())
+    assert pl._page_reader() is None

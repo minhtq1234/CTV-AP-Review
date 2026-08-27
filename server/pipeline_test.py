@@ -742,4 +742,12 @@ def test_the_ingest_is_local_only_unless_idp_is_configured(monkeypatch, tmp_path
 
     monkeypatch.setenv("GREENNODE_IDP_URL", "http://idp.example/v1")
     monkeypatch.setenv("GREENNODE_API_KEY", "not-a-real-key")
+    # The two variables alone enable the CCCD card reader -- that path is proven
+    # (42 cards read, 39 attached). Document-field escalation needs an explicit
+    # IDP_DOC_TYPE on top, because no value for a general page read is known to
+    # work yet and every candidate returns HTTP 500.
+    assert callable(pl._card_reader())
+    monkeypatch.delenv("IDP_DOC_TYPE", raising=False)
+    assert pl._page_reader() is None
+    monkeypatch.setenv("IDP_DOC_TYPE", "GENERAL")
     assert callable(pl._page_reader())
