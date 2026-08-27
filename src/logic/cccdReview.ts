@@ -82,3 +82,32 @@ export function buildCccdReview(
     },
   }
 }
+
+// The five states cccd_matching can resolve to, plus `assigned` for a card a
+// reviewer named. Only `exact` and `assigned` carry evidence into a packet.
+export const CCCD_STATE_LABELS: Record<string, string> = {
+  exact: 'Tự động khớp',
+  assigned: 'Người dùng gán',
+  suggested: 'Gợi ý theo tên',
+  manual: 'Cần gán tay',
+  conflict: 'Xung đột',
+}
+
+export const CCCD_ISSUE_LABELS: Record<string, string> = {
+  'no-front': 'Không có mặt trước',
+  'unreadable-identity': 'Không đọc được số',
+  'no-number-region': 'Không tìm được vùng số',
+  'no-exact-roster-match': 'Số không khớp bảng kê',
+  'duplicate-cccd': 'Trùng số CCCD',
+  'duplicate-name': 'Trùng họ tên',
+  'ambiguous-pair': 'Không ghép được mặt trước/sau',
+}
+
+/** State then issues, in Vietnamese. An unmapped code renders as itself so a
+ *  new backend code shows up in the UI instead of disappearing. */
+export function describeCard(card: CccdCard): string {
+  return [
+    CCCD_STATE_LABELS[card.state] ?? card.state,
+    ...card.issues.map(issue => CCCD_ISSUE_LABELS[issue] ?? issue),
+  ].join(' · ')
+}

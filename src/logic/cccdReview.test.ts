@@ -1,7 +1,7 @@
 // src/logic/cccdReview.test.ts
 import { describe, expect, it } from 'vitest'
 import type { CccdCard, PacketMeta } from '../upload/api'
-import { buildCccdReview } from './cccdReview'
+import { buildCccdReview, CCCD_ISSUE_LABELS, CCCD_STATE_LABELS, describeCard } from './cccdReview'
 
 function packet(index: number, name: string | null,
                 overrides: Partial<PacketMeta> = {}): PacketMeta {
@@ -97,5 +97,41 @@ describe('buildCccdReview', () => {
   it('exposes the attached bucket\'s card without a null check', () => {
     const review = buildCccdReview([packet(0, 'Synthetic A')], [card('card-00', 0)])
     expect(review.attached.map(row => row.card.cardId)).toEqual(['card-00'])
+  })
+})
+
+describe('describeCard', () => {
+  it('names the state on its own when there are no issues', () => {
+    expect(describeCard(card('card-00', 0, { state: 'exact' }))).toBe('Tự động khớp')
+    expect(describeCard(card('card-01', 0, { state: 'assigned' }))).toBe('Người dùng gán')
+  })
+
+  it('appends every issue after the state', () => {
+    expect(describeCard(card('card-02', null, {
+      state: 'conflict',
+      issues: ['duplicate-cccd', 'duplicate-name'],
+    }))).toBe('Xung đột · Trùng số CCCD · Trùng họ tên')
+  })
+
+  it('passes an unknown state or issue through as itself', () => {
+    expect(describeCard(card('card-03', null, {
+      state: 'brand-new-state',
+      issues: ['brand-new-issue'],
+    }))).toBe('brand-new-state · brand-new-issue')
+  })
+
+  it('labels every state and issue the backend can emit', () => {
+    expect(Object.keys(CCCD_STATE_LABELS).sort()).toEqual(
+      ['assigned', 'conflict', 'exact', 'manual', 'suggested'],
+    )
+    expect(Object.keys(CCCD_ISSUE_LABELS).sort()).toEqual([
+      'ambiguous-pair',
+      'duplicate-cccd',
+      'duplicate-name',
+      'no-exact-roster-match',
+      'no-front',
+      'no-number-region',
+      'unreadable-identity',
+    ])
   })
 })
