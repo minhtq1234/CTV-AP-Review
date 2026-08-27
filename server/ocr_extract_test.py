@@ -109,6 +109,74 @@ def test_locate_field_no_hit_when_label_absent():
 
 
 # ---------------------------------------------------------------------------
+# Per-spec lookahead. Default 1 keeps a value tied to its own label's line;
+# `phi` widens to 3 because its anchor matches a section HEADING, not the
+# clause -- see the `phi` entry in FIELD_SPECS for the measurement.
+# ---------------------------------------------------------------------------
+
+def _money_lines(gap_lines):
+    """A heading line that carries the anchor, `gap_lines` junk lines, then the fee."""
+    lines = [[W("ĐIỀU", 10, 50, 40, 18), W("2.", 55, 50, 20, 18),
+              W("PHÍ", 80, 50, 30, 18), W("DỊCH", 115, 50, 35, 18),
+              W("VỤ", 155, 50, 25, 18), W("VÀ", 185, 50, 20, 18),
+              W("THANH", 210, 50, 50, 18), W("TOÁN", 265, 50, 45, 18)]]
+    for i in range(gap_lines):
+        lines.append([W("IÍ", 10, 80 + i * 30, 15, 18, conf=20)])
+    lines.append([W("2.1.", 10, 80 + gap_lines * 30, 30, 18),
+                  W("Phí", 45, 80 + gap_lines * 30, 25, 18),
+                  W("dịch", 75, 80 + gap_lines * 30, 30, 18),
+                  W("8.888.889", 110, 80 + gap_lines * 30, 90, 18, conf=84),
+                  W("đồng.", 205, 80 + gap_lines * 30, 45, 18)])
+    return lines
+
+def test_locate_field_default_lookahead_is_one_line():
+    # No `lookahead` key -> unchanged behaviour: a value two lines down is NOT
+    # pulled in, so a value stays tied to its own label.
+    spec = {"anchors": ["phi dich vu"], "patterns": [PATTERNS["MONEY"]]}
+    hits = locate_field(_money_lines(1), spec)
+    assert len(hits) == 1
+    assert hits[0]["value"] == ""
+
+def test_locate_field_default_lookahead_still_reads_the_immediately_next_line():
+    spec = {"anchors": ["phi dich vu"], "patterns": [PATTERNS["MONEY"]]}
+    hits = locate_field(_money_lines(0), spec)
+    assert hits[0]["value"] == "8.888.889"
+
+def test_locate_field_widened_lookahead_reaches_a_value_three_lines_down():
+    # The real July shape: heading anchors, OCR fragments intervene, fee below.
+    spec = {"anchors": ["phi dich vu"], "patterns": [PATTERNS["MONEY"]], "lookahead": 3}
+    for gap in (0, 1, 2):
+        hits = locate_field(_money_lines(gap), spec)
+        assert hits[0]["value"] == "8.888.889", f"gap={gap}"
+        assert abs(hits[0]["confidence"] - 0.84) < 1e-6
+
+def test_locate_field_lookahead_does_not_reach_past_its_window():
+    # 3 junk lines puts the fee 4 lines down -- outside the window, so the hit
+    # stays "cần xem" rather than silently scanning the rest of the page.
+    spec = {"anchors": ["phi dich vu"], "patterns": [PATTERNS["MONEY"]], "lookahead": 3}
+    hits = locate_field(_money_lines(3), spec)
+    assert hits[0]["value"] == ""
+
+def test_locate_field_lookahead_takes_the_nearest_match():
+    # Two candidate values in the window: the closer one wins, so widening the
+    # window never pulls a further value in ahead of a nearer one.
+    spec = {"anchors": ["phi dich vu"], "patterns": [PATTERNS["MONEY"]], "lookahead": 3}
+    lines = [
+        [W("Phí", 10, 50, 25, 18), W("dịch", 40, 50, 30, 18), W("vụ:", 75, 50, 25, 18)],
+        [W("1.000.000", 10, 80, 90, 18, conf=80)],
+        [W("2.000.000", 10, 110, 90, 18, conf=90)],
+    ]
+    assert locate_field(lines, spec)[0]["value"] == "1.000.000"
+
+def test_only_phi_widens_its_lookahead():
+    # A broad pattern must not get slack: ACCOUNT is \d{6,16}, so three lines
+    # of it would let `tk` capture a CCCD or MST from a neighbouring row --
+    # the read count would stay high while the values silently went wrong.
+    widened = {s["key"]: s.get("lookahead") for s in FIELD_SPECS if s.get("lookahead")}
+    assert widened == {"phi": 3}
+
+
+# ---------------------------------------------------------------------------
 # #005: on a multi-field line, the unread region must stop at the NEXT
 # field's label -- not latch onto a stray token, not run to end-of-line.
 # ---------------------------------------------------------------------------

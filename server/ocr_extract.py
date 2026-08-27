@@ -93,6 +93,12 @@ def norm(s: str) -> str:
 # Anchored pattern search (Task A2)
 # ---------------------------------------------------------------------------
 
+#: How many lines below an anchor `locate_field` will look for the value.
+#: 1 keeps a value tied to its own label's line; only widen per-spec, and only
+#: with a measurement (see `locate_field` and the `phi` spec).
+_DEFAULT_LOOKAHEAD = 1
+
+
 PATTERNS = {
     "MST": r"\d{10,13}",
     "CCCD_SPACED": r"\d(?:\s*\d){8,12}",
@@ -358,17 +364,26 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
     its value can't be read (e.g. handwritten):
 
     - if any of `spec["patterns"]` matches this line (or, failing that, the
-      next line -- same lookahead as `find_in_lines`) -> a readable hit:
-      `{value, bbox, confidence}` from the matched words;
+      next `spec["lookahead"]` lines -- 1 by default, the same lookahead as
+      `find_in_lines`) -> a readable hit: `{value, bbox, confidence}` from the
+      matched words;
     - else -> a located-but-unread hit: `value=""`, `bbox` = the value slot
       on this line (see `_label_region_bbox`), `confidence=0.0`.
 
     This is the "locate & look" fix for docs/test-findings.md #004: a label
     reliably found is worth a navigable "cần xem" chip even when its
     handwritten value isn't -- the OCR'd value is a hint, never the gate.
+
+    The lookahead is per-spec rather than global on purpose. Widening it helps
+    only where the anchor lands on a heading rather than the value's own line
+    (see `phi`), and it is actively unsafe for a broad pattern: ACCOUNT is
+    `\\d{6,16}`, so three lines of slack would let `tk` capture a CCCD or MST
+    from a neighbouring row -- the read count would stay high while the values
+    silently became wrong. Widen a field only with a measurement for it.
     """
     anchors_norm = [norm(a) for a in spec["anchors"]]
     patterns = spec.get("patterns", [])
+    lookahead = int(spec.get("lookahead", _DEFAULT_LOOKAHEAD))
     hits = []
     for idx, line in enumerate(lines):
         text = " ".join(w["text"] for w in line)
@@ -383,8 +398,13 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
                 # into a different line despite sitting beside the label
                 row = row if row is not None else _row_words(lines, idx)
                 hit = _search_line(row, pattern)
-            if hit is None and idx + 1 < len(lines):
-                hit = _search_line(lines[idx + 1], pattern)
+            if hit is None:
+                # Nearest line wins, so a wider window never pulls a further
+                # value in ahead of a closer one.
+                for ahead in range(idx + 1, min(idx + 1 + lookahead, len(lines))):
+                    hit = _search_line(lines[ahead], pattern)
+                    if hit is not None:
+                        break
             if hit is not None:
                 break
         if hit is None:
@@ -762,8 +782,19 @@ FIELD_SPECS = [
         "patterns": [PATTERNS["DATE"]], "roster_key": "ngaysinh",
     },
     {
+        # `lookahead: 3` -- "phi dich vu" is the one anchor that matches a
+        # SECTION HEADING ("ĐIỀU 2. PHÍ DỊCH VỤ VÀ THANH TOÁN") rather than the
+        # value's own line, because OCR reads big bold type reliably while
+        # routinely dropping "vụ" from the clause below ("Phí dịch 8.888.889
+        # đồng."), so the clause never anchors itself. Measured on the July
+        # batch: the fee sits 2-3 display-space lines under the heading, and a
+        # 1-line lookahead read it on 32 of 41 packets only because the fee
+        # happened to be the very next line -- an intervening OCR fragment
+        # ("IÍ") broke the other 9. At 3 lines, 7 of those 9 are recovered.
+        # MONEY needs a thousands separator, which is what keeps the wider
+        # window from capturing a clause number or a page number.
         "key": "phi", "label": "Phí dịch vụ", "group": "Thanh toán", "kind": "number",
-        "anchors": ["phi dich vu"],
+        "anchors": ["phi dich vu"], "lookahead": 3,
         "patterns": [PATTERNS["MONEY"]], "roster_key": "phi",
     },
 ]
