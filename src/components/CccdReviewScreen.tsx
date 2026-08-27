@@ -1,7 +1,7 @@
 // Ver 3 step 1: the reviewer confirms which CCCD card belongs to which packet
 // before opening the packet list. Exceptions first; everything already attached
 // sits behind a collapsed section, so a wrong automatic match is still findable.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { cccdCardImageUrl, listCccdCards } from '../upload/api'
 import type { CccdCard, PacketMeta } from '../upload/api'
 import { buildCccdReview } from '../logic/cccdReview'
@@ -186,32 +186,24 @@ export default function CccdReviewScreen({
   const [cards, setCards] = useState<CccdCard[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Guards a caseId change outrunning an in-flight fetch for the previous
-  // case — CccdCardPicker.tsx guards the identical shape of hazard the same
-  // way, so the two files agree.
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const result = await listCccdCards(caseId)
-        if (!cancelled) setCards(result)
-      } catch {
-        if (!cancelled) setError(LOAD_ERROR)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [caseId])
+  const cancelledRef = useRef(false)
 
-  // A separate path for the retry button: a deliberate, one-shot action the
-  // reviewer takes once the component has already settled, not something a
-  // caseId change can race the way the mount-time fetch above can.
   const load = useCallback(async () => {
+    setCards(null)
+    setError(null)
     try {
-      setCards(await listCccdCards(caseId))
+      const result = await listCccdCards(caseId)
+      if (!cancelledRef.current) setCards(result)
     } catch {
-      setError(LOAD_ERROR)
+      if (!cancelledRef.current) setError(LOAD_ERROR)
     }
   }, [caseId])
+
+  useEffect(() => {
+    cancelledRef.current = false
+    void load()
+    return () => { cancelledRef.current = true }
+  }, [load])
 
   return (
     <CccdReviewView
@@ -222,7 +214,7 @@ export default function CccdReviewScreen({
       error={error}
       onAssign={() => {}}
       onDetach={() => {}}
-      onRetry={() => { setError(null); void load() }}
+      onRetry={() => { void load() }}
       onContinue={onContinue}
     />
   )
