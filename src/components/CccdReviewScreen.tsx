@@ -222,7 +222,10 @@ export default function CccdReviewScreen({
     } catch {
       if (liveCaseIdRef.current === caseId) setError(LOAD_ERROR)
     } finally {
-      setBusy(false)
+      // Guarded like the setters above: a request for a case the screen has left
+      // must not clear the `busy` that the live case's own operation set. Every
+      // caseId change fires that case's own load, so `busy` is never stranded.
+      if (liveCaseIdRef.current === caseId) setBusy(false)
     }
   }, [caseId])
 
@@ -248,9 +251,10 @@ export default function CccdReviewScreen({
       const code = caught instanceof Error ? caught.message : ''
       if (liveCaseIdRef.current === caseId) setError(ERROR_TEXT[code] ?? MUTATE_ERROR)
     } finally {
-      // Unguarded on purpose: `busy` tracks this mutation, not the case. Skipping
-      // it after a swap would leave the new case's buttons disabled for good.
-      setBusy(false)
+      // Guarded like the setters above: a request for a case the screen has left
+      // must not clear the `busy` that the live case's own operation set. Every
+      // caseId change fires that case's own load, so `busy` is never stranded.
+      if (liveCaseIdRef.current === caseId) setBusy(false)
     }
   }
 

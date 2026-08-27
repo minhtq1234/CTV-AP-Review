@@ -301,4 +301,26 @@ describe('CccdReviewScreen', () => {
     })
     expect(button('Gỡ').disabled).toBe(false)
   })
+
+  it('a stale load does not re-enable rows while the live case is detaching', async () => {
+    const slowA = deferred<CccdCard[]>()
+    listCccdCards.mockImplementation((cid: string) => (
+      cid === 'case-1' ? slowA.promise : Promise.resolve([card('card-00', 0), card('card-01', 1)])
+    ))
+    const pending = deferred<{ cards: CccdCard[] }>()
+    assignCccdCard.mockReturnValue(pending.promise)
+
+    await render('case-1')          // A's load hangs
+    await render('case-2')          // B loads and settles
+    await act(async () => { button('Gỡ').click() })   // B's detach in flight
+    expect(button('Gỡ').disabled).toBe(true)
+
+    await act(async () => {         // A's abandoned load finally lands
+      slowA.resolve([card('card-77', 0)])
+      await slowA.promise
+    })
+
+    // B's detach is still in flight — its rows must stay disabled.
+    expect(button('Gỡ').disabled).toBe(true)
+  })
 })
