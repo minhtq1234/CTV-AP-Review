@@ -14,11 +14,14 @@ import {
 export interface CccdReviewViewProps {
   caseId: string
   caseName: string
-  review: CccdReview
+  /** Null before the first load resolves — nothing is known yet, so nothing
+   * about which packets need a card should be claimed yet either. */
+  review: CccdReview | null
   busy: boolean
   error: string | null
   onAssign: (packetIndex: number, packetLabel: string) => void
   onDetach: (cardId: string) => void
+  onRetry: () => void
   onContinue: () => void
 }
 
@@ -67,9 +70,9 @@ export function CccdReviewView({
   error,
   onAssign,
   onDetach,
+  onRetry,
   onContinue,
 }: CccdReviewViewProps) {
-  const { needsAction, attached, counts } = review
   return (
     <div className="cccd-review">
       <div className="case-detail-head">
@@ -79,72 +82,82 @@ export function CccdReviewView({
       <div className="banner result-banner">
         <b>Ghép ảnh CCCD</b>
         <span>
-          {counts.attached} đã gắn · {counts.unattachedCards} chưa ghép ·{' '}
-          {counts.packetsWithoutCard} gói chưa có thẻ
+          {review
+            ? `${review.counts.attached} đã gắn · ${review.counts.unattachedCards} chưa ghép · ${review.counts.packetsWithoutCard} gói chưa có thẻ`
+            : 'Đang tải…'}
         </span>
       </div>
 
-      {error && <p className="cccd-review-error" role="alert">{error}</p>}
+      {error && (
+        <>
+          <p className="cccd-review-error" role="alert">{error}</p>
+          <button type="button" className="btn" onClick={onRetry}>Thử lại</button>
+        </>
+      )}
 
-      <section className="cccd-review-section" aria-label="Cần xử lý">
-        <h3>Cần xử lý</h3>
-        {needsAction.length === 0 && (
-          <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
-        )}
-        <ul className="cccd-review-list">
-          {needsAction.map(row => (
-            row.kind === 'packet' ? (
-              <li
-                className="cccd-review-row"
-                aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
-                key={`packet-${row.packetIndex}`}
-              >
-                <span className="cccd-review-stt">{row.packetIndex + 1}</span>
-                <span className="cccd-review-name">{row.name}</span>
-                <span className="cccd-review-state">Chưa có thẻ CCCD</span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onAssign(row.packetIndex, row.name)}
-                >
-                  Gán thẻ
-                </button>
-              </li>
-            ) : (
-              <li
-                className="cccd-review-row cccd-review-orphan"
-                aria-label={`Ảnh ${row.card.cardId}: ${describeCard(row.card)}`}
-                key={`card-${row.card.cardId}`}
-              >
-                <CardThumb caseId={caseId} card={row.card} />
-                <span className="cccd-review-number">
-                  {row.card.number || 'Không đọc được số'}
-                </span>
-                <span className="cccd-review-state">{describeCard(row.card)}</span>
-                <span className="cccd-review-cardid">{row.card.cardId}</span>
-                <span className="cccd-review-hint">
-                  Gán từ dòng của gói cần thẻ.
-                </span>
-              </li>
-            )
-          ))}
-        </ul>
-      </section>
+      {review && (
+        <>
+          <section className="cccd-review-section" aria-label="Cần xử lý">
+            <h3>Cần xử lý</h3>
+            {review.needsAction.length === 0 && (
+              <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
+            )}
+            <ul className="cccd-review-list">
+              {review.needsAction.map(row => (
+                row.kind === 'packet' ? (
+                  <li
+                    className="cccd-review-row"
+                    aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
+                    key={`packet-${row.packetIndex}`}
+                  >
+                    <span className="cccd-review-stt">{row.packetIndex + 1}</span>
+                    <span className="cccd-review-name">{row.name}</span>
+                    <span className="cccd-review-state">Chưa có thẻ CCCD</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onAssign(row.packetIndex, row.name)}
+                    >
+                      Gán thẻ
+                    </button>
+                  </li>
+                ) : (
+                  <li
+                    className="cccd-review-row cccd-review-orphan"
+                    aria-label={`Ảnh ${row.card.cardId}: ${describeCard(row.card)}`}
+                    key={`card-${row.card.cardId}`}
+                  >
+                    <CardThumb caseId={caseId} card={row.card} />
+                    <span className="cccd-review-number">
+                      {row.card.number || 'Không đọc được số'}
+                    </span>
+                    <span className="cccd-review-state">{describeCard(row.card)}</span>
+                    <span className="cccd-review-cardid">{row.card.cardId}</span>
+                    <span className="cccd-review-hint">
+                      Gán từ dòng của gói cần thẻ.
+                    </span>
+                  </li>
+                )
+              ))}
+            </ul>
+          </section>
 
-      <details className="cccd-review-section">
-        <summary>Đã gán ({attached.length})</summary>
-        <ul className="cccd-review-list">
-          {attached.map(row => (
-            <AttachedRow
-              key={`attached-${row.packetIndex}`}
-              caseId={caseId}
-              row={row}
-              busy={busy}
-              onDetach={onDetach}
-            />
-          ))}
-        </ul>
-      </details>
+          <details className="cccd-review-section">
+            <summary>Đã gán ({review.attached.length})</summary>
+            <ul className="cccd-review-list">
+              {review.attached.map(row => (
+                <AttachedRow
+                  key={`attached-${row.packetIndex}`}
+                  caseId={caseId}
+                  row={row}
+                  busy={busy}
+                  onDetach={onDetach}
+                />
+              ))}
+            </ul>
+          </details>
+        </>
+      )}
 
       <div className="cccd-review-foot">
         <button className="btn primary" type="button" onClick={onContinue}>
@@ -173,6 +186,25 @@ export default function CccdReviewScreen({
   const [cards, setCards] = useState<CccdCard[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Guards a caseId change outrunning an in-flight fetch for the previous
+  // case — CccdCardPicker.tsx guards the identical shape of hazard the same
+  // way, so the two files agree.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const result = await listCccdCards(caseId)
+        if (!cancelled) setCards(result)
+      } catch {
+        if (!cancelled) setError(LOAD_ERROR)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [caseId])
+
+  // A separate path for the retry button: a deliberate, one-shot action the
+  // reviewer takes once the component has already settled, not something a
+  // caseId change can race the way the mount-time fetch above can.
   const load = useCallback(async () => {
     try {
       setCards(await listCccdCards(caseId))
@@ -181,17 +213,16 @@ export default function CccdReviewScreen({
     }
   }, [caseId])
 
-  useEffect(() => { void load() }, [load])
-
   return (
     <CccdReviewView
       caseId={caseId}
       caseName={caseName}
-      review={buildCccdReview(packets, cards ?? [])}
+      review={cards === null ? null : buildCccdReview(packets, cards)}
       busy={cards === null}
       error={error}
       onAssign={() => {}}
       onDetach={() => {}}
+      onRetry={() => { setError(null); void load() }}
       onContinue={onContinue}
     />
   )

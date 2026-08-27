@@ -52,6 +52,7 @@ let host: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   listCccdCards.mockReset()
   assignCccdCard.mockReset()
   host = document.createElement('div')
@@ -62,6 +63,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
+  vi.unstubAllGlobals()
 })
 
 async function mount(onContinue = () => {}) {
@@ -105,5 +107,25 @@ describe('CccdReviewScreen', () => {
     await mount(onContinue)
     await act(async () => { button('Tiếp tục').click() })
     expect(onContinue).toHaveBeenCalledOnce()
+  })
+
+  it('does not claim any packet needs a card when the load fails', async () => {
+    listCccdCards.mockRejectedValue(new Error('boom'))
+    await mount()
+    expect(host.textContent).toContain('Không tải được danh sách ảnh.')
+    expect(host.textContent).not.toContain('Synthetic B')
+  })
+
+  it('retries the load when "Thử lại" is clicked', async () => {
+    listCccdCards.mockRejectedValueOnce(new Error('boom'))
+    listCccdCards.mockResolvedValueOnce([card('card-00', 0), card('card-09', null)])
+    await mount()
+    expect(host.textContent).toContain('Không tải được danh sách ảnh.')
+
+    await act(async () => { button('Thử lại').click() })
+
+    expect(listCccdCards).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('Synthetic B')
+    expect(host.textContent).toContain('1 gói chưa có thẻ')
   })
 })

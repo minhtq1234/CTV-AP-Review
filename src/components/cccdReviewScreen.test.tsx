@@ -45,6 +45,7 @@ function render(cards: CccdCard[]) {
       error={null}
       onAssign={() => {}}
       onDetach={() => {}}
+      onRetry={() => {}}
       onContinue={() => {}}
     />,
   )
@@ -106,9 +107,48 @@ describe('CccdReviewView', () => {
         error="Gói này đã có ảnh CCCD. Gỡ ảnh cũ trước."
         onAssign={() => {}}
         onDetach={() => {}}
+        onRetry={() => {}}
         onContinue={() => {}}
       />,
     )
     expect(html).toContain('Gỡ ảnh cũ trước')
+  })
+
+  it('shows a loading state and hides both sections when the review is not ready yet', () => {
+    const html = renderToStaticMarkup(
+      <CccdReviewView
+        caseId="case-1"
+        caseName="FA-SYNTHETIC.pdf"
+        review={null}
+        busy={true}
+        error={null}
+        onAssign={() => {}}
+        onDetach={() => {}}
+        onRetry={() => {}}
+        onContinue={() => {}}
+      />,
+    )
+    expect(html).toContain('Đang tải…')
+    expect(html).not.toContain('Cần xử lý')
+    expect(html).not.toContain('<details')
+    expect(html).toContain('Tiếp tục')
+  })
+
+  it('offers a retry alongside the error while the review is not ready yet', () => {
+    const html = renderToStaticMarkup(
+      <CccdReviewView
+        caseId="case-1"
+        caseName="FA-SYNTHETIC.pdf"
+        review={null}
+        busy={true}
+        error="Không tải được danh sách ảnh."
+        onAssign={() => {}}
+        onDetach={() => {}}
+        onRetry={() => {}}
+        onContinue={() => {}}
+      />,
+    )
+    expect(html).toContain('Không tải được danh sách ảnh.')
+    expect(html).toContain('Thử lại')
   })
 })
