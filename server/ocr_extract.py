@@ -357,6 +357,243 @@ def _row_words(lines: list[list[dict]], idx: int) -> list[dict]:
     return sorted(words, key=lambda w: w["x"])
 
 
+# ---------------------------------------------------------------------------
+# Party columns (#011) — which of a two-column signature/contact block's two
+# names belongs to the CTV.
+#
+# Contracts and biên bản end (and open, in the "Thông tin liên hệ của các
+# Bên" block) in TWO COLUMNS, one per party, and BOTH carry the same generic
+# "Họ và tên:" label: VNG's own signatory on the left, the CTV -- the person
+# the roster names -- on the right. `find_name` used to reduce a page to one
+# name by CONFIDENCE, and confidence is legibility, not correctness: measured
+# on the July batch, VNG's signatory reads just as crisply as the CTV's name
+# (abs page 82: 'Trần Lê Hoài Anh' 0.96 vs 'Nhan Kiến Phát' 0.96; abs page
+# 247: 'Trịnh Đức Minh' 0.94 vs 'Phan Tắn Tài' 0.85), so the wrong party won
+# and a correctly-matched packet was reported as a name mismatch -- a `no`,
+# which drives "cần gửi lại" on valid paperwork.
+#
+# The party evidence is printed on the page itself: the block's own column
+# HEADER. It is never a correctness proxy -- it says nothing about whether a
+# read is right, only about WHICH PARTY the words under it describe -- so it
+# decides the party and confidence survives only as the tiebreak between two
+# reads of the SAME party's name.
+#
+# Detection is GEOMETRIC, not phrase-based, because the left (VNG) header does
+# not survive OCR: on all three failing pages "BÊN SỬ DỤNG DỊCH VỤ" reads as
+# the bare logo word 'VNG' (abs 82 x=232..278, abs 247 x=236..284, abs 275
+# x=236..286). Requiring both headers would have been a no-op on every one of
+# them. So a row qualifies on the ONE header that does survive plus a
+# word-free band: content ending to its left, a gutter-wide gap, and the CTV
+# header run alone to the right of that gap.
+# ---------------------------------------------------------------------------
+
+#: The CTV's ("party B") column header. Its x-position is what orients the
+#: whole mechanism: the detection below requires content to its LEFT, so the
+#: side of the gutter that is the CTV's is read off the page, never assumed.
+_PARTY_B_HEADER = "ben cung ung dich vu"
+
+#: Name anchors BOTH columns carry, so an occurrence of one says nothing by
+#: itself about which party it names. Ambiguity is a property of the PHRASE,
+#: not of the field spec, which is why it lives here rather than in
+#: FIELD_SPECS. Every other `hoten` anchor ("bên cung ứng dịch vụ", "tên
+#: người nộp thuế", "tên tôi là") is party-specific by construction.
+_AMBIGUOUS_NAME_ANCHORS = {"ho va ten"}
+
+#: Minimum gutter width, as a fraction of the page's own measured width --
+#: NOT a pixel constant, so it holds at any render dpi (the ingest renders at
+#: display_dpi=150, but nothing here depends on that). Measured gutters on the
+#: three failing pages are 158-198px on a 1241px-wide page, i.e. 13-16%; the
+#: floor sits well under that and still well over ordinary intra-column
+#: label-value gaps (the widest measured, "CCCD số  :  079189016370", is
+#: ~120px ≈ 10%, and it is never a candidate anyway -- see `_party_of`: the
+#: gutter CLASSIFIES words, it never cuts a line).
+_MIN_GUTTER_FRAC = 0.045
+
+#: Rows below the header that must keep the same band clear for the block to
+#: count as two columns. Two, measured: on all three failing pages the header
+#: is followed by the name row AND the email row, both column-split. One row
+#: would let a single OCR-thinned prose line masquerade as a column header.
+_MIN_COLUMN_ROWS = 2
+
+
+def _visual_rows(lines: list[list[dict]]) -> list[list[dict]]:
+    """The page's distinct VISUAL rows, top to bottom -- `_row_words` applied
+    to every line, deduped, so a row `group_lines` split into fragments (the
+    common case for these blocks: abs page 275's header is 'VNG' in one
+    fragment and 'Bên Cung Ứng Dịch Vụ' in another) is considered once, whole.
+    """
+    rows: list[list[dict]] = []
+    seen: set[frozenset[int]] = set()
+    for idx in range(len(lines)):
+        row = _row_words(lines, idx)
+        # `_same_row` needs a positive height, so a line whose boxes all OCR'd
+        # with h=0 (real July-batch pages carry a few) matches no row at all,
+        # its own included. It isn't a visual row; skip it.
+        if not row:
+            continue
+        key = frozenset(id(w) for w in row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return sorted(rows, key=lambda r: _span(r)[0])
+
+
+def _word_free_gaps(row: list[dict], page_width: int) -> list[tuple[int, int]]:
+    """`row`'s word-free x-bands, left to right, including the margins either
+    side of its content -- a row whose only mark sits between the columns (abs
+    page 82's header is followed by a stray '¬' at x=624..649) still leaves the
+    gutter clear on one side of that mark, and the margin bands are how that is
+    expressed. Uses the running right edge so an overlapping or out-of-order
+    box can't invent a negative gap.
+    """
+    ordered = sorted(row, key=lambda w: w["x"])
+    if not ordered:
+        return [(0, page_width)]
+    gaps = [(0, ordered[0]["x"])]
+    right = None
+    for w in ordered:
+        if right is not None and w["x"] > right:
+            gaps.append((right, w["x"]))
+        right = max(right or 0, w["x"] + w["w"])
+    gaps.append((right, max(page_width, right)))
+    return gaps
+
+
+def _is_two_sided(row: list[dict], band: tuple[int, int]) -> bool:
+    """True if `row` has a word entirely left of `band` AND one entirely right
+    of it -- i.e. this row really is split across the two columns, not a
+    full-width or single-column row that merely happens to leave the gutter
+    clear. What keeps a block from creeping down the page over unrelated
+    single-column text (which would then get classified, and dropped, as
+    VNG's).
+    """
+    left = any(w["x"] + w["w"] <= band[0] for w in row)
+    right = any(w["x"] >= band[1] for w in row)
+    return left and right
+
+
+def _party_header_band(row: list[dict], min_gutter: int) -> tuple[int, int] | None:
+    """The word-free band separating a two-column block's two headers on
+    `row`, or None if this row isn't such a header.
+
+    Three conditions, all measured on abs page 275 (packet 35's biên bản):
+    - low-confidence specks are dropped first (`_MIN_LABEL_CONF`): that page's
+      header row also carries '+}' at conf 43 (x=646..670, right beside the
+      header) and a stray '|' at conf 26 (x=1087..1103, past its end). Without
+      the filter the first defeats the gap test and the second defeats the
+      end-of-row test below; with it, the row qualifies.
+    - the CTV header run must END the row, with content to its LEFT: that is
+      what makes the row a two-column HEADER rather than a prose sentence
+      mentioning the party, and it is also what tells us the CTV's column is
+      the right-hand one (read off the page, never assumed).
+    - the gap immediately left of the run must be at least `min_gutter` wide.
+    """
+    words = [w for w in sorted(row, key=lambda w: w["x"]) if w["conf"] >= _MIN_LABEL_CONF]
+    covered = _anchor_word_span(words, _PARTY_B_HEADER)
+    if not covered:
+        return None
+    first, last = min(covered), max(covered)
+    if first == 0 or last != len(words) - 1:
+        return None
+    left_edge = max(w["x"] + w["w"] for w in words[:first])
+    right_edge = words[first]["x"]
+    if right_edge - left_edge < min_gutter:
+        return None
+    return (left_edge, right_edge)
+
+
+def _intersect_gap(
+    band: tuple[int, int], row: list[dict], min_gutter: int, page_width: int,
+) -> tuple[int, int] | None:
+    """`band` narrowed by whichever of `row`'s word-free gaps overlaps it
+    most, or None if no gap leaves at least `min_gutter`.
+
+    "Widest overlap" is what keeps a small intra-column label-value gap from
+    being mistaken for the gutter: abs page 82's name row has a 10px gap after
+    'tên:' and a 165px one between the columns, both inside the header's band.
+    """
+    best = None
+    for g0, g1 in _word_free_gaps(row, page_width):
+        lo, hi = max(band[0], g0), min(band[1], g1)
+        if hi - lo >= min_gutter and (best is None or hi - lo > best[1] - best[0]):
+            best = (lo, hi)
+    return best
+
+
+def _party_column_blocks(lines: list[list[dict]]) -> list[dict]:
+    """The page's two-column party blocks: `[{y0, y1, gutter}, ...]`.
+
+    A block opens on a row `_party_header_band` accepts and extends downward
+    while the following rows keep a gutter-wide slice of the SAME band clear
+    (`_intersect_gap`) -- so the divide is confirmed by every row it is applied
+    to, and the gutter is the midpoint of the band that survived ALL of them,
+    which is why it cannot land inside a column that any block row fills. Only
+    rows that really are split across both columns (`_is_two_sided`) extend the
+    block's y-range; the walk stops at a row that blocks the band, or at the
+    second consecutive row that is not two-sided -- one stray row does not
+    close a block (abs page 82's header is followed by a lone '¬' speck before
+    the name row), two mean the block has ended.
+
+    A block needs `_MIN_COLUMN_ROWS` two-sided rows to count at all; a page
+    with no qualifying header yields no blocks and leaves `find_name` at its
+    previous behaviour -- a deliberate no-fix (no party evidence, nothing to
+    decide with), not a regression.
+    """
+    page_width = max((w["x"] + w["w"] for line in lines for w in line), default=0)
+    min_gutter = max(round(page_width * _MIN_GUTTER_FRAC), 1)
+    rows = _visual_rows(lines)
+    blocks = []
+    for i, row in enumerate(rows):
+        band = _party_header_band(row, min_gutter)
+        if band is None:
+            continue
+        y1 = _span(row)[1]
+        n_rows = 0
+        skipped = 0
+        for below in rows[i + 1:]:
+            narrowed = _intersect_gap(band, below, min_gutter, page_width)
+            if narrowed is None:
+                break
+            if not _is_two_sided(below, narrowed):
+                skipped += 1
+                if skipped >= 2:
+                    break
+                continue
+            skipped = 0
+            band = narrowed
+            y1 = _span(below)[1]
+            n_rows += 1
+        if n_rows >= _MIN_COLUMN_ROWS:
+            blocks.append({"y0": _span(row)[0], "y1": y1, "gutter": (band[0] + band[1]) // 2})
+    return blocks
+
+
+def _party_of(bbox: dict, blocks: list[dict]) -> str | None:
+    """Which party's column `bbox` sits in: "b" (the CTV's), "a" (VNG's),
+    "straddle" (it crosses the divide, so its words belong to neither party
+    alone), or None when no block covers it -- no party evidence here.
+
+    The gutter only ever CLASSIFIES a bbox; nothing in this module cuts a line
+    or a value at it. That is what keeps a mis-placed gutter from truncating a
+    correct read into a wrong-token-count value (`compare_values`
+    `_person_verdict` treats a differing token count as an outright mismatch,
+    so a truncated name would be a NEW false `no`); the worst it can do is
+    call a read "straddle", which lands it in "cần xem".
+    """
+    cy = bbox["y"] + bbox["height"] / 2
+    for b in blocks:
+        if not (b["y0"] <= cy <= b["y1"]):
+            continue
+        x0, x1 = bbox["x"], bbox["x"] + bbox["width"]
+        if x1 <= b["gutter"]:
+            return "a"
+        if x0 >= b["gutter"]:
+            return "b"
+        return "straddle"
+    return None
+
+
 def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
     """For each line whose text contains one of `spec["anchors"]` (accent-
     insensitively), produce exactly one hit -- never zero for a matching
@@ -452,19 +689,303 @@ def _looks_like_person_name(words: list[dict]) -> bool:
     return True
 
 
+#: Name-hit ranks -- two levels, not a score. Whether the words are the CTV's
+#: at all decides; confidence is only ever the tiebreak BETWEEN TWO READS OF
+#: THE SAME PARTY'S NAME, never a proxy for which party is right.
+#: - 1, party-certain: either the page's own column header places the name in
+#:      the CTV's column (`_party_of` == "b"), or the anchor phrase that found
+#:      it is party-specific ("bên cung ứng dịch vụ", "tên tôi là", ...).
+#: - 0, unplaced: a readable name from the ambiguous "Họ và tên" with no column
+#:      evidence at all, and every located-but-unread hit.
+#:
+#: The two kinds of party evidence are deliberately EQUAL. Ranking the column
+#: above the phrase was measured on the July batch and made things worse: on
+#: packets 22 and 28 the two-column block on contract page 1 reads the same
+#: name a diacritic worse than the party-labeled signature block on page 0
+#: (0.55 vs 0.96, 0.91 vs 0.93), so promoting it turned two matches into
+#: "cần xem" -- and it bought nothing, because the truncation that motivated
+#: the promotion is fixed at its source by the row reassembly in
+#: `_row_value_extension`.
+_RANK_PARTY_CERTAIN = 1
+_RANK_UNPLACED = 0
+
+
+def _hit_rank(hit: dict) -> tuple[int, float]:
+    """Sort/selection key for one hit: `(rank, confidence)`. Hits from
+    `locate_field` carry no "rank", so for them this degenerates to the
+    confidence-only key it replaced.
+    """
+    return (hit.get("rank", _RANK_UNPLACED), hit["confidence"])
+
+
 def _dedupe_and_cap(hits: list[dict], max_n: int = 3) -> list[dict]:
     """Collapse identical values to their highest-confidence hit; keep at
     most `max_n`, highest-confidence first -- so a handful of genuine
     labeled occurrences don't get diluted by noise, and duplicates don't
     inflate the source count.
+
+    Ordered by `_hit_rank` (party evidence first, confidence as the
+    tiebreak -- see `find_name`), DESCENDING, so a rank-0 hit can't consume a
+    cap slot ahead of a party-confirmed one. With no ranks in play the key
+    degenerates to the previous `-confidence` ordering, and `sorted(...,
+    reverse=True)` is stable, so equal-confidence hits keep their page order
+    exactly as before.
     """
     best_by_value: dict[str, dict] = {}
     for h in hits:
         prev = best_by_value.get(h["value"])
-        if prev is None or h["confidence"] > prev["confidence"]:
+        if prev is None or _hit_rank(h) > _hit_rank(prev):
             best_by_value[h["value"]] = h
-    ordered = sorted(best_by_value.values(), key=lambda h: -h["confidence"])
+    ordered = sorted(best_by_value.values(), key=_hit_rank, reverse=True)
     return ordered[:max_n]
+
+
+def _primary_anchor_match(line: list[dict], tokenized: list[list[str]]) -> tuple[int, int, int] | None:
+    """The occurrence `find_name` has always used on a line: the FIRST anchor
+    in `anchors` order (which is party-specific-first) at its first matching
+    position on this line. Unchanged, deliberately -- #011 adds an extension
+    and a party classification on top of this occurrence, never a different
+    choice of it.
+    """
+    words_norm = [_clean_tok(norm(w["text"])) for w in line]
+    for a_idx, tokens in enumerate(tokenized):
+        n = len(tokens)
+        for i in range(len(words_norm) - n + 1):
+            if words_norm[i:i + n] == tokens:
+                return (i, n, a_idx)
+    return None
+
+
+def _anchor_occurrences(words: list[dict], tokenized: list[list[str]]) -> list[tuple[int, int, int]]:
+    """Every `(start, n_words, anchor_index)` anchor occurrence in `words`,
+    left to right, non-overlapping; at each position the first anchor in
+    `anchors` order wins. Used on a REASSEMBLED ROW, where a two-column
+    signature block puts both parties' labels side by side.
+    """
+    words_norm = [_clean_tok(norm(w["text"])) for w in words]
+    out = []
+    i = 0
+    while i < len(words_norm):
+        for a_idx, tokens in enumerate(tokenized):
+            n = len(tokens)
+            if tokens and words_norm[i:i + n] == tokens:
+                out.append((i, n, a_idx))
+                i += n - 1
+                break
+        i += 1
+    return out
+
+
+def _strip_leading_colon(value_words: list[dict]) -> list[dict]:
+    """Drop a ':' that OCR'd as its own word between label and value (abs
+    page 85 has one at x=512, from a different `group_lines` fragment than
+    either side)."""
+    if value_words and value_words[0]["text"].strip() == ":":
+        return value_words[1:]
+    return value_words
+
+
+def _bounded_value_words(words: list[dict], start: int, occurrences: list[tuple[int, int, int]]) -> list[dict]:
+    """`words[start:]`, cut where the NEXT name anchor begins.
+
+    Bounded on a KNOWN NAME ANCHOR, never on `_next_label_start`: measured on
+    abs page 275's reassembled row ('Họ và tên: Trần Văn Tiến Họ và tên: Hoàng
+    Nguyễn Hải Đăng'), `_next_label_start(row, 3)` returns 5, not 6 -- its
+    short-colon-terminated-run rule fires on ['Tiến','Họ','và','tên:'] before
+    it ever reaches the anchor, so a 3-token value would lose its last token.
+    29 of the July batch's 41 roster names are 3 tokens, and
+    `compare_values._person_verdict` makes a differing token count an outright
+    MISMATCH -- that truncation would be a new false `no`, not a near miss.
+    """
+    end = next((i for i, _n, _a in occurrences if i >= start), len(words))
+    return _strip_leading_colon(words[start:end])
+
+
+def _swallows_a_label(added: list[dict], tokenized: list[list[str]]) -> bool:
+    """True if `added` runs into a neighbouring label: its tail matches the
+    start of a known name anchor ('Họ' alone is enough -- it opens "họ và
+    tên")."""
+    words_norm = [_clean_tok(norm(w["text"])) for w in added]
+    for k in range(len(words_norm)):
+        tail = words_norm[k:]
+        if any(tokens[:len(tail)] == tail for tokens in tokenized):
+            return True
+    return False
+
+
+def _legible_row_value(words: list[dict]) -> bool:
+    """True if every word of a ROW-derived value OCR'd as real text
+    (`_MIN_LABEL_CONF`).
+
+    Only row-derived values are held to this: a value reassembled from a whole
+    visual row can pick up a mark from ANYWHERE on that row, and on abs page
+    170 (packet 20's contract) it did -- two scanner-edge specks, 'ZZ' at conf
+    2 and 'NI' at conf 1, sitting at x=1222..1240 in the page margin. Both are
+    capitalised and alphabetic, so `_looks_like_person_name` accepts them, and
+    'Trần Văn Ninh' became the 5-token 'Trần Văn Ninh ZZ NI' at confidence
+    0.01 -- a wrong token count, which `compare_values._person_verdict` makes
+    an outright MISMATCH: a NEW false `no`.
+
+    The check rejects the whole row-derived value rather than truncating it at
+    the speck. Truncating would be the same false `no` in the other direction
+    the moment a real name token happened to OCR below the floor.
+    """
+    return bool(words) and all(w["conf"] >= _MIN_LABEL_CONF for w in words)
+
+
+def _row_value_extension(
+    line_value: list[dict], row_value: list[dict], tokenized: list[list[str]],
+) -> list[dict] | None:
+    """`row_value` if it is a strict PREFIX EXTENSION of `line_value` that
+    still reads as a person's name -- else None, and the line's own read
+    stands untouched.
+
+    Strict prefix means the row's value opens with exactly the words the
+    line's value had, in order (identity, not text), and adds at least one
+    more. That is the only shape a `group_lines` split of ONE value can take:
+    abs page 85 (packet 9's biên bản) put 'Phát' in a different fragment from
+    'Nhan Kiến', and the truncated 'Nhan Kiến' is a hard MISMATCH under
+    `compare_values._person_verdict`'s token-count rule -- the packet stayed
+    `no` even after the contract page was read correctly.
+
+    The guard matters as much as the extension: `_looks_like_person_name` is
+    shape-only, so absorbing ONE stray capitalised token (the neighbouring
+    column's 'Họ') would turn a correct 3-token read into a 4-token one, which
+    is that same hard MISMATCH in the other direction.
+    """
+    if not line_value or len(row_value) <= len(line_value):
+        return None
+    if any(a is not b for a, b in zip(line_value, row_value)):
+        return None
+    if _swallows_a_label(row_value[len(line_value):], tokenized):
+        return None
+    if not _legible_row_value(row_value) or not _looks_like_person_name(row_value):
+        return None
+    return row_value
+
+
+def _readable_name_hit(
+    value_words: list[dict], label_words: list[dict], party_scoped: bool, blocks: list[dict],
+) -> dict | None:
+    """One readable name occurrence, classified against the page's own party
+    columns: a hit at `_RANK_PARTY_CERTAIN` / `_RANK_UNPLACED`, a
+    located-but-unread hit, or None (not a source at all).
+
+    - no block covers this occurrence -> no party evidence, so today's
+      behaviour stands: the value as read, party-certain only if its anchor
+      phrase is party-specific. A deliberate no-fix, not a regression.
+    - label AND value both in the CTV's column -> `_RANK_PARTY_CERTAIN`. This
+      is the only positive positional signal here, and it is page geometry,
+      never a correctness proxy: abs page 247 publishes the 0.85 CTV read over
+      the 0.94 VNG one.
+    - VNG's column, reached by the ambiguous "Họ và tên" -> None. VNG's
+      signatory is not evidence about the CTV; counting it is what produced the
+      false `no`.
+    - anything else (the value crosses the divide, or the label and value sit
+      on opposite sides, or a party-specific anchor's `allow_next_line` guess
+      landed in VNG's column) -> located-but-unread at the words actually
+      read, so the loupe still points at the real text. `evaluate`
+      `_compare_reads` drops an unreadable copy from the worst-wins fold
+      instead of counting it as disagreement, so this is "cần xem", never a
+      `no`.
+    """
+    bbox = union_bbox(value_words)
+    label_party = _party_of(union_bbox(label_words), blocks)
+    value_party = _party_of(bbox, blocks)
+    readable = {
+        "value": " ".join(w["text"] for w in value_words),
+        "bbox": bbox,
+        "confidence": min(w["conf"] for w in value_words) / 100,
+    }
+    if label_party is None and value_party is None:
+        readable["rank"] = _RANK_PARTY_CERTAIN if party_scoped else _RANK_UNPLACED
+        return readable
+    if label_party == "b" and value_party == "b":
+        readable["rank"] = _RANK_PARTY_CERTAIN
+        return readable
+    if label_party == "a" and not party_scoped:
+        return None
+    return {"value": "", "bbox": bbox, "confidence": 0.0, "rank": _RANK_UNPLACED}
+
+
+def _extra_column_name_hit(
+    row: list[dict], i: int, n: int, a_idx: int, anchors: list[str],
+    occurrences: list[tuple[int, int, int]], blocks: list[dict],
+    page_lines: list[list[dict]],
+) -> dict | None:
+    """A labeled name occurrence that only the REASSEMBLED ROW carries -- the
+    second column of a two-column signature block, and on abs page 275 the
+    only place the CTV's own name exists at all: `group_lines` split its label
+    across two fragments ('Họ' at x=670 in one, 'và tên:' in another), so no
+    single line holds it.
+
+    Considered only when the page's own column divide places the label in the
+    CTV's column. With no party evidence an extra candidate is just another
+    confident guess about a name that might as easily be VNG's, and
+    `_best_hit` would let it win on confidence -- precisely the failure this
+    change is about. When the label IS the CTV's but its value can't be
+    trusted, the occurrence is still worth a navigable "cần xem" chip (#008),
+    which is what the unread hit at the end is.
+    """
+    if not _is_labeled_anchor(row, i, n):
+        return None
+    label_words = row[i:i + n]
+    if _party_of(union_bbox(label_words), blocks) != "b":
+        return None
+    value_words = _bounded_value_words(row, i + n, occurrences)
+    if _legible_row_value(value_words) and _looks_like_person_name(value_words):
+        return _readable_name_hit(
+            value_words, label_words, anchors[a_idx] not in _AMBIGUOUS_NAME_ANCHORS, blocks)
+    return {
+        "value": "",
+        "bbox": _geometric_value_slot(row, label_words, i + n, page_lines),
+        "confidence": 0.0,
+        "rank": _RANK_UNPLACED,
+    }
+
+
+def _primary_name_hit(
+    lines: list[list[dict]], idx: int, row: list[dict], primary: tuple[int, int, int],
+    anchors: list[str], tokenized: list[list[str]],
+    occurrences: list[tuple[int, int, int]], allow_next_line: bool, blocks: list[dict],
+) -> dict | None:
+    """The hit for the occurrence `find_name` has always used on this line
+    (`_primary_anchor_match`), with #011's two additions layered on it.
+    """
+    line = lines[idx]
+    li, n, a_idx = primary
+    if not _is_labeled_anchor(line, li, n):
+        return None
+    label_words = line[li:li + n]
+    party_scoped = anchors[a_idx] not in _AMBIGUOUS_NAME_ANCHORS
+    # today's value: the rest of the label's own line, or the whole next line
+    value_words = _strip_leading_colon(line[li + n:])
+    if not value_words and allow_next_line and idx + 1 < len(lines):
+        value_words = lines[idx + 1]
+    # the same label's value on its reassembled row, bounded at the next label
+    row_i = next((k for k, w in enumerate(row) if w is line[li]), None)
+    row_value: list[dict] = []
+    if row_i is not None and (row_i, n, a_idx) in occurrences:
+        row_value = _bounded_value_words(row, row_i + n, occurrences)
+    if (_party_of(union_bbox(label_words), blocks) == "b"
+            and _legible_row_value(row_value) and _looks_like_person_name(row_value)):
+        # The divide says these words are the CTV's own. Use the BOUNDED row
+        # value: when `group_lines` merges both columns into one line, the
+        # unbounded value runs straight into VNG's column (abs page 275 read
+        # 'Văn Họ' that way).
+        value_words = row_value
+    else:
+        extended = _row_value_extension(value_words, row_value, tokenized)
+        if extended is not None:
+            value_words = extended
+    if value_words and _looks_like_person_name(value_words):
+        return _readable_name_hit(value_words, label_words, party_scoped, blocks)
+    return {
+        "value": "",
+        "bbox": _geometric_value_slot(line, label_words, li + n, lines),
+        "confidence": 0.0,
+        "rank": _RANK_UNPLACED,
+    }
 
 
 def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool = True) -> list[dict]:
@@ -491,42 +1012,55 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
     is what keeps this scoped: a prose mid-sentence mention never reaches
     this point at all. Results are deduped by value and capped
     (`_dedupe_and_cap`).
+
+    #011 adds two things on top of that, both about WHICH PARTY a labeled
+    occurrence names -- see the "Party columns" section above:
+
+    - the value may be extended by the label's own REASSEMBLED ROW
+      (`_row_words`), but only as a strict prefix extension
+      (`_row_value_extension`). Measured on abs page 85 (packet 9's biên bản):
+      `group_lines` split 'BÊN CUNG ỨNG DỊCH VỤ : Nhan Kiến Phát' so that
+      'Phát' landed in a different fragment, and the truncated read 'Nhan
+      Kiến' is a hard mismatch rather than a near miss -- `compare_values`
+      `_person_verdict` makes a differing token count an outright MISMATCH.
+    - on a page whose own column header marks off the two parties' columns
+      (`_party_column_blocks`), a readable name is classified against that
+      divide: the CTV's column -> `_RANK_PARTY_CERTAIN`; VNG's -> not a source
+      at all (VNG's signatory is not evidence about the CTV, the same reasoning
+      the `mst` spec uses to exclude the generic "Mã số thuế" anchor); and
+      crossing it -> degraded to a located-but-unread hit, since a value
+      spliced across the divide belongs to neither party (abs page 275 read
+      'Văn Họ' -- one party's middle name token plus the first word of the
+      other column's LABEL). Inside such a block a SECOND labeled occurrence
+      on the same visual row is emitted too -- that is where the CTV's own name
+      lives on abs page 275, which no single `group_lines` line contains -- but
+      only when the divide places it in the CTV's column: with no party
+      evidence an extra candidate would just be another confident guess.
     """
     hits = []
     tokenized = [a.split() for a in anchors]
+    blocks = _party_column_blocks(lines)
     for idx, line in enumerate(lines):
-        words_norm = [_clean_tok(norm(w["text"])) for w in line]
-        match = None
-        for tokens in tokenized:
-            n = len(tokens)
-            for i in range(len(words_norm) - n + 1):
-                if words_norm[i:i + n] == tokens:
-                    match = (i, n)
-                    break
-            if match is not None:
-                break
-        if match is None:
-            continue
-        i, n = match
-        if not _is_labeled_anchor(line, i, n):
-            continue
-        value_words = line[i + n:]
-        if value_words and value_words[0]["text"].strip() == ":":
-            value_words = value_words[1:]
-        if not value_words and allow_next_line and idx + 1 < len(lines):
-            value_words = lines[idx + 1]
-        if value_words and _looks_like_person_name(value_words):
-            hits.append({
-                "value": " ".join(w["text"] for w in value_words),
-                "bbox": union_bbox(value_words),
-                "confidence": min(w["conf"] for w in value_words) / 100,
-            })
-        else:
-            hits.append({
-                "value": "",
-                "bbox": _geometric_value_slot(line, line[i:i + n], i + n, lines),
-                "confidence": 0.0,
-            })
+        row = _row_words(lines, idx)
+        occurrences = _anchor_occurrences(row, tokenized)
+        primary = _primary_anchor_match(line, tokenized)
+        if primary is not None:
+            hit = _primary_name_hit(
+                lines, idx, row, primary, anchors, tokenized, occurrences,
+                allow_next_line, blocks)
+            if hit is not None:
+                hits.append(hit)
+        primary_word = line[primary[0]] if primary is not None else None
+        for i, n, a_idx in occurrences:
+            # An occurrence belongs to whichever line holds its first label
+            # word, so a row shared by several lines isn't processed twice --
+            # and the line's own primary occurrence, handled above, is skipped.
+            if row[i] is primary_word or not any(row[i] is w for w in line):
+                continue
+            hit = _extra_column_name_hit(
+                row, i, n, a_idx, anchors, occurrences, blocks, lines)
+            if hit is not None:
+                hits.append(hit)
     return _dedupe_and_cap(hits)
 
 
@@ -824,15 +1358,21 @@ def _hits_for_doc(spec: dict, pages: dict[int, list[dict]]) -> list[tuple[int, d
 def _best_hit(hits: list[tuple[int, dict]]) -> tuple[int, dict] | None:
     """The one hit a document contributes for a field (#004: a document gets
     exactly one source per field, never one per confirming/anchor line) --
-    a readable value (highest confidence) if the document has one; else a
-    located-but-unread hit, still worth a navigable "cần xem" chip rather
-    than no source at all.
+    a readable value if the document has one; else a located-but-unread hit,
+    still worth a navigable "cần xem" chip rather than no source at all.
+
+    Within the pool the key is `_hit_rank`: party evidence first, confidence
+    only as the tiebreak (#011 -- confidence is legibility, not correctness,
+    and both parties' names print equally crisply). `locate_field`'s hits
+    carry no "rank", so for the five pattern fields the key degenerates to the
+    confidence-only one it replaced, and `max` still returns the first maximal
+    element -- the same hit, ties included.
     """
     if not hits:
         return None
     readable = [ph for ph in hits if ph[1]["value"]]
     pool = readable or hits
-    return max(pool, key=lambda ph: ph[1]["confidence"])
+    return max(pool, key=lambda ph: _hit_rank(ph[1]))
 
 
 def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: dict[str, str]) -> list[dict]:

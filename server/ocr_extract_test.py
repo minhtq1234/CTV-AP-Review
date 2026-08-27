@@ -1092,3 +1092,442 @@ class TestTheIdentityCarriesTheMst:
         ]}
         from ocr_extract import _best_value
         assert _best_value(field) == "060203014847"
+
+
+# ---------------------------------------------------------------------------
+# #011: two-column party blocks -- which of a signature/contact block's two
+# "Họ và tên:" names is the CTV's (the one the roster names) and which is
+# VNG's own signatory. Every coordinate below is MEASURED off the real July
+# batch page named in the test, in display space (150 dpi, 1241px wide), so a
+# failure here is a failure against the actual scans.
+# ---------------------------------------------------------------------------
+
+HOTEN_ANCHORS = next(s for s in FIELD_SPECS if s["key"] == "hoten")["anchors"]
+
+
+def _vng_and_ctv_header_row(y=616):
+    """The block's own column header, exactly as abs page 82 OCRs it: the left
+    (VNG) header survives ONLY as the bare logo word 'VNG' at x=232..278 --
+    "BÊN SỬ DỤNG DỊCH VỤ" is gone, on this page and on abs 247/275 too -- with
+    'Bên Cung Ứng Dịch Vụ' (x=660..884) right of a 382px word-free band. That
+    is why the party divide is derived from the ONE header that survives plus
+    the band, and not from finding both headers.
+    """
+    return [
+        W("VNG", 232, y, 46, 16, conf=92),
+        W("Bên", 660, y + 6, 36, 16), W("Cung", 704, y + 7, 51, 20),
+        W("Ứng", 761, y + 3, 40, 26), W("Dịch", 808, y + 8, 44, 20),
+        W("Vụ", 858, y + 10, 26, 20),
+    ]
+
+
+def _email_and_phone_rows(y=725):
+    """The two rows below the names on all three failing pages -- email and
+    phone -- both split across the same two columns. `_MIN_COLUMN_ROWS` needs
+    two such rows before a header row counts as a real two-column block, so a
+    single OCR-thinned prose line can't masquerade as one.
+    """
+    return [
+        [W("Email:", 230, y, 58, 16), W("anhtlh@)vng.com.vn", 296, y, 210, 21, conf=70),
+         W("Email:", 659, y, 58, 17), W("kienphatnhan(@)gmail.com", 725, y, 236, 22, conf=60)],
+        [W("Số", 230, y + 52, 26, 16), W("điện", 262, y + 52, 40, 16),
+         W("thoại:", 308, y + 52, 52, 20), W("0902428933", 370, y + 52, 120, 18),
+         W("Số", 659, y + 52, 26, 16), W("điện", 691, y + 52, 40, 16),
+         W("thoại:", 737, y + 52, 52, 20), W("0905209809", 799, y + 52, 120, 18)],
+    ]
+
+
+def _p82_name_lines():
+    """abs page 82's two name lines. `group_lines` keeps them apart (it
+    baselines on the first word's y) but they are ONE visual row: y-spans
+    671..694 and 680..701 overlap by 14 of the shorter's 21px.
+    """
+    return [
+        [W("Họ", 231, 675, 25, 18, conf=95), W("và", 263, 675, 20, 16), W("tên:", 290, 676, 30, 16),
+         W("Trần", 330, 671, 40, 20, conf=96), W("Lê", 378, 677, 22, 16, conf=96),
+         W("Hoài", 407, 677, 42, 16, conf=96), W("Anh", 456, 678, 38, 16, conf=96)],
+        [W("Họ", 659, 682, 26, 19), W("và", 692, 682, 20, 16), W("tên:", 720, 682, 32, 16),
+         W("Nhan", 758, 683, 48, 16, conf=96), W("Kiến", 813, 680, 44, 20, conf=96),
+         W("Phát", 862, 684, 40, 16, conf=96)],
+    ]
+
+
+def test_find_name_prefers_ctv_column_over_vng_signatory():
+    # abs page 82 (packet 9's contract; roster name 'Nhan Kiến Phát'). Both
+    # columns print "Họ và tên:" and both read at 0.96, so confidence cannot
+    # tell the parties apart -- VNG's 'Trần Lê Hoài Anh' used to win and the
+    # packet was reported as a name mismatch, i.e. "cần gửi lại" on valid
+    # paperwork. The page's own column header is the evidence that decides.
+    lines = [_vng_and_ctv_header_row(), *_p82_name_lines(), *_email_and_phone_rows()]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Nhan Kiến Phát"
+    assert hits[0]["rank"] == 1               # party-certain: the page said so
+    assert hits[0]["bbox"]["x"] == 758        # the loupe points at the CTV's own words
+    # VNG's signatory is not evidence about the CTV: it is not a source at all.
+    assert all("Trần" not in h["value"] for h in hits)
+
+
+def test_find_name_ignores_vng_column_name_at_higher_confidence():
+    # abs page 247 (packet 31; roster name 'Phan Tấn Tài'). Measured minimum
+    # word confidences: VNG's 'Trịnh Đức Minh' 0.94, the CTV's 'Phan Tắn Tài'
+    # 0.85 -- so the CORRECT read is the LESS legible one. Confidence is
+    # legibility, not correctness; if anyone reintroduces a confidence gate to
+    # choose between the parties, this test fails.
+    lines = [
+        [W("Bên", 642, 626, 36, 16), W("Cung", 686, 625, 50, 20), W("Ứng", 742, 620, 40, 24),
+         W("Dịch", 790, 624, 44, 20), W("Vụ", 840, 624, 26, 20)],
+        [W("VNG", 236, 630, 48, 16, conf=92)],
+        [W("Họ", 643, 686, 26, 18), W("và", 676, 684, 20, 16), W("tên:", 703, 684, 32, 16),
+         W("Phan", 742, 684, 44, 16, conf=93), W("Tắn", 792, 678, 34, 20, conf=85),
+         W("Tài", 833, 682, 28, 16, conf=97)],
+        [W("Họ", 238, 690, 25, 18, conf=55), W("và", 271, 689, 19, 16), W("tên:", 297, 690, 32, 15),
+         W("Trịnh", 336, 688, 50, 20, conf=96), W("Đức", 393, 688, 38, 16, conf=94),
+         W("Minh", 437, 687, 47, 16, conf=96)],
+        [W("Email:", 238, 740, 58, 16), W("minhtd4)vng.com.vn", 304, 738, 202, 21, conf=70),
+         W("Email:", 644, 734, 58, 17), W("taiwan1903w(0gmail.com", 710, 732, 236, 22, conf=12)],
+        [W("Số", 238, 792, 26, 16), W("điện", 270, 792, 40, 16), W("thoại:", 316, 792, 52, 20),
+         W("0912260033", 378, 792, 120, 18), W("Số", 644, 792, 26, 16),
+         W("điện", 676, 792, 40, 16), W("thoại:", 722, 792, 52, 20),
+         W("0328615668", 784, 792, 120, 18)],
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert len(hits) == 1
+    # 'Tắn' is what OCR reads (the roster has 'Tấn'); compare_values folds
+    # accents to a FUZZY -> "cần xem", which is a cleared false `no`, not a
+    # match. What this test pins is which PARTY's words get published.
+    assert hits[0]["value"] == "Phan Tắn Tài"
+    assert abs(hits[0]["confidence"] - 0.85) < 1e-9
+    assert all("Trịnh" not in h["value"] for h in hits)
+
+
+def test_find_name_merged_columns_publish_the_ctv_column_not_the_splice():
+    # abs page 275 (packet 35; roster name 'Hoàng Nguyễn Hải Đăng'). Here
+    # `group_lines` interleaved the two columns: one fragment holds 'Trần'
+    # (x=338) 'Tiến' (x=430) and the RIGHT column's 'và tên:' + name, the
+    # other holds the left 'Họ và tên:', 'Văn' (x=387) and the right column's
+    # 'Họ' (x=670). The old read was the splice 'Họ và tên: Văn Họ' -- one
+    # party's middle name token plus the first word of the OTHER column's
+    # label -- published at 0.96 as if it were a name.
+    # The header row carries two low-confidence specks ('+}' at 43 beside the
+    # header, '|' at 26 past its end); dropping them is what lets the row
+    # qualify at all.
+    lines = [
+        [W("+}", 646, 634, 24, 39, conf=43), W("Bên", 668, 633, 36, 16),
+         W("Cung", 712, 633, 51, 20), W("Ứng", 770, 627, 40, 25),
+         W("Dịch", 816, 632, 44, 20), W("Vụ", 866, 630, 28, 20)],
+        [W("VNG", 236, 637, 50, 25, conf=91), W("|", 1087, 640, 16, 19, conf=26)],
+        [W("Trần", 338, 692, 42, 21, conf=96), W("Tiến", 430, 692, 40, 20, conf=96),
+         W("và", 702, 692, 21, 16), W("tên:", 730, 692, 31, 16),
+         W("Hoàng", 770, 690, 61, 20, conf=96), W("Nguyễn", 837, 684, 75, 26, conf=96),
+         W("Hải", 920, 688, 32, 17, conf=96), W("Đăng", 958, 688, 50, 20, conf=90)],
+        [W("Họ", 240, 699, 25, 18, conf=94), W("và", 273, 698, 20, 16),
+         W("tên:", 300, 698, 30, 15), W("Văn", 387, 696, 38, 16, conf=96),
+         W("Họ", 670, 693, 26, 18, conf=96)],
+        [W("Email:", 240, 747, 58, 16), W("tientv(0)vng.com.vn", 306, 747, 178, 20, conf=40),
+         W("Email:", 670, 742, 58, 17), W("đdanghnh(2gmail.com", 737, 739, 202, 22, conf=28)],
+        [W("Số", 240, 800, 26, 16), W("điện", 272, 800, 40, 16), W("thoại:", 318, 800, 52, 20),
+         W("0909924678", 380, 800, 120, 18), W("Số", 670, 800, 26, 16),
+         W("điện", 702, 800, 40, 16), W("thoại:", 748, 800, 52, 20),
+         W("0933179569", 810, 800, 120, 18)],
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    # The spliced value must never be published: `_person_verdict` would make
+    # it an outright MISMATCH -> `no` -> "cần gửi lại".
+    assert all("Văn Họ" not in h["value"] for h in hits)
+    readable = [h for h in hits if h["value"]]
+    # The CTV's own name exists only on the REASSEMBLED row (its label's words
+    # are spread across both fragments), and the divide places it in the CTV's
+    # column, so it is read rather than downgraded to "cần xem".
+    assert [h["value"] for h in readable] == ["Hoàng Nguyễn Hải Đăng"]
+    assert readable[0]["bbox"]["x"] == 770
+
+
+def test_find_name_without_party_headers_keeps_current_behaviour():
+    # The same two name lines with NO column header above them: there is no
+    # party evidence on the page, so nothing is classified and both names are
+    # still returned exactly as before, the higher-confidence one winning in
+    # `_best_hit`. A deliberate no-fix -- not a bug for a later reader to
+    # "tidy up" by guessing from column position, which is how VNG's name
+    # would get published on a parties-swapped page.
+    lines = _p82_name_lines()
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert sorted(h["value"] for h in hits) == ["Nhan Kiến Phát", "Trần Lê Hoài Anh"]
+    assert all(h["rank"] == 0 for h in hits)
+
+
+def test_find_name_single_column_ho_va_ten_unaffected():
+    # The common non-signature page (a cam kết / contact block with one
+    # column): one "Họ và tên:", no header row, unchanged single readable hit.
+    lines = [[
+        W("Họ", 231, 300, 25, 18), W("và", 263, 300, 20, 16), W("tên:", 290, 300, 30, 16),
+        W("Trần", 330, 300, 40, 20), W("Văn", 378, 300, 38, 16), W("A", 424, 300, 15, 16),
+    ]]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert len(hits) == 1 and hits[0]["value"] == "Trần Văn A"
+
+
+def test_find_name_ignores_a_name_above_the_detected_block():
+    # A left-aligned single-column "Họ và tên: <the CTV>" ABOVE the block (the
+    # party-B contact block does appear on its own higher up on some contract
+    # pages) must not be classified -- and so not dropped -- by a divide that
+    # only describes the rows inside the block. The block's y-range is what
+    # scopes it.
+    lines = [
+        [W("Họ", 231, 300, 25, 18), W("và", 263, 300, 20, 16), W("tên:", 290, 300, 30, 16),
+         W("Nhan", 330, 300, 48, 16, conf=91), W("Kiến", 385, 300, 44, 20, conf=91),
+         W("Phát", 434, 300, 40, 16, conf=91)],
+        _vng_and_ctv_header_row(), *_p82_name_lines(), *_email_and_phone_rows(),
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    values = sorted(h["value"] for h in hits)
+    assert values == ["Nhan Kiến Phát"]      # deduped: same value, one source
+    assert all("Trần" not in h["value"] for h in hits)
+
+
+def test_find_name_row_reassembly_completes_a_split_name():
+    # abs page 85 (packet 9's biên bản). `_row_words` reassembles
+    # 'BÊN CUNG ỨNG DỊCH VỤ : Nhan Kiến Phát' from two `group_lines`
+    # fragments: the standalone ':' (x=512, y=684) and 'Phát' (x=648) sort into
+    # a DIFFERENT fragment than the label and 'Nhan Kiến'. Reading the line
+    # alone gave 'Nhan Kiến', and `compare_values._person_verdict` makes a
+    # differing token count an outright MISMATCH -- so packet 9 stayed `no`
+    # even once its contract page read the right party.
+    lines = [
+        [W("BÊN", 196, 671, 46, 22, conf=88), W("CUNG", 251, 676, 67, 16, conf=93),
+         W("ỨNG", 326, 672, 52, 22, conf=91), W("DỊCH", 385, 678, 60, 20, conf=95),
+         W("VỤ", 453, 678, 32, 21, conf=83),
+         W("Nhan", 534, 679, 52, 16, conf=96), W("Kiến", 594, 674, 47, 22, conf=96)],
+        [W(":", 512, 684, 2, 10, conf=91), W("Phát", 648, 680, 46, 16, conf=96)],
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert len(hits) == 1
+    assert hits[0]["value"] == "Nhan Kiến Phát"
+
+
+def test_find_name_row_reassembly_only_extends_a_prefix():
+    # The extension is a STRICT prefix extension or nothing: here the row
+    # holds a different value beside the label (a second, unlabeled fragment
+    # that does not continue the read), so the line's own value survives
+    # untouched rather than being replaced by whatever else shares the row.
+    lines = [
+        [W("BÊN", 196, 671, 46, 22), W("CUNG", 251, 671, 67, 16), W("ỨNG", 326, 671, 52, 22),
+         W("DỊCH", 385, 671, 60, 20), W("VỤ", 453, 671, 32, 21),
+         W("Nhan", 534, 671, 52, 16), W("Kiến", 594, 671, 47, 22)],
+        [W("Phạm", 300, 676, 50, 16), W("Thị", 360, 676, 30, 16)],
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert [h["value"] for h in hits] == ["Nhan Kiến"]
+
+
+def test_find_name_extension_never_swallows_a_neighbouring_label():
+    # `_looks_like_person_name` is shape-only, so a stray capitalised token
+    # from the next column's LABEL would pass it and turn a correct 3-token
+    # read into a 4-token one -- the same hard MISMATCH the truncation causes,
+    # in the other direction. 'Họ' opens "họ và tên", so the extension stops.
+    lines = [
+        [W("BÊN", 196, 671, 46, 22), W("CUNG", 251, 671, 67, 16), W("ỨNG", 326, 671, 52, 22),
+         W("DỊCH", 385, 671, 60, 20), W("VỤ", 453, 671, 32, 21),
+         W("Trần", 534, 671, 42, 16), W("Văn", 584, 671, 38, 16), W("Tiến", 630, 671, 40, 16)],
+        [W("Họ", 700, 676, 26, 18)],
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert [h["value"] for h in hits] == ["Trần Văn Tiến"]
+
+
+def test_party_column_blocks_needs_a_header_and_two_two_column_rows():
+    from ocr_extract import _party_column_blocks
+    header = _vng_and_ctv_header_row()
+    names = _p82_name_lines()
+    # header + both name lines (ONE visual row) + email + phone -> a block,
+    # its gutter between the two columns' measured x-spans.
+    blocks = _party_column_blocks([header, *names, *_email_and_phone_rows()])
+    assert len(blocks) == 1
+    assert 494 < blocks[0]["gutter"] < 659
+    # only ONE two-column row below the header -> not a block
+    assert _party_column_blocks([header, *names]) == []
+    # no header at all -> nothing to classify with
+    assert _party_column_blocks([*names, *_email_and_phone_rows()]) == []
+    # a full-width row right under the header closes the block before it can
+    # collect its two rows (this is what stops a block creeping down the page)
+    wide = [[W("Điều", 230, 660, 44, 18), W("2.", 280, 660, 24, 18),
+             W("Phí", 320, 660, 34, 18), W("dịch", 360, 660, 40, 18),
+             W("vụ", 406, 660, 26, 18), W("và", 438, 660, 24, 18),
+             W("thanh", 468, 660, 60, 18), W("toán", 534, 660, 48, 18),
+             W("theo", 588, 660, 46, 18), W("quy", 640, 660, 40, 18),
+             W("định", 686, 660, 44, 18), W("của", 736, 660, 40, 18),
+             W("pháp", 782, 660, 50, 18), W("luật", 838, 660, 40, 18)]]
+    assert _party_column_blocks([header, *wide, *names, *_email_and_phone_rows()]) == []
+
+
+def test_party_header_row_ignores_low_confidence_specks():
+    # abs page 275's header row only qualifies once the two illegible marks
+    # around it are dropped: '+}' (conf 43) sits INSIDE the gutter and would
+    # defeat the gap, and '|' (conf 26) sits past the header's end and would
+    # defeat the "the CTV header run ends the row" test.
+    from ocr_extract import _party_header_band
+    row = [
+        W("VNG", 236, 637, 50, 25, conf=91), W("+}", 646, 634, 24, 39, conf=43),
+        W("Bên", 668, 633, 36, 16), W("Cung", 712, 633, 51, 20),
+        W("Ứng", 770, 627, 40, 25), W("Dịch", 816, 632, 44, 20),
+        W("Vụ", 866, 630, 28, 20), W("|", 1087, 640, 16, 19, conf=26),
+    ]
+    assert _party_header_band(row, min_gutter=56) == (286, 668)
+    # the same marks at LABEL confidence are real content, and the row is then
+    # not a two-column header at all
+    legible = [dict(w, conf=90) for w in row]
+    assert _party_header_band(legible, min_gutter=56) is None
+
+
+def test_party_of_classifies_against_the_gutter():
+    from ocr_extract import _party_of
+    blocks = [{"y0": 616, "y1": 823, "gutter": 576}]
+    assert _party_of({"x": 330, "y": 671, "width": 164, "height": 23}, blocks) == "a"
+    assert _party_of({"x": 758, "y": 680, "width": 144, "height": 20}, blocks) == "b"
+    # abs page 275's splice, which crosses the divide -> neither party's
+    assert _party_of({"x": 387, "y": 693, "width": 309, "height": 19}, blocks) == "straddle"
+    # a wide value that still starts clear of the gutter is the CTV's
+    assert _party_of({"x": 600, "y": 680, "width": 400, "height": 20}, blocks) == "b"
+    # outside the block's rows there is no party evidence
+    assert _party_of({"x": 330, "y": 300, "width": 164, "height": 23}, blocks) is None
+
+
+def test_best_hit_ranks_party_evidence_above_confidence():
+    from ocr_extract import _best_hit
+    ctv = (1, {"value": "Nhan Kiến Phát", "bbox": {}, "confidence": 0.60, "rank": 1})
+    vng = (0, {"value": "Trần Lê Hoài Anh", "bbox": {}, "confidence": 0.95, "rank": 0})
+    assert _best_hit([vng, ctv])[1]["value"] == "Nhan Kiến Phát"
+    # a readable hit still beats an unread one regardless of rank
+    unread = (2, {"value": "", "bbox": {}, "confidence": 0.0, "rank": 1})
+    assert _best_hit([unread, vng])[1]["value"] == "Trần Lê Hoài Anh"
+
+
+def test_party_certainty_has_one_level_so_confidence_breaks_the_tie():
+    # The column divide and a party-specific anchor phrase are EQUAL evidence:
+    # both say "these words are the CTV's", and between two such reads only
+    # confidence is left to choose. Measured on the July batch: ranking the
+    # column above the phrase moved packets 22 and 28 from a match to a
+    # "cần xem" (their contract page 1 reads the same name a diacritic worse
+    # than the party-labeled block on page 0) and fixed nothing extra.
+    from ocr_extract import _best_hit
+    from_column = (1, {"value": "Lê Định Lương Thiện", "bbox": {}, "confidence": 0.91, "rank": 1})
+    from_anchor = (0, {"value": "Lê Đinh Lương Thiện", "bbox": {}, "confidence": 0.93, "rank": 1})
+    assert _best_hit([from_column, from_anchor])[1]["value"] == "Lê Đinh Lương Thiện"
+
+
+def test_best_hit_is_unchanged_for_hits_without_a_rank():
+    # `locate_field`'s hits (the five pattern fields) carry no "rank", so the
+    # key degenerates to the confidence-only one it replaced -- including the
+    # tie, where `max` returns the FIRST maximal element either way.
+    from ocr_extract import _best_hit
+    hits = [
+        (0, {"value": "079189016370", "bbox": {}, "confidence": 0.91}),
+        (1, {"value": "079189016371", "bbox": {}, "confidence": 0.95}),
+        (2, {"value": "079189016372", "bbox": {}, "confidence": 0.95}),
+    ]
+    assert _best_hit(hits) == max(hits, key=lambda ph: ph[1]["confidence"])
+    assert _best_hit(hits)[1]["value"] == "079189016371"
+
+
+def test_dedupe_and_cap_keeps_the_party_confirmed_hit():
+    # #011's ordering is (rank, confidence) DESCENDING: a rank-0 hit must not
+    # consume one of the three cap slots ahead of the party-confirmed one,
+    # even when it reads more crisply.
+    from ocr_extract import _dedupe_and_cap
+    hits = [
+        {"value": "A A", "bbox": {}, "confidence": 0.99, "rank": 0},
+        {"value": "B B", "bbox": {}, "confidence": 0.98, "rank": 0},
+        {"value": "C C", "bbox": {}, "confidence": 0.97, "rank": 0},
+        {"value": "Nhan Kiến Phát", "bbox": {}, "confidence": 0.60, "rank": 1},
+    ]
+    kept = _dedupe_and_cap(hits)
+    assert kept[0]["value"] == "Nhan Kiến Phát"
+    assert len(kept) == 3
+
+
+def test_extract_fields_hoten_source_is_the_ctv_column():
+    # End to end: one document, one page with abs page 82's layout -> exactly
+    # one `hoten` source, the CTV's name, and no "rank" key on the emitted
+    # source (the manifest shape is untouched -- `extract_fields` builds each
+    # source dict explicitly).
+    words = [w for line in [_vng_and_ctv_header_row(), *_p82_name_lines(),
+                            *_email_and_phone_rows()] for w in line]
+    fields = extract_fields({"contract-0": {1: words}}, {"name": "Nhan Kiến Phát"})
+    hoten = next(f for f in fields if f["key"] == "hoten")
+    assert len(hoten["sources"]) == 1
+    src = hoten["sources"][0]
+    assert src["value"] == "Nhan Kiến Phát"
+    assert src["page"] == 1
+    assert set(src) == {"docId", "page", "value", "bbox", "confidence"}
+
+
+def test_locate_field_still_associates_a_label_across_a_large_gap():
+    # The party divide CLASSIFIES words; it never cuts a line, and
+    # `group_lines` is untouched -- so the label-to-value association the
+    # other five fields depend on is unaffected even when the gap between a
+    # label and its value is gutter-sized ("CCCD số      :      079189016370"
+    # measures ~120px on the real pages).
+    cccd_spec = next(s for s in FIELD_SPECS if s["key"] == "cccd")
+    lines = [[
+        W("CCCD", 231, 500, 60, 18), W("số", 300, 500, 24, 18), W(":", 420, 500, 8, 18),
+        W("079189016370", 540, 500, 150, 18, conf=93),
+    ]]
+    hits = locate_field(lines, cccd_spec)
+    assert len(hits) == 1
+    assert hits[0]["value"] == "079189016370"
+    assert abs(hits[0]["confidence"] - 0.93) < 1e-9
+
+
+def test_find_name_row_value_ignores_scanner_edge_specks():
+    # abs page 170 (packet 20's contract). `group_lines` merged both columns
+    # into one line here, and the same VISUAL row also carries two
+    # scanner-edge specks in the right margin: 'ZZ' at conf 2 and 'NI' at conf
+    # 1, x=1222..1240. Both are capitalised and alphabetic, so the shape check
+    # accepts them, and the CTV's 'Trần Văn Ninh' came out as the 5-token
+    # 'Trần Văn Ninh ZZ NI' at confidence 0.01 -- a differing token count,
+    # which `compare_values._person_verdict` makes an outright MISMATCH. A
+    # value assembled from a whole row must be legible end to end or not be
+    # published at all; the label is still worth a "cần xem" chip.
+    lines = [
+        [W("VNG", 235, 634, 48, 16, conf=90),
+         W("Bên", 640, 630, 36, 16), W("Cung", 682, 631, 51, 20),
+         W("Ứng", 740, 626, 40, 25), W("Dịch", 787, 630, 44, 20),
+         W("Vụ", 838, 630, 26, 20)],
+        [W("Họ", 236, 694, 25, 18), W("và", 268, 693, 20, 15), W("tên:", 295, 693, 32, 15),
+         W("Trịnh", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16, conf=93),
+         W("Minh", 440, 690, 50, 17),
+         W("Họ", 640, 690, 26, 19, conf=95), W("và", 674, 690, 20, 16),
+         W("tên:", 701, 690, 30, 16), W("Trần", 740, 685, 42, 20),
+         W("Văn", 788, 690, 37, 15), W("Ninh", 830, 689, 44, 16)],
+        [W("ZZ", 1222, 704, 18, 14, conf=2), W("NI", 1224, 676, 16, 18, conf=1)],
+        *_email_and_phone_rows(),
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    assert all("ZZ" not in h["value"] for h in hits)
+    assert [h["value"] for h in hits] == [""]      # located, not read: "cần xem"
+    assert hits[0]["confidence"] == 0.0
+
+
+def test_find_name_legible_row_value_is_published_from_the_same_shape():
+    # The same merged-columns shape WITHOUT the specks: the CTV's name is
+    # published, bounded at the next label so it can't run into VNG's column.
+    # This is the pair that shows the speck rejection above is about
+    # legibility, not about the merged row.
+    lines = [
+        [W("VNG", 235, 634, 48, 16, conf=90),
+         W("Bên", 640, 630, 36, 16), W("Cung", 682, 631, 51, 20),
+         W("Ứng", 740, 626, 40, 25), W("Dịch", 787, 630, 44, 20),
+         W("Vụ", 838, 630, 26, 20)],
+        [W("Họ", 236, 694, 25, 18), W("và", 268, 693, 20, 15), W("tên:", 295, 693, 32, 15),
+         W("Trịnh", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16), W("Minh", 440, 690, 50, 17),
+         W("Họ", 640, 690, 26, 19), W("và", 674, 690, 20, 16), W("tên:", 701, 690, 30, 16),
+         W("Trần", 740, 685, 42, 20), W("Văn", 788, 690, 37, 15), W("Ninh", 830, 689, 44, 16)],
+        *_email_and_phone_rows(),
+    ]
+    hits = find_name(lines, anchors=HOTEN_ANCHORS)
+    readable = [h for h in hits if h["value"]]
+    assert [h["value"] for h in readable] == ["Trần Văn Ninh"]
+    assert readable[0]["rank"] == 1
+    # VNG's column is never published; the merged line's own 9-token read is
+    # not name-shaped, so it stays the "cần xem" it has always been.
+    assert all("Trịnh" not in h["value"] for h in hits)
