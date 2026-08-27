@@ -27,36 +27,42 @@ v1 convention, so the number lives in the repo rather than in conversation.
 
 ## 2. What ver 2 adds
 
-A prerequisite fix, then two features.
+Two features. (An earlier revision of this doc listed a prerequisite fix — §2.0 below records
+why it turned out not to apply here.)
 
-### 2.0 Prerequisite — stop discarding reads the pipeline already made
+### 2.0 NOT APPLICABLE to this base — the routed-source defect is `main`-only
 
-`server/checklist.py` picks one source per value check by **document routing**, without
-checking whether that source has a value:
+Recorded so it is not re-derived, and because it explains a number in §4.
+
+On the `main` lineage, `server/checklist.py` picks one source per value check by document
+routing without checking whether that source has a value:
 
 ```python
 src = next((s for s in sources if s and s.get("docId") == routed), None) or (sources[0] if sources else None)
 ```
 
-Measured on the February case: **139 of the 175 checks reported as unread had a readable
-value that OCR had already extracted** on another document in the same packet. Only 36 were
-genuinely unread. Example, packet 0:
+Consequence, measured on the February case **on `main`**: 139 of the 175 checks reported as
+unread had a readable value OCR had already extracted elsewhere in the packet; only 36 were
+genuinely unread. Packet 0's CCCD sat on the BBNT at 0.91 confidence while the checklist
+showed nothing read.
 
-| check | checklist picked | available but ignored |
-|---|---|---|
-| `A1` Số CCCD | `contract-0`, `''`, conf 0.0 | `bbnt-0`, `079189016370`, conf 0.91 |
-| `B1` Họ tên | `contract-0`, `''`, conf 0.0 | `bbnt-0`, `Huỳnh Thị Thúy Phượng`, conf 0.95 |
+The routing was deliberate — `097bdc9 fix(ocr/checklist): value checks prefer routed-doc
+source so B1 name lands on the contract`. Preferring an **empty** routed source over a
+**readable** non-routed one, and then reporting "unread", is the unintended side effect.
 
-Routing itself is legitimate — "Số CCCD khớp giữa chứng từ" wants the CCCD *as it appears on
-the contract*. The defect is preferring an **empty** routed source over a **readable**
-non-routed one, and then reporting the field as unread.
+**This base is unaffected.** `stable` has no `server/checklist.py` and no
+`ChecklistPanel.tsx` (dropped via merge `e177cf7`; `server/cccd_ingest_test.py` even asserts
+`"checks" not in manifest`). Its criteria engine handles the case correctly and says so in
+`server/evaluate.py::_compare_reads`:
 
-Fix shape: prefer a readable source on the routed document; fall back to a readable source on
-another document **and attribute which document it came from**, so the reviewer is told
-"the contract's value couldn't be read; the BBNT here reads X" rather than "nothing was read".
+> An unreadable copy is excluded rather than counted as disagreement — that is what a reviewer
+> does with an illegible page. Only when every copy is unreadable does the cell go `pending`.
 
-**Do this before 2.1.** Otherwise IDP will extract values that this same routing rule
-discards, and the cost buys nothing for those 139 fields.
+Verified rather than assumed: across the February re-ingest on `stable`, **0 of 128 criteria
+rows hid a value OCR had read**. No work here.
+
+`main` and `stable` forked at `4955545` (27 Jul); `main` added 3 commits (docs + gitignore),
+`stable` added 103. `main` is *not* an ancestor of `stable`.
 
 ### 2.1 GreenNode IDP for document-field extraction
 
@@ -127,7 +133,9 @@ bottleneck was an artifact of measuring `checks[].source.value` instead. Same ca
     fields[].sources[]        156/192  (81%)
     checks[].source.value      17/192   (9%)
 
-The gap between those two numbers is not OCR quality — it is the routing defect in §2.0.
+The gap between those two numbers is not OCR quality — it is `main`'s routing defect, §2.0.
+It does not exist on this base, so **78% and 96% are the real numbers to plan against**; 9%
+never described this codebase.
 
 **Why IDP is still an escalation, but a substantial one:** on July the trigger (unread, or
 below `LOW_CONF`) would fire on ~20% of fields; on February, ~35–40%. That is real work rather
