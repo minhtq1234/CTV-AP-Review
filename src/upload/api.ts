@@ -90,6 +90,22 @@ export interface PacketMeta {
   reviewFieldCount: number
   /** What the engine found here and nobody has decided on yet. */
   findingCount?: number
+  /**
+   * The engine's own worst-wins rollup over this packet's criteria — the same
+   * `criteria.roll_up` the 25-criterion matrix uses, so a list column and the
+   * matrix cannot disagree. Null when the packet matched no bảng kê row: with
+   * nothing to compare against, the list must not imply a verdict.
+   */
+  aiStatus?: SummaryStatus | null
+  /**
+   * Document completeness as the ENGINE sees it, not against a hand-written
+   * required list: `span` is how many documents this packet's criteria actually
+   * reach, `missing` names the ones that are not there. Excludes the bảng kê —
+   * that is the reference, not something the CTV submits.
+   */
+  documents?: { span: number; missing: string[] } | null
+  /** Whether a bản cam kết thuế is present in the packet. */
+  hasCommitment?: boolean | null
 }
 
 // The pipeline's split/OCR summary — key names mirror server/pipeline.py's
