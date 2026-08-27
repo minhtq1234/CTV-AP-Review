@@ -387,3 +387,72 @@ def test_a_read_value_is_separated_from_its_note():
     line = next(ln for ln in full["markdown"].splitlines()
                 if "Ai Đó Khác" in ln)
     assert 'đọc được "Ai Đó Khác" —' in line
+
+
+class TestTheReviewerSDecisionsReachTheReport:
+    """Two directions, and only one of them is unambiguous.
+
+    A reviewer who *adds* a finding (`rv → no`) has found a problem, and sending
+    problems back is what the report is for. A reviewer who *clears* a computed
+    finding (`no → ok`) has validated it — and whether the report should then
+    stay silent is a product decision, not a technical one. Until it is made the
+    finding stays in, marked as cleared: keeping information a reviewer can see
+    and remove is recoverable, silently dropping it from an export is not.
+    """
+
+    def _decided(self, stt, document, frm, to, reason):
+        import criteria as c
+        o = c.Override(stt=stt, document=document, from_status=frm,
+                       to_status=to, reason=reason, at="t", by="")
+        return {o.key: o.as_dict()}
+
+    def test_a_finding_the_reviewer_added_is_reported(self):
+        from criteria import Status
+        overrides = self._decided(23, "BBNT", Status.REVIEW, Status.NO,
+                                  "BBNT thiếu chữ ký CTV")
+        report = build_report(DISAGREEING, DISAGREEING_MANIFESTS,
+                              generated_at="t", roster_rows=ROSTER,
+                              overrides_by_packet={0: overrides})
+        found = [c for g in report["groups"] for c in g["criteria"]
+                 if c["stt"] == 23]
+
+        assert found
+        assert "BBNT thiếu chữ ký CTV" in report["markdown"]
+
+    def test_a_finding_the_reviewer_cleared_is_still_shown_and_marked(self):
+        from criteria import Status
+        overrides = self._decided(1, "Hợp đồng", Status.NO, Status.OK,
+                                  "đã đối chiếu bản scan, đúng người")
+        report = build_report(DISAGREEING, DISAGREEING_MANIFESTS,
+                              generated_at="t", roster_rows=ROSTER,
+                              overrides_by_packet={0: overrides})
+        cleared = [c for g in report["groups"] for c in g["criteria"]
+                   if c["stt"] == 1]
+
+        assert cleared, "a cleared finding must not vanish from the export"
+        assert cleared[0]["clearedByReviewer"] is True
+        assert "đã đối chiếu bản scan, đúng người" in report["markdown"]
+
+    def test_a_cleared_finding_says_so_in_the_markdown(self):
+        from criteria import Status
+        overrides = self._decided(1, "Hợp đồng", Status.NO, Status.OK,
+                                  "đã đối chiếu bản scan")
+        md = build_report(DISAGREEING, DISAGREEING_MANIFESTS, generated_at="t",
+                          roster_rows=ROSTER,
+                          overrides_by_packet={0: overrides})["markdown"]
+
+        assert "người kiểm tra đã xác nhận" in md.lower()
+
+    def test_a_finding_nobody_touched_is_unmarked(self):
+        report = build_report(DISAGREEING, DISAGREEING_MANIFESTS,
+                              generated_at="t", roster_rows=ROSTER)
+        finding = report["groups"][0]["criteria"][0]
+
+        assert finding["clearedByReviewer"] is False
+
+    def test_no_overrides_argument_behaves_as_before(self):
+        a = build_report(DISAGREEING, DISAGREEING_MANIFESTS, generated_at="t",
+                         roster_rows=ROSTER)
+        b = build_report(DISAGREEING, DISAGREEING_MANIFESTS, generated_at="t",
+                         roster_rows=ROSTER, overrides_by_packet={})
+        assert a["markdown"] == b["markdown"]

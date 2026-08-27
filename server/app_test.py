@@ -171,6 +171,8 @@ def test_put_review_validates_and_roundtrips_multiple_rejection_reasons(
             "reasons": ["missing_documents", "missing_signature"],
             "note": "bổ sung",
         },
+        # criteria-cell decisions live here; none recorded on this packet
+        "overrides": {},
     }
 
 def test_report_endpoint_generates_and_persists(tmp_path, monkeypatch):
@@ -560,3 +562,144 @@ class TestTheReportCarriesTheEngineFindings:
 
         assert "Kiểm tra toàn bảng kê" in text
         assert "Ai Đó Khác" in text
+
+
+class TestRecordingADecisionOverHttp:
+    """The backend loop end to end: a decision goes in over HTTP, is persisted
+    with its audit record, and comes back out of GET /criteria."""
+
+    def _decide(self, client, cid, **body):
+        return client.put(f"/api/cases/{cid}/packets/0/criteria/21:Hợp đồng",
+                          json={"toStatus": "ok",
+                                "reason": "đã xem chữ ký, đúng CTV", **body})
+
+    def _ready(self, monkeypatch, tmp_path):
+        c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes())
+        _write_manifest(tmp_path, cid, 0)
+        return c, cid
+
+    def test_a_decision_changes_the_cell(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        before = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        assert next(x for x in before["criteria"]
+                    if x["stt"] == 21)["status"] == "rv"
+
+        assert self._decide(c, cid).status_code == 200
+
+        after = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        row = next(x for x in after["criteria"] if x["stt"] == 21)
+        assert row["status"] == "ok"
+
+    def test_the_cell_keeps_what_the_engine_computed(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        self._decide(c, cid)
+
+        after = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        cell = next(x for x in next(r for r in after["criteria"]
+                                    if r["stt"] == 21)["cells"]
+                    if x["document"] == "Hợp đồng")
+
+        assert cell["status"] == "ok"
+        assert cell["computedStatus"] == "rv"
+
+    def test_the_reason_reaches_the_cell_note(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        self._decide(c, cid)
+
+        after = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+        cell = next(x for x in next(r for r in after["criteria"]
+                                    if r["stt"] == 21)["cells"]
+                    if x["document"] == "Hợp đồng")
+
+        assert "đã xem chữ ký, đúng CTV" in cell["note"]
+
+    def test_the_engine_records_what_it_thought(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+
+        body = self._decide(c, cid).json()
+
+        assert body["override"]["fromStatus"] == "rv"
+        assert body["override"]["toStatus"] == "ok"
+
+    def test_it_is_stamped_with_a_time(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        body = self._decide(c, cid).json()
+        assert body["override"]["at"]
+
+    def test_the_author_is_empty_until_there_is_auth(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        assert self._decide(c, cid).json()["override"]["by"] == ""
+
+    def test_deciding_again_appends_to_the_audit_trail(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        self._decide(c, cid)
+        body = self._decide(c, cid, toStatus="no",
+                            reason="xem lại, thiếu ký").json()
+
+        assert len(body["history"]) == 2
+        assert body["history"][0]["toStatus"] == "ok"
+        assert body["history"][1]["toStatus"] == "no"
+
+    def test_a_reason_is_required(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        r = self._decide(c, cid, reason="   ")
+        assert r.status_code == 422
+
+    def test_an_unknown_status_is_refused(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        assert self._decide(c, cid, toStatus="maybe").status_code == 422
+
+    def test_na_is_refused(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        assert self._decide(c, cid, toStatus="na").status_code == 422
+
+    def test_a_document_outside_the_criterion_is_refused(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        r = c.put(f"/api/cases/{cid}/packets/0/criteria/21:Excel",
+                  json={"toStatus": "ok", "reason": "x"})
+        assert r.status_code == 422
+
+    def test_a_roster_level_criterion_is_refused(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        r = c.put(f"/api/cases/{cid}/packets/0/criteria/20:Excel",
+                  json={"toStatus": "ok", "reason": "x"})
+        assert r.status_code == 422
+
+    def test_a_malformed_key_is_refused(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        for key in ("nonsense", "21", ":Excel", "aa:Excel"):
+            r = c.put(f"/api/cases/{cid}/packets/0/criteria/{key}",
+                      json={"toStatus": "ok", "reason": "x"})
+            assert r.status_code == 422, key
+
+    def test_an_unknown_case_or_packet_is_not_found(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        assert c.put("/api/cases/nope/packets/0/criteria/21:Hợp đồng",
+                     json={"toStatus": "ok", "reason": "x"}).status_code == 404
+        assert c.put(f"/api/cases/{cid}/packets/9/criteria/21:Hợp đồng",
+                     json={"toStatus": "ok", "reason": "x"}).status_code == 404
+
+    def test_the_decision_survives_a_store_reload(self, tmp_path, monkeypatch):
+        c, cid = self._ready(monkeypatch, tmp_path)
+        self._decide(c, cid)
+
+        monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+        after = c.get(f"/api/cases/{cid}/packets/0/criteria").json()
+
+        assert next(x for x in after["criteria"] if x["stt"] == 21)["status"] == "ok"
+
+    def test_the_report_reflects_the_decision(self, tmp_path, monkeypatch):
+        """A recorded decision that never reaches the report is the failure the
+        whole checkpoint is about."""
+        c, cid = self._ready(monkeypatch, tmp_path)
+        c.put(f"/api/cases/{cid}/packets/0/criteria/23:BBNT",
+              json={"toStatus": "no", "reason": "BBNT thiếu chữ ký CTV"})
+
+        body = c.post(f"/api/cases/{cid}/report").json()
+        found = [x for g in body["groups"] for x in g.get("criteria", [])
+                 if x["stt"] == 23]
+
+        assert found, "the reviewer's finding is missing from the report"
+        assert "BBNT thiếu chữ ký CTV" in body["markdown"]

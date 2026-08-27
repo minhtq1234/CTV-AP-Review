@@ -41,6 +41,8 @@ from roster_workbook import (
     load_roster_rows,
     preflight_roster_workbook,
 )
+import criteria as cr
+from cases import effective_overrides
 from evaluate import as_payload as criteria_payload
 from summary_criteria import as_payload as summary_payload
 
@@ -311,6 +313,84 @@ def _norm(value: str) -> str:
     return norm(value or "").strip()
 
 
+class CriterionDecisionBody(BaseModel):
+    """A reviewer's decision on one criteria cell."""
+
+    toStatus: str
+    reason: str = Field(min_length=1)
+
+
+def _parse_override_key(key: str) -> tuple[int, str]:
+    """`"21:Hợp đồng"` -> `(21, "Hợp đồng")`, or 422."""
+    stt, _, document = key.partition(":")
+    if not stt.isdigit() or not document:
+        raise HTTPException(status_code=422,
+                            detail={"code": "invalid-criterion-key"})
+    return int(stt), document
+
+
+@app.put("/api/cases/{cid}/packets/{i}/criteria/{key}")
+async def put_criterion_decision(
+    cid: str, i: int, key: str, body: CriterionDecisionBody,
+):
+    """Record a reviewer's decision on one cell, keeping what the engine thought.
+
+    The engine is re-run first so `fromStatus` is the status actually being
+    replaced rather than whatever the client believed -- a stale matrix must not
+    be able to write a wrong provenance into the audit trail.
+    """
+    case = store.get(cid)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    packet = next((p for p in case["packets"] if p["index"] == i), None)
+    if packet is None:
+        raise HTTPException(status_code=404, detail="packet not found")
+    stt, document = _parse_override_key(key)
+
+    path = os.path.join(store.case_dir(cid), "packets", str(i), "manifest.json")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="manifest not found")
+    with open(path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    row = await run_in_threadpool(_roster_row_for, cid, packet)
+    current = await run_in_threadpool(
+        criteria_payload, manifest, row,
+        effective_overrides(packet.get("review")),
+    )
+    row_now = next((c for c in current["criteria"] if c["stt"] == stt), None)
+    cell_now = next((c for c in (row_now or {}).get("cells", [])
+                     if c["document"] == document), None)
+    if cell_now is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "cell-not-in-criterion", "key": key})
+
+    try:
+        override = cr.Override(
+            stt=stt, document=document,
+            from_status=cr.Status(cell_now["status"]),
+            to_status=cr.Status(body.toStatus),
+            reason=body.reason,
+            at=datetime.now(timezone.utc).isoformat(),
+            by="",   # no auth yet; the spec's §6 allows an empty author
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422,
+                            detail={"code": "invalid-decision",
+                                    "message": str(e)}) from e
+
+    updated = store.add_override(cid, i, override)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="case or packet not found")
+    saved = next(p for p in updated["packets"] if p["index"] == i)
+    return {
+        "override": override.as_dict(),
+        "history": saved["review"]["overrides"][override.key],
+        "packet": _packet_for_response(cid, saved),
+        "status": updated["status"],
+    }
+
+
 @app.get("/api/cases/{cid}/packets/{i}/criteria")
 async def get_criteria(cid: str, i: int):
     """Acc's 25-criterion matrix for one packet, computed from its manifest.
@@ -330,7 +410,10 @@ async def get_criteria(cid: str, i: int):
     with open(path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
     row = await run_in_threadpool(_roster_row_for, cid, packet)
-    payload = await run_in_threadpool(criteria_payload, manifest, row)
+    payload = await run_in_threadpool(
+        criteria_payload, manifest, row,
+        effective_overrides(packet.get("review")),
+    )
     payload["packet"] = i
     payload["name"] = packet.get("name") or ""
     return payload
@@ -392,9 +475,13 @@ async def post_report(cid: str):
     # With the roster, the report carries the criteria engine's own findings and
     # the roster-level section -- not only what a reviewer flagged by hand.
     rows = await run_in_threadpool(_roster_rows, cid)
+    decisions = {
+        p["index"]: effective_overrides(p.get("review"))
+        for p in case["packets"]
+    }
     report = await run_in_threadpool(
         build_report, case, manifests, now, rows or None,
-        case.get("purchaseTotal"),
+        case.get("purchaseTotal"), decisions,
     )
     case_dir = store.case_dir(cid)
     with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:

@@ -64,6 +64,8 @@ def test_new_packet_review_defaults_include_null_rejection():
         }])
         assert s.get(cid)["packets"][0]["review"] == {
             "done": False, "fields": {}, "rejection": None,
+        "overrides": {},
+            "overrides": {},
         }
 
 def test_create_list_get_roundtrip_and_reload():
@@ -108,6 +110,7 @@ def test_set_review_normalizes_and_roundtrips_packet_rejection():
                 "reasons": ["missing_signature", "missing_documents"],
                 "note": "  bổ sung  ",
             },
+            "overrides": {},
         })
         review = CaseStore(d).get(cid)["packets"][0]["review"]
         assert review == {
@@ -117,6 +120,7 @@ def test_set_review_normalizes_and_roundtrips_packet_rejection():
                 "reasons": ["missing_documents", "missing_signature"],
                 "note": "bổ sung",
             },
+            "overrides": {},
         }
 
 def test_delete_removes_case():
@@ -177,6 +181,7 @@ def test_reconciled_processing_case_also_normalizes_existing_packet_reviews(tmp_
     assert loaded["status"] == "error"
     assert loaded["packets"][0]["review"] == {
         "done": False, "fields": {}, "rejection": None,
+        "overrides": {},
     }
 
 
@@ -208,7 +213,8 @@ def test_load_migrates_old_decision_packets(tmp_path):
     (d / "case.json").write_text(json.dumps(old), encoding="utf-8")
     store = CaseStore(str(tmp_path))
     p = store.get(cid)["packets"][0]
-    assert p["review"] == {"done": False, "fields": {}, "rejection": None}
+    assert p["review"] == {"done": False, "fields": {}, "rejection": None,
+                           "overrides": {}}
     assert "decision" not in p and "rejectReason" not in p and "reviewedAt" not in p
     assert p["matchedBy"] == "no-roster"
 
@@ -231,6 +237,7 @@ def test_load_adds_null_rejection_to_existing_review_without_changing_fields(tmp
     packet = CaseStore(str(tmp_path)).get(cid)["packets"][0]
     assert packet["review"] == {
         "done": True, "fields": fields, "rejection": None,
+        "overrides": {},
     }
     persisted = json.loads((d / "case.json").read_text(encoding="utf-8"))
     assert persisted["packets"][0]["review"]["rejection"] is None
@@ -363,3 +370,145 @@ class TestPurchaseTotal:
                        "packets": []}, f)
 
         assert cases.CaseStore(str(tmp_path)).get("old")["purchaseTotal"] is None
+
+
+# ---------------------------------------------------------------------------
+# Reviewer decisions on criteria cells.
+#
+# `normalize_review` returns a fixed three-key dict, so any key it does not name
+# is dropped — and `_ensure_packet_defaults` runs it on every load while `_load`
+# writes back what changed, so a stored decision would be deleted *and the
+# deletion persisted*. This shape has to exist before anything writes to it.
+# ---------------------------------------------------------------------------
+
+import criteria as _cr                                    # noqa: E402
+from criteria import Status as _Status                     # noqa: E402
+
+
+def _override(stt=1, document=None, frm=_Status.OK, to=_Status.NO,
+              reason="tên trên hợp đồng là người khác", at="2026-08-27T00:00:00Z"):
+    return _cr.Override(stt=stt, document=document or _cr.CONTRACT,
+                        from_status=frm, to_status=to, reason=reason,
+                        at=at, by="")
+
+
+class TestNormalizeReviewKeepsDecisions:
+    def test_overrides_survive_normalisation(self):
+        o = _override()
+        kept = cases.normalize_review(
+            {"done": False, "fields": {}, "overrides": {o.key: [o.as_dict()]}})
+
+        assert kept["overrides"] == {o.key: [o.as_dict()]}
+
+    def test_a_review_without_them_gets_an_empty_map(self):
+        assert cases.normalize_review({})["overrides"] == {}
+
+    def test_a_malformed_overrides_value_becomes_an_empty_map(self):
+        for junk in (None, [], "x", 3):
+            assert cases.normalize_review({"overrides": junk})["overrides"] == {}
+
+    def test_the_other_keys_are_untouched(self):
+        out = cases.normalize_review({"done": True, "fields": {"a": {}}})
+        assert out["done"] is True and out["fields"] == {"a": {}}
+
+
+class TestAddingADecision:
+    def _store(self, tmp_path):
+        store = cases.CaseStore(str(tmp_path))
+        cid = store.create("c", "in.pdf", "r.xlsx", now="2026-08-27T00:00:00Z")
+        store.set_result(cid, summary=None, packets=[
+            {"index": 0, "name": "A", "pages": [0, 7], "flags": [],
+             "labels": [], "confidence": "green"},
+        ])
+        return store, cid
+
+    def test_it_records_the_decision(self, tmp_path):
+        store, cid = self._store(tmp_path)
+        o = _override()
+
+        case = store.add_override(cid, 0, o)
+
+        assert case["packets"][0]["review"]["overrides"][o.key] == [o.as_dict()]
+
+    def test_it_survives_a_reload_from_disk(self, tmp_path):
+        store, cid = self._store(tmp_path)
+        o = _override()
+        store.add_override(cid, 0, o)
+
+        reloaded = cases.CaseStore(str(tmp_path)).get(cid)
+
+        assert reloaded["packets"][0]["review"]["overrides"][o.key] \
+            == [o.as_dict()]
+
+    def test_deciding_again_appends_rather_than_replaces(self, tmp_path):
+        """An audit trail is the point. A reviewer who changes their mind leaves
+        both decisions, and the engine's original view is the first record's
+        `fromStatus`."""
+        store, cid = self._store(tmp_path)
+        first = _override(frm=_Status.OK, to=_Status.NO, at="t1")
+        second = _override(frm=_Status.NO, to=_Status.OK, at="t2",
+                           reason="đã xem lại bản scan, đúng")
+        store.add_override(cid, 0, first)
+        case = store.add_override(cid, 0, second)
+
+        history = case["packets"][0]["review"]["overrides"][first.key]
+        assert [h["at"] for h in history] == ["t1", "t2"]
+        assert history[0]["fromStatus"] == "ok"      # what the engine thought
+
+    def test_decisions_on_different_cells_are_separate(self, tmp_path):
+        store, cid = self._store(tmp_path)
+        a = _override(stt=1, document=_cr.CONTRACT)
+        b = _override(stt=1, document=_cr.BBNT)
+        store.add_override(cid, 0, a)
+        case = store.add_override(cid, 0, b)
+
+        assert set(case["packets"][0]["review"]["overrides"]) == {a.key, b.key}
+
+    def test_an_unknown_case_or_packet_is_refused(self, tmp_path):
+        store, cid = self._store(tmp_path)
+        assert store.add_override("nope", 0, _override()) is None
+        assert store.add_override(cid, 99, _override()) is None
+
+    def test_it_does_not_disturb_the_field_review(self, tmp_path):
+        store, cid = self._store(tmp_path)
+        store.set_review(cid, 0, {"done": True, "fields": {
+            "cccd": {"seen": True, "flag": {"reason": "x", "note": ""}}}})
+
+        case = store.add_override(cid, 0, _override())
+        review = case["packets"][0]["review"]
+
+        assert review["fields"]["cccd"]["flag"]["reason"] == "x"
+        assert review["done"] is True
+
+
+class TestTheEffectiveDecision:
+    def test_the_latest_decision_per_cell_wins(self):
+        first = _override(frm=_Status.OK, to=_Status.NO, at="t1")
+        second = _override(frm=_Status.NO, to=_Status.OK, at="t2", reason="y")
+        review = {"overrides": {first.key: [first.as_dict(), second.as_dict()]}}
+
+        effective = cases.effective_overrides(review)
+
+        assert effective[first.key]["toStatus"] == "ok"
+        assert effective[first.key]["at"] == "t2"
+
+    def test_no_decisions_is_an_empty_map(self):
+        assert cases.effective_overrides({}) == {}
+        assert cases.effective_overrides({"overrides": {}}) == {}
+
+    def test_an_empty_history_is_skipped(self):
+        assert cases.effective_overrides({"overrides": {"01:Excel": []}}) == {}
+
+    def test_the_result_feeds_the_engine_directly(self):
+        import evaluate as ev
+        o = _override(stt=21, document=_cr.CONTRACT,
+                      frm=_Status.REVIEW, to=_Status.OK, reason="đã xem")
+        review = {"overrides": {o.key: [o.as_dict()]}}
+
+        manifest = {"id": "p", "docs": [
+            {"id": "contract-0", "kind": "contract", "label": "HĐ", "pages": []},
+        ], "fields": []}
+        results = {r.stt: r for r in ev.evaluate_packet(
+            manifest, None, overrides=cases.effective_overrides(review))}
+
+        assert results[21].status is _Status.OK

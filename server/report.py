@@ -65,6 +65,7 @@ def _packet_rejection(packet: dict) -> dict | None:
 
 def _criteria_for(
     packet: dict, manifest: dict | None, roster_rows: list | None,
+    overrides: dict | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     """The engine's findings for one packet.
 
@@ -82,7 +83,8 @@ def _criteria_for(
         return [], [], {}
     import evaluate as ev
 
-    results = ev.evaluate_packet(manifest, _roster_row_for(packet, roster_rows))
+    results = ev.evaluate_packet(manifest, _roster_row_for(packet, roster_rows),
+                                 overrides)
     counts = ev.summarise(results)
 
     disagreements = []
@@ -97,12 +99,17 @@ def _criteria_for(
                      "criteria": []},
                 )
                 entry["criteria"].append(result.stt)
-        if result.status.value == "no":
-            # only the cells carrying the finding; an `ok` cell beside a `no`
-            # one is not what needs fixing
-            item["cells"] = [c for c in item["cells"] if c["status"] == "no"]
-            if item["cells"]:
-                disagreements.append(item)
+        # A cell the reviewer cleared (`no` -> `ok`) still belongs in the export,
+        # marked. Whether it should instead go silent is a product decision; a
+        # finding kept and visible can be removed later, one dropped from an
+        # export cannot be recovered.
+        cleared = [c for c in item["cells"]
+                   if c["status"] != "no" and c["computedStatus"] == "no"]
+        carrying = [c for c in item["cells"] if c["status"] == "no"]
+        if carrying or cleared:
+            item["cells"] = carrying + cleared
+            item["clearedByReviewer"] = not carrying and bool(cleared)
+            disagreements.append(item)
     return disagreements, sorted(absent.values(),
                                  key=lambda a: a["document"]), counts
 
@@ -134,7 +141,8 @@ def _summary_section(roster_rows: list | None, packets: list,
 
 def build_report(case: dict, manifests: dict, generated_at: str,
                  roster_rows: list | None = None,
-                 purchase_total: dict | None = None) -> dict:
+                 purchase_total: dict | None = None,
+                 overrides_by_packet: dict | None = None) -> dict:
     """The consolidated resubmission report.
 
     Supply `roster_rows` to include the criteria engine's own findings and the
@@ -144,7 +152,8 @@ def build_report(case: dict, manifests: dict, generated_at: str,
     groups = []
     for p in case.get("packets", []):
         criteria, absent, counts = _criteria_for(
-            p, manifests.get(p["index"]), roster_rows)
+            p, manifests.get(p["index"]), roster_rows,
+            (overrides_by_packet or {}).get(p["index"]))
         if not _needs_resubmit(p) and not criteria and not absent:
             continue
         ident = p.get("rosterIdentity") or p.get("ocrIdentity") or {}
@@ -197,7 +206,9 @@ def build_report(case: dict, manifests: dict, generated_at: str,
             md.append(f"- **Thiếu chứng từ: {absent['document']}** "
                       f"— chưa kiểm tra được {blocks}")
         for c in g.get("criteria", []):
-            md.append(f"- **#{c['stt']} {c['label']}**")
+            mark = (" — _người kiểm tra đã xác nhận_"
+                    if c.get("clearedByReviewer") else "")
+            md.append(f"- **#{c['stt']} {c['label']}**{mark}")
             for cell in c["cells"]:
                 read = (f" đọc được \"{cell['value']}\" —" if cell["value"]
                         else "")

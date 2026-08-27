@@ -44,11 +44,29 @@ def normalize_review(review: dict | None) -> dict:
             "reasons": reasons,
             "note": str(rejection.get("note") or "").strip(),
         } if reasons else None
+    overrides = source.get("overrides")
     return {
         "done": True if rejection else bool(source.get("done", False)),
         "fields": source.get("fields", {}) or {},
         "rejection": rejection,
+        # Reviewer decisions on criteria cells: `{override_key: [record, ...]}`,
+        # append-only. This function returns a complete literal, so a key it does
+        # not name is dropped -- and `_ensure_packet_defaults` runs on every load
+        # while `_load` writes back what changed, which would delete a stored
+        # decision *and persist the deletion*.
+        "overrides": overrides if isinstance(overrides, dict) else {},
     }
+
+
+def effective_overrides(review: dict | None) -> dict:
+    """The decision currently in force per cell: `{key: record}`.
+
+    The store keeps every decision; the engine only needs the latest. A
+    reviewer's original view is still recoverable -- it is the first record's
+    `fromStatus`.
+    """
+    stored = (review or {}).get("overrides") or {}
+    return {key: history[-1] for key, history in stored.items() if history}
 
 
 def needs_resubmit(packet: dict) -> bool:
@@ -295,6 +313,32 @@ class CaseStore:
         if case is None:
             return None
         case["cccdWorkbook"] = workbook
+        self._write(case)
+        return case
+
+    def add_override(self, cid: str, index: int, override) -> dict | None:
+        """Append one reviewer decision to a packet's audit trail.
+
+        Append-only on purpose: a reviewer who changes their mind leaves both
+        decisions, and what the engine originally thought stays recoverable as
+        the first record's `fromStatus` -- the spec's §6 calls that the most
+        valuable data this product generates.
+        """
+        case = self._idx.get(cid)
+        if case is None:
+            return None
+        packet = next((p for p in case["packets"] if p["index"] == index), None)
+        if packet is None:
+            return None
+        review = normalize_review(packet.get("review"))
+        record = override.as_dict() if hasattr(override, "as_dict") else override
+        key = override.key if hasattr(override, "key") else record["key"]
+        review["overrides"] = {
+            **review["overrides"],
+            key: [*review["overrides"].get(key, []), record],
+        }
+        packet["review"] = review
+        case["status"] = case_status("ready", case["packets"])
         self._write(case)
         return case
 
