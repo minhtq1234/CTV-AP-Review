@@ -298,10 +298,10 @@ Three defects, two fixed:
 - **`match_roster` ignored the MST.** Now CCCD → MST → name, strongest first: a
   name match is the fragile path, and the wrong-person error is the most
   expensive one this tool can make.
-- **`group_lines` uses a fixed `y_tol=8`** — not fixed. At display scale, half
-  the OCR resolution, it splits `CCCD` from `sô` and interleaves words across a
-  row. A resolution-relative tolerance is the real answer but changes the input
-  to every caller, so it wants measuring on its own.
+- **`group_lines` uses a fixed `y_tol=8`.** At display scale, half the OCR
+  resolution, it splits `CCCD` from `sô` and interleaves words across a row.
+  **Do not "fix" this by making the tolerance relative** — that was tried and
+  measured, and it is a large regression. See §3.10.
 
 **Final state of the July submission**: 41 packets for 41 roster rows, **41
 matched — 37 by CCCD, 4 by MST, none by name, none unmatched** — and 0 duplicate
@@ -365,6 +365,41 @@ Two truthfulness defects the real data exposed, both fixed:
 - Copies of one document disagreeing **with each other** were reported only when
   the cell was already a mismatch. Two contracts naming two people is a finding
   about the packet whatever the verdict against the bảng kê is.
+
+### 3.10 The line-grouping tolerance is not miscalibrated — do not make it relative
+
+`group_lines` uses a fixed `y_tol=8`, which is 0.22x the median word height at
+300 dpi but 0.42x at display scale. That looked like an obvious bug: the same
+page groups differently depending on which coordinate space its words are in.
+
+It was measured before being changed. Deriving the tolerance from the median word
+height at the 300-dpi ratio, then re-grouping **identical OCR output** for all 41
+July packets and scoring five fields against the roster:
+
+| field | fixed 8 | derived (0.22x) | change |
+|---|---|---|---|
+| Số tài khoản | 41 | 8 | **-33** |
+| Họ tên | 37 | 10 | **-27** |
+| Số CCCD | 37 | 32 | -5 |
+| MST | 40 | 40 | 0 |
+| Ngày sinh | 38 | 40 | +2 |
+| **total correct reads** | **193** | **130** | **-63** |
+
+The premise was backwards. Extraction does not run at 300 dpi — `ocr_packet`
+scales its words to display space first, so every anchor and pattern rule here
+was tuned against `y_tol=8` at **0.42x**, and that looseness is doing real work:
+it keeps a label and its value on one line when their baselines differ slightly,
+which is the normal case. Tightening to 0.22x splits them, and `locate_field`
+then cannot see the value beside its own label.
+
+The interleaving on page 251 is real but is not the tolerance's fault, and
+`_row_words` already handles it by reassembling the label's visual row. That fix
+stands on its own and needs no change here.
+
+If this is revisited, the direction is the opposite one: a *looser* derived ratio
+near 0.42x, which would keep display-scale behaviour identical while making the
+300-dpi and 150-dpi-unscaled paths consistent with it. The value of that is
+unproven; the cost of getting it backwards is 63 fields.
 
 ---
 
