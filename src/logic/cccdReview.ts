@@ -93,14 +93,36 @@ export const CCCD_STATE_LABELS: Record<string, string> = {
   conflict: 'Xung đột',
 }
 
+// Every issue code the server can attach to a mapping. Grouped by origin:
+// cccd_pairing.py decides sides, cccd_matching.py resolves identity, and
+// cccd_ingest.py attaches the result to a packet. An unmapped code still falls
+// through to its raw value below — this map only decides what a reviewer reads.
 export const CCCD_ISSUE_LABELS: Record<string, string> = {
+  // Sides and pairing (cccd_pairing.py)
+  'missing-front': 'Thiếu ảnh mặt trước',
+  'missing-back': 'Thiếu ảnh mặt sau',
+  'unknown-side': 'Không xác định được mặt thẻ',
+  'side-inferred-front': 'Mặt trước được suy đoán',
+  'layout-side-conflict': 'Bố cục hai mặt không khớp',
+  'ambiguous-pair': 'Không ghép được mặt trước/sau',
+  // Reading and identity (cccd_matching.py)
   'no-front': 'Không có mặt trước',
-  'unreadable-identity': 'Không đọc được số',
   'no-number-region': 'Không tìm được vùng số',
+  'unreadable-identity': 'Không đọc được số',
+  'low-cccd-confidence': 'Số CCCD đọc được với độ tin cậy thấp',
+  'non-12-digit-cccd': 'Số trên thẻ không đủ 12 chữ số',
   'no-exact-roster-match': 'Số không khớp bảng kê',
+  'conflicting-identity': 'Danh tính trên thẻ không thống nhất',
+  'competing-candidate': 'Có ảnh khác cùng tranh gói này',
   'duplicate-cccd': 'Trùng số CCCD',
   'duplicate-name': 'Trùng họ tên',
-  'ambiguous-pair': 'Không ghép được mặt trước/sau',
+  // Attaching to a packet (cccd_ingest.py)
+  'packet-target-not-found': 'Không tìm được gói tương ứng',
+  'non-unique-packet-target': 'Nhiều gói cùng khớp',
+  'invalid-roster-key': 'Khóa bảng kê không hợp lệ',
+  'non-12-digit-roster-cccd': 'Số trong bảng kê không đủ 12 chữ số',
+  'attachment-failed': 'Gắn ảnh vào gói thất bại',
+  'cleanup-failed': 'Dọn ảnh cũ thất bại',
 }
 
 /** State then issues, in Vietnamese. An unmapped code renders as itself so a

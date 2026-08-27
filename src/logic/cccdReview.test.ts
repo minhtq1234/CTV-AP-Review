@@ -120,18 +120,51 @@ describe('describeCard', () => {
     }))).toBe('brand-new-state · brand-new-issue')
   })
 
-  it('labels every state and issue the backend can emit', () => {
+  // A tripwire, not a snapshot: this pins the exact vocabulary so that when
+  // the server starts emitting a code neither map has a translation for, a
+  // test fails here instead of raw English quietly leaking into the UI.
+  it('pins the vocabulary so a new server code fails a test instead of leaking English into the UI', () => {
     expect(Object.keys(CCCD_STATE_LABELS).sort()).toEqual(
       ['assigned', 'conflict', 'exact', 'manual', 'suggested'],
     )
     expect(Object.keys(CCCD_ISSUE_LABELS).sort()).toEqual([
       'ambiguous-pair',
+      'attachment-failed',
+      'cleanup-failed',
+      'competing-candidate',
+      'conflicting-identity',
       'duplicate-cccd',
       'duplicate-name',
+      'invalid-roster-key',
+      'layout-side-conflict',
+      'low-cccd-confidence',
+      'missing-back',
+      'missing-front',
       'no-exact-roster-match',
       'no-front',
       'no-number-region',
+      'non-12-digit-cccd',
+      'non-12-digit-roster-cccd',
+      'non-unique-packet-target',
+      'packet-target-not-found',
+      'side-inferred-front',
+      'unknown-side',
       'unreadable-identity',
     ])
+  })
+
+  // Ground truth, not theory: measured by parsing every mapping's issues[]
+  // out of the 13 real cases under server/data/cases. A code the vocabulary
+  // test above doesn't require can still be one reviewers hit constantly —
+  // this is what catches that.
+  const CODES_SEEN_IN_REAL_CASES = [
+    'competing-candidate', 'low-cccd-confidence', 'missing-back', 'missing-front',
+    'no-exact-roster-match', 'no-front', 'no-number-region', 'non-unique-packet-target',
+    'packet-target-not-found', 'side-inferred-front', 'unknown-side', 'unreadable-identity',
+  ]
+
+  it('labels every issue code actually seen in real case data', () => {
+    const missing = CODES_SEEN_IN_REAL_CASES.filter(code => !(code in CCCD_ISSUE_LABELS))
+    expect(missing).toEqual([])
   })
 })
