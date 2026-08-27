@@ -15,10 +15,20 @@ Two things make the targeting precise:
     position is known essentially always. So escalation re-reads exactly the
     pages a weak field points at, not the whole packet.
 
-  * A read below `LOW_CONF` is treated as unusable, not merely uncertain. On the
-    real batches every confident read (0.94-0.96) agreed with the roster and
-    every disagreeing read (0.00-0.16) was an OCR failure, so the threshold
-    separates "worth escalating" from "already fine" cleanly.
+  * A read below `LOW_CONF` is treated as unusable, not merely uncertain.
+
+    BUT THE CONVERSE IS FALSE, and an earlier version of this comment claimed
+    it. Confidence does NOT mean correct. Hand-checked against the scans on the
+    July batch: 8 of the 14 disagreements are at or above 0.7, and packet 34
+    read the same digits on the same page two ways -- CCCD `070198011354` at
+    0.93 and 0.90 (wrong) while MST read `079198011354` at 0.86 (right).
+    Packet 39 read a date correctly at 0.06.
+
+    So this threshold is a floor on what is CLEARLY unusable, not a boundary
+    between good and bad reads. Escalation deliberately does not see a
+    confidently-wrong read; catching those needs a different signal (a
+    digit-level disagreement against an otherwise-consistent roster value is a
+    better one) and is not solved here.
 
 Pure: no IO, no network, no OCR. `ocr_packet` owns the actual re-read.
 """
