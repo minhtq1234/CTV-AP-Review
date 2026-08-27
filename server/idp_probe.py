@@ -113,6 +113,32 @@ def main(argv: list[str]) -> int:
     print("=" * 60)
     usable = [r for r in results if r.get("words_parsed")]
     if not usable:
+        # Every doc_type failing the same way is a URL problem, not a doc_type
+        # problem -- "ID" is known to work against the real IDP service, so if
+        # that 404s too then this host simply has no /ocr/ingest. Distinguish
+        # the two before blaming the doc_type, since the message is otherwise
+        # actively misleading (it was, once).
+        all_404 = results and all("404" in str(r.get("error") or "") for r in results)
+        if all_404:
+            print("Every doc_type returned 404 -- including ID, which is known to work")
+            print("against the real IDP service. That means the URL is wrong, not the")
+            print("doc_type. Checking what this host actually serves:\n")
+            import urllib.error
+            for probe_path in ("/ocr/ingest", "/chat/completions", "/models"):
+                try:
+                    with urllib.request.urlopen(base_url + probe_path, timeout=20) as r:
+                        code = r.status
+                except urllib.error.HTTPError as exc:
+                    code = exc.code
+                except Exception as exc:
+                    code = f"{type(exc).__name__}"
+                note = {401: "exists, needs auth", 403: "exists, needs auth",
+                        404: "NOT on this host"}.get(code, "")
+                print(f"    GET {probe_path:<20} -> {code}  {note}")
+            print("\nIf /chat/completions answers 401 but /ocr/ingest is 404, this is the")
+            print("MaaS LLM endpoint (GREENNODE_API_URL), not the IDP document reader.")
+            print("GREENNODE_IDP_URL needs the IDP service's own base URL, ending in /v1.")
+            return 1
         print("No doc_type returned parseable words with coordinates.")
         print("Ask GreenNode which doc_type exposes general OCR, or whether the")
         print("account is provisioned only for the ID model.")
