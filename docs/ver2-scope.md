@@ -245,12 +245,35 @@ reads 78–96% correctly and keeps that data on the workstation.
 `server/pipeline.py` for CCCD cards: *26 of 41 people resolved locally versus 40 of 41 via
 IDP, with no false reads either way.*
 
-**Confidence is a reliable signal.** On `main`'s case all 11 `match` results carried
-confidence 0.94–0.96 and all 6 `mismatch` results 0.00–0.16 — and every one of those 6 was an
-OCR failure (`NujI Van` for a name, a company MST for a CCCD, a 6-digit fragment for a bank
-account, a mobile number for a CCCD), not a discrepancy in the paperwork. This is why the
-escalation trigger is confidence-based, and why a disagreement is only reported as a
-disagreement when the read behind it was confident.
+**Confidence is NOT a reliable signal — an earlier revision of this section said it was.**
+That claim came from `main`'s February case alone, where all 11 `match` results sat at
+0.94–0.96 and all 6 `mismatch` results at 0.00–0.16. Hand-checking the July batch against the
+scans on 2026-08-27 refuted it:
+
+| status × confidence | count (July, 41 packets) |
+|---|---|
+| disagreement, ≥ `LOW_CONF` | **8** |
+| disagreement, < `LOW_CONF` | 6 |
+| agreement, ≥ `LOW_CONF` | 262 |
+| flagged `rv`, < `LOW_CONF` | 64 |
+
+**8 of the 14 disagreements are high-confidence.** Packet 34 read the same digits on the same
+page two different ways — CCCD `070198011354` at 0.93 (contract) and 0.90 (BBNT), both wrong
+against a page that plainly reads `079198011354`, while MST read `079198011354` at 0.86,
+correctly. Packet 39 read a date correctly at 0.06.
+
+Three consequences, all load-bearing:
+
+- **A confident misread produces a false `no`**, which drives `cần gửi lại` — so the tool
+  would send a *valid* packet back to the CTV. Packet 34 does this today.
+- **Agreement across documents is not independent corroboration.** The same systematic
+  misread repeats on two documents of similar scan quality, so `_compare_reads` treating
+  copies as corroborating is unsafe.
+- **The escalation trigger cannot see a confidently-wrong read.** `LOW_CONF` remains a floor
+  on what is clearly unusable — which is all it was ever measured to be — not a boundary
+  between good and bad reads. Catching confident misreads needs a different signal; a
+  digit-level difference against an otherwise-consistent roster value is a better candidate,
+  and is not yet built.
 
 ## 5. Open questions
 
