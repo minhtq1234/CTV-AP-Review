@@ -110,8 +110,30 @@ escalation just fixed into a false mismatch.
 Fallbacks: a reader that raises, returns nothing, or is pointed at a missing page all leave the
 local read in place. A network problem must never make an ingest worse than not having called.
 
-**The one open unknown.** `doc_type=ID` is the only value this codebase has ever sent, and it
-selects the CCCD model — wrong for a contract page. Which `doc_type` gives a general page read,
+**The transport is PROVEN, as of 2026-08-27.** Pointed at the real endpoint — which is
+tenant-namespaced, `https://<maas-host>/maas/<user-id>/greennode/idp/v1` — the CCCD card path
+ran end to end over a 41-packet batch: auth, submit, the poll-for-content contract and
+`doc_type=ID` all work. Measured against the local Tesseract reader on the same batch:
+
+| CCCD cards (42 candidates) | local reader | via IDP |
+|---|---|---|
+| attached | 24 | **39** |
+| unresolved | 18 | **3** |
+
+`matchedBy` stayed `{cccd: 37, mst: 4}` — roster matching was already 41/41 from document OCR,
+so the gain is entirely in CCCD criterion coverage: 15 more people now have card evidence to
+check against. ~19 minutes for the batch, 42 IDP calls.
+
+Two consequences. Enabling IDP for CCCD cards is worth doing on its own, independent of
+document fields — it needs only the two env vars. And because the same code path succeeded 39
+times, the 500s on other doc_types are genuinely about unsupported doc_type **values**, not
+about our request shape.
+
+**The one remaining unknown.** `doc_type=ID` is the only value that works, and it
+selects the CCCD model — wrong for a contract page. `GENERAL`, `DOCUMENT`, `DOC`, `OCR`,
+`TEXT`, `FULL_TEXT` and `OTHER` all return **HTTP 500** against the correct URL with a working
+key. `greennode/idp` is listed as `model_type: ocr` on the account, so IDP is provisioned;
+whether a document-oriented doc_type exists is a question for GreenNode. Which `doc_type` gives a general page read,
 and whether that mode returns **text runs** (what `parse_words` assumes) or **named fields**
 (which would need a small mapper instead), cannot be established without a live credential.
 `server/idp_probe.py` settles both in one run:
