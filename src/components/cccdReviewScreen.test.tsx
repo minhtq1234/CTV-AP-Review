@@ -20,6 +20,10 @@ function packet(index: number, name: string): PacketMeta {
   }
 }
 
+// Two sides by default: the one real case checked had 42/42 cards with both
+// a front and a back, and having both is what makes the viewer trigger exist
+// at all (CardThumb renders no button for a single-sided card). Tests that
+// specifically want the single-sided, no-button case override `sides`.
 function card(cardId: string, attachedPacketIndex: number | null,
               overrides: Partial<CccdCard> = {}): CccdCard {
   return {
@@ -28,7 +32,10 @@ function card(cardId: string, attachedPacketIndex: number | null,
     attachedPacketIndex,
     number: '',
     issues: [],
-    sides: [{ side: 'front', width: 1059, height: 668 }],
+    sides: [
+      { side: 'front', width: 1059, height: 668 },
+      { side: 'back', width: 1059, height: 668 },
+    ],
     ...overrides,
   }
 }
@@ -73,14 +80,33 @@ describe('CccdReviewView', () => {
     expect(html).toContain('Xung đột · Trùng số CCCD')
     expect(html).toContain('card-09')
     const orphan = html.match(
-      /<li class="cccd-review-row cccd-review-orphan"[\s\S]*?<\/li>/,
+      /<li class="cccd-review-tile" aria-label="Ảnh card-09[\s\S]*?<\/li>/,
     )?.[0] ?? ''
     expect(orphan).toContain('card-09')
-    // The only button here opens the full-size viewer -- assigning this card
-    // still has to go through the packet's own "Gán thẻ" row, not this one.
+    // The only button here opens the viewer -- assigning this card still
+    // has to go through the packet's own "Gán thẻ" row, not this one.
     const orphanButtons = orphan.match(/<button[\s\S]*?<\/button>/g) ?? []
     expect(orphanButtons).toHaveLength(1)
-    expect(orphanButtons[0]).toContain('Xem ảnh CCCD card-09 ở kích thước đầy đủ')
+    expect(orphanButtons[0]).toContain('Xem cả hai mặt của ảnh CCCD card-09')
+  })
+
+  // Newly required: orphan cards used to be their own row shape
+  // (.cccd-review-row.cccd-review-orphan); they are tiles now, in the
+  // section's own grid, same as an attached card.
+  it('renders an orphan card as a tile in the grid, not as a row', () => {
+    const html = render([card('card-09', null)])
+    const grid = html.match(/<ul class="cccd-review-grid">[\s\S]*?<\/ul>/)?.[0] ?? ''
+    expect(grid).toContain('class="cccd-review-tile"')
+    expect(grid).toContain('card-09')
+    expect(html).not.toContain('cccd-review-orphan')
+  })
+
+  it("shows the orphan tile's head as the cardId, not an STT and name", () => {
+    const html = render([card('card-09', null)])
+    const tile = html.match(/<li class="cccd-review-tile"[\s\S]*?<\/li>/)?.[0] ?? ''
+    const head = tile.match(/<div class="cccd-review-tile-head">[\s\S]*?<\/div>/)?.[0] ?? ''
+    expect(head).toContain('>card-09<')
+    expect(head).not.toContain('cccd-review-tile-stt')
   })
 
   it('renders attached packets inside a collapsed details element', () => {
@@ -93,23 +119,24 @@ describe('CccdReviewView', () => {
 
   // The recorded side dimensions are transposed on any case ingested before
   // fccded7 (the JPEG parser returned header order, height before width) --
-  // only the image file itself knows its real size, so neither the orphan
-  // row's image (Cần xử lý) nor the tile image (Đã gán) may assert a
-  // width/height that came from that untrustworthy manifest. Re-targeted
-  // from a single "the thumbnail" test into one per section, since an
-  // attached card no longer renders a `.cccd-review-orphan-thumb` at all.
-  it('does not put the recorded (possibly transposed) dimensions on the orphan row image', () => {
+  // only the image file itself knows its real size, so neither tile kind
+  // may assert a width/height that came from that untrustworthy manifest.
+  it('does not put the recorded (possibly transposed) dimensions on the orphan tile image', () => {
     const html = render([card('card-09', null)])
-    const thumb = html.match(/<img[^>]*class="cccd-review-orphan-thumb"[^>]*>/)?.[0] ?? ''
-    expect(thumb).not.toBe('')
-    expect(thumb).not.toMatch(/\bwidth=/)
-    expect(thumb).not.toMatch(/\bheight=/)
+    const orphanButton = html.match(
+      /<button[^>]*aria-label="Xem cả hai mặt của ảnh CCCD card-09"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? ''
+    expect(orphanButton).not.toBe('')
+    const img = orphanButton.match(/<img[^>]*>/)?.[0] ?? ''
+    expect(img).not.toBe('')
+    expect(img).not.toMatch(/\bwidth=/)
+    expect(img).not.toMatch(/\bheight=/)
   })
 
-  it('does not put the recorded (possibly transposed) dimensions on the tile image', () => {
+  it('does not put the recorded (possibly transposed) dimensions on the attached tile image', () => {
     const html = render([card('card-00', 0)])
     const tileButton = html.match(
-      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
+      /<button[^>]*aria-label="Xem cả hai mặt của ảnh CCCD card-00"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? ''
     expect(tileButton).not.toBe('')
     const img = tileButton.match(/<img[^>]*>/)?.[0] ?? ''
@@ -118,58 +145,64 @@ describe('CccdReviewView', () => {
     expect(img).not.toMatch(/\bheight=/)
   })
 
-  // Re-targeted: this used to check both sections' thumbnails for the same
-  // `cccd-review-thumb` class. Đã gán's tile image now fills the tile
-  // instead (no fixed box at all), and Cần xử lý's own box grew from
-  // 160x101 to 320 wide/auto tall, so the two sections are checked for
-  // their own, separate classes rather than one shared one.
+  // Re-targeted: this used to check the orphan row and the attached tile for
+  // two DIFFERENT classes (.cccd-review-orphan-thumb vs .cccd-review-tile-
+  // image), pinning that they did not share a box. That distinction is gone
+  // by design this round -- both are the same tile now -- so this checks
+  // the new, opposite invariant: both really do share the one class.
   it('renders every thumbnail inside a button with an accessible label, in both sections', () => {
     const html = render([
       card('card-00', 0),
       card('card-09', null, { state: 'conflict', issues: ['duplicate-cccd'] }),
     ])
     for (const cardId of ['card-00', 'card-09']) {
-      const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
-      expect(html).toContain(`aria-label="${label}"`)
+      expect(html).toContain(`aria-label="Xem cả hai mặt của ảnh CCCD ${cardId}"`)
     }
-    // Cần xử lý keeps its own, enlarged row image.
     const orphanButton = html.match(
-      /<button[^>]*aria-label="Xem ảnh CCCD card-09[^"]*"[^>]*>[\s\S]*?<\/button>/,
+      /<button[^>]*aria-label="Xem cả hai mặt của ảnh CCCD card-09"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? ''
-    expect(orphanButton).toContain('class="cccd-review-orphan-thumb"')
-    // Đã gán's tile image fills the tile -- a different class, and the
-    // orphan row's box must not leak onto it.
     const tileButton = html.match(
-      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
+      /<button[^>]*aria-label="Xem cả hai mặt của ảnh CCCD card-00"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? ''
+    expect(orphanButton).toContain('class="cccd-review-tile-image"')
     expect(tileButton).toContain('class="cccd-review-tile-image"')
-    expect(tileButton).not.toContain('cccd-review-orphan-thumb')
   })
 
-  // Pin that the orphan row's enlarged image is not the old shared
-  // .cccd-review-thumb (160x101, fixed aspect, object-fit: cover) reapplied
-  // under a new name that something else also uses -- it is its own class,
-  // used nowhere else, so the 320px/height:auto rule on it cannot be
-  // silently shared with (or overridden by) another element's box.
-  it('gives the orphan row its own image class, not shared with the tile image', () => {
-    const html = render([card('card-00', 0), card('card-09', null)])
-    const orphanButton = html.match(
-      /<button[^>]*aria-label="Xem ảnh CCCD card-09[^"]*"[^>]*>[\s\S]*?<\/button>/,
-    )?.[0] ?? ''
-    const tileButton = html.match(
-      /<button[^>]*aria-label="Xem ảnh CCCD card-00[^"]*"[^>]*>[\s\S]*?<\/button>/,
-    )?.[0] ?? ''
-    expect(orphanButton).toContain('class="cccd-review-orphan-thumb"')
-    expect(tileButton).not.toContain('cccd-review-orphan-thumb')
-    expect(orphanButton).not.toContain('cccd-review-tile-image"')
+  // The trigger no longer enlarges (images are already at native size) --
+  // it reveals the back, so the label has to say that, not "full size".
+  it('names both sides in the trigger label, not "full size"', () => {
+    const html = render([card('card-00', 0)])
+    expect(html).toContain('aria-label="Xem cả hai mặt của ảnh CCCD card-00"')
+    expect(html).not.toContain('ở kích thước đầy đủ')
   })
 
-  // A future change must not silently merge the two sections' markup back
-  // together -- Cần xử lý is an unchanged list, Đã gán is now a tile grid.
-  it('keeps the exceptions list and the attached grid as separate structures', () => {
+  // The one most likely to regress: a single-sided card has nothing more to
+  // reveal, so it must get no clickable trigger at all -- just the image.
+  it('renders no viewer button for a single-sided card, only for a two-sided one', () => {
+    const html = render([
+      card('card-00', 0, { sides: [{ side: 'front', width: 1059, height: 668 }] }),
+      card('card-01', 1),
+    ])
+    expect(html).not.toContain('aria-label="Xem cả hai mặt của ảnh CCCD card-00"')
+    expect(html).toContain('aria-label="Xem cả hai mặt của ảnh CCCD card-01"')
+    // The single-sided card's image still renders, just not inside a button.
+    expect(html).toContain('alt="Ảnh CCCD card-00"')
+    const plain = html.match(/<div class="cccd-review-tile-image">[\s\S]*?<\/div>/)?.[0] ?? ''
+    expect(plain).toContain('card-00')
+  })
+
+  // Re-targeted: originally pinned that Cần xử lý was list-only and Đã gán
+  // was grid-only. Cần xử lý now holds both shapes in one section (a list
+  // for packets-needing-a-card, a grid for orphan tiles), so this pins the
+  // piece that still matters -- a packet-needing-a-card row never becomes a
+  // tile, and a card image never renders as a plain list row.
+  it('keeps packets-needing-a-card as rows and every card image as a tile', () => {
     const html = render([card('card-00', 0), card('card-09', null)])
-    expect(html).toContain('<ul class="cccd-review-list">')
+    const list = html.match(/<ul class="cccd-review-list">[\s\S]*?<\/ul>/)?.[0] ?? ''
+    expect(list).toContain('Synthetic B')
+    expect(list).not.toContain('cccd-review-tile')
     expect(html).toContain('<ul class="cccd-review-grid">')
+    expect(html).not.toContain('cccd-review-orphan')
   })
 
   it('does not render the full-size card dialog until a thumbnail is clicked', () => {

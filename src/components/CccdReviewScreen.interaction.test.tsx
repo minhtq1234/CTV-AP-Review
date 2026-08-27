@@ -50,6 +50,10 @@ function packet(index: number, name: string): PacketMeta {
   }
 }
 
+// Two sides by default: the one real case checked had 42/42 cards with both
+// a front and a back, and having both is what makes the viewer trigger exist
+// at all (CardThumb renders no button for a single-sided card). Tests that
+// specifically want the single-sided, no-button case build their own object.
 function card(cardId: string, attachedPacketIndex: number | null): CccdCard {
   return {
     cardId,
@@ -57,7 +61,10 @@ function card(cardId: string, attachedPacketIndex: number | null): CccdCard {
     attachedPacketIndex,
     number: '',
     issues: [],
-    sides: [{ side: 'front', width: 1059, height: 668 }],
+    sides: [
+      { side: 'front', width: 1059, height: 668 },
+      { side: 'back', width: 1059, height: 668 },
+    ],
   }
 }
 
@@ -115,7 +122,7 @@ function button(text: string): HTMLButtonElement {
 }
 
 function thumbButton(cardId: string): HTMLButtonElement {
-  const label = `Xem ảnh CCCD ${cardId} ở kích thước đầy đủ`
+  const label = `Xem cả hai mặt của ảnh CCCD ${cardId}`
   const found = host.querySelector(`button[aria-label="${label}"]`)
   if (!found) throw new Error(`no thumbnail button for ${cardId}: ${host.textContent}`)
   return found as HTMLButtonElement
@@ -417,5 +424,25 @@ describe('CccdReviewScreen', () => {
 
     expect(listCccdCards).toHaveBeenCalledTimes(1)
     expect(assignCccdCard).not.toHaveBeenCalled()
+  })
+
+  // The one most likely to regress: a single-sided card has no back to
+  // reveal, so it must render no clickable trigger at all -- just the image.
+  it('renders no viewer button for a single-sided card, but does for a two-sided one', async () => {
+    const singleSided: CccdCard = {
+      cardId: 'card-00',
+      state: 'exact',
+      attachedPacketIndex: 0,
+      number: '',
+      issues: [],
+      sides: [{ side: 'front', width: 1059, height: 668 }],
+    }
+    listCccdCards.mockResolvedValue([singleSided, card('card-01', 1)])
+    await mount()
+
+    expect(host.querySelector('button[aria-label="Xem cả hai mặt của ảnh CCCD card-00"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Xem cả hai mặt của ảnh CCCD card-01"]')).not.toBeNull()
+    // The single-sided card's image still renders, just not as a button.
+    expect(host.querySelector('img[alt="Ảnh CCCD card-00"]')).not.toBeNull()
   })
 })

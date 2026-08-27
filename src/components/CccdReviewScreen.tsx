@@ -8,6 +8,8 @@ import { buildCccdReview } from '../logic/cccdReview'
 import {
   describeCard,
   type CccdAttachedRow,
+  type CccdCardRow,
+  type CccdPacketRow,
   type CccdReview,
 } from '../logic/cccdReview'
 import CccdCardPicker from './CccdCardPicker'
@@ -26,47 +28,48 @@ export interface CccdReviewViewProps {
   onContinue: () => void
 }
 
-// `variant` picks the visual treatment only -- the state, the button, the
-// viewer and its label are identical either way. 'orphan' is Cần xử lý's
-// unattached-card row (320px wide, height: auto -- enlarged because an
-// unattached card has no name or packet beside it, so identifying it is
-// scrutiny from scratch); 'tile' is Đã gán's tile-filling image, sized
-// entirely by CSS on .cccd-review-tile-image so neither box applies to the
-// other variant.
-function CardThumb({ caseId, card, variant = 'orphan' }: {
-  caseId: string
-  card: CccdCard
-  variant?: 'orphan' | 'tile'
-}) {
+// One shape for every card image now: capped at native size, never
+// upscaled (see .cccd-review-tile-image img). The trigger only exists when
+// there is a second side to reveal -- with images capped at native size,
+// clicking can no longer make the image bigger, only show the back, so a
+// single-sided card (nothing more to show) renders a plain image, no
+// button: a click that would change nothing is the same class of lie as
+// the shrink-on-click affordance this replaces.
+function CardThumb({ caseId, card }: { caseId: string; card: CccdCard }) {
   // Whether the full-size viewer is open for THIS card. Pure UI state: it
   // never reads or writes card data, so it lives here rather than in the
   // container that owns cards/error/busy.
   const [open, setOpen] = useState(false)
   const front = card.sides.find(side => side.side === 'front') ?? card.sides[0]
   if (!front) return <span className="cccd-review-nothumb">Không có ảnh</span>
+
+  // No width/height attributes: the recorded side dimensions are transposed
+  // on any case ingested before fccded7 (the JPEG parser returned header
+  // order, height before width), and every existing case predates that fix.
+  // The image file is the only trustworthy source of its own size, so
+  // .cccd-review-tile-image img caps it at native (width: auto; max-width:
+  // 100%) rather than trusting a declared width/height.
+  const image = (
+    <img
+      src={cccdCardImageUrl(caseId, card.cardId, front.side)}
+      alt={`Ảnh CCCD ${card.cardId}`}
+      loading="lazy"
+    />
+  )
+
+  if (card.sides.length <= 1) {
+    return <div className="cccd-review-tile-image">{image}</div>
+  }
+
   return (
     <>
       <button
         type="button"
-        className={variant === 'tile' ? 'cccd-review-tile-image' : 'cccd-review-orphan-thumb-btn'}
-        aria-label={`Xem ảnh CCCD ${card.cardId} ở kích thước đầy đủ`}
+        className="cccd-review-tile-image"
+        aria-label={`Xem cả hai mặt của ảnh CCCD ${card.cardId}`}
         onClick={() => setOpen(true)}
       >
-        {/* No width/height attributes: the recorded side dimensions are
-            transposed on any case ingested before fccded7 (the JPEG parser
-            returned header order, height before width), and every existing
-            case predates that fix. The image file is the only trustworthy
-            source of its own size, so the box is reserved by CSS instead
-            (width: 320px; height: auto on .cccd-review-orphan-thumb for the
-            orphan row; .cccd-review-tile-image img's width: 100%; height:
-            auto for the tile) -- neither is capped to a fixed aspect, since
-            these crops are not a uniform shape. */}
-        <img
-          className={variant === 'tile' ? undefined : 'cccd-review-orphan-thumb'}
-          src={cccdCardImageUrl(caseId, card.cardId, front.side)}
-          alt={`Ảnh CCCD ${card.cardId}`}
-          loading="lazy"
-        />
+        {image}
       </button>
       {open && (
         <CccdCardViewer caseId={caseId} card={card} onClose={() => setOpen(false)} />
@@ -75,13 +78,14 @@ function CardThumb({ caseId, card, variant = 'orphan' }: {
   )
 }
 
-// The row thumbnail is barely big enough to place a face at a glance -- the
-// reviewer decides by eye, so seeing the card at full size has to be one
-// click away. View-only: no assign, no detach, nothing that mutates.
-// Reuses CccdCardPicker's backdrop (.cccd-picker-backdrop) for the dim /
-// centering and its backdrop-click + Escape pattern; the panel below is a
-// sibling class, not the picker's, since this always shows exactly one
-// card's own sides rather than a grid of candidates to choose from.
+// Every card image is already shown at native size (see CardThumb), so
+// clicking cannot make it bigger -- what it reveals is the back, the side
+// the tile does not have room for. View-only: no assign, no detach, nothing
+// that mutates. Reuses CccdCardPicker's backdrop (.cccd-picker-backdrop) for
+// the dim/centering and its backdrop-click + Escape pattern; the panel
+// below is a sibling class, not the picker's, since this always shows
+// exactly one card's own sides rather than a grid of candidates to choose
+// from.
 function CccdCardViewer({ caseId, card, onClose }: {
   caseId: string
   card: CccdCard
@@ -126,10 +130,10 @@ function CccdCardViewer({ caseId, card, onClose }: {
 }
 
 // Đã gán is a scan for a wrong automatic match, not a data table, so it is a
-// tile rather than a row: head line (identity), then the image big enough to
-// place a face, then a foot line with the OCR number, the match reason and
-// the one action this section offers. Cần xử lý (below, in CccdReviewView)
-// is untouched and still uses the row grid.
+// tile rather than a row: head line (identity), then the image, then a foot
+// line with the OCR number, the match reason and the one action this
+// section offers. Cần xử lý's orphan cards (below, in CccdReviewView) are
+// the same tile shape -- one visual language, every card image the same way.
 function AttachedTile({ caseId, row, busy, onDetach }: {
   caseId: string
   row: CccdAttachedRow
@@ -146,11 +150,35 @@ function AttachedTile({ caseId, row, busy, onDetach }: {
         <span className="cccd-review-tile-stt">{row.packetIndex + 1}</span>
         <span className="cccd-review-tile-name">{row.name}</span>
       </div>
-      <CardThumb caseId={caseId} card={card} variant="tile" />
+      <CardThumb caseId={caseId} card={card} />
       <div className="cccd-review-tile-foot">
         <span className="cccd-review-tile-number">{card.number || 'Không đọc được số'}</span>
         <span className="cccd-review-tile-state">{describeCard(card)}</span>
         <button type="button" disabled={busy} onClick={() => onDetach(card.cardId)}>Gỡ</button>
+      </div>
+    </li>
+  )
+}
+
+// Cần xử lý's own tile: an orphan card has no packet identity yet (nothing
+// has claimed it), so the head line carries the one thing it does have --
+// its cardId -- instead of an STT and a name. No Gỡ button (nothing
+// attached to detach), and still no assign control of its own: assignment
+// goes through the packet's own "Gán thẻ" row above, unchanged.
+function OrphanTile({ caseId, card }: { caseId: string; card: CccdCard }) {
+  return (
+    <li
+      className="cccd-review-tile"
+      aria-label={`Ảnh ${card.cardId}: ${describeCard(card)}`}
+    >
+      <div className="cccd-review-tile-head">
+        <span className="cccd-review-tile-name">{card.cardId}</span>
+      </div>
+      <CardThumb caseId={caseId} card={card} />
+      <div className="cccd-review-tile-foot">
+        <span className="cccd-review-tile-number">{card.number || 'Không đọc được số'}</span>
+        <span className="cccd-review-tile-state">{describeCard(card)}</span>
+        <span className="cccd-review-hint">Gán từ dòng của gói cần thẻ.</span>
       </div>
     </li>
   )
@@ -196,9 +224,17 @@ export function CccdReviewView({
             {review.needsAction.length === 0 && (
               <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
             )}
+            {/* The packets waiting for a card, then the cards waiting for a
+                packet: a compact row list first (no image, nothing to
+                enlarge), then the orphan cards as tiles below it, in the
+                same section -- reusing Đã gán's own .cccd-review-grid, since
+                an orphan card gets no less scrutiny than an attached one;
+                if anything it gets more, since there is no name to confirm
+                it against. */}
             <ul className="cccd-review-list">
-              {review.needsAction.map(row => (
-                row.kind === 'packet' ? (
+              {review.needsAction
+                .filter((row): row is CccdPacketRow => row.kind === 'packet')
+                .map(row => (
                   <li
                     className="cccd-review-row cccd-review-needs"
                     aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
@@ -215,24 +251,14 @@ export function CccdReviewView({
                       Gán thẻ
                     </button>
                   </li>
-                ) : (
-                  <li
-                    className="cccd-review-row cccd-review-orphan"
-                    aria-label={`Ảnh ${row.card.cardId}: ${describeCard(row.card)}`}
-                    key={`card-${row.card.cardId}`}
-                  >
-                    <CardThumb caseId={caseId} card={row.card} />
-                    <span className="cccd-review-number">
-                      {row.card.number || 'Không đọc được số'}
-                    </span>
-                    <span className="cccd-review-state">{describeCard(row.card)}</span>
-                    <span className="cccd-review-cardid">{row.card.cardId}</span>
-                    <span className="cccd-review-hint">
-                      Gán từ dòng của gói cần thẻ.
-                    </span>
-                  </li>
-                )
-              ))}
+                ))}
+            </ul>
+            <ul className="cccd-review-grid">
+              {review.needsAction
+                .filter((row): row is CccdCardRow => row.kind === 'card')
+                .map(row => (
+                  <OrphanTile key={`card-${row.card.cardId}`} caseId={caseId} card={row.card} />
+                ))}
             </ul>
           </section>
 

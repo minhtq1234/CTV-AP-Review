@@ -1162,8 +1162,10 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .pt-pill.fa-completed { background: #e7f3ea; color: var(--success); }
 .pt-pill.fa-flagged { background: #fce8e6; color: #c5221f; }
 
-/* Ver 3 step 1 — the CCCD review step. Rows are a fixed grid so the STT, name,
-   thumbnail and action line up down the page in both sections. */
+/* Ver 3 step 1 — the CCCD review step. The packets-needing-a-card row is a
+   fixed grid so the STT, name and action line up down the page; it carries
+   no image (there is nothing to show yet), so it is the only thing still
+   shaped as a row -- every card image, attached or orphan, is a tile. */
 .cccd-review { padding: 16px 20px 32px; }
 .cccd-review-section { margin-top: 18px; }
 .cccd-review-section > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
@@ -1176,49 +1178,28 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
-/* 320px, not the 160px the row template above still uses -- an unattached
-   card has no name or packet beside it, so the reviewer is identifying it
-   from scratch rather than confirming a match they already have a name
-   for, and that needs more scrutiny than a glance. This overrides the whole
-   column list (not just one track), so .cccd-review-row's own template --
-   and the grid-column: 3/6 span below, which reads from THAT template, not
-   this one -- is untouched by the number here. */
-.cccd-review-orphan { grid-template-columns: 320px 140px minmax(160px, 1fr) 120px auto; }
 /* The needs-a-card row has no thumbnail or number, so its state spans those
-   columns — keeping stt, name and the action aligned with the attached rows. */
+   columns — keeping stt, name and the action aligned with the attached rows.
+   (Orphan cards used to be a row here too, with their own grid-template
+   override; they are tiles now, in the grid below, so that override is
+   gone -- this is the only row left, and its own template is unchanged.) */
 .cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }
 .cccd-review-stt { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cccd-review-name { font-weight: 600; }
 .cccd-review-number { font-variant-numeric: tabular-nums; }
 .cccd-review-state { color: var(--text-muted); }
-.cccd-review-cardid { color: var(--text-muted); font-size: 12px; }
 .cccd-review-hint { color: var(--text-muted); font-size: 12px; }
-/* Orphan-card row only (confirmed by grep -- nothing else references this
-   class since the tile grid took over Đã gán), so it is named for what it
-   actually is rather than the generic "thumb" it used to share. 320px wide,
-   height: auto, no object-fit, no fixed aspect: same reasoning as the tile
-   image -- the real crops are not a uniform shape (622x288 front, 607x360
-   back), so cropping to a fixed ratio would cut card content. */
-.cccd-review-orphan-thumb {
-  width: 320px; height: auto;
-  border: 1px solid var(--border); border-radius: 4px; background: #f4f4f5;
-}
-/* Zero-chrome wrapper so the trigger button hugs the thumbnail exactly --
-   the grid column width above is sized to the image, not to a button. */
-.cccd-review-orphan-thumb-btn {
-  display: block; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0;
-}
 .cccd-review-nothumb { color: var(--text-muted); font-size: 12px; }
 .cccd-review-empty { color: var(--text-muted); margin: 8px 0 0; }
 .cccd-review-error { color: var(--danger); margin: 10px 0 0; }
 .cccd-review-foot { margin-top: 22px; display: flex; justify-content: flex-end; }
 
-/* Đã gán only -- Cần xử lý keeps the row list above untouched. This section
-   is a scan for a wrong automatic match, so the card has to be big enough to
-   recognise a face. Tiles, not rows: two columns at a desktop width,
-   collapsing to one when there is not room, rather than overflowing.
-   Own classes throughout (not .cccd-review-row/-stt/etc.) so the row grid
-   and the tile grid cannot fight. */
+/* Shared by both card-bearing sections now: an orphan card and an attached
+   card are the same job -- judging a card image by eye -- so they get the
+   same tile. Two columns at a desktop width, collapsing to one when there
+   is not room, rather than overflowing. Own classes throughout (not
+   .cccd-review-row/-stt/etc.) so the row grid (the packets-needing-a-card
+   list, which has no image) and this tile grid cannot fight. */
 .cccd-review-grid {
   list-style: none; margin: 8px 0 0; padding: 0;
   display: grid; gap: 14px;
@@ -1233,15 +1214,33 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-tile-stt { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cccd-review-tile-name { font-weight: 600; }
 /* The viewer-opening button IS the image's sizing container -- no separate
-   wrapper element needed. */
+   wrapper element needed (a single-sided card renders a plain <div> here
+   instead, since there is no back to reveal -- see CardThumb). cursor:
+   pointer is scoped to the button case only, so the non-interactive div
+   never looks clickable. */
 .cccd-review-tile-image {
-  display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer;
+  display: block; width: 100%; padding: 0; border: 0; background: none;
 }
-/* height: auto, not a fixed aspect, and no object-fit: cover: these crops
-   are not a uniform shape (the real card measured 622x288 on the front,
-   607x360 on the back), so cropping to a fixed ratio would cut real card
-   content. Let the tile be as tall as its own image needs. */
-.cccd-review-tile-image img { display: block; width: 100%; height: auto; }
+button.cccd-review-tile-image { cursor: pointer; }
+/* Capped at native size, never upscaled -- this deliberately reverses the
+   picker's own convention (.cccd-card-images img, styles.css:828: "small to
+   begin with -- let them fill the tile rather than shrinking them
+   further"). That reasoning is right when the tile is NARROWER than the
+   image; ours is the opposite case -- a ~693px tile against a source that
+   is only ~622px wide, so filling the tile would invent pixels the file
+   does not have. width: auto; max-width: 100% applies the same "don't
+   distort real detail" principle to a tile that turned out to be the
+   larger side. margin: 0 auto centres a card narrower than its tile, since
+   it is no longer stretched to the edges. Do not "fix" this back to
+   width: 100% to match the picker -- the picker's tiles are smaller than
+   their images; these are not. No object-fit and no fixed aspect either
+   way: the real crops are not a uniform shape (622x288 front, 607x360
+   back), so cropping to a fixed ratio would cut real card content. */
+.cccd-review-tile-image img {
+  display: block;
+  width: auto; max-width: 100%; height: auto;
+  margin: 0 auto;
+}
 .cccd-review-tile-foot {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 13px;
 }
@@ -1249,11 +1248,13 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-tile-state { color: var(--text-muted); }
 .cccd-review-tile-foot button { margin-left: auto; }
 
-/* Card viewer: click a row thumbnail to see that card's sides at full size.
-   Reuses .cccd-picker-backdrop for the dim/centering (see styles.css:796);
-   this panel is a sibling of .cccd-picker, not a replacement for it -- the
-   picker shows a grid of small candidates filling their tiles, this shows one
-   card's sides at natural size, only capped down when the viewport is small. */
+/* Card viewer: click a two-sided tile to see its back -- the tile itself
+   already shows the front at native size, so this is not a zoom, it is the
+   other side. Reuses .cccd-picker-backdrop for the dim/centering (see
+   styles.css:796); this panel is a sibling of .cccd-picker, not a
+   replacement for it -- the picker shows a grid of small candidates filling
+   their tiles, this shows one card's sides at natural size, only capped
+   down when the viewport is small. */
 .cccd-card-viewer {
   max-width: min(900px, 92vw); max-height: 90vh; overflow-y: auto; padding: 20px;
   background: var(--surface); border: 0.5px solid var(--border);
