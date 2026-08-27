@@ -101,14 +101,33 @@ So a success depends on the fee happening to be the very next line:
 | p9 (packet 0) | `ĐIỀU 2. PHÍ DỊCH VỤ VÀ THANH TOÁN` | `Bộ 1; Phí dịch 8.888.889 đồng.` | reads — **by luck** |
 | p17 (packet 1) | same heading | `IÍ` (an OCR fragment) | fails |
 
-Measured over July's 9 failures, the fee sits 2–3 lines below the anchor. **Widening the
-lookahead to 3 lines recovers 7 of 9** — July goes 32/41 → **39/41 (95%)** for free. It also
-makes the existing 32 robust instead of accidental. Note the line grouping happens in
-*display* space (`scale_words` then `group_lines`, `y_tol=8`), so "lines" here are
-display-space lines, not OCR-space ones.
+Measured over July's 9 failures, the fee sits 2–3 lines below the anchor. Note the line
+grouping happens in *display* space (`scale_words` then `group_lines`, `y_tol=8`), so "lines"
+here are display-space lines, not OCR-space ones.
 
-Remaining tail: packets 35 and 38 have a different layout where `ĐIỀU 2` falls on a later page
-than the anchor hit. Unresolved, 2 of 41.
+**Done — `b7e2994`.** The lookahead is now per-spec (`spec["lookahead"]`, default 1) and `phi`
+is the only spec that widens it, to 3. Confirmed end-to-end by re-ingesting July through the
+real pipeline:
+
+| field | before | after |
+|---|---|---|
+| `phi` | 32/41 | **40/41 — all 40 matching the roster, 0 wrong** |
+| `hoten` / `mst` / `tk` / `ngaysinh` | 41 / 41 / 41 / 39 | unchanged |
+| all fields | 235/246 (96%) | 240/246 (98%) |
+
+It also makes the previously-passing 32 robust rather than accidental.
+
+Two cautions for anyone repeating this measurement:
+
+- **Ingest with `cccd.xlsx`**, not just the PDF and roster. Without it, `cccd` reads 38/41
+  instead of 41/41 — 24 card-derived sources vanish and 3 packets lose their only readable
+  CCCD source. The document-derived counts (`contract` 34, `bbnt` 26, `pit` 1) are identical
+  either way, which is how that drop was distinguished from a regression.
+- **`packet["pages"]` in `case.json` is `[first, last]`, a range — not a list of pages.**
+  Indexing it per doc-relative page silently reads the wrong pages.
+
+Remaining tail: **packet 38 only** (1 of 41). Its sole `phi` source doc is `bbnt-0` — it has no
+contract source at all, so that is a document-segmentation problem, not a lookahead one.
 
 **Cause 2 — the value is handwritten.** This is all 32 February packets. The anchor finds the
 right clause (`2:Ì.. Phí dịch vụ:`), but the amount is written in blue pen on a ruled blank and
@@ -195,11 +214,12 @@ disagreement when the read behind it was confident.
    February reads 78% vs July's 96%, `phi` 0/32, and the August fixes did not help it. IDP
    earns a wider role than July alone suggested. See §4. Re-ingested as case
    `8ee0c3a88104466cad20cccbfbf0b25a` (~7 min for 32 packets) if the numbers need rechecking.
-3. ~~Why is `phi` 0/32 on February but 32/41 on July?~~ **Answered 2026-08-27** — two separate
-   causes, see §2.1a. February's fee is **handwritten** (a real IDP case); July's 9 failures
-   are an **anchor/lookahead defect** that a 3-line lookahead fixes for free, taking July to
-   39/41. The hour was worth it: part of what looked like an IDP requirement is a local code
-   fix. Still open within it: packets 35 and 38 (different contract layout).
+3. ~~Why is `phi` 0/32 on February but 32/41 on July?~~ **Answered and fixed 2026-08-27** —
+   two separate causes, see §2.1a. February's fee is **handwritten** (a real IDP case); July's
+   9 failures were an **anchor/lookahead defect**, fixed in `b7e2994`, taking July's `phi` to
+   40/41 with every read matching the roster. Part of what looked like an IDP requirement was
+   a local code fix. Still open within it: packet 38, which has no contract `phi` source at
+   all (a segmentation problem).
 4. **Governance for sending payment documents to GreenNode.** CCCD-only IDP was one thing;
    document-field IDP sends contracts and BBNT off the workstation. The original brief
    allowed GreenNode processing *"subject to confirmation of internal logging, retention and
