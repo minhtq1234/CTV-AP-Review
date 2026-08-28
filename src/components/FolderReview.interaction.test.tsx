@@ -595,10 +595,50 @@ describe('field hotkeys stay out of the criteria view', () => {
     click(button)
   }
 
+  it('falls back to the grid where there is no criteria tab', () => {
+    // The offline demo renders FolderReview with no caseId, so the criteria
+    // tab is never offered -- defaulting to it there would show a blank pane.
+    act(() => {
+      root.render(
+        <FolderReview
+          folder={folder}
+          review={emptyReview}
+          onReview={() => undefined}
+          onCommitReview={async () => undefined}
+        />,
+      )
+    })
+    const labels = Array.from(
+      container.querySelectorAll('.package-view-toggle button'),
+    ).map(b => b.textContent)
+    expect(labels).toEqual(['Dạng bảng', 'Xem chứng từ'])
+    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
+  })
+
+  it('offers the tabs in checklist-first order', () => {
+    renderWithCriteria()
+    const labels = Array.from(
+      container.querySelectorAll('.package-view-toggle button'),
+    ).map(b => b.textContent)
+    expect(labels).toEqual(['25 tiêu chí', 'Dạng bảng', 'Xem chứng từ'])
+  })
+
+  it('opens on 25 tiêu chí', () => {
+    renderWithCriteria()
+    const pressed = Array.from(
+      container.querySelectorAll('.package-view-toggle button'),
+    ).find(b => b.getAttribute('aria-pressed') === 'true')
+    expect(pressed?.textContent).toBe('25 tiêu chí')
+    expect(container.querySelector('.criteria-view, .criteria-empty')).not.toBeNull()
+    expect(container.querySelector('.packet-grid-view')).toBeNull()
+  })
+
   it('arrow keys do not write while the criteria view is open', () => {
     const onReview = renderWithCriteria()
+    openTab('Dạng bảng')               // the criteria view is what opens now
     press('ArrowDown')                 // select a field in the grid
-    openTab('25 tiêu chí')
+    expect(onReview).toHaveBeenCalled()  // the hotkey works here, so the
+    openTab('25 tiêu chí')               // assertion below is about the view
     onReview.mockClear()
 
     press('ArrowDown')
@@ -609,7 +649,9 @@ describe('field hotkeys stay out of the criteria view', () => {
 
   it('F does not flag a field while the criteria view is open', () => {
     const onReview = renderWithCriteria()
+    openTab('Dạng bảng')
     press('ArrowDown')
+    expect(onReview).toHaveBeenCalled()
     openTab('25 tiêu chí')
     onReview.mockClear()
 
@@ -620,6 +662,7 @@ describe('field hotkeys stay out of the criteria view', () => {
 
   it('the hotkeys come back when the grid does', () => {
     const onReview = renderWithCriteria()
+    openTab('Dạng bảng')
     press('ArrowDown')
     openTab('25 tiêu chí')
     onReview.mockClear()

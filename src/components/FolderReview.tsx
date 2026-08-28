@@ -75,9 +75,14 @@ export default function FolderReview({
   const [rejectionDialogOpen, setRejectionDialogOpen] = useState(false)
   const [rejectionSaving, setRejectionSaving] = useState(false)
   const [rejectionError, setRejectionError] = useState<string | null>(null)
-  // 'grid' is the default: the comparison table answers "does this packet
-  // reconcile?" at a glance, and a cell opens the scan behind it.
-  const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  // '25 tiêu chí' is the default -- it is the checklist the reviewer is
+  // actually accountable for, and a cell opens the scan behind it. Falls back
+  // to the grid in the offline demo, which has no caseId and so never renders
+  // the criteria tab at all. FolderReview is keyed per packet in UploadFlow,
+  // so this applies on every packet rather than remembering the last view.
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    caseId != null && packetIndex != null ? 'criteria' : 'grid',
+  )
   const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false)
   const [cardPickerOpen, setCardPickerOpen] = useState(false)
   const [cardBusy, setCardBusy] = useState(false)
@@ -255,14 +260,6 @@ export default function FolderReview({
   return (
     <div className="screen">
       <div className="package-view-toggle" role="group" aria-label="Chế độ xem hồ sơ">
-        <button
-          type="button"
-          aria-pressed={viewMode === 'grid'}
-          className={viewMode === 'grid' ? 'on' : ''}
-          onClick={() => { setEvidenceDrawerOpen(false); setViewMode('grid') }}
-        >
-          Dạng bảng
-        </button>
         {caseId != null && packetIndex != null && (
           <button
             type="button"
@@ -273,6 +270,14 @@ export default function FolderReview({
             25 tiêu chí
           </button>
         )}
+        <button
+          type="button"
+          aria-pressed={viewMode === 'grid'}
+          className={viewMode === 'grid' ? 'on' : ''}
+          onClick={() => { setEvidenceDrawerOpen(false); setViewMode('grid') }}
+        >
+          Dạng bảng
+        </button>
         <button
           type="button"
           aria-pressed={viewMode === 'documents'}
