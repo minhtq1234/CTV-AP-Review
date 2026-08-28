@@ -5,70 +5,85 @@ CCCD review step) has shipped — see `docs/superpowers/specs/2026-08-27-ver3-cc
 
 ---
 
-## 1. A new input: one workbook that replaces two, and carries three kinds of image
+## 1. Another document-input template — the tool assumes there is only one
 
-**The sample:** `Nghiem thu CTV - PUBGm Esports -AGQ2026.xlsx` (18 MB), alongside
-`FA-PM260706029.pdf` (178 pages). Measured, not assumed:
+**Corrected after measuring.** This is not a new input format to migrate to; it is a *second
+template*, and submissions arrive in both. The July batch (Danh Tướng 3Q) sends `roster.xlsx`
+plus a separate `cccd.xlsx`. The PUBGm Esports batch sends **one workbook with three sheets**.
+Both are legitimate. The tool currently assumes the July shape.
 
-| sheet | people | images | where the images sit |
+**The sample:** `Nghiem thu CTV - PUBGm Esports -AGQ2026.xlsx` (18 MB) with
+`FA-PM260706029.pdf` (178 pages — a submission the tool has already processed, as 25 packets).
+
+| sheet | people | images | columns the images sit in |
 |---|---|---|---|
-| `CTV` | 25 | 0 | the bảng kê itself — header on **row 5**, data from row 7 |
-| `CCCD` | 25 | **75** | col D ×24, col E ×24, col G ×25 |
-| `MST` | 25 | **25** | cols C–D |
+| `CTV` | 25 | 0 | the bảng kê — header on **row 6**, 13 columns mapped |
+| `CCCD` | 25 | **75** | D ×24 front · E ×24 back · **G ×25 bank-account screenshots** |
+| `MST` | 25 | **25** | **tax-lookup screenshots** |
 
-### What this changes
+### The good news: layout variance is already handled
 
-**It collapses two of today's three inputs into one.** Today `POST /api/cases` takes `pdf`,
-`roster` and `cccd` separately. Here the `CTV` sheet *is* the roster and the `CCCD` sheet
-carries the card images. A submission in this format has two files, not three.
+`roster_checks.locate_columns` searches for the header row and maps by column name, so it reads
+the new template unaided — header at row 6, and it recovers **account, bank, cccd, commitment,
+dob, gender, gross, mst, name, net, period, pit, stt**, 25 people. All three sheets parse. No
+work needed there, and cross-sheet checking (see §3) is nearly free as a result.
 
-**It introduces two evidence types the tool has never had.** The images are not all cards:
+### The bad news: which sheet gets read is decided by the submitter's mouse
 
-- `CCCD` col D / col E — card front and back, what we handle today
-- `CCCD` col G, under the **STK** heading — **screenshots of the bank account**
-- `MST` sheet — **screenshots of the tax-authority lookup**
+`roster_workbook.load_roster_rows` takes **`workbook.active`** — the tab that happened to be
+selected when the file was last saved. Measured on this file: **`active` is `CCCD`, not `CTV`.**
 
-**Today's extractor would mangle it.** `cccd_workbook` pulls *every* image out of the workbook
-and pairs front/back by anchor proximity. Given this file it would treat bank screenshots and
-tax screenshots as card candidates, and would happily pair a card front in col E with a bank
-screenshot in col G — they are two columns apart. The extractor has to become **column-aware**:
-read the header row, learn which column holds which kind of image, and never pair across kinds.
-Proximity pairing was a reasonable guess when the workbook was cards only; it is wrong now.
+Fed in today, that does not fail. It parses 25 people carrying only name, CCCD and STT, and
+produces a case in which every money and identity criterion has nothing to compare against —
+silently, with no error anywhere. The July template has a single sheet, so `active` was always
+correct and the assumption was invisible until now.
+
+**Fix direction:** choose the roster sheet by what it contains, not by which tab is open — the
+sheet whose header maps the most required columns wins, with the others available as companions.
+That also removes the need to name sheets `CTV`/`CCCD`/`MST`, which the next template will spell
+differently anyway.
+
+### The images are three populations, not one
+
+The extractor pulls *every* image out of the workbook and pairs front/back by anchor proximity.
+Given this file it would treat bank and tax screenshots as card candidates, and would pair a card
+front in col E with a bank screenshot in col G — two columns apart. It has to become
+**column-aware**: read the header, learn which column holds which kind, never pair across kinds.
+Proximity pairing was reasonable when the workbook was cards only; it is wrong now.
 
 ### The part worth getting excited about
 
-Two of the criteria that today produce nothing become answerable, because the submitter is now
-supplying the evidence:
+Two criteria that produce nothing today become answerable, because this template supplies the
+evidence:
 
-- **#6 Trạng thái MST** — currently 39 `rv` per case, because confirming it "needs the tax
+- **#6 Trạng thái MST** — currently 39 `rv` per case because confirming it "needs the tax
   website". The `MST` sheet is a screenshot *of that website*, one per person.
-- **#8 Thông tin ngân hàng** — currently every cell `pending`, nothing extracted. The `STK`
-  column gives account + bank as text, and col G gives a screenshot to check it against.
+- **#8 Thông tin ngân hàng** — currently every cell `pending`. The `STK` column gives account and
+  bank as text; col G gives a screenshot to check it against.
 
-A third becomes real rather than nominal: **#4 Giới tính** is dismissed in
-`criteria-reliability.md` as checking "one Excel column and nothing else" — the card front
-carries giới tính, so it could become a genuine two-source comparison.
+And **#4 Giới tính**, dismissed in `criteria-reliability.md` as checking "one Excel column and
+nothing else", could become a real comparison — the card front carries giới tính.
 
-That is three of the seven "not built" / "always routes to a person" criteria, unlocked by an
-input change rather than by better OCR.
+Three of the seven unbuilt or always-routed criteria, unlocked by an input template rather than
+by better OCR.
 
-### Columns the bảng kê now carries that we ignore
+### Template differences that change behaviour
 
-`Giới tính`, `Ngân hàng`, `Thời gian làm việc`, `Công việc`, `SĐT`, and a header block with
-`Mã eform plan` / `Mã eform thanh toán`. The eform codes look like the natural join back to the
-payment request itself — worth checking whether they appear on the PDF's cover page.
+- **`pit` is filled on only 8 of 25 rows here**, against every row in July. Criterion #15 produces
+  14 of 20 rejections on the July batch; a template that leaves PIT blank will not behave the same
+  way, and `commitment` is filled on all 25 rows, so the rule's other half is present. Worth
+  measuring before assuming #15 transfers.
+- 24 fronts and 24 backs for 25 people — one card side missing in the source.
+- Two stray images in `CCCD` col C, seven in `MST` col C. Unidentified.
+- The header block carries `Mã eform plan` and `Mã eform thanh toán`, which look like the join
+  back to the payment request. Worth checking whether they appear on the PDF cover.
 
-### Open questions
+### Open question that shapes everything else
 
-- Do both formats need to be supported at once, or is this replacing the old one? Detecting
-  sheet names (`CTV` / `CCCD` / `MST`) is a cheap discriminator if both must live.
-- The header row is row 5 here, not row 1. `roster_checks.locate_columns` already searches for
-  it — confirm it copes with this layout before assuming it does.
-- 24 fronts and 24 backs for 25 people: one person is missing a card side in the source file.
-  What should that produce — a missing-document finding, or silence?
-- Two stray images in `CCCD` col C and seven in `MST` col C. Unknown what they are.
-
----
+How many templates are there, really? Two are now known. If the answer is "one per product team
+and it changes yearly", the design target is not "support this second file" but **a template
+adapter** — a small declaration per template naming the roster sheet, the image columns and their
+kinds — rather than a second hard-coded path that the third template breaks again.
 
 ## 2. Clicking a status cell should open the document
 
