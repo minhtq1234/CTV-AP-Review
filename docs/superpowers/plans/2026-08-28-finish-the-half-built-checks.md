@@ -14,6 +14,14 @@ page has to record that place while the words are still in hand.
 
 ---
 
+## What is deferred, and where it went
+
+#6 (Trạng thái MST) and #27 (Thông tin công ty VNG) are **deferred** — both need information from
+outside the code rather than code, so neither is in this plan or the semantic one. #27's comparison
+machinery does get built as a side effect of `compare="organisation"` in
+`2026-08-28-semantic-extraction.md`; it will answer `UNKNOWN` until somebody supplies VNG's and
+Adtima's own legal details, which is correct and honest rather than a gap.
+
 ## Before you start
 
 **This repo has three divergent lineages sharing filenames with different APIs.** Verify every
