@@ -78,12 +78,70 @@ by better OCR.
 - The header block carries `Mã eform plan` and `Mã eform thanh toán`, which look like the join
   back to the payment request. Worth checking whether they appear on the PDF cover.
 
-### Open question that shapes everything else
+### Decision: read both templates, do not ask users to transform their files
 
-How many templates are there, really? Two are now known. If the answer is "one per product team
-and it changes yearly", the design target is not "support this second file" but **a template
-adapter** — a small declaration per template naming the roster sheet, the image columns and their
-kinds — rather than a second hard-coded path that the third template breaks again.
+Two templates are known today. The question raised was whether to build a second input path or
+to give submitters a converter / canonical template to fill in. **Read them. Do not transform.**
+
+**The layout is self-describing, so this is inference, not an adapter.** `D1:E1` on the CCCD
+sheet is a *merged* cell labelled `Hình CCCD` — the header itself says columns D and E are the
+two card sides. `Hình Ảnh` sits beside `STK`; on the MST sheet `Hình Ảnh` sits beside `MST`. The
+same header-search that already maps roster columns can map image columns.
+
+**We have already proved the approach on the harder half.** `locate_columns` reads both templates
+with no per-template code — header on row 1 in one, row 6 in the other, 13 columns recovered from
+a sheet it had never seen. Nobody wrote an adapter for that; they wrote a reader that looks at
+headers. The images are not harder.
+
+Why not a transform, in order of weight:
+
+1. **Transcription is the failure class this tool exists to catch.** Any human transform — retyping
+   into a canonical template, or correcting what a converter got wrong — is a fresh chance for one
+   digit of a CCCD or an account number to change. Packet 34 is that exact shape: `070198011354`
+   for `079198011354`, one digit, found only because a criterion compared it against the bảng kê.
+   Adding a copy step upstream manufactures the defect the downstream is built to detect.
+2. **The original stops being the evidence.** This is an audit tool; the artifact checked should be
+   the artifact submitted. A converter that silently mis-maps a column hands the tool a clean-looking
+   file with no way to know — the same shape as the `workbook.active` bug above, but outside the
+   codebase where it cannot be measured.
+3. **The submitters will not do it reliably.** These are product teams attaching files to a payment
+   request. The evidence is in this very workbook: the same card pasted twice on two sheets, 24
+   fronts for 25 people, stray images in column C. A process that produces those will produce
+   canonical templates with the same errors plus transcription ones.
+4. **A canonical template still versions.** You would end up maintaining the template *and* readers
+   for its old versions — the thing the transform was meant to avoid.
+
+**Transformation does belong in this design — one layer inward.** Several readers, one canonical
+internal shape. That is the normalisation layer we would build regardless; it just runs inside the
+tool, on the file the submitter actually sent, instead of on a copy someone made by hand.
+
+### What that means concretely
+
+- **Pick the roster sheet by content, not by `workbook.active`** — the sheet whose header maps the
+  most required columns. Not a template feature; removing a wrong assumption, and it fixes both
+  known templates plus most unknown ones.
+- **Map image columns by header**, the way roster columns are mapped: a merged `Hình CCCD` spanning
+  two columns means front and back; `Hình Ảnh` next to `STK` means a bank screenshot; on a sheet
+  keyed by MST it means a tax-lookup screenshot.
+- **Keep proximity pairing as the fallback**, used only when no image headers are found, so the
+  July `cccd.xlsx` (which has no such headers) keeps working unchanged.
+
+### The risk, and what answers it
+
+Inference can be confidently wrong and silent — precisely the bug found above. So it has to be
+**shown**. The bảng kê pre-flight in §3 is where the tool states what it inferred:
+
+> bảng kê read from sheet `CTV` · 25 people · 24 card fronts in column D, 24 backs in column E ·
+> 25 bank screenshots under `STK` · 25 tax screenshots on sheet `MST`
+
+A reviewer confirms that in seconds, before a 51-minute run commits to it. That buys inference's
+flexibility with a declaration's auditability — and it is why notes 1 and 3 are really one piece
+of work, not two.
+
+### Still open
+
+- How many templates exist beyond these two, and do they come from the same team each period?
+- Does the `Mã eform` header block appear on the PDF cover, and should it be checked against it?
 
 ## 2. Clicking a status cell should open the document
 
