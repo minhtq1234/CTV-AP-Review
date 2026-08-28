@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import io
+import pathlib
 import json
 import os
 import time
@@ -239,6 +240,104 @@ def test_invalid_cccd_extension_is_rejected_before_case_creation(
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid-cccd-workbook"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_combined_workbook_alone_is_also_used_as_the_card_source(
+    tmp_path,
+    monkeypatch,
+):
+    """One file, one upload. The combined template is both the bảng kê and the
+    card source, and a reviewer who selects it once should not have to know to
+    select it again in the CCCD field -- doing that silently ingested no cards at
+    all, so every packet reported CCCD/Passport missing."""
+    from test_fixtures import combined_workbook
+
+    built = str(tmp_path / "combined.xlsx")
+    combined_workbook.build(built)
+    combined_bytes = pathlib.Path(built).read_bytes()
+
+    seen = {}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["cccd"] = cccd_xlsx_path
+        seen["roster"] = roster
+        cb("done", 1, 1, "")
+        return {
+            "summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
+            "packets": [{"index": 0, "name": "P0", "pages": [0, 1],
+                         "confidence": "green", "flags": [], "labels": []}],
+        }
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path / "store")))
+    client = TestClient(app)
+    response = client.post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "roster": (
+                "combined.xlsx",
+                combined_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    cid = response.json()["case_id"]
+    for _ in range(100):
+        detail = client.get(f"/api/cases/{cid}").json()
+        if detail["status"] != "processing":
+            break
+        time.sleep(.02)
+
+    # Same stored file in both roles -- not a second 18 MB copy.
+    assert seen["cccd"] == seen["roster"]
+    assert seen["cccd"] is not None
+
+
+def test_a_plain_roster_alone_is_not_treated_as_a_card_source(
+    tmp_path,
+    monkeypatch,
+):
+    """The older single-sheet bảng kê holds no card images, so nothing changes
+    for it -- the card stage stays off rather than walking a workbook that has
+    nothing in it."""
+    seen = {}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["cccd"] = cccd_xlsx_path
+        cb("done", 1, 1, "")
+        return {
+            "summary": {"found": 1, "rosterN": 1, "autoMerged": 0},
+            "packets": [{"index": 0, "name": "P0", "pages": [0, 1],
+                         "confidence": "green", "flags": [], "labels": []}],
+        }
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    client = TestClient(app)
+    response = client.post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "roster": (
+                "roster.xlsx",
+                _roster_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    cid = response.json()["case_id"]
+    for _ in range(100):
+        detail = client.get(f"/api/cases/{cid}").json()
+        if detail["status"] != "processing":
+            break
+        time.sleep(.02)
+
+    assert seen["cccd"] is None
 
 
 def test_valid_cccd_upload_is_saved_passed_to_pipeline_and_redacted(

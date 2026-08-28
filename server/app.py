@@ -351,6 +351,13 @@ async def post_case(
             cccd.file.seek(0)
             with open(cccd_path, "wb") as f:
                 shutil.copyfileobj(cccd.file, f)
+    elif roster_path is not None and _holds_cards(roster_path):
+        # One file, one upload. The combined template is both the bảng kê and
+        # the card source; a reviewer who selects it once should not have to
+        # know to select it again in the CCCD field. Selecting it once used to
+        # ingest no cards at all, and every packet then reported
+        # CCCD/Passport missing with nothing on screen to say why.
+        cccd_path = roster_path
 
     t = threading.Thread(
         target=_run_case,
@@ -798,6 +805,23 @@ async def post_inspect(
         }
 
     return await run_in_threadpool(describe)
+
+
+def _holds_cards(xlsx_path: str) -> bool:
+    """Whether this workbook carries a column of ID-card images.
+
+    Deliberately narrower than "has any images": the combined template also
+    holds bank and tax-lookup screenshots, and the older single-sheet bảng kê
+    holds none at all. Only a column the header identifies as cards makes a
+    workbook worth walking for cards.
+    """
+    try:
+        columns = cccd_workbook.describe_image_columns(xlsx_path)
+    except Exception:
+        # A workbook whose drawings cannot be walked still has a usable roster
+        # half. Treat it as card-less rather than failing the upload.
+        return False
+    return any(column.get("kind") == "card" for column in columns)
 
 
 def _distinct_workbooks(roster: UploadFile, cccd: UploadFile | None):
