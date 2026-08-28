@@ -17,7 +17,7 @@ import {
 import { cccdReviewSeenKey, shouldOpenCccdReview } from '../logic/cccdReview'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
-import CaseDetail, { type CaseTab } from './CaseDetail'
+import CaseDetail from './CaseDetail'
 import CccdReviewScreen from './CccdReviewScreen'
 import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
@@ -60,7 +60,6 @@ export default function UploadFlow() {
   // Which tab CaseDetail should land on next time it renders. The criteria
   // matrix's roster-level cell leaves the packet for the bảng kê check, which
   // lives on Tổng hợp.
-  const [detailTab, setDetailTab] = useState<CaseTab>('packets')
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
   const [folder, setFolder] = useState<CtvFolder | null>(null)
   const [review, setReviewState] = useState<PacketReview>(
@@ -262,7 +261,6 @@ export default function UploadFlow() {
     return (
       <>
         <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList}
-          initialTab={detailTab}
           onExport={() => setShowReport(true)}
           onOpenCccd={detail.cccdSummary ? () => setScreen('cccd') : undefined} />
         {showReport && caseId && <ReportPanel caseId={caseId} onClose={() => setShowReport(false)} />}
@@ -303,7 +301,6 @@ export default function UploadFlow() {
           onCardAssigned={() => {
             if (packetIndex != null) void onOpenPacket(packetIndex)
           }}
-          onShowSummary={() => { setDetailTab('summary'); setScreen('detail') }}
         />
       </div>
     )

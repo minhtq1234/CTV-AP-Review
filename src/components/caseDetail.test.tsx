@@ -388,7 +388,10 @@ describe('view tabs', () => {
     }
   }
 
-  it('offers the packet grid and the roster-level tab', () => {
+  // Tổng hợp is hidden behind SHOW_SUMMARY_TAB for now (see CaseDetail's own
+  // comment on the flag). Flip the flag and this test flips back to asserting
+  // both tabs are offered.
+  it('hides the roster-level tab, showing only the packets', () => {
     const html = renderToStaticMarkup(
       <CaseDetail
         detail={detailFor()}
@@ -398,8 +401,27 @@ describe('view tabs', () => {
       />,
     )
 
-    expect(html).toContain('>Gói hồ sơ<')
-    expect(html).toContain('>Tổng hợp<')
+    expect(html).not.toContain('>Tổng hợp<')
+    expect(html).not.toContain('role="tablist"')
+    // The packet view itself is untouched -- this hides a tab, not a screen.
+    expect(html).toContain('Cần chú ý trước')
+  })
+
+  it('stays on the packets even when asked to land on the hidden tab', () => {
+    // UploadFlow no longer passes initialTab, but nothing should break if a
+    // caller does -- a hidden tab must not become an unreachable blank screen.
+    const html = renderToStaticMarkup(
+      <CaseDetail
+        detail={detailFor()}
+        onOpenPacket={() => undefined}
+        onBack={() => undefined}
+        onExport={() => undefined}
+        initialTab="summary"
+      />,
+    )
+
+    expect(html).not.toContain('Kiểm tra toàn bảng kê')
+    expect(html).toContain('Xuất báo cáo gửi lại')
   })
 
   it('opens on the packets, so the tab is additive', () => {

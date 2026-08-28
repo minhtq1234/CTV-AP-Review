@@ -40,7 +40,7 @@ export default function CaseDetail({
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
-  const [tab, setTab] = useState<CaseTab>(initialTab)
+  const [tab, setTab] = useState<CaseTab>(SHOW_SUMMARY_TAB ? initialTab : 'packets')
   // The packet a "Xem chứng từ" click asked to preview -- null when the
   // dialog is closed. Kept here (not in PacketDashboardView) because opening
   // the full reviewer from inside the dialog needs the same onOpenPacket a
@@ -102,6 +102,7 @@ export default function CaseDetail({
         </div>
       )}
 
+      {SHOW_SUMMARY_TAB && (
       <div className="case-tabs" role="tablist" aria-label="Chế độ xem hồ sơ">
         {CASE_TABS.map(option => (
           <button
@@ -116,6 +117,7 @@ export default function CaseDetail({
           </button>
         ))}
       </div>
+      )}
 
       {tab === 'summary' ? (
         <SummaryTab caseId={detail.id} />
@@ -163,6 +165,19 @@ const CASE_TABS: Array<{ value: CaseTab; label: string }> = [
   { value: 'packets', label: 'Gói hồ sơ' },
   { value: 'summary', label: 'Tổng hợp' },
 ]
+
+/**
+ * Tổng hợp is hidden for now, at the reviewer's request. Landing on it
+ * unexpectedly was worse than not having it: UploadFlow's `detailTab` was
+ * sticky, so one Bảng Kê Thu Mua jump made every later back-out-of-a-packet
+ * land here instead of on the packet list.
+ *
+ * Flip this to true to bring it back -- SummaryTab, the five roster-level
+ * criteria, `GET /api/cases/{id}/summary` and their tests are all still here
+ * and still passing. Restoring the matrix's jump to it needs `onShowSummary`
+ * wired again in UploadFlow, and `detailTab` cleared once consumed.
+ */
+const SHOW_SUMMARY_TAB = false
 
 export interface PacketDashboardViewProps {
   packets: PacketMeta[]

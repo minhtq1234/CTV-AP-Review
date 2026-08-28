@@ -276,7 +276,11 @@ function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
               onOpen()
             }
           } else if (action.kind === 'summary') {
-            onShowSummary?.()
+            // Same fallback as `open` above: with Tổng hợp hidden there is
+            // nowhere to send the reviewer, so show the notes rather than be
+            // a button that silently does nothing.
+            if (onShowSummary) onShowSummary()
+            else onOpen()
           }
         }}
       >
