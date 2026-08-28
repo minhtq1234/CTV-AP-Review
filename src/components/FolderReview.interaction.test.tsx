@@ -537,7 +537,10 @@ describe('FolderReview package grid', () => {
     expect(container.querySelector('.panes')).not.toBeNull()
   })
 
-  it('a grid cell opens the evidence drawer without hiding the grid', () => {
+  it("a grid cell opens that column's document, not a focused value", () => {
+    // Ver 3: the cell opens the whole document rather than jumping to the
+    // value's bounding box. With a live case that is the docs dialog; this
+    // fixture has no caseId, so it falls back to the document panes.
     renderReview(emptyReview, folder, 'grid')
 
     const cell = container.querySelector<HTMLButtonElement>(
@@ -546,9 +549,9 @@ describe('FolderReview package grid', () => {
     expect(cell).not.toBeNull()
     click(cell!)
 
-    // the table stays put -- the scan opens beside it, not instead of it
-    expect(container.querySelector('.packet-grid-view')).not.toBeNull()
-    expect(container.querySelector('.packet-evidence-drawer')).not.toBeNull()
+    expect(container.querySelector('.panes')).not.toBeNull()
+    // No autofocus: nothing is highlighted on the way in.
+    expect(container.querySelector('.doc-hl-fill')).toBeNull()
   })
 })
 

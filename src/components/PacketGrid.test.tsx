@@ -41,7 +41,7 @@ const folder: CtvFolder = {
 
 test('renders Excel rows against dynamic document columns with accessible statuses', () => {
   const html = renderToStaticMarkup(
-    <PacketGrid folder={folder} onOpenEvidence={() => undefined} />,
+    <PacketGrid folder={folder} onOpenDocument={() => undefined} />,
   )
 
   expect(html).toContain('Excel file')
@@ -70,7 +70,7 @@ test('distinguishes duplicate document labels by their package order', () => {
     }],
   }
   const html = renderToStaticMarkup(
-    <PacketGrid folder={duplicateDocuments} onOpenEvidence={() => undefined} />,
+    <PacketGrid folder={duplicateDocuments} onOpenDocument={() => undefined} />,
   )
 
   expect(html).toContain('aria-label="Họ và tên · Chứng từ 1 Hợp đồng: Khớp"')
@@ -82,7 +82,7 @@ test('marks the exact evidence cell selected by the drawer', () => {
     <PacketGrid
       folder={folder}
       selectedEvidence={{ fieldKey: 'cccd', sourceIndex: 0 }}
-      onOpenEvidence={() => undefined}
+      onOpenDocument={() => undefined}
     />,
   )
 

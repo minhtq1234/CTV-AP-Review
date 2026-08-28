@@ -82,11 +82,13 @@ export default function FolderReview({
   const [cardPickerOpen, setCardPickerOpen] = useState(false)
   const [cardBusy, setCardBusy] = useState(false)
   const [cardError, setCardError] = useState<string | null>(null)
-  // Which document a criteria cell asked to open, with the cell's own note and
-  // value so the popup header carries what the detail row used to show.
+  // Which document a cell asked to open. The criteria matrix names a kind and
+  // carries the cell's note and value; the Dạng bảng grid names the document
+  // outright, since its columns already are the packet's documents.
   const [docPopup, setDocPopup] = useState<{
-    docKind: EvidenceKind
-    context: { label: string; note?: string; value?: string }
+    docKind?: EvidenceKind
+    docId?: string
+    context?: { label: string; note?: string; value?: string }
   } | null>(null)
 
   // The CCCD card the ingest could not place. OCR fails on roughly half of
@@ -293,9 +295,15 @@ export default function FolderReview({
           selectedEvidence={evidenceDrawerOpen && selection.kind === 'field'
             ? { fieldKey: selection.key, sourceIndex: selection.sourceIndex }
             : null}
-          onOpenEvidence={(fieldKey, sourceIndex) => {
-            focusAt(fieldKey, sourceIndex)
-            setEvidenceDrawerOpen(true)
+          onOpenDocument={docId => {
+            if (caseId != null && packetIndex != null) { setDocPopup({ docId }); return }
+            // The offline demo has no case, so there is no manifest endpoint
+            // for the dialog to fetch. Show the document in the panes instead
+            // of leaving the cell an inert button -- same intent, no autofocus.
+            setActiveDocId(docId)
+            setActivePage(0)
+            setFocusBbox(null)
+            setViewMode('documents')
           }}
         />
       ) : (
@@ -415,6 +423,7 @@ export default function FolderReview({
           caseId={caseId}
           packetIndex={packetIndex}
           packetName={folder.name}
+          initialDocId={docPopup.docId}
           initialDocKind={docPopup.docKind}
           context={docPopup.context}
           onClose={() => setDocPopup(null)}

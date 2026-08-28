@@ -8,7 +8,10 @@ import { formatRosterValue } from '../logic/reviewValue'
 interface Props {
   folder: CtvFolder
   selectedEvidence?: { fieldKey: string; sourceIndex: number } | null
-  onOpenEvidence: (fieldKey: string, sourceIndex: number) => void
+  /** Open the document this column is, full-page and unfocused. Replaces the
+   *  old bbox-focused jump: the reviewer asked to read the whole document here.
+   *  Value-level focus is still reached from the fields panel and the keyboard. */
+  onOpenDocument: (docId: string) => void
 }
 
 const STATUS_PRESENTATION: Record<PacketGridStatus, { icon: string; label: string }> = {
@@ -18,7 +21,7 @@ const STATUS_PRESENTATION: Record<PacketGridStatus, { icon: string; label: strin
   na: { icon: '–', label: 'Không áp dụng' },
 }
 
-export default function PacketGrid({ folder, selectedEvidence, onOpenEvidence }: Props) {
+export default function PacketGrid({ folder, selectedEvidence, onOpenDocument }: Props) {
   const grid = buildPacketGrid(folder)
 
   return (
@@ -65,7 +68,7 @@ export default function PacketGrid({ folder, selectedEvidence, onOpenEvidence }:
                             aria-label={label}
                             aria-pressed={selected}
                             title={`${presentation.label} — mở chứng từ`}
-                            onClick={() => onOpenEvidence(row.fieldKey, cell.sourceIndex!)}
+                            onClick={() => onOpenDocument(grid.columns[columnIndex].docId)}
                           >
                             {presentation.icon}
                           </button>

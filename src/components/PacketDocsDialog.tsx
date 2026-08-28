@@ -14,6 +14,9 @@ interface Props {
    *  nowhere to go, and a button that navigates to where you already are is a
    *  lie. */
   onOpenPacket?: (index: number) => void
+  /** Open on this exact document. Wins over `initialDocKind` when both are
+   *  given; falls back to the first document when the id is not in the packet. */
+  initialDocId?: string
   /** Open on this document rather than the first. Falls back to the first when
    *  the packet has no document of that kind. */
   initialDocKind?: EvidenceKind
@@ -56,6 +59,7 @@ export default function PacketDocsDialog({
   packetName,
   onClose,
   onOpenPacket,
+  initialDocId,
   initialDocKind,
   context,
 }: Props) {
@@ -81,9 +85,10 @@ export default function PacketDocsDialog({
         // Open on the kind the caller asked for -- the matrix cell names the
         // document its column refers to -- falling back to the first when this
         // packet has no document of that kind.
-        const requested = initialDocKind
-          ? manifest.docs.find(doc => doc.kind === initialDocKind)
-          : undefined
+        const requested =
+          (initialDocId && manifest.docs.find(doc => doc.id === initialDocId))
+          || (initialDocKind && manifest.docs.find(doc => doc.kind === initialDocKind))
+          || undefined
         setActiveDocId(requested?.id ?? manifest.docs[0]?.id ?? null)
         setActivePage(0)
       })
@@ -91,7 +96,7 @@ export default function PacketDocsDialog({
         if (liveKeyRef.current !== key) return
         setState({ status: 'error' })
       })
-  }, [caseId, packetIndex, initialDocKind])
+  }, [caseId, packetIndex, initialDocKind, initialDocId])
 
   useEffect(() => {
     load()
