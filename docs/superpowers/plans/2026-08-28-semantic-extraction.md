@@ -616,7 +616,12 @@ git commit -m "feat(semantic): record semantic values, with quote and box, at in
 ## Task 6: The real adapter — #13 only
 
 **Stop and read.** Everything above works with no model. This task adds one, and it is the only
-task whose output cannot be judged by a test. Its purpose is to make **one** criterion answerable on
+task whose output cannot be judged by a test.
+
+**Before you start, read `docs/ver3-scope.md` §4.** Sending contract text to MaaS is approved, but
+the entry states four things the approval explicitly does not cover — another vendor, page images,
+the bảng kê or card images, and anything at all with the credentials unset. Those limits are part
+of this task. Its purpose is to make **one** criterion answerable on
 **real** contracts so somebody with the data can say whether it is good enough.
 
 **Files:**
@@ -780,11 +785,14 @@ reason, over 25% rejects the approach. Plus a hard assertion at any rate — a q
 does not support its value rejects outright, because that puts a highlight on the page vouching for
 something the page does not say.
 
-**Q4 — sending contract text to MaaS. You are right to stop.** The plan overstated the approval: what
-is approved is a cropped ID image, and a contract page is materially more — name, CCCD, address,
-account, amounts, signature block. **Task 6 does not start until the project owner answers, in
-writing, in this repository.** Escalated on 2026-08-28; the answer belongs in `docs/ver3-scope.md`
-where the other standing decisions live. Tasks 1–5 are unaffected and are the work to pick up now.
+**Q4 — sending contract text to MaaS. You were right to stop, and it is now answered.** The plan
+overstated the approval: what was approved was a cropped ID image, and a contract page is materially
+more — name, CCCD, address, account, amounts, signature block.
+
+**Approved on 2026-08-28 by the project owner (minhtq4), and recorded in `docs/ver3-scope.md` §4**
+along with what the approval does *not* extend to: no other vendor, no page images, and nothing sent
+when the credentials are unset. **Task 6 is unblocked.** Read §4 before starting it — the limits
+there are part of the task, not background.
 
 **Q5 — the candidate-pool defect.** Confirmed independently. `_pairable` is referenced only at
 `cccd_pairing.py:92`, inside `_vertically_eligible`, so it stops a screenshot being *paired with* a

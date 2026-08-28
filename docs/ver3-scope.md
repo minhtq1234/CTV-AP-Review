@@ -251,6 +251,39 @@ per-row validation stays in the Excel column where it already lives.
 
 ---
 
+## 4. Data leaving the machine: what is approved
+
+Recorded here because it is a standing decision, not a task, and because everywhere else this
+project is deliberate about it — `server/data/` is gitignored, and the plans forbid a real
+contractor's details in a test fixture on the grounds that fixtures reach a public repository.
+
+**Approved, 2026-08-28, by the project owner (minhtq4):** sending **contract page text** to
+GreenNode's MaaS inference endpoint
+(`https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1/chat/completions`), authenticated with the
+existing `GREENNODE_API_KEY`, for the semantic reading of criteria #8, #9, #10, #11 and #13.
+
+The disclosure this widens, stated plainly so nobody has to reconstruct it later:
+
+| | before | now approved |
+|---|---|---|
+| what is sent | a cropped ID card image | full text of the contract pages being read |
+| what that contains | the card's own fields | name, CCCD, address, bank account, amounts, signature block |
+| to whom | GreenNode IDP | GreenNode MaaS — same vendor, same tenancy, same key |
+
+The question was raised in review of `docs/superpowers/plans/2026-08-28-semantic-extraction.md`,
+which had wrongly asserted the existing card-reader approval already covered it. It did not; this
+entry is the approval.
+
+**Still not approved, and not to be assumed from the above:**
+
+- any other vendor or endpoint — this covers GreenNode's tenancy and nothing else
+- sending **page images** rather than text
+- sending the bảng kê, the CCCD sheet, or card images to the MaaS endpoint
+- sending anything at all when the credentials are unset: absent keys must leave the cells
+  `pending`, exactly as the card reader behaves today
+
+---
+
 ## Appendix — the original pre-flight sketch, superseded
 
 Kept because the reasoning about *what* to check is still the checklist for filling the Excel
