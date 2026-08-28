@@ -210,3 +210,87 @@ def test_a_sheet_without_image_headers_leaves_every_kind_none():
     result = extract_drawings(path, os.path.join(directory, "out"))
 
     assert all(d.kind is None for d in result.drawings)
+
+
+def test_one_combined_workbook_serves_as_both_roster_and_cards(tmp_path, monkeypatch):
+    """Task 7: the combined template is a single file that is both the bảng kê
+    and the card source. Uploaded in both fields it must be stored once, and the
+    pipeline must receive the same path for each."""
+    import app as appmod
+    from fastapi.testclient import TestClient
+
+    seen = {}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["roster"] = roster
+        seen["cccd"] = cccd_xlsx_path
+        cb("done", 1, 1, "")
+        return {"summary": {"found": 0, "rosterN": 0, "autoMerged": 0}, "packets": []}
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    path = build(os.path.join(tempfile.mkdtemp(), "combined.xlsx"))
+    with open(path, "rb") as handle:
+        payload = handle.read()
+    sheet_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    client = TestClient(appmod.app)
+    response = client.post("/api/cases", files={
+        "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+        "roster": ("combined.xlsx", payload, sheet_type),
+        "cccd": ("combined.xlsx", payload, sheet_type),
+    })
+    assert response.status_code == 200
+
+    cid = response.json()["case_id"]
+    for _ in range(200):
+        if client.get(f"/api/cases/{cid}").json()["status"] != "processing":
+            break
+
+    # Stored once, and both roles point at that one file.
+    assert seen["roster"] == seen["cccd"]
+    assert os.path.isfile(seen["roster"])
+    case_dir = appmod.store.case_dir(cid)
+    assert not os.path.exists(os.path.join(case_dir, "cccd.xlsx"))
+
+
+def test_two_different_workbooks_are_still_stored_separately(tmp_path, monkeypatch):
+    """The July pair must keep its two files; dedupe applies only when the same
+    bytes arrive in both fields."""
+    import app as appmod
+    from fastapi.testclient import TestClient
+
+    seen = {}
+
+    def fake_pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        seen["roster"] = roster
+        seen["cccd"] = cccd_xlsx_path
+        cb("done", 1, 1, "")
+        return {"summary": {"found": 0, "rosterN": 0, "autoMerged": 0}, "packets": []}
+
+    monkeypatch.setattr(appmod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+
+    directory = tempfile.mkdtemp()
+    with open(build_july(os.path.join(directory, "roster.xlsx")), "rb") as handle:
+        roster_payload = handle.read()
+    with open(build(os.path.join(directory, "cards.xlsx")), "rb") as handle:
+        cards_payload = handle.read()
+    sheet_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    client = TestClient(appmod.app)
+    response = client.post("/api/cases", files={
+        "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+        "roster": ("roster.xlsx", roster_payload, sheet_type),
+        "cccd": ("cards.xlsx", cards_payload, sheet_type),
+    })
+    assert response.status_code == 200
+
+    cid = response.json()["case_id"]
+    for _ in range(200):
+        if client.get(f"/api/cases/{cid}").json()["status"] != "processing":
+            break
+
+    assert seen["roster"] != seen["cccd"]
+    assert os.path.isfile(seen["cccd"])

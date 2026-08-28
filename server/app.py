@@ -11,6 +11,7 @@ restart: `case.json` holds the metadata + per-packet reviews, and
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -204,6 +205,24 @@ def _upload_size(upload: UploadFile) -> int:
     return size
 
 
+def _same_bytes(path: str, upload_file) -> bool:
+    """Whether the stored file and the uploaded stream hold identical bytes.
+
+    Compared by digest in bounded chunks rather than read whole: these are up to
+    25 MB workbooks and the check runs on the request thread.
+    """
+    stored = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            stored.update(chunk)
+    incoming = hashlib.sha256()
+    upload_file.seek(0)
+    for chunk in iter(lambda: upload_file.read(1024 * 1024), b""):
+        incoming.update(chunk)
+    upload_file.seek(0)
+    return stored.digest() == incoming.digest()
+
+
 def _roster_rejection(upload: UploadFile) -> str | None:
     """None if the workbook is usable as a bảng kê, else why it is not.
 
@@ -313,9 +332,18 @@ async def post_case(
 
     cccd_path = None
     if cccd is not None:
-        cccd_path = os.path.join(case_dir, "cccd.xlsx")
-        with open(cccd_path, "wb") as f:
-            shutil.copyfileobj(cccd.file, f)
+        # The combined template is one file serving as both the bảng kê and the
+        # card source, so a reviewer selects it in both fields. Store it once and
+        # let both roles point at it, rather than keeping two copies of an 18 MB
+        # workbook and OCRing a second set of identical drawings.
+        cccd.file.seek(0)
+        if roster_path is not None and _same_bytes(roster_path, cccd.file):
+            cccd_path = roster_path
+        else:
+            cccd_path = os.path.join(case_dir, "cccd.xlsx")
+            cccd.file.seek(0)
+            with open(cccd_path, "wb") as f:
+                shutil.copyfileobj(cccd.file, f)
 
     t = threading.Thread(
         target=_run_case,
