@@ -301,7 +301,7 @@ def test_valid_cccd_upload_is_saved_passed_to_pipeline_and_redacted(
 
     assert detail["status"] == "ready"
     assert seen["cccd_exists"] is True
-    assert seen["cccd"].endswith("/cccd.xlsx")
+    assert os.path.basename(seen["cccd"]) == "cccd.xlsx"
     assert detail["cccdName"] == "cards.xlsx"
     assert detail["cccdSummary"] == {
         "status": "ready",
