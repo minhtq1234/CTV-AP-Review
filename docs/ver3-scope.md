@@ -152,28 +152,49 @@ of work, not two.
   against the PDF cover and nothing should. Read them if they are free to read; do not build a
   criterion on them.
 
-## 2. Clicking a status cell should open the document
+## 2. Clicking a status cell opens its document
 
 **Ask:** in the 25-criteria view and the Dạng bảng view, clicking a ✓ / ✗ / ? / ! opens the
 document that cell refers to, in a popup. Full document, **no autofocus** on the value.
 
-**Most of this already exists.** `PacketDocsDialog` (shipped today) opens a packet's documents
-in a modal over the list, reusing `EvidenceViewer` read-only. The work is to open it *on a
-specific document* rather than the first one, from a cell rather than from the `CHỨNG TỪ` cell.
+**Most of this is built.** `PacketDocsDialog` (shipped 2026-08-28) already opens a person's
+documents in a modal over the packet list, reusing `EvidenceViewer` read-only. The work is
+opening it on a *specific* document, from a status cell rather than from the `CHỨNG TỪ` cell.
 
-Notes for whoever picks it up:
+### The mapping that has to exist
 
-- A cell already knows its document — `Cell.document` is what the matrix renders its columns from.
-  The mapping from that to a manifest `docId` is the only lookup needed.
-- "No autofocus" is a deliberate reversal of the reviewer's existing behaviour, where selecting a
-  field scrolls and highlights the value's bounding box. That is the right call for a cell that is
-  `pending` or `missing` — there is no box to focus, and today's viewer would sit at the top of a
-  page with nothing marked. Worth confirming the reviewer still *wants* the highlight when opening
-  from the packet-review screen, where it does help.
-- The Excel column is a cell too. Clicking it has no document to show — it should either do
-  nothing or show the bảng kê row. Decide before building.
+The matrix renders eight columns (`criteria.py:35-42`), and they are **criteria column names, not
+manifest documents** — there is no direct identity between them today, so this map is the one new
+piece:
 
----
+| column | opens |
+|---|---|
+| `Hợp đồng` | kind `contract` |
+| `BBNT` | kind `bbnt` |
+| `Phụ lục/KPI` | kind `appendix` |
+| `Cam kết PIT` | kind `commitment` |
+| `Website tra cứu MST` | kind **`pit`** — the column names MST, the kind is `pit`; easy to get wrong |
+| `CCCD/Passport` | kinds `id_front` **and** `id_back` |
+| `Excel` | nothing |
+| `Bảng Kê Thu Mua` | nothing per person |
+
+### Decided
+
+1. **`Excel` cell: do nothing.** It is the reference value, not a document.
+2. **`Bảng Kê Thu Mua` cell: navigate to the Tổng hợp tab.** It is a roster-level document and the
+   criterion's own note already says to check it there.
+3. **`CCCD/Passport` opens the front**, with the back reachable through the viewer's existing tabs.
+   No decision needed at click time.
+4. **"No autofocus" applies to this popup only.** The packet-review screen keeps its current
+   behaviour, where selecting a field highlights the value's bounding box on the scan — that is
+   useful there. Here it would be wrong: a `pending` or `missing` cell has no box to focus, and the
+   viewer would open on a page with nothing marked.
+
+### Defined, not decisions
+
+- A `na` cell and a cell whose document is not in this person's file — only 20 of 41 have a
+  `Phụ lục` — do nothing on click. The reason is already in the cell's note; the click should not
+  open an empty viewer to say so.
 
 ## 3. Validate the bảng kê first — thinking it through
 
