@@ -50,6 +50,10 @@ class EmbeddedDrawing:
     height: int
     sha256: str
     stored_path: str
+    #: What this image is, read from its column header (`workbook_layout`).
+    #: None when the sheet declares no image headers -- the July cccd.xlsx --
+    #: in which case pairing falls back to proximity alone, as it always did.
+    kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +99,11 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
         records = []
         issues = []
         drawing_instances = 0
+        kinds_by_sheet = {}
         for sheet_name, sheet_part in sheet_parts:
+            kinds_by_sheet[sheet_name] = _image_kinds_for_sheet(
+                archive, sheet_part, sheet_name, byte_budget
+            )
             for drawing_part in _drawing_parts_for_sheet(
                 archive, sheet_part, byte_budget
             ):
@@ -115,9 +123,24 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
                 records.extend(drawing_records)
                 issues.extend(drawing_issues)
         return _decode_and_store(
-            archive, records, issues, drawing_instances, output_dir, byte_budget
+            archive, records, issues, drawing_instances, output_dir, byte_budget,
+            kinds_by_sheet,
         )
 
+
+def _image_kinds_for_sheet(archive, sheet_part, sheet_name, byte_budget):
+    """Column index -> image kind for one sheet, or {} if it declares none.
+
+    A sheet whose header cannot be read is not an error: it simply declares
+    nothing, and pairing falls back to proximity exactly as it did before.
+    """
+    from workbook_layout import classify_image_columns  # lazy: pulls OCR deps
+
+    try:
+        header = _header_row(archive, sheet_part, byte_budget)
+    except (ET.ParseError, KeyError, ValueError):
+        return {}
+    return classify_image_columns(header, sheet_name)
 
 def _worksheet_parts_in_workbook_order(archive, byte_budget):
     workbook = _parse_xml(archive, "xl/workbook.xml", byte_budget)
@@ -133,9 +156,16 @@ def _worksheet_parts_in_workbook_order(archive, byte_budget):
 
 def _drawing_parts_for_sheet(archive, sheet_part, byte_budget):
     sheet = _parse_xml(archive, sheet_part, byte_budget)
+    anchors = sheet.findall(f".//{_SHEET_NS}drawing")
+    if not anchors:
+        # A sheet with no <drawing> has no relationships part at all -- Excel
+        # and openpyxl both omit the file rather than writing an empty one --
+        # and asking for one raises. The combined template's CTV sheet is
+        # exactly this: a bang ke with no images beside two sheets full of them.
+        return []
     rels = _relationships(archive, sheet_part, byte_budget)
     parts = []
-    for drawing in sheet.findall(f".//{_SHEET_NS}drawing"):
+    for drawing in anchors:
         rel = rels[drawing.attrib[f"{_DOC_REL_NS}id"]]
         if rel["type"] == _DRAWING_REL_TYPE:
             parts.append(_resolve_relationship_target(sheet_part, rel))
@@ -244,6 +274,7 @@ def _decode_and_store(
     drawing_instances,
     output_dir,
     byte_budget,
+    kinds_by_sheet=None,
 ):
     if drawing_instances > MAX_DRAWINGS:
         raise CccdWorkbookError("drawing-limit")
@@ -289,6 +320,7 @@ def _decode_and_store(
             height=height,
             sha256=hashlib.sha256(content).hexdigest(),
             stored_path=stored_path,
+            kind=(kinds_by_sheet or {}).get(anchor.sheet, {}).get(anchor.from_col),
         ))
     return ExtractionResult(drawing_instances, drawings, issues)
 
@@ -609,3 +641,71 @@ def _read_member_bytes(archive, member, limit, error_code, byte_budget):
             if not chunk:
                 return b"".join(chunks)
             chunks.append(chunk)
+
+
+def _column_index(reference: str) -> int:
+    """0-based column index from a cell reference like `AD7`."""
+    index = 0
+    for character in reference:
+        if not character.isalpha():
+            break
+        index = index * 26 + (ord(character.upper()) - ord("A") + 1)
+    return index - 1
+
+
+def _shared_strings(archive, byte_budget) -> list[str]:
+    if "xl/sharedStrings.xml" not in {info.filename for info in archive.infolist()}:
+        return []
+    root = _parse_xml(archive, "xl/sharedStrings.xml", byte_budget)
+    return [
+        "".join(node.itertext())
+        for node in root.findall(f"{_SHEET_NS}si")
+    ]
+
+
+def _header_row(archive, sheet_part, byte_budget) -> dict[int, str]:
+    """Column index -> text for the sheet's first non-empty row.
+
+    Read from the sheet XML rather than through openpyxl: this module's whole
+    contract is that nothing unbounded runs against a submitted workbook, and
+    a merged header has to be expanded across the columns it spans anyway,
+    which read-only openpyxl does not report.
+    """
+    root = _parse_xml(archive, sheet_part, byte_budget)
+    strings = _shared_strings(archive, byte_budget)
+
+    header: dict[int, str] = {}
+    for row in root.findall(f".//{_SHEET_NS}sheetData/{_SHEET_NS}row"):
+        for cell in row.findall(f"{_SHEET_NS}c"):
+            reference = cell.attrib.get("r", "")
+            if not reference:
+                continue
+            if cell.attrib.get("t") == "s":
+                value_node = cell.find(f"{_SHEET_NS}v")
+                position = int(value_node.text) if value_node is not None else -1
+                text = strings[position] if 0 <= position < len(strings) else ""
+            elif cell.attrib.get("t") == "inlineStr":
+                inline = cell.find(f"{_SHEET_NS}is")
+                text = "".join(inline.itertext()) if inline is not None else ""
+            else:
+                value_node = cell.find(f"{_SHEET_NS}v")
+                text = value_node.text or "" if value_node is not None else ""
+            if text.strip():
+                header[_column_index(reference)] = text
+        if header:
+            break
+
+    # A merged label reports its text only in the range's top-left cell, but it
+    # describes every column it covers -- `Hình CCCD` over D:E is what says the
+    # two columns are the card's two sides.
+    for merge in root.findall(f".//{_SHEET_NS}mergeCells/{_SHEET_NS}mergeCell"):
+        span = merge.attrib.get("ref", "")
+        if ":" not in span:
+            continue
+        start, end = span.split(":", 1)
+        source = header.get(_column_index(start))
+        if not source:
+            continue
+        for column in range(_column_index(start), _column_index(end) + 1):
+            header.setdefault(column, source)
+    return header

@@ -1,3 +1,5 @@
+import dataclasses
+
 from cccd_ocr import CccdImageOcr
 from cccd_pairing import AnalyzedDrawing, pair_drawings
 from cccd_workbook import Anchor, EmbeddedDrawing
@@ -214,3 +216,49 @@ def test_aggregate_layout_groups_yield_29_pairs_and_3_singles():
         candidate.front is None or candidate.back is None
         for candidate in result
     ) == 3
+
+
+def analyzed_kind(drawing_id, side, *, anchor, kind, sheet="Cards"):
+    """Same as `analyzed`, but with the drawing's declared image kind set."""
+    base = analyzed(drawing_id, side, anchor=anchor, sheet=sheet)
+    return AnalyzedDrawing(
+        drawing=dataclasses.replace(base.drawing, kind=kind),
+        ocr=base.ocr,
+    )
+
+
+def test_a_card_front_is_never_paired_with_a_bank_screenshot():
+    """On the combined template the card columns (D:E) and the bank screenshot
+    column (G) sit on the same row. A packet missing its back leaves the front
+    and the screenshot alone together, and proximity alone pairs them."""
+    front = analyzed_kind("drawing-0001", "front", anchor=(2, 3, 12, 4), kind="card")
+    bank = analyzed_kind("drawing-0002", "unknown", anchor=(2, 6, 12, 7), kind="bank")
+
+    result = pair_drawings([front, bank])
+
+    assert len(result) == 2, "expected two singles, not one front/back pair"
+    assert all(c.back is None for c in result)
+
+
+def test_two_card_columns_still_pair_normally():
+    front = analyzed_kind("drawing-0001", "front", anchor=(2, 3, 12, 3), kind="card")
+    back = analyzed_kind("drawing-0002", "back", anchor=(2, 4, 12, 4), kind="card")
+
+    result = pair_drawings([front, back])
+
+    assert len(result) == 1
+    assert result[0].front is front
+    assert result[0].back is back
+
+
+def test_drawings_with_no_declared_kind_keep_todays_proximity_behaviour():
+    """The July cccd.xlsx has no image headers, so every drawing has kind None.
+    That path must be byte-for-byte what it was before kinds existed."""
+    right = analyzed("drawing-0001", "unknown", anchor=(2, 4, 12, 6))
+    left = analyzed("drawing-0099", "unknown", anchor=(2, 1, 12, 3))
+
+    result = pair_drawings([right, left])
+
+    assert len(result) == 1
+    assert result[0].front is left
+    assert result[0].back is right

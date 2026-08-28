@@ -71,10 +71,26 @@ def _spatial_components(
     return components
 
 
+def _pairable(image: AnalyzedDrawing) -> bool:
+    """Whether this drawing may be a card side at all.
+
+    A drawing whose column header says it is a bank or tax screenshot is never
+    one half of a card, however close it sits: on the combined template those
+    populations share a row with the card columns, so proximity alone would pair
+    a front with a screenshot whenever the back is missing. `None` means the
+    sheet declared no image headers -- the July `cccd.xlsx` -- and that path
+    keeps proximity pairing exactly as it was.
+    """
+    kind = image.drawing.kind
+    return kind is None or kind == "card"
+
+
 def _vertically_eligible(
     first: AnalyzedDrawing,
     second: AnalyzedDrawing,
 ) -> bool:
+    if not (_pairable(first) and _pairable(second)):
+        return False
     first_anchor = first.drawing.anchor
     second_anchor = second.drawing.anchor
     if first_anchor.sheet != second_anchor.sheet:

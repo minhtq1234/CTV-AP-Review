@@ -179,3 +179,34 @@ def test_an_image_column_on_an_mst_sheet_is_a_tax_screenshot():
 
 def test_a_sheet_with_no_image_headers_classifies_nothing():
     assert classify_image_columns({0: "STT", 1: "Họ và tên"}, sheet_name="Thông tin CK") == {}
+
+
+def test_extraction_labels_the_fixture_images_by_column():
+    """End-to-end over a real .xlsx: the header reader, the merge expansion and
+    the classifier together must label D/E as card sides, G as bank and the MST
+    sheet's D as tax. The unit tests above hand-build kinds; this one earns them."""
+    from cccd_workbook import extract_drawings
+
+    directory = tempfile.mkdtemp()
+    path = build(os.path.join(directory, "combined.xlsx"))
+    result = extract_drawings(path, os.path.join(directory, "out"))
+
+    by_sheet_col = {
+        (d.anchor.sheet, d.anchor.from_col): d.kind for d in result.drawings
+    }
+    assert by_sheet_col[("CCCD", 3)] == "card"      # D, merged header
+    assert by_sheet_col[("CCCD", 4)] == "card"      # E, same merged header
+    assert by_sheet_col[("CCCD", 6)] == "bank"      # G, beside STK
+    assert by_sheet_col[("MST", 3)] == "tax"        # D on the MST sheet
+
+
+def test_a_sheet_without_image_headers_leaves_every_kind_none():
+    """The July template's path: no image headers, so nothing is labelled and
+    pairing keeps its original proximity-only behaviour."""
+    from cccd_workbook import extract_drawings
+
+    directory = tempfile.mkdtemp()
+    path = build_july(os.path.join(directory, "roster.xlsx"))
+    result = extract_drawings(path, os.path.join(directory, "out"))
+
+    assert all(d.kind is None for d in result.drawings)
