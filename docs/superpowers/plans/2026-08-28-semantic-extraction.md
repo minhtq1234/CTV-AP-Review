@@ -33,9 +33,17 @@ hard-code a model name you have not seen in that output.
 there is nothing to search. Locating has to happen during the read, while the words are still in
 hand, exactly as `signature_anchors` does. This is why Task 4 exists.
 
-**3. The engine cannot compare a multi-part value yet.** `parts=("bank", "branch", "province")` sits
-in `server/criteria.py` and **nothing reads it**. `compare="organisation"` has no comparator at
-all. Task 1 fixes that, and it is worth doing even if the model half is never built.
+**3. The engine cannot compare a multi-part value yet — but it can compare a single one.**
+`parts=(...)` sits in `server/criteria.py` at `:164`, `:174` and `:206` and **nothing reads it**.
+
+An earlier draft of this plan also claimed `compare="organisation"` has no comparator. **That was
+wrong**, and review caught it: `evaluate.py:343` passes `compare` as `kind` into `cv.compare`, and
+`compare_values.py:167` dispatches `("organisation", "name")` to `_organisation_verdict` at `:205`,
+which folds both sides and scores them on `_contained_ratio`.
+
+The consequence is a real change to Task 1: what is missing is **only** the orchestration across
+several parts. Per-part comparison already exists, is already tuned for Vietnamese names and
+organisations, and must not be reimplemented.
 
 **4. A value without a place to check it is worse than no value.** This tool's whole premise is that
 it points and a person decides. A model that returns "15 days" with nothing to verify it against
@@ -81,9 +89,24 @@ GitHub repository.
 
 ## Task 1: Compare a value that has several parts
 
-#8 wants bank, branch and province. #13 wants five things out of one clause. #27 wants five company
-details. "Three of five present, one of those wrong" is a different answer from "all five present
-and one wrong", and the engine has no way to say either today.
+Only three criteria carry `parts`, and one of them is out of scope:
+
+| | parts | in this plan? |
+|---|---|---|
+| #8 Thông tin ngân hàng | bank, branch, province | **yes** |
+| #13 Thời hạn & phương thức thanh toán | amount_basis, term, term_start, method, account | **yes** |
+| #27 Thông tin công ty VNG | legal_name, mst, address, representative, title | **no — deferred** |
+
+#9, #10 and #11 have no parts; they are single-value reads and need nothing from this task.
+
+**#27 is deferred**, so **do not wire `compare="organisation"` in Task 2.** It needs VNG's and
+Adtima's own legal details as reference data, which nobody has supplied, so wiring it would produce
+`UNKNOWN` cells for a criterion this plan does not deliver. `compare_parts` is written generically
+enough that #27 costs one line when its reference list arrives — that is the right amount of
+preparation, and no more.
+
+"Three of five present, one of those wrong" is a different answer from "all five present and one
+wrong", and the engine has no way to say either today.
 
 **Files:**
 - Create: `server/compare_parts.py`
@@ -155,6 +178,24 @@ def test_comparison_tolerates_case_spacing_and_accents():
     assert result.verdict is PartsVerdict.MATCH
 
 
+def test_each_part_is_judged_by_the_comparator_it_is_given():
+    """compare_parts orchestrates and never compares. The per-part comparators
+    already exist and are tuned -- _organisation_verdict scores a company name
+    by containment, not equality, so "VNG Corp" against "CÔNG TY CỔ PHẦN VNG"
+    is a match. Folding equality here would fork that."""
+    calls = []
+
+    def always_agrees(expected, value):
+        calls.append((expected, value))
+        return True
+
+    result = compare_parts(("bank",), {"bank": "totally different"},
+                           {"bank": "Techcombank"}, compare_part=always_agrees)
+
+    assert result.verdict is PartsVerdict.MATCH
+    assert calls == [("Techcombank", "totally different")]
+
+
 def test_the_note_names_what_is_wrong_in_the_reviewers_terms():
     """The note is what the reviewer actually reads, so it has to be specific
     about which part, not just report a count."""
@@ -217,12 +258,31 @@ def _fold(value: object) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _agrees_by_fold(expected: str, value: str) -> bool:
+    """The default per-part test: accent- and case-insensitive equality.
+
+    Only a fallback. Callers should pass `compare_part` so that each part is
+    judged by the comparator its own kind already has -- see the note on
+    `compare_parts`.
+    """
+    return _fold(expected) == _fold(value)
+
+
 def compare_parts(
     parts: tuple[str, ...],
     got: dict[str, str],
     want: dict[str, str],
+    compare_part=_agrees_by_fold,
 ) -> PartsResult:
     """Compare `got` against `want` over `parts`.
+
+    `compare_part(expected, value) -> bool` judges ONE part. It is injected
+    because the per-part comparators already exist and are already tuned:
+    `compare_values.compare` dispatches on kind, and `_organisation_verdict`
+    scores a company name by containment rather than equality, which matters
+    when one document writes "CÔNG TY CỔ PHẦN VNG" and another "VNG Corp".
+    Reimplementing that here would fork a tuned comparator, so this function
+    orchestrates and never compares.
 
     `UNKNOWN` when nothing was read or there is nothing to compare against --
     never `MISMATCH`, because "I could not see it" and "it is wrong" are
@@ -236,7 +296,8 @@ def compare_parts(
 
     comparable = readable & expected
     missing = tuple(p for p in parts if p in expected and p not in readable)
-    differing = tuple(p for p in comparable if _fold(got[p]) != _fold(want[p]))
+    differing = tuple(p for p in comparable
+                      if not compare_part(want[p], got[p]))
 
     if differing:
         verdict = PartsVerdict.MISMATCH
@@ -297,10 +358,12 @@ not invent a helper.
 
 - [ ] **Step 3: Run red, implement, run green**
 
-In `_compare`'s path, when `criterion.params` carries `parts`, route through `compare_parts` and
-map as above. `compare="organisation"` uses the same code — it is a multi-part text comparison
-whose expected value comes from reference data, and until #27's reference list exists it will
-return `UNKNOWN`, which is correct and honest.
+In `_compare`'s path, when `criterion.params` carries `parts`, route through `compare_parts`,
+passing `compare_part=lambda e, v: cv.compare(e, v, kind) is not Verdict.MISMATCH` so each part is
+judged by the comparator its criterion's `compare` kind already selects.
+
+**Only #8 and #13.** Do not wire `compare="organisation"`: #27 is deferred and has no reference
+data, so wiring it would emit `UNKNOWN` cells for a criterion this plan does not deliver.
 
 **No existing status may change.** If one does, stop and report.
 
@@ -593,9 +656,21 @@ Send only the pages of the document being read, as text — not the whole submis
 
 - [ ] **Step 4: Run one real contract past it, and report honestly**
 
-For #13's five parts, on a handful of real contracts, report: how many parts came back, how many
-quotes located successfully, and every case where the value looked right but the quote could not be
-found — that last number decides whether this approach is viable at all.
+For #13's five parts, on at least ten real contracts, report three numbers: parts returned, quotes
+that located, and values whose quote could not be found.
+
+**The gate, named in advance so it is a gate.** Measured over those contracts:
+
+| unlocatable-quote rate | verdict |
+|---|---|
+| **under 10%** | viable — carry on |
+| **10–25%** | viable only with a stated reason for the misses; report the reason, do not proceed on hope |
+| **over 25%** | **rejected.** Stop and report. A value the reviewer cannot check is not worth having, and at that rate the approach is not delivering its premise |
+
+Plus one hard assertion, independent of rate: **every located quote must actually contain or support
+the value claimed.** A quote that locates but does not support its value is worse than an unlocatable
+one — it puts a highlight on the page that vouches for something the page does not say. Any instance
+of that rejects the approach outright, whatever the rate.
 
 **Do not tune the prompt against a single contract until the numbers look good.** Report what the
 first honest attempt produced.
@@ -687,6 +762,42 @@ of them is counted as an unresolved CCCD. The reviewer is shown 81 unresolved ca
 figure is nearer 5.
 
 Worth fixing where the count is computed rather than in the reader.
+
+### Answers — 2026-08-28, after verifying every point above
+
+**Q1 — organisation comparator.** You are right and the plan was wrong; the settling fact is
+corrected above. `compare_parts` now takes an injected `compare_part`, orchestrates across parts,
+and never compares one itself. `_organisation_verdict` and the rest of `compare_values` stay the
+single source of truth. **Do not replace anything in `compare_values.py`.**
+
+**Q2 — #27.** Out of scope, deferred with #6. Only #8 and #13 carry `parts` and are in scope; #9,
+#10 and #11 have no parts at all. Task 1's scope table and Task 2's wiring instruction now say so,
+and the organisation wiring is explicitly excluded. `compare_parts` stays generic so #27 costs one
+line when Acc supplies VNG's and Adtima's legal details.
+
+**Q3 — threshold.** Named in Task 6 Step 4: under 10% unlocatable is viable, 10–25% needs a stated
+reason, over 25% rejects the approach. Plus a hard assertion at any rate — a quote that locates but
+does not support its value rejects outright, because that puts a highlight on the page vouching for
+something the page does not say.
+
+**Q4 — sending contract text to MaaS. You are right to stop.** The plan overstated the approval: what
+is approved is a cropped ID image, and a contract page is materially more — name, CCCD, address,
+account, amounts, signature block. **Task 6 does not start until the project owner answers, in
+writing, in this repository.** Escalated on 2026-08-28; the answer belongs in `docs/ver3-scope.md`
+where the other standing decisions live. Tasks 1–5 are unaffected and are the work to pick up now.
+
+**Q5 — the candidate-pool defect.** Confirmed independently. `_pairable` is referenced only at
+`cccd_pairing.py:92`, inside `_vertically_eligible`, so it stops a screenshot being *paired with* a
+card but does not stop `_component_candidates` calling `_single_candidate` on every image in a
+component. Every bank and tax screenshot therefore becomes a `CardCandidate`, and
+`cccd_ingest.py:703` counts the pool with `len(mappings)`. Not this plan's work — it has its own
+plan, and it should be fixed at candidate formation rather than by subtracting at the count.
+
+**Q6 — baseline.** Correct not to trust a number you could not verify. 821 was measured on
+`f5ff182` with the working tree carrying another session's uncommitted changes, which is exactly why
+the plan says to establish your own.
+
+---
 
 ### 6. A note on the stated baseline
 
