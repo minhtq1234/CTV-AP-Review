@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { fetchPacketManifest } from '../upload/api'
-import type { EvidenceDoc } from '../ctv/types'
+import type { EvidenceDoc, EvidenceKind } from '../ctv/types'
 import EvidenceViewer from './EvidenceViewer'
 
 interface Props {
@@ -9,8 +9,18 @@ interface Props {
   /** Shown in the dialog title so the reviewer knows whose documents these are. */
   packetName: string
   onClose: () => void
-  /** The way to continue into the full reviewer from inside the popup. */
-  onOpenPacket: (index: number) => void
+  /** The way to continue into the full reviewer from inside the popup. Absent
+   *  when the dialog is opened from inside the packet itself -- there is
+   *  nowhere to go, and a button that navigates to where you already are is a
+   *  lie. */
+  onOpenPacket?: (index: number) => void
+  /** Open on this document rather than the first. Falls back to the first when
+   *  the packet has no document of that kind. */
+  initialDocKind?: EvidenceKind
+  /** The cell's own note and value, shown in the header. The matrix cell used
+   *  to open a detail row so the reviewer read these before deciding; carrying
+   *  them here keeps that, rather than dropping it. */
+  context?: { label: string; note?: string; value?: string } | null
 }
 
 type LoadState =
@@ -46,6 +56,8 @@ export default function PacketDocsDialog({
   packetName,
   onClose,
   onOpenPacket,
+  initialDocKind,
+  context,
 }: Props) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [activeDocId, setActiveDocId] = useState<string | null>(null)
@@ -66,14 +78,20 @@ export default function PacketDocsDialog({
       .then(manifest => {
         if (liveKeyRef.current !== key) return
         setState({ status: 'loaded', docs: manifest.docs })
-        setActiveDocId(manifest.docs[0]?.id ?? null)
+        // Open on the kind the caller asked for -- the matrix cell names the
+        // document its column refers to -- falling back to the first when this
+        // packet has no document of that kind.
+        const requested = initialDocKind
+          ? manifest.docs.find(doc => doc.kind === initialDocKind)
+          : undefined
+        setActiveDocId(requested?.id ?? manifest.docs[0]?.id ?? null)
         setActivePage(0)
       })
       .catch(() => {
         if (liveKeyRef.current !== key) return
         setState({ status: 'error' })
       })
-  }, [caseId, packetIndex])
+  }, [caseId, packetIndex, initialDocKind])
 
   useEffect(() => {
     load()
@@ -98,6 +116,22 @@ export default function PacketDocsDialog({
           <h2 id={titleId}>Chứng từ — {packetName}</h2>
           <button type="button" onClick={onClose}>Đóng</button>
         </header>
+
+        {/* The cell's note and value. The matrix cell used to open a detail row
+            so these were read before deciding; carrying them into the popup
+            keeps that rather than reducing the decision to a glyph. */}
+        {context && (
+          <div className="packet-docs-context">
+            <span className="packet-docs-context-lbl">{context.label}</span>
+            {context.value && (
+              <span className="packet-docs-context-val">{context.value}</span>
+            )}
+            {context.note && (
+              <p className="packet-docs-context-note">{context.note}</p>
+            )}
+          </div>
+        )}
+
 
         {state.status === 'loading' && (
           <div className="packet-docs-state">Đang tải…</div>
@@ -133,15 +167,19 @@ export default function PacketDocsDialog({
           )
         )}
 
-        <footer className="packet-docs-foot">
-          <button
-            type="button"
-            className="btn primary"
-            onClick={() => onOpenPacket(packetIndex)}
-          >
-            Mở gói hồ sơ
-          </button>
-        </footer>
+        {/* Only when there is somewhere to go: opened from inside the packet
+            itself, this button would navigate to where the reviewer already is. */}
+        {onOpenPacket && (
+          <footer className="packet-docs-foot">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => onOpenPacket(packetIndex)}
+            >
+              Mở gói hồ sơ
+            </button>
+          </footer>
+        )}
       </section>
     </div>
   )

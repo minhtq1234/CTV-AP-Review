@@ -4,7 +4,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, EvidenceKind } from '../ctv/types'
 
 const fetchPacketManifest = vi.fn()
 
@@ -80,7 +80,8 @@ interface RenderProps {
   packetIndex: number
   packetName: string
   onClose: () => void
-  onOpenPacket: (index: number) => void
+  onOpenPacket?: (index: number) => void
+  initialDocKind?: EvidenceKind
 }
 
 const defaultProps = (): RenderProps => ({
@@ -101,6 +102,7 @@ async function render(overrides: Partial<RenderProps> = {}) {
         packetName={props.packetName}
         onClose={props.onClose}
         onOpenPacket={props.onOpenPacket}
+        initialDocKind={props.initialDocKind}
       />,
     )
   })
@@ -268,5 +270,29 @@ describe('PacketDocsDialog', () => {
     fetchPacketManifest.mockResolvedValue(folder({ docs: [] }))
     await render()
     expect(host.textContent).toContain('Gói này chưa có chứng từ nào.')
+  })
+
+  it('opens on the requested document kind rather than the first', async () => {
+    // The fixture's first doc is the CCCD front; ask for the contract and
+    // assert the viewer starts there instead.
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render({ initialDocKind: 'contract' })
+    const active = host.querySelector('.ev-tab.on')
+    expect(active?.textContent).toContain('Hợp đồng')
+  })
+
+  it('falls back to the first document when that kind is not in this packet', async () => {
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render({ initialDocKind: 'appendix' })   // fixture has no appendix
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull()
+    const active = host.querySelector('.ev-tab.on')
+    expect(active?.textContent).toContain('CCCD mặt trước')
+  })
+
+  it('omits the open-packet button when no handler is given', async () => {
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render({ onOpenPacket: undefined })
+    const buttons = [...host.querySelectorAll('button')].map(b => b.textContent)
+    expect(buttons.some(t => t?.includes('Mở gói hồ sơ'))).toBe(false)
   })
 })
