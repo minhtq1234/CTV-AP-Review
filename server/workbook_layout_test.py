@@ -152,3 +152,30 @@ def test_the_upload_response_names_the_sheet_read_and_what_was_missing(tmp_path,
     assert detail["code"] == "invalid-roster-workbook"
     assert "money" in detail["reason"]
     assert "Sheet" in detail["reason"]        # names the sheet it actually read
+
+
+from workbook_layout import classify_image_columns
+
+
+def test_a_merged_header_covers_both_card_columns():
+    # "Hình CCCD" merged across D:E -- one label, two columns, front and back.
+    header = {3: "Hình CCCD", 4: "Hình CCCD", 5: "STK", 6: "Hình Ảnh"}
+    kinds = classify_image_columns(header, sheet_name="CCCD")
+    assert kinds[3] == "card"
+    assert kinds[4] == "card"
+
+
+def test_an_image_column_beside_stk_is_a_bank_screenshot():
+    header = {3: "Hình CCCD", 4: "Hình CCCD", 5: "STK", 6: "Hình Ảnh"}
+    kinds = classify_image_columns(header, sheet_name="CCCD")
+    assert kinds[6] == "bank"
+
+
+def test_an_image_column_on_an_mst_sheet_is_a_tax_screenshot():
+    header = {0: "STT", 1: "Họ tên", 2: "MST", 3: "Hình Ảnh"}
+    kinds = classify_image_columns(header, sheet_name="MST")
+    assert kinds[3] == "tax"
+
+
+def test_a_sheet_with_no_image_headers_classifies_nothing():
+    assert classify_image_columns({0: "STT", 1: "Họ và tên"}, sheet_name="Thông tin CK") == {}

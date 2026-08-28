@@ -12,6 +12,7 @@ cross these signatures, so every branch is testable without a file.
 from __future__ import annotations
 
 import roster_checks
+from ocr_extract import norm
 
 #: A sheet has to carry these to be usable as a bảng kê at all. Without a name
 #: there is nobody to match a packet to; without a CCCD there is no identity to
@@ -65,3 +66,39 @@ def missing_required_columns(rows: list[list]) -> list[str]:
     if not any(key in columns for key in MONEY_COLUMNS):
         missing.append("money")
     return missing
+
+
+#: What an image column can hold. `card` is the only kind the pipeline consumes
+#: today; `bank` and `tax` are recognised so they are never mistaken for a card
+#: side, and are available to the criteria that will want them (#8, #6).
+CARD, BANK, TAX = "card", "bank", "tax"
+
+_CARD_HEADERS = ("hinh cccd", "anh cccd", "hinh the")
+_ANY_IMAGE_HEADERS = ("hinh anh", "hinh", "anh")
+
+
+def classify_image_columns(header: dict[int, str], sheet_name: str) -> dict[int, str]:
+    """Column index -> what kind of image it holds, read from the header row.
+
+    A merged header cell reports the same text for every column it spans, which
+    is what tells us `Hình CCCD` over D:E means front and back rather than one
+    image. A generic `Hình Ảnh` takes its meaning from its neighbour: beside a
+    `STK` column it is a bank screenshot; on a sheet keyed by MST it is a tax
+    lookup. Anything unrecognised is left out rather than guessed at -- an
+    unclassified image is better than an image filed as the wrong kind.
+    """
+    flat = {index: norm(str(text or "")) for index, text in header.items()}
+    kinds: dict[int, str] = {}
+    for index, text in flat.items():
+        if not text:
+            continue
+        if any(marker in text for marker in _CARD_HEADERS):
+            kinds[index] = CARD
+            continue
+        if any(marker in text for marker in _ANY_IMAGE_HEADERS):
+            left = flat.get(index - 1, "")
+            if "stk" in left or "tai khoan" in left:
+                kinds[index] = BANK
+            elif "mst" in norm(sheet_name) or "mst" in left:
+                kinds[index] = TAX
+    return kinds
