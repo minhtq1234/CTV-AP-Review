@@ -102,10 +102,11 @@ def _vertically_eligible(
     second_anchor = second.drawing.anchor
     if first_anchor.sheet != second_anchor.sheet:
         return False
-    return (
-        _vertical_overlap_ratio(first_anchor, second_anchor) >= .5
-        or abs(first_anchor.from_row - second_anchor.from_row) <= 1
-    )
+    # Overlap alone. The `or abs(from_row diff) <= 1` disjunct existed because
+    # the ratio was structurally dead for a drawing inside a single row; with a
+    # real measure it is not needed, and on a sheet whose card rows are
+    # consecutive it chained all 48 sides into one component, so nothing paired.
+    return _vertical_overlap_ratio(first_anchor, second_anchor) >= .5
 
 
 def _component_candidates(
@@ -195,13 +196,39 @@ def _single_candidate(
 
 
 def _vertical_overlap_ratio(first: Anchor, second: Anchor) -> float:
-    first_height = first.to_row - first.from_row
-    second_height = second.to_row - second.from_row
+    """How much of the shorter drawing's height the two share, 0.0 to 1.0.
+
+    Measured in absolute EMU when the anchors carry it, because row indices
+    cannot express this: a drawing that sits inside a single row has
+    `to_row == from_row`, so a row-span height is zero and the ratio was
+    always 0.0 -- on the combined template that is 39 of 50 drawings, which
+    made this measure dead and left row adjacency as the only thing pairing a
+    front with its back.
+
+    Falls back to a row-span measure for anchors built without a sheet to
+    measure against, counting the span inclusively so a single-row drawing has
+    height 1 rather than 0.
+    """
+    if None not in (
+        first.top_emu, first.bottom_emu, second.top_emu, second.bottom_emu,
+    ):
+        return _overlap_ratio(
+            first.top_emu, first.bottom_emu, second.top_emu, second.bottom_emu,
+        )
+    return _overlap_ratio(
+        first.from_row, first.to_row + 1, second.from_row, second.to_row + 1,
+    )
+
+
+def _overlap_ratio(
+    first_start: float,
+    first_end: float,
+    second_start: float,
+    second_end: float,
+) -> float:
+    first_height = first_end - first_start
+    second_height = second_end - second_start
     if first_height <= 0 or second_height <= 0:
         return 0.0
-    overlap = max(
-        0,
-        min(first.to_row, second.to_row)
-        - max(first.from_row, second.from_row),
-    )
+    overlap = max(0.0, min(first_end, second_end) - max(first_start, second_start))
     return overlap / min(first_height, second_height)

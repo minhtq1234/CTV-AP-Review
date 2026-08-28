@@ -172,7 +172,6 @@ def test_extract_drawings_preserves_full_anchor_offsets(tmp_path):
     )
 
     result = extract_drawings(str(book), str(tmp_path / "out"))
-
     assert result.drawings[0].anchor == Anchor(
         "Cards",
         7,
@@ -183,6 +182,10 @@ def test_extract_drawings_preserves_full_anchor_offsets(tmp_path):
         from_col_offset=222,
         to_row_offset=333,
         to_col_offset=444,
+        # The sheet declares no row heights, so every row is Excel's 15pt
+        # default: 7 * 15 * 12700 + 111, and 18 * 15 * 12700 + 333.
+        top_emu=1333611,
+        bottom_emu=3429333,
     )
 
 
@@ -400,3 +403,116 @@ def test_png_size_was_already_correct():
     png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
     assert _png_size(png) == (w, h)
+
+
+def test_row_heights_come_from_the_sheet_not_a_constant():
+    """The measure is only as good as the row heights behind it. On the real
+    combined workbook the image rows are 136.5pt while the sheet's own declared
+    default is 15pt, so assuming the default puts every drawing in the wrong
+    place and nothing pairs."""
+    from cccd_workbook import EMU_PER_POINT, RowGeometry, _row_top_emu
+
+    default = round(15.0 * EMU_PER_POINT)
+    tall = round(136.5 * EMU_PER_POINT)
+    geometry = RowGeometry.build(default, {1: tall, 2: tall})
+
+    assert _row_top_emu(0, geometry) == 0
+    assert _row_top_emu(1, geometry) == default
+    assert _row_top_emu(2, geometry) == default + tall
+    assert _row_top_emu(3, geometry) == default + tall * 2
+
+
+def test_every_extracted_drawing_carries_geometry(tmp_path):
+    """The row-span fallback in `_vertical_overlap_ratio` must be unreachable on
+    the real path: if extraction ever stopped populating this, pairing would
+    silently revert to the measure that could not size a single-row drawing."""
+    book = tmp_path / "geometry.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [
+            ("rId1", "xl/media/image1.png", (3, 1, 3, 2, 0, 0, 0, 0), _PNG),
+            ("rId2", "xl/media/image2.png", (3, 3, 3, 4, 0, 0, 0, 0), _PNG),
+        ])],
+    )
+
+    result = extract_drawings(str(book), str(tmp_path / "out"))
+
+    assert len(result.drawings) == 2
+    for drawing in result.drawings:
+        assert drawing.anchor.top_emu is not None
+        assert drawing.anchor.bottom_emu is not None
+
+
+def test_a_one_cell_anchor_is_as_tall_as_its_declared_extent(tmp_path):
+    """A oneCellAnchor states its real height in `ext/@cy`. Deriving the box
+    from the synthesised `to_row` instead describes the row the picture starts
+    in -- on the July workbook, whose every anchor is this shape, that made all
+    84 boxes an identical 171450 EMU against real heights of 952500-1524000,
+    and pairing then worked only because the fabrications happened to be equal.
+    """
+    from cccd_workbook import EMU_PER_POINT
+
+    book = tmp_path / "one-cell-extent.xlsx"
+    _write_synthetic_xlsx(
+        book,
+        [("Cards", [("rId1", "xl/media/image1.png", (3, 2, 4, 3), _PNG)])],
+    )
+    _replace_zip_part(
+        book,
+        "xl/drawings/drawing1.xml",
+        _one_cell_drawing("rId1", from_col=2, from_row=3),
+    )
+
+    anchor = extract_drawings(str(book), str(tmp_path / "out")).drawings[0].anchor
+
+    default = round(15.0 * EMU_PER_POINT)
+    assert anchor.top_emu == 3 * default + 19050
+    # cy="1809750" from the fixture -- nine times the 15pt row it sits in.
+    assert anchor.bottom_emu == anchor.top_emu + 1809750
+
+
+def test_row_geometry_reads_declared_heights_off_the_sheet(tmp_path):
+    """The half of the fix that reads the XML. Without it every row is the 15pt
+    default, which on the real workbook (136.5pt image rows) puts every drawing
+    in the wrong place and pairs nothing -- so this must be covered directly."""
+    import zipfile as _zipfile
+
+    from cccd_workbook import (
+        EMU_PER_POINT,
+        _ExtractionByteBudget,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        _row_geometry,
+    )
+
+    book = tmp_path / "heights.xlsx"
+    with _zipfile.ZipFile(book, "w") as archive:
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            '<worksheet xmlns="http://schemas.openxmlformats.org/'
+            'spreadsheetml/2006/main">'
+            '<sheetFormatPr defaultRowHeight="20"/>'
+            '<sheetData>'
+            '<row r="2" ht="100" customHeight="1"/>'
+            '<row r="3" ht="50" customHeight="1"/>'
+            '<row r="4"/>'
+            '</sheetData></worksheet>',
+        )
+
+    with _zipfile.ZipFile(book) as archive:
+        geometry = _row_geometry(
+            archive,
+            "xl/worksheets/sheet1.xml",
+            _ExtractionByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES),
+        )
+
+    default = round(20.0 * EMU_PER_POINT)
+    assert geometry.default == default
+    # Row indices are 0-based here; the XML's r attribute is 1-based.
+    assert geometry.top(0) == 0
+    assert geometry.top(1) == default
+    assert geometry.top(2) == default + round(100.0 * EMU_PER_POINT)
+    assert geometry.top(3) == (
+        default + round(100.0 * EMU_PER_POINT) + round(50.0 * EMU_PER_POINT)
+    )
+    # A row with no explicit height falls back to the sheet default.
+    assert geometry.top(4) - geometry.top(3) == default

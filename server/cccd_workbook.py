@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import bisect
+import dataclasses
 import hashlib
 import os
 from pathlib import PurePosixPath
@@ -38,6 +40,13 @@ class Anchor:
     from_col_offset: int = 0
     to_row_offset: int = 0
     to_col_offset: int = 0
+    #: The drawing's top and bottom edge in absolute EMU down the sheet, from
+    #: the sheet's real row heights. Row indices alone cannot measure overlap:
+    #: a drawing inside one row has `to_row == from_row`, so a row-span height
+    #: is zero and every such pair scores 0.0 however much they really overlap.
+    #: None when the anchor was built without a sheet to measure against.
+    top_emu: int | None = None
+    bottom_emu: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +113,7 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
             kinds_by_sheet[sheet_name] = _image_kinds_for_sheet(
                 archive, sheet_part, sheet_name, byte_budget
             )
+            geometry = _row_geometry(archive, sheet_part, byte_budget)
             for drawing_part in _drawing_parts_for_sheet(
                 archive, sheet_part, byte_budget
             ):
@@ -115,6 +125,7 @@ def extract_drawings(xlsx_path: str, output_dir: str) -> ExtractionResult:
                         drawing_instances + 1,
                         MAX_DRAWINGS - drawing_instances,
                         byte_budget,
+                        geometry,
                     )
                 except ET.ParseError:
                     issues.append(ExtractionIssue("malformed-drawing", None))
@@ -179,6 +190,7 @@ def _drawing_records(
     next_id,
     remaining_capacity,
     byte_budget,
+    row_geometry=None,
 ):
     rels = _relationships(archive, drawing_part, byte_budget)
     records = []
@@ -230,6 +242,26 @@ def _drawing_records(
                         element, "to", "colOff", default=0
                     ),
                 )
+                if row_geometry is not None:
+                    top_emu = (
+                        _row_top_emu(anchor.from_row, row_geometry)
+                        + anchor.from_row_offset
+                    )
+                    # A oneCellAnchor states its real height in EMU right here,
+                    # in `ext/@cy`. The `to_row`/`to_row_offset` above are
+                    # synthesised for it, so deriving a box from them describes
+                    # the row the picture starts in, not the picture -- 8.9x
+                    # short on the July workbook, which is entirely this format.
+                    extent = _extent_cy(element)
+                    bottom_emu = (
+                        top_emu + extent
+                        if one_cell and extent is not None
+                        else _row_top_emu(anchor.to_row, row_geometry)
+                        + anchor.to_row_offset
+                    )
+                    anchor = dataclasses.replace(
+                        anchor, top_emu=top_emu, bottom_emu=bottom_emu,
+                    )
             except (AttributeError, TypeError, ValueError):
                 issues.append(ExtractionIssue("malformed-drawing", drawing_id))
                 element.clear()
@@ -764,3 +796,94 @@ def describe_image_columns(xlsx_path: str) -> list[dict]:
         }
         for (sheet, column), count in sorted(counts.items())
     ]
+
+
+#: Excel measures row height in points; drawing anchors are in EMU.
+EMU_PER_POINT = 12700
+#: Excel's own default when a sheet declares none.
+DEFAULT_ROW_POINTS = 15.0
+
+
+def _row_geometry(archive, sheet_part, byte_budget) -> "RowGeometry":
+    """`(default row height, {row index: height})` in EMU for one sheet.
+
+    Row indices are 0-based here, as drawing anchors count them; the XML's
+    `r` attribute is 1-based. `sheetFormatPr` is a sibling of `sheetData`, not
+    part of it, so it needs its own lookup.
+    """
+    root = _parse_xml(archive, sheet_part, byte_budget)
+    default_points = DEFAULT_ROW_POINTS
+    for node in root.findall(f".//{_SHEET_NS}sheetFormatPr"):
+        raw = node.attrib.get("defaultRowHeight")
+        if raw:
+            try:
+                default_points = float(raw)
+            except ValueError:
+                pass
+            break
+
+    heights: dict[int, int] = {}
+    for row in root.findall(f".//{_SHEET_NS}sheetData/{_SHEET_NS}row"):
+        raw_height = row.attrib.get("ht")
+        raw_index = row.attrib.get("r")
+        if not raw_height or not raw_index:
+            continue
+        try:
+            heights[int(raw_index) - 1] = round(float(raw_height) * EMU_PER_POINT)
+        except ValueError:
+            continue
+    return RowGeometry.build(round(default_points * EMU_PER_POINT), heights)
+
+
+@dataclass(frozen=True)
+class RowGeometry:
+    """One sheet's row heights, prepared for repeated top-of-row lookups.
+
+    The corrections for explicitly-sized rows are summed once here rather than
+    rescanned per drawing: a styled sheet carries thousands of sized rows and
+    `top` is called twice for every drawing on it.
+    """
+    default: int
+    rows: tuple[int, ...]
+    running: tuple[int, ...]
+
+    @classmethod
+    def build(cls, default: int, heights: dict[int, int]) -> "RowGeometry":
+        ordered = sorted(heights.items())
+        rows, running, total = [], [], 0
+        for row, height in ordered:
+            rows.append(row)
+            total += height - default
+            running.append(total)
+        return cls(default, tuple(rows), tuple(running))
+
+    def top(self, row: int) -> int:
+        """Absolute EMU from the top of the sheet to the top of `row`."""
+        above = bisect.bisect_left(self.rows, row)
+        correction = self.running[above - 1] if above else 0
+        return row * self.default + correction
+
+
+def _row_top_emu(row: int, geometry: RowGeometry) -> int:
+    """Absolute EMU to the top of `row`, on this sheet's real row heights."""
+    return geometry.top(row)
+
+
+def _extent_cy(element) -> int | None:
+    """A drawing's real height in EMU from its `ext` element, or None.
+
+    Read with a default rather than through `_anchor_value`'s raising path: a
+    drawing whose extent is missing or malformed should fall back to the
+    row-derived box, not be dropped as a malformed drawing.
+    """
+    node = element.find(f"{_DRAWING_NS}ext")
+    if node is None:
+        return None
+    raw = node.attrib.get("cy")
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None

@@ -300,3 +300,68 @@ def test_an_unclassified_drawing_still_becomes_a_candidate():
     unclassified drawing must still be offered to the reviewer."""
     images = [analyzed_kind("lone", "unknown", anchor=(1, 3, 11, 3), kind=None)]
     assert len(pair_drawings(images)) == 1
+
+
+def analyzed_emu(drawing_id, side, *, kind, row, col, top, bottom, sheet="Cards"):
+    """A drawing that sits inside a single row, carrying real EMU geometry.
+
+    This is the shape the combined template actually produces -- `to_row ==
+    from_row` -- which a row-span measure cannot size at all.
+    """
+    base = analyzed(drawing_id, side, anchor=(row, col, row, col), sheet=sheet)
+    return AnalyzedDrawing(
+        drawing=dataclasses.replace(
+            base.drawing,
+            kind=kind,
+            anchor=dataclasses.replace(
+                base.drawing.anchor, top_emu=top, bottom_emu=bottom,
+            ),
+        ),
+        ocr=base.ocr,
+    )
+
+
+def test_two_sides_inside_one_row_pair_on_their_real_geometry():
+    """The combined template's cards sit inside a single row each, so
+    `to_row - from_row` is 0 and the old ratio returned 0.0 for every one of
+    them. Nothing paired: all 48 sides chained into one component instead."""
+    front = analyzed_emu("front-1", "front", kind="card", row=4, col=3,
+                         top=1_733_550, bottom=3_400_000)
+    back = analyzed_emu("back-1", "back", kind="card", row=4, col=4,
+                        top=1_740_000, bottom=3_410_000)
+
+    result = pair_drawings([front, back])
+
+    assert len(result) == 1
+    assert result[0].front is front
+    assert result[0].back is back
+
+
+def test_a_drawing_in_the_next_row_is_not_a_neighbour():
+    """The rule that broke the combined template: row adjacency made every card
+    eligible with the card below it, so consecutive rows chained into one
+    component. Real geometry must keep rows apart."""
+    first = analyzed_emu("row-4", "front", kind="card", row=4, col=3,
+                         top=1_733_550, bottom=3_400_000)
+    second = analyzed_emu("row-5", "front", kind="card", row=5, col=3,
+                          top=3_467_100, bottom=5_133_000)
+
+    result = pair_drawings([first, second])
+
+    assert len(result) == 2, "consecutive rows must not chain into one component"
+    assert all(candidate.back is None for candidate in result)
+
+
+def test_a_drifted_side_still_pairs_when_it_genuinely_overlaps():
+    """A side whose anchor starts a row lower than its partner still pairs, so
+    long as the drawings really do overlap -- the requirement the old row
+    tolerance existed to serve, now measured rather than assumed."""
+    front = analyzed_emu("front-2", "front", kind="card", row=14, col=3,
+                         top=1_000_000, bottom=2_000_000)
+    back = analyzed_emu("back-2", "back", kind="card", row=15, col=4,
+                        top=1_040_000, bottom=2_040_000)
+
+    result = pair_drawings([front, back])
+
+    assert len(result) == 1
+    assert result[0].front is front and result[0].back is back
