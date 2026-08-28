@@ -24,6 +24,13 @@ class CardCandidate:
 def pair_drawings(images: list[AnalyzedDrawing]) -> list[CardCandidate]:
     if len({image.drawing.id for image in images}) != len(images):
         raise ValueError("duplicate drawing id")
+    # A drawing the header identifies as a bank or tax screenshot is not a card
+    # side and is not a lone card either, so it must not reach
+    # `_component_candidates` -- that function turns every image in a component
+    # into its own candidate, which is how 52 screenshots became 52 unresolved
+    # CCCDs on the combined workbook. `_pairable` was already the right rule; it
+    # was only ever consulted when deciding whether two drawings pair.
+    images = [image for image in images if _pairable(image)]
     candidates = [
         candidate
         for component in _spatial_components(images)

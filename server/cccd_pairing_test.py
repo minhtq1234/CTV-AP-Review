@@ -236,8 +236,19 @@ def test_a_card_front_is_never_paired_with_a_bank_screenshot():
 
     result = pair_drawings([front, bank])
 
-    assert len(result) == 2, "expected two singles, not one front/back pair"
-    assert all(c.back is None for c in result)
+    # The screenshot is not paired with the front -- and no longer becomes a
+    # candidate of its own either, since it is not a card at all. This assertion
+    # was `len(result) == 2` while a non-card still entered the pool.
+    assert len(result) == 1
+    assert result[0].front is front
+    assert result[0].back is None
+    referenced = {
+        drawing.drawing.id
+        for candidate in result
+        for drawing in (candidate.front, candidate.back, candidate.unknown)
+        if drawing
+    }
+    assert "drawing-0002" not in referenced
 
 
 def test_two_card_columns_still_pair_normally():
@@ -262,3 +273,30 @@ def test_drawings_with_no_declared_kind_keep_todays_proximity_behaviour():
     assert len(result) == 1
     assert result[0].front is left
     assert result[0].back is right
+
+
+def test_screenshots_do_not_enter_the_candidate_pool():
+    """A bank or tax screenshot is not half a card and not a whole one either.
+    They used to become single candidates with `unknown-side`, so the combined
+    workbook offered the reviewer 81 unresolved cards where about five need
+    attention -- which made the CCCD review step unusable on that template."""
+    images = [
+        analyzed_kind("front-1", "front", anchor=(1, 3, 11, 3), kind="card"),
+        analyzed_kind("back-1", "back", anchor=(1, 4, 11, 4), kind="card"),
+        analyzed_kind("bank-1", "unknown", anchor=(1, 6, 11, 6), kind="bank"),
+        analyzed_kind("tax-1", "unknown", anchor=(1, 3, 11, 3), kind="tax"),
+    ]
+
+    candidates = pair_drawings(images)
+
+    assert len(candidates) == 1
+    ids = {d.drawing.id for c in candidates for d in (c.front, c.back) if d}
+    assert ids == {"front-1", "back-1"}
+
+
+def test_an_unclassified_drawing_still_becomes_a_candidate():
+    """`kind is None` means the sheet declared no image headers -- the July
+    cccd.xlsx. That path keeps proximity pairing exactly as it was, so an
+    unclassified drawing must still be offered to the reviewer."""
+    images = [analyzed_kind("lone", "unknown", anchor=(1, 3, 11, 3), kind=None)]
+    assert len(pair_drawings(images)) == 1
