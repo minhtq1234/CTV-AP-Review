@@ -766,3 +766,65 @@ def test_workbook_failure_removes_prior_attached_evidence(
         if document["id"].startswith("cccd-excel-")
     ]
     assert not list(manifest_path.parent.glob("cccd-*.png"))
+
+
+def test_the_summary_counts_cards_and_not_screenshots(tmp_path, monkeypatch):
+    """`cccd_ingest.py:703` counts the candidate pool. With screenshots filtered
+    at formation this needs no arithmetic of its own -- this test is here so that
+    if anyone reintroduces them, the failure names the screen it breaks.
+
+    The combined workbook put 25 bank and 25 tax screenshots beside 48 card
+    sides; every screenshot became its own unresolved CCCD, and the reviewer was
+    handed 81 to assign by hand.
+    """
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    candidate = card(tmp_path)
+    front, back = candidate.front.drawing, candidate.back.drawing
+    # Two screenshots on the same rows as the card, as the real sheet has them.
+    bank = replace(
+        analyzed(tmp_path, "drawing-0003", "unknown",
+                 anchor=Anchor("Sheet1", 1, 7, 5, 9)).drawing,
+        kind="bank",
+    )
+    tax = replace(
+        analyzed(tmp_path, "drawing-0004", "unknown",
+                 anchor=Anchor("Sheet1", 1, 10, 5, 12)).drawing,
+        kind="tax",
+    )
+    drawings = [
+        replace(front, kind="card"),
+        replace(back, kind="card"),
+        bank,
+        tax,
+    ]
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(len(drawings), drawings, []),
+    )
+    analyzed_by_id = {
+        front.id: candidate.front.ocr,
+        back.id: candidate.back.ocr,
+        bank.id: candidate.front.ocr,
+        tax.id: candidate.front.ocr,
+    }
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing, *args: analyzed_by_id[drawing.id],
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    summary = result["cccdWorkbook"]["summary"]
+    assert summary["candidates"] == 1, "the two screenshots must not be candidates"
+    assert summary["unresolved"] <= 1
