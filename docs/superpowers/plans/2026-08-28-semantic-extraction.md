@@ -618,3 +618,77 @@ Say plainly:
 - for #13: parts returned, quotes located, and values whose quote could not be found
 - what you did NOT do, and why
 - that Tasks 5–6 need a re-ingest before anything shows on an existing case
+
+---
+
+## Open questions from review — answer before Task 1 starts
+
+Read against this checkout on 2026-08-28, after running the combined workbook end to end. Each
+point below was verified in the code, not inferred from the plan. Four change what gets built.
+
+### 1. `compare="organisation"` already has a comparator — Task 1 may build a second one
+
+The plan's third settling fact says `compare="organisation"` "has no comparator at all". It has
+one. `evaluate.py:343` reads the `compare` param and passes it as `kind` into `cv.compare`;
+`compare_values.py:166` dispatches `("organisation", "name")` to `_organisation_verdict`
+(`compare_values.py:205`), which folds both sides through `_organisation` and returns
+MATCH/FUZZY/MISMATCH on `_contained_ratio`.
+
+The other half of the fact is exactly right: `parts=` is declared at `criteria.py:164`, `:174` and
+`:206` and read by nothing — the only other `.parts` in the tree is `pathlib`.
+
+**So the gap is multi-part comparison alone, not the organisation comparator.**
+
+> **Question.** Should Task 1 build `compare_parts` and leave `_organisation_verdict` as the
+> per-part comparator it calls — or is the existing one considered unfit, in which case what is
+> wrong with it? As written, Task 1 reads as though it should be replaced.
+
+### 2. #27 is not in the stated six
+
+The goal names #8, #9, #10, #11, #13 and #12. But `compare="organisation"` belongs to **#27**
+(`criteria.py:167-174`, VNG ↔ Hợp đồng ↔ BBNT), which is not in that list — while #8
+(`criteria.py:161-164`) and #9 (`criteria.py:203-206`) use `compare="text"` with `parts`.
+
+> **Question.** Is #27 in scope? If yes it belongs in the goal line; if no, the organisation half
+> of Task 1 is work for a criterion this plan is not delivering, and could be deferred.
+
+### 3. Task 6 has no threshold, so its own decision cannot be made
+
+Step 4 says the count of values whose quote could not be located "decides whether this approach is
+viable at all", and Step 4's discipline about not tuning the prompt first is right. But no number
+is given. A threshold agreed after seeing the result is not a threshold.
+
+> **Question.** At what unlocatable-quote rate is this approach rejected? Naming it now — 1 in 10?
+> 1 in 4? — is what makes Step 4 a real gate.
+
+### 4. Sending contract text to the model is a wider disclosure than the key's approval covers
+
+Task 6 Step 3 sends "only the pages of the document being read, as text". The plan justifies the
+endpoint as "same vendor, same tenancy, same approval already given" — but what is approved today
+is the **card reader**, which sends a cropped ID image. A contract page carries the contractor's
+name, CCCD, address, bank account, amounts and signature block, and #13's clause sits in the body
+of the contract, so the pages sent are the substantive ones.
+
+This repository is otherwise careful about exactly this: `server/data/` is gitignored, the splitter
+README marks its output PII, and this plan itself forbids a real contractor's details in a test
+because "a real number in a fixture goes to a public GitHub repository". Sending the same details
+to a third-party inference endpoint deserves the same explicitness.
+
+> **Question.** Has sending full contract text to MaaS been approved, by whom, and is it recorded
+> anywhere? If not, Task 6 should not start. Tasks 1–5 are unaffected — they need no model.
+
+### 5. Not a question — a defect found while verifying the above
+
+On the combined workbook, `cccdSummary` reports `candidates: 100, attached: 19, unresolved: 81`.
+The workbook holds 100 drawings, but only ~48 are card sides: `CCCD!D` 24 and `CCCD!E` 24, against
+`CCCD!G` 25 bank screenshots and `MST!D` 18 + `MST!C` 7 tax screenshots. Kind classification keeps
+the screenshots from being *paired* as cards, but they still enter the candidate pool, so every one
+of them is counted as an unresolved CCCD. The reviewer is shown 81 unresolved cards where the real
+figure is nearer 5.
+
+Worth fixing where the count is computed rather than in the reader.
+
+### 6. A note on the stated baseline
+
+The plan gives 821 passing. That was not verified here: a branch switch was not safe while a real
+ingest was in flight. Establish your own, as the plan already advises.
