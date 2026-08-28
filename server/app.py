@@ -38,6 +38,7 @@ from pipeline import run_pipeline  # noqa: F401 - referenced as `run_pipeline` a
                                     # time below so tests can monkeypatch this name.
 from report import build_report
 from roster_workbook import (
+    RosterWorkbookError,
     load_roster_rows,
     preflight_roster_workbook,
 )
@@ -203,15 +204,24 @@ def _upload_size(upload: UploadFile) -> int:
     return size
 
 
-def _is_valid_roster(upload: UploadFile) -> bool:
+def _roster_rejection(upload: UploadFile) -> str | None:
+    """None if the workbook is usable as a bảng kê, else why it is not.
+
+    Returns the reason rather than a bool so the reviewer learns which sheet was
+    read and which columns were missing. A wrong-sheet read and a legitimately
+    empty column otherwise report the same thing in every Excel cell of the
+    matrix, and only after a full processing run.
+    """
     if not (upload.filename or "").casefold().endswith(".xlsx"):
-        return False
+        return "not-xlsx"
     try:
         upload.file.seek(0)
         preflight_roster_workbook(upload.file)
-        return True
+        return None
+    except RosterWorkbookError as error:
+        return str(error)
     except Exception:
-        return False
+        return "invalid-workbook"
     finally:
         upload.file.seek(0)
 
@@ -225,14 +235,13 @@ async def _validate_uploads(
             status_code=422,
             detail={"code": "cccd-requires-roster"},
         )
-    if roster is not None and not await run_in_threadpool(
-        _is_valid_roster,
-        roster,
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid-roster-workbook"},
-        )
+    if roster is not None:
+        reason = await run_in_threadpool(_roster_rejection, roster)
+        if reason is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid-roster-workbook", "reason": reason},
+            )
     if cccd is None:
         return
     if not (cccd.filename or "").casefold().endswith(".xlsx"):

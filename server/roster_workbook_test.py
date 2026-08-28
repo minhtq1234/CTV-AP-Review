@@ -16,8 +16,8 @@ def _workbook_bytes() -> bytes:
     content = io.BytesIO()
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
-    worksheet.append(["Họ và tên", "Số CCCD"])
-    worksheet.append(["Synthetic A", "000000000001"])
+    worksheet.append(["Họ và tên", "Số CCCD", "Gross"])
+    worksheet.append(["Synthetic A", "000000000001", 8000000])
     workbook.save(content)
     workbook.close()
     return content.getvalue()
@@ -39,8 +39,8 @@ def _replace_part(content: bytes, member: str, replacement: bytes) -> bytes:
 
 def test_valid_roster_is_preflighted_and_loaded():
     assert load_roster_rows(io.BytesIO(_workbook_bytes())) == [
-        ["Họ và tên", "Số CCCD"],
-        ["Synthetic A", "000000000001"],
+        ["Họ và tên", "Số CCCD", "Gross"],
+        ["Synthetic A", "000000000001", 8000000],
     ]
 
 
@@ -108,7 +108,7 @@ def test_unbounded_workbook_never_reaches_openpyxl(monkeypatch):
     malformed = _replace_part(
         content,
         "xl/worksheets/sheet1.xml",
-        worksheet.replace(b"A1:B2", b"A1:B200001"),
+        worksheet.replace(b"A1:C2", b"A1:C200001"),
     )
     loader_calls = 0
 

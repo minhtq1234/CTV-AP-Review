@@ -46,8 +46,8 @@ def _roster_bytes():
     content = io.BytesIO()
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
-    worksheet.append(["Họ và tên", "Số CCCD"])
-    worksheet.append(["Synthetic A", "000000000001"])
+    worksheet.append(["Họ và tên", "Số CCCD", "Gross"])
+    worksheet.append(["Synthetic A", "000000000001", 8000000])
     workbook.save(content)
     workbook.close()
     return content.getvalue()

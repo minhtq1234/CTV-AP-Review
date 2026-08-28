@@ -177,6 +177,40 @@ def preflight_roster_workbook(xlsx_source) -> None:
     finally:
         _restore_position(xlsx_source, original_position)
 
+    # The container is sound. Now: is any sheet usable as a bảng kê? A workbook
+    # that parses but has no name/CCCD/money column produces a case where every
+    # comparison silently has nothing to compare against, and the reviewer only
+    # finds out after a full run.
+    _seek_start(xlsx_source)
+    workbook = openpyxl.load_workbook(xlsx_source, read_only=True, data_only=True)
+    try:
+        sheets = {
+            name: [list(row) for row in workbook[name].iter_rows(values_only=True)]
+            for name in workbook.sheetnames
+        }
+    finally:
+        workbook.close()
+        _seek_start(xlsx_source)
+
+    # A sheet can be selected and still be unusable: `select_roster_sheet` only
+    # requires name and CCCD, while a bảng kê with no money column has nothing
+    # to pay against. Refuse on the same set the diagnostic reports, so the gate
+    # and the message can never disagree.
+    chosen = workbook_layout.select_roster_sheet(sheets)
+    best = chosen or max(
+        sheets,
+        key=lambda n: workbook_layout.score_roster_sheet(sheets[n]),
+        default=None,
+    )
+    missing = (
+        workbook_layout.missing_required_columns(sheets[best])
+        if best else ["name", "cccd", "money"]
+    )
+    if missing:
+        raise RosterWorkbookError(
+            f"no-roster-sheet: read '{best}', missing {', '.join(missing)}"
+        )
+
 
 def _validate_archive(archive: zipfile.ZipFile) -> set[str]:
     infos = archive.infolist()

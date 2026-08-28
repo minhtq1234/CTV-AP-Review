@@ -81,3 +81,74 @@ def test_load_roster_rows_still_reads_a_single_sheet_workbook():
     with open(path, "rb") as handle:
         rows = load_roster_rows(handle)
     assert any("Họ và tên" in str(c) for row in rows for c in row if c is not None)
+
+
+import openpyxl as _openpyxl
+import pytest
+
+from roster_workbook import RosterWorkbookError, preflight_roster_workbook
+from workbook_layout import missing_required_columns
+
+
+def _workbook_with_only(path, headers):
+    wb = _openpyxl.Workbook()
+    ws = wb.active
+    for col, text in enumerate(headers, start=1):
+        ws.cell(row=1, column=col, value=text)
+    ws.cell(row=2, column=1, value=1)
+    wb.save(path)
+    return path
+
+
+def test_missing_required_columns_names_what_is_absent():
+    rows = [["STT", "Họ tên", "Số CCCD"], [1, "NGUYEN VAN MOT", "001100000001"]]
+    assert missing_required_columns(rows) == ["money"]
+    rows_no_name = [["STT", "Số CCCD"], [1, "001100000001"]]
+    assert "name" in missing_required_columns(rows_no_name)
+
+
+def test_preflight_refuses_a_workbook_with_no_usable_roster_sheet():
+    path = _workbook_with_only(os.path.join(tempfile.mkdtemp(), "bad.xlsx"),
+                               ["STT", "Họ tên", "Số CCCD"])
+    with open(path, "rb") as handle:
+        with pytest.raises(RosterWorkbookError) as caught:
+            preflight_roster_workbook(handle)
+    assert "roster" in str(caught.value)
+
+
+def test_preflight_accepts_both_real_templates():
+    for builder in (build, build_july):
+        path = builder(os.path.join(tempfile.mkdtemp(), "ok.xlsx"))
+        with open(path, "rb") as handle:
+            preflight_roster_workbook(handle)     # must not raise
+
+
+def test_the_upload_response_names_the_sheet_read_and_what_was_missing(tmp_path, monkeypatch):
+    """Task 4's whole point: the reviewer must be able to tell a wrong-sheet
+    read from a legitimately empty column, and before a full processing run."""
+    import app as appmod
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    path = _workbook_with_only(os.path.join(tempfile.mkdtemp(), "bad.xlsx"),
+                               ["STT", "Họ tên", "Số CCCD"])
+    with open(path, "rb") as handle:
+        payload = handle.read()
+
+    response = TestClient(appmod.app).post(
+        "/api/cases",
+        files={
+            "pdf": ("packet.pdf", b"%PDF-1.4 synthetic", "application/pdf"),
+            "roster": (
+                "roster.xlsx",
+                payload,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "invalid-roster-workbook"
+    assert "money" in detail["reason"]
+    assert "Sheet" in detail["reason"]        # names the sheet it actually read
