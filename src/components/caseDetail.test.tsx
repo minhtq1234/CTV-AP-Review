@@ -9,6 +9,7 @@ import CaseDetail, {
   PacketDashboardView,
   type PacketDashboardViewProps,
 } from './CaseDetail'
+import PacketTable from './PacketTable'
 
 function review(overrides: Partial<PacketReview> = {}): PacketReview {
   return {
@@ -229,6 +230,56 @@ describe('packet dashboard presentation', () => {
     expect(after).toContain('Đã xong</span><span class="packet-filter-count">1')
     expect(after).not.toContain('Synthetic Unseen')
     expect(after).toContain('Không có gói hồ sơ ở trạng thái này.')
+  })
+})
+
+describe('CHỨNG TỪ preview button (PacketTable)', () => {
+  const docsPacket = packet(0, 'Synthetic Docs Packet', review(), {
+    documents: { span: 6, missing: [] },
+  })
+
+  it('renders exactly as it does today when onPreviewDocs is absent', () => {
+    const html = renderToStaticMarkup(
+      <PacketTable packets={[docsPacket]} onOpenPacket={() => undefined} />,
+    )
+    expect(html).toContain(
+      '<td class="pt-docs"><span class="pt-pill good">Đầy đủ (6/6)</span></td>',
+    )
+    expect(html).not.toContain('pt-docs-preview')
+    expect(html).not.toContain('<button')
+  })
+
+  it('wraps the same pill content in a button when onPreviewDocs is supplied', () => {
+    const html = renderToStaticMarkup(
+      <PacketTable
+        packets={[docsPacket]}
+        onOpenPacket={() => undefined}
+        onPreviewDocs={() => undefined}
+      />,
+    )
+    expect(html).toContain(
+      '<td class="pt-docs"><button type="button" class="pt-docs-preview" '
+      + 'aria-label="Xem chứng từ — Synthetic Docs Packet">'
+      + '<span class="pt-pill good">Đầy đủ (6/6)</span></button></td>',
+    )
+  })
+
+  it('still wraps the muted placeholder in a button, for a packet with no document data of its own', () => {
+    // hasDocumentData only requires ONE row in the table to carry `documents`
+    // -- this second row has none, and still gets a manifest worth previewing.
+    const noDocsPacket = packet(1, 'Synthetic No-Docs Packet', review())
+    const html = renderToStaticMarkup(
+      <PacketTable
+        packets={[docsPacket, noDocsPacket]}
+        onOpenPacket={() => undefined}
+        onPreviewDocs={() => undefined}
+      />,
+    )
+    expect(html).toContain(
+      '<td class="pt-docs"><button type="button" class="pt-docs-preview" '
+      + 'aria-label="Xem chứng từ — Synthetic No-Docs Packet">'
+      + '<span class="pt-pill muted">—</span></button></td>',
+    )
   })
 })
 

@@ -13,6 +13,13 @@ import { attentionReasons, packetStatusSummary } from '../logic/packetDashboard'
 interface Props {
   packets: PacketMeta[]
   onOpenPacket: (index: number) => void
+  /**
+   * Opens a read-only preview of the packet's documents without navigating
+   * into the full reviewer. Optional so every existing call site (and its
+   * tests) keeps rendering the CHỨNG TỪ cell exactly as before when it is
+   * not supplied.
+   */
+  onPreviewDocs?: (index: number) => void
 }
 
 /**
@@ -30,7 +37,7 @@ interface Props {
  * already are the "Kết quả FA" filter, so repeating it would give two controls
  * for one axis.
  */
-export default function PacketTable({ packets, onOpenPacket }: Props) {
+export default function PacketTable({ packets, onOpenPacket, onPreviewDocs }: Props) {
   const [filters, setFilters] = useState<PacketTableFilters>(NO_FILTERS)
   const rows = useMemo(() => packetRows(packets), [packets])
   const counters = useMemo(() => visibleCounters(rows), [rows])
@@ -128,6 +135,22 @@ export default function PacketTable({ packets, onOpenPacket }: Props) {
                 const packet = packets.find(p => p.index === row.index)
                 const attention = packet ? attentionReasons(packet) : []
                 const detail = packet ? packetStatusSummary(packet, row.fa) : null
+                const docsContent = row.documentsLabel ? (
+                  <>
+                    <span
+                      className={`pt-pill ${row.documentsComplete ? 'good' : 'bad'}`}
+                    >
+                      {row.documentsLabel}
+                    </span>
+                    {row.documents && row.documents.missing.length > 0 && (
+                      <span className="pt-missing">
+                        Thiếu: {row.documents.missing.join(', ')}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="pt-pill muted">—</span>
+                )
                 return (
                   <tr
                     key={row.index}
@@ -163,22 +186,31 @@ export default function PacketTable({ packets, onOpenPacket }: Props) {
                     )}
                     {hasDocumentData && (
                       <td className="pt-docs">
-                        {row.documentsLabel ? (
-                          <>
-                            <span
-                              className={`pt-pill ${row.documentsComplete ? 'good' : 'bad'}`}
-                            >
-                              {row.documentsLabel}
-                            </span>
-                            {row.documents && row.documents.missing.length > 0 && (
-                              <span className="pt-missing">
-                                Thiếu: {row.documents.missing.join(', ')}
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="pt-pill muted">—</span>
-                        )}
+                        {onPreviewDocs ? (
+                          <button
+                            type="button"
+                            className="pt-docs-preview"
+                            aria-label={`Xem chứng từ — ${row.name}`}
+                            onClick={event => {
+                              // Without this, the click bubbles to the row's
+                              // own onClick and also navigates into the full
+                              // reviewer — opening the popup must not do that.
+                              event.stopPropagation()
+                              onPreviewDocs(row.index)
+                            }}
+                            onKeyDown={event => {
+                              // Same bubbling risk on the keyboard path: the
+                              // row listens for Enter/Space anywhere inside
+                              // it, so a keyboard activation of this button
+                              // must not also reach the row's handler.
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.stopPropagation()
+                              }
+                            }}
+                          >
+                            {docsContent}
+                          </button>
+                        ) : docsContent}
                       </td>
                     )}
                     <td className="pt-ai">

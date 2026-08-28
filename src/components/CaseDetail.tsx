@@ -14,8 +14,10 @@ import {
   type PacketDashboardFilter,
 } from '../logic/packetDashboard'
 import PacketTable from './PacketTable'
+import { packetDisplayName } from '../logic/packetTable'
 import { formatCccdSummary } from '../upload/cccd'
 import SummaryTab from './SummaryTab'
+import PacketDocsDialog from './PacketDocsDialog'
 
 interface Props {
   detail: CaseDetailT
@@ -34,6 +36,21 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport, onO
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
   const [tab, setTab] = useState<CaseTab>('packets')
+  // The packet a "Xem chứng từ" click asked to preview -- null when the
+  // dialog is closed. Kept here (not in PacketDashboardView) because opening
+  // the full reviewer from inside the dialog needs the same onOpenPacket a
+  // row click uses, and that prop lives on this component.
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null)
+  const previewPacket = previewIndex !== null
+    ? packets.find(p => p.index === previewIndex) ?? null
+    : null
+  // Continuing into the full reviewer from the dialog is still a navigation
+  // — close the popup on the way out rather than leaving it to a stale
+  // unmount, so it is never still open if the reviewer comes back here.
+  const openPacketFromPreview = (index: number) => {
+    setPreviewIndex(null)
+    onOpenPacket(index)
+  }
   const rosterTxt = summary?.roster_n == null ? '—' : String(summary.roster_n)
   const mergedTxt = summary?.auto_merged
     ? ` · ${summary.auto_merged} ranh giới gộp tự động — cần xác nhận`
@@ -115,8 +132,19 @@ export default function CaseDetail({ detail, onOpenPacket, onBack, onExport, onO
         onFilter={setFilter}
         onAttentionFirst={setAttentionFirst}
         onOpenPacket={onOpenPacket}
+        onPreviewDocs={setPreviewIndex}
       />
         </>
+      )}
+
+      {previewIndex !== null && previewPacket && (
+        <PacketDocsDialog
+          caseId={detail.id}
+          packetIndex={previewIndex}
+          packetName={packetDisplayName(previewPacket)}
+          onClose={() => setPreviewIndex(null)}
+          onOpenPacket={openPacketFromPreview}
+        />
       )}
     </div>
   )
@@ -138,6 +166,8 @@ export interface PacketDashboardViewProps {
   onFilter: (filter: PacketDashboardFilter) => void
   onAttentionFirst: (active: boolean) => void
   onOpenPacket: (index: number) => void
+  /** Optional: see PacketTable's own prop of the same name. */
+  onPreviewDocs?: (index: number) => void
 }
 
 const FILTERS: Array<{
@@ -158,6 +188,7 @@ export function PacketDashboardView({
   onFilter,
   onAttentionFirst,
   onOpenPacket,
+  onPreviewDocs,
 }: PacketDashboardViewProps) {
   const counts = packetDashboardCounts(packets)
   const filtered = filterPackets(packets, filter)
@@ -194,7 +225,7 @@ export function PacketDashboardView({
       </div>
 
       {visible.length > 0 ? (
-        <PacketTable packets={visible} onOpenPacket={onOpenPacket} />
+        <PacketTable packets={visible} onOpenPacket={onOpenPacket} onPreviewDocs={onPreviewDocs} />
       ) : (
         <div className="packet-grid-empty">
           Không có gói hồ sơ ở trạng thái này.

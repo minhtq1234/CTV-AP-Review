@@ -1162,6 +1162,21 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .pt-pill.fa-completed { background: #e7f3ea; color: var(--success); }
 .pt-pill.fa-flagged { background: #fce8e6; color: #c5221f; }
 
+/* CHỨNG TỪ preview button (only rendered when PacketTable is given
+   onPreviewDocs): a plain button reset so the cell reads exactly as it does
+   without the prop -- the pill(s) inside are the same markup either way --
+   plus a focus/hover ring on the pill so the row's own click target isn't
+   the only sign this is now interactive. */
+.pt-docs-preview {
+  display: block; width: 100%; padding: 0; margin: 0; border: 0; background: none;
+  font: inherit; text-align: left; cursor: pointer; border-radius: 6px;
+}
+.pt-docs-preview:hover .pt-pill,
+.pt-docs-preview:focus-visible .pt-pill {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.pt-docs-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* Ver 3 step 1 — the CCCD review step. The packets-needing-a-card row is a
    fixed grid so the STT, name and action line up down the page; it carries
    no image (there is nothing to show yet), so it is the only thing still
@@ -1276,4 +1291,52 @@ button.cccd-review-tile-image { cursor: pointer; }
 .cccd-summary-link {
   margin-left: 10px; background: none; border: 0; padding: 0;
   color: var(--accent); cursor: pointer; text-decoration: underline;
+}
+
+/* PacketDocsDialog: a read-only preview of one packet's evidence documents,
+   opened from a "Xem chứng từ" click in the packet table without leaving the
+   list. Backdrop-click + Escape follow CccdCardPicker's pattern.
+   .packet-docs-backdrop deliberately duplicates .cccd-picker-backdrop's
+   rules (fixed/inset/z-index/centering/dim) rather than reusing that class
+   directly -- .cccd-picker-backdrop is named for the CCCD picker feature, and
+   this is an unrelated one; there is no neutral/shared backdrop class in this
+   file to reuse instead (.palette-backdrop and .help-backdrop are similarly
+   feature-scoped, both absolutely- rather than fixed-positioned for their own
+   in-flow ancestors). */
+.packet-docs-backdrop {
+  position: fixed; inset: 0; z-index: 80; display: flex;
+  align-items: center; justify-content: center; padding: 20px;
+  background: rgba(24, 20, 20, .48);
+}
+.packet-docs-dialog {
+  width: min(1040px, 96vw); height: min(760px, 86vh);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 0.5px solid var(--border);
+  border-radius: 12px; box-shadow: 0 18px 44px rgba(24, 20, 20, .22);
+}
+/* Same override this dialog's layout needs as .packet-evidence-drawer > .ev
+   (styles.css:913): .ev's own width:53% is sized for FolderReview's
+   side-by-side split with a fields panel, which this dialog does not have. */
+.packet-docs-dialog > .ev { flex: 1; width: 100%; min-height: 0; }
+.packet-docs-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex: none; padding: 14px 18px; border-bottom: 0.5px solid var(--border);
+}
+.packet-docs-head h2 {
+  margin: 0; font-size: 16px; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.packet-docs-head button {
+  flex: none; padding: 5px 11px; border: 0.5px solid var(--border); border-radius: 8px;
+  background: transparent; cursor: pointer; font-size: 13px;
+}
+.packet-docs-state {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 40px;
+  font-size: 13px; color: var(--text-muted); text-align: center;
+}
+.packet-docs-error-text { color: var(--danger); margin: 0; }
+.packet-docs-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  flex: none; padding: 12px 18px; border-top: 0.5px solid var(--border);
 }
