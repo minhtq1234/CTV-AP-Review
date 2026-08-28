@@ -1,34 +1,38 @@
 // src/components/PacketTable.hitTarget.test.tsx
 // @vitest-environment jsdom
 //
-// The hit-target contract for the CHỨNG TỪ preview button: its rendered box
-// should equal its <td>'s box, padding included, not just wrap the pill's
-// natural size -- otherwise a click in what looks like the cell but isn't
-// the button falls through to the row's own onClick (wrong-action, not
-// no-action). jsdom has no layout engine, so this cannot assert real pixel
-// geometry -- it asserts the CSS relationship the fix relies on (padding
-// moved from the cell to the button, the button sized to 100% of its parent
-// under border-box sizing), read from the real stylesheet, guarding against
-// a future style edit silently undoing it.
+// The hit-target contract for the CHỨNG TỪ preview button: a click anywhere
+// in the cell -- padding included -- must open the preview popup, not fall
+// through to the row's own onClick (which navigates into the full reviewer;
+// wrong-action-on-misclick, not no-action-on-misclick).
 //
-// That relationship does NOT fully deliver box equality in every row, and a
-// jsdom test cannot see the gap because jsdom never computes real layout.
-// Measured in a real browser: width matches on every row, and height
-// matches when THIS cell's own content is what makes the row tall (the
-// "Thiếu: ..." case) -- but when a SIBLING cell (Kết quả FA's second
-// .pt-sub line) is what stretches the row instead, the button stays sized
-// to its own single-line content and falls ~13-16.5px short of the row's
-// real height (3 of 41 rows in the case checked). See the batch report for
-// the full measurements; no fix for that residual gap is applied yet.
+// An earlier version tried to deliver that by sizing the button itself to
+// the cell's box (width/height:100%, box-sizing:border-box, the <td>'s
+// padding moved onto the button). Measured in a real browser against a real
+// case, that worked for width on every row, and for height only when the
+// docs cell's own content was what made the row tall -- when a SIBLING cell
+// did instead (Kết quả FA's second .pt-sub line, on an otherwise
+// single-line docs cell), the button stayed sized to its own content and
+// left a ~13-16.5px dead strip (3 of 41 rows) where a click still fell
+// through to the row. jsdom has no layout engine, so that gap was never
+// visible to a jsdom test in the first place -- see git history for the
+// CSS-relationship test this file used to have, which pinned the wrong
+// mechanism.
+//
+// The actual fix moved the click handler onto the <td> itself (see
+// PacketTable.tsx): a click event bubbles to whatever DOM element it lands
+// on and up from there regardless of any descendant's box geometry, so the
+// <td> catches everything the button's own (possibly smaller) box misses.
+// That IS testable without layout: dispatching a click directly on the
+// <td> element -- bypassing the button entirely -- is exactly what a real
+// click in that dead strip would also target, since nothing else occupies
+// that space.
 
-import { readFileSync } from 'node:fs'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PacketMeta, PacketReview } from '../upload/api'
 import PacketTable from './PacketTable'
-
-const styles = readFileSync('src/styles.css', 'utf8')
 
 function packet(index: number, name: string, overrides: Partial<PacketMeta> = {}): PacketMeta {
   const review: PacketReview = { done: false, fields: {}, rejection: null }
@@ -49,10 +53,10 @@ function packet(index: number, name: string, overrides: Partial<PacketMeta> = {}
   }
 }
 
-// A row whose "Kết quả FA" cell renders a second .pt-sub line ("N/6 đã xem"),
-// matching the real-browser scenario this was checked against (see the file
-// header) -- kept here even though jsdom's lack of layout means this
-// particular test can't itself tell that row apart from a plain one.
+// The same scenario that showed the gap: a single-line docs cell next to a
+// two-line "Kết quả FA" cell ("Đang xem" / "N/6 đã xem"), so the row is
+// taller than the docs cell's own content -- the sibling-driven case the
+// button's own box never covered.
 const tallerRowPacket = packet(0, 'Synthetic Taller Row', {
   review: {
     done: false,
@@ -63,13 +67,9 @@ const tallerRowPacket = packet(0, 'Synthetic Taller Row', {
 
 let host: HTMLDivElement
 let root: Root
-let styleElement: HTMLStyleElement
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-  styleElement = document.createElement('style')
-  styleElement.textContent = styles
-  document.head.append(styleElement)
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -78,61 +78,74 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
-  styleElement.remove()
   vi.unstubAllGlobals()
 })
 
 describe('PacketTable CHỨNG TỪ hit-target contract', () => {
-  it("gives the preview button the padding its <td> gave up, sized to fill it, box included", async () => {
+  it('a click on the <td> itself -- not the button -- opens the preview, not the row', async () => {
+    const onOpenPacket = vi.fn()
+    const onPreviewDocs = vi.fn()
     await act(async () => {
       root.render(
         <PacketTable
           packets={[tallerRowPacket]}
-          onOpenPacket={() => {}}
-          onPreviewDocs={() => {}}
+          onOpenPacket={onOpenPacket}
+          onPreviewDocs={onPreviewDocs}
         />,
       )
     })
 
-    const cell = host.querySelector('td.pt-docs') as HTMLElement
-    const button = host.querySelector('button.pt-docs-preview') as HTMLElement
-    // A plain, non-interactive cell in the SAME row still carries the base
-    // `.packet-table td` padding -- read from it rather than hard-coding
-    // "9px 10px" a second time, so this test can't silently drift from the
-    // rule it is checking.
-    const plainCell = host.querySelector('td.pt-stt') as HTMLElement
-    expect(cell).not.toBeNull()
-    expect(button).not.toBeNull()
-    expect(plainCell).not.toBeNull()
-
-    const cellStyle = getComputedStyle(cell)
-    const buttonStyle = getComputedStyle(button)
-    const basePadding = getComputedStyle(plainCell)
-
-    // The cell gave its padding away -- it must not also keep it, or the
-    // button (sized to the cell's now-smaller content box) would fall short
-    // of the cell's real edges again.
-    expect([cellStyle.paddingTop, cellStyle.paddingRight, cellStyle.paddingBottom, cellStyle.paddingLeft])
-      .toEqual(['0px', '0px', '0px', '0px'])
-
-    // The button holds exactly the padding an ordinary cell would have had.
-    expect(buttonStyle.paddingTop).toBe(basePadding.paddingTop)
-    expect(buttonStyle.paddingRight).toBe(basePadding.paddingRight)
-    expect(buttonStyle.paddingBottom).toBe(basePadding.paddingBottom)
-    expect(buttonStyle.paddingLeft).toBe(basePadding.paddingLeft)
-    expect(basePadding.paddingTop).not.toBe('0px') // guards against a vacuous pass
-
-    // border-box + 100%/100% on the cell's only child is what makes that
-    // padded border-box equal the cell's own content box (jsdom cannot
-    // resolve the percentages into pixels itself -- that part is confirmed
-    // in a real browser, see the batch report).
-    expect(buttonStyle.boxSizing).toBe('border-box')
-    expect(buttonStyle.width).toBe('100%')
-    expect(buttonStyle.height).toBe('100%')
-    expect(buttonStyle.display).toBe('block')
-
-    // Sanity: this row really is the taller-sibling scenario, not an
-    // accidental single-line one.
+    // Sanity: this really is the taller-sibling row, not an accidental
+    // single-line one -- otherwise this test would prove nothing new.
     expect(host.querySelector('.pt-sub')?.textContent).toContain('đã xem')
+
+    const cell = host.querySelector('td.pt-docs') as HTMLElement
+    expect(cell.contains(host.querySelector('button.pt-docs-preview'))).toBe(true)
+    // Dispatched on the <td> directly: jsdom cannot aim a click at real
+    // coordinates, but a click landing anywhere in the cell that isn't on
+    // the (smaller) button targets the <td> exactly like this one does.
+    await act(async () => { cell.click() })
+
+    expect(onPreviewDocs).toHaveBeenCalledOnce()
+    expect(onPreviewDocs).toHaveBeenCalledWith(0)
+    expect(onOpenPacket).not.toHaveBeenCalled()
+  })
+
+  it('clicking the button does not also fire the <td>\'s own handler underneath it', async () => {
+    const onOpenPacket = vi.fn()
+    const onPreviewDocs = vi.fn()
+    await act(async () => {
+      root.render(
+        <PacketTable
+          packets={[tallerRowPacket]}
+          onOpenPacket={onOpenPacket}
+          onPreviewDocs={onPreviewDocs}
+        />,
+      )
+    })
+
+    const button = host.querySelector('button.pt-docs-preview') as HTMLButtonElement
+    await act(async () => { button.click() })
+
+    // Exactly once: the button's own stopPropagation must keep this click
+    // from also reaching the <td>'s handler it sits inside.
+    expect(onPreviewDocs).toHaveBeenCalledOnce()
+    expect(onOpenPacket).not.toHaveBeenCalled()
+  })
+
+  it('renders the <td> with no click handler of its own when onPreviewDocs is absent', async () => {
+    const onOpenPacket = vi.fn()
+    await act(async () => {
+      root.render(
+        <PacketTable packets={[tallerRowPacket]} onOpenPacket={onOpenPacket} />,
+      )
+    })
+
+    const cell = host.querySelector('td.pt-docs') as HTMLElement
+    expect(cell.className).toBe('pt-docs')
+    // With no handler of the <td>'s own, a click there has nothing to stop
+    // it, and reaches the row exactly as it always has.
+    await act(async () => { cell.click() })
+    expect(onOpenPacket).toHaveBeenCalledWith(0)
   })
 })

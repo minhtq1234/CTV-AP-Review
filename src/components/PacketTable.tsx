@@ -185,16 +185,33 @@ export default function PacketTable({ packets, onOpenPacket, onPreviewDocs }: Pr
                       </td>
                     )}
                     {hasDocumentData && (
-                      <td className={`pt-docs${onPreviewDocs ? ' pt-docs-interactive' : ''}`}>
+                      <td
+                        className={`pt-docs${onPreviewDocs ? ' pt-docs-interactive' : ''}`}
+                        onClick={onPreviewDocs ? event => {
+                          // Catches every click the button below doesn't --
+                          // its own padding included, and any row a sibling
+                          // cell (Kết quả FA's second line, say) makes taller
+                          // than the button's own content. The <td> always
+                          // spans the row's real rendered height regardless
+                          // of any child's box, so this is what can actually
+                          // promise "the whole cell" -- sizing the button to
+                          // match it (tried first) left a measured gap
+                          // whenever a sibling, not this cell, drove the
+                          // row's height.
+                          event.stopPropagation()
+                          onPreviewDocs(row.index)
+                        } : undefined}
+                      >
                         {onPreviewDocs ? (
                           <button
                             type="button"
                             className="pt-docs-preview"
                             aria-label={`Xem chứng từ — ${row.name}`}
                             onClick={event => {
-                              // Without this, the click bubbles to the row's
-                              // own onClick and also navigates into the full
-                              // reviewer — opening the popup must not do that.
+                              // Stop here too -- otherwise this same click
+                              // would then reach the <td>'s own handler just
+                              // above, firing onPreviewDocs a second time
+                              // before either stops it reaching the row.
                               event.stopPropagation()
                               onPreviewDocs(row.index)
                             }}

@@ -1139,10 +1139,10 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .packet-table .pt-name { min-width: 180px; }          /* flexible, never collapses */
 .packet-table .pt-camket { width: 96px; }
 .packet-table .pt-docs { width: 168px; }
-/* The preview button (below) owns this cell's padding instead of the <td>
-   when it's rendered, so its own box is the whole cell -- see the button's
-   own comment for why. */
-.packet-table .pt-docs.pt-docs-interactive { padding: 0; }
+/* The <td> itself carries the click handler when this cell is interactive
+   (see PacketTable.tsx) -- cursor:pointer here says the whole cell, padding
+   included, is the target, not only the button's own smaller box. */
+.packet-table .pt-docs.pt-docs-interactive { cursor: pointer; }
 .packet-table .pt-ai { width: 168px; }
 .packet-table .pt-fa { width: 132px; }
 .packet-table .pt-pages { width: 104px; color: var(--text-muted); white-space: nowrap;
@@ -1168,32 +1168,25 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 
 /* CHỨNG TỪ preview button (only rendered when PacketTable is given
    onPreviewDocs): a plain button reset so the cell reads exactly as it does
-   without the prop -- the pill(s) inside are the same markup either way --
-   plus a focus/hover ring on the pill so the row's own click target isn't
-   the only sign this is now interactive.
+   without the prop -- the pill(s) inside are the same markup either way.
 
-   width/height 100% + box-sizing:border-box + the 9px/10px .packet-table td
-   used to hold (moved here via .pt-docs.pt-docs-interactive above, zeroed
-   there) makes this button's box the cell's whole box in most rows, not
-   just the pill's natural size -- confirmed by measuring both boxes in a
-   real browser (not by eye): width is exact on every row, and height is
-   exact whenever this cell's OWN content is what makes the row tall (e.g.
-   the "Thiếu: ..." second line).
-
-   KNOWN GAP, not yet fixed: when a SIBLING cell is what stretches the row
-   (e.g. Kết quả FA's second .pt-sub line, on an otherwise single-line docs
-   cell) the button stays sized to ITS OWN content and falls short of the
-   row's real height by ~13-16.5px in this table's own type scale (real
-   measurement, a real case, 3 of 41 rows) -- table cells only propagate a
-   row-stretched height to a percentage-height child when that same cell's
-   content is what caused the stretch, not when a sibling did. A click in
-   that leftover strip still falls through the <td> (no handler of its own)
-   to the row's own onClick -- the wrong-action-on-misclick this button
-   exists to prevent, just with a smaller footprint. See the batch report
-   for the measurements and candidate fixes; none is applied here yet. */
+   This button is NOT what makes "the whole cell" the click target -- an
+   earlier version tried sizing it to the cell's box with width/height:100%
+   and box-sizing:border-box, moving the <td>'s own padding onto it. Real
+   measurement (a real case, in a real browser) found that worked for width
+   on every row, and for height only when this cell's OWN content was what
+   made the row tall: whenever a SIBLING cell did instead (Kết quả FA's
+   second .pt-sub line, on an otherwise single-line docs cell), the button
+   stayed sized to its own content and fell ~13-16.5px short of the row's
+   real height (3 of 41 rows) -- table cells don't propagate a
+   sibling-driven row height to a percentage-sized child the way they do
+   for the cell's own content. The <td>'s own click handler (PacketTable.tsx)
+   replaced that approach: it catches every click in the cell regardless of
+   this button's box, via plain event bubbling, which no row height can
+   defeat. This button still matters for keyboard focus, its accessible
+   name, and the hover/focus ring below -- just not for hit-testing. */
 .pt-docs-preview {
-  display: block; width: 100%; height: 100%; box-sizing: border-box;
-  padding: 9px 10px; margin: 0; border: 0; background: none;
+  display: block; width: 100%; padding: 0; margin: 0; border: 0; background: none;
   font: inherit; text-align: left; cursor: pointer; border-radius: 6px;
 }
 .pt-docs-preview:hover .pt-pill,
