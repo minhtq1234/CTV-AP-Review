@@ -125,14 +125,24 @@ class TestEnum:
 
 
 class TestConfidence:
-    def test_a_low_confidence_match_needs_a_human(self):
-        assert cv.compare(
-            "079203031329", "079203031329", "digits", confidence=0.5,
-        ) is Verdict.LOW_CONF
+    """`confidence` is `min(word confidence)` -- legibility, not correctness
+    (docs/handoff-ver3.md) -- so it never decides a verdict here: an outright
+    match is trusted at any confidence, a mismatch is never softened, and a
+    fuzzy near miss already means "a person must look" independent of it.
+    """
 
-    def test_confidence_at_the_threshold_passes(self):
+    def test_an_exact_match_passes_regardless_of_confidence(self):
+        for confidence in (0.99, 0.7, 0.5, 0.02, 0.0):
+            assert cv.compare(
+                "079203031329", "079203031329", "digits", confidence=confidence,
+            ) is Verdict.MATCH
+
+    def test_an_exact_match_at_the_lowest_confidence_measured_is_a_clean_pass(self):
+        # Packet 25, số tài khoản, July batch: an 11-digit read matching the
+        # roster exactly, off a faint scan, at confidence 0.02. Before this was
+        # fixed, that was downgraded to `low_conf` (-> `rv`) despite being right.
         assert cv.compare(
-            "079203031329", "079203031329", "digits", confidence=cv.LOW_CONF,
+            "079203031329", "079203031329", "digits", confidence=0.02,
         ) is Verdict.MATCH
 
     def test_a_mismatch_stays_a_mismatch_however_unsure_the_read(self):
@@ -142,12 +152,12 @@ class TestConfidence:
         ) is Verdict.MISMATCH
 
     def test_a_fuzzy_result_is_not_further_downgraded_by_confidence(self):
-        # Both already mean "a person must look"; low_conf would say less.
+        # Fuzzy already means "a person must look"; there is no lower tier.
         assert cv.compare(
             "Đinh Hữu Phúc", "Dinh Huu Phuc", "person", confidence=0.1,
         ) is Verdict.FUZZY
 
-    def test_no_confidence_supplied_is_not_treated_as_zero(self):
+    def test_no_confidence_supplied_is_fine(self):
         assert cv.compare(
             "079203031329", "079203031329", "digits", confidence=None,
         ) is Verdict.MATCH
@@ -216,9 +226,7 @@ class TestVerdictToStatus:
 
         assert cv.to_status(Verdict.MATCH) is Status.OK
         assert cv.to_status(Verdict.MISMATCH) is Status.NO
-        # both of these mean the same thing to a reviewer: look at it
         assert cv.to_status(Verdict.FUZZY) is Status.REVIEW
-        assert cv.to_status(Verdict.LOW_CONF) is Status.REVIEW
 
     def test_every_verdict_maps(self):
         for verdict in Verdict:

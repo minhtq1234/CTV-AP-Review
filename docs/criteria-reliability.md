@@ -33,8 +33,11 @@ These are the ones the validation pass covered. Two known false results remain:
   and 0.90. Avoid that packet.
 - **#5 on packet 24** — the MST anchor read the value beside "TK số", the wrong field's label.
 
-#3 carries 17 `rv` because handwritten dates read at low confidence; that is the tool asking
-rather than failing.
+#3 used to carry 17 `rv` here because handwritten dates that already matched the bảng kê were
+downgraded for a low-confidence read. `compare_values.compare` no longer does that -- confidence
+is `min(word confidence)`, legibility rather than correctness, so an outright match now passes
+at any confidence (`docs/handoff-ver3.md`). Re-running this measurement after that fix: all 17
+move to `ok`, and nothing else on this case moves at all.
 
 ## Tier 2 — arithmetic on the bảng kê, always passes
 

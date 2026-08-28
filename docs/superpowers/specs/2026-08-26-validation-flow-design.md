@@ -413,7 +413,7 @@ human* — distinctions that `review` / `unread` currently collapse.
 |---|---|---|---|
 | `ok` | ✓ | agrees | a comparator ran and matched |
 | `no` | ✕ | does not agree | a comparator ran and differed |
-| `rv` | ! | needs a human | ambiguous compare, low confidence, or any `presence` criterion |
+| `rv` | ! | needs a human | a fuzzy (near-miss) compare, or any `presence` criterion |
 | `na` | – | not applicable to this packet | `conditional` unmet, or document not in `criterion.docs` |
 | `missing` | ⊘ | document should be here and is not | required document absent from the packet |
 | `pending` | ? | not evaluated | no value extracted, or no comparator for this pair |
@@ -424,6 +424,13 @@ because packets genuinely arrive incomplete: 24 of 32 February packets have no
 cam kết. And a cell for a document not listed in `criterion.docs` renders as a
 static dash and is **not clickable**, distinct from a clickable `na` that can
 explain itself.
+
+A third reason for `rv` was in this table when it was written: an outright
+match read at low confidence. `compare_values.compare` shipped that way and
+later dropped it -- confidence is `min(word confidence)`, legibility rather
+than correctness, so it is not evidence the comparison is wrong, and an
+outright match now passes at any confidence. See `docs/criteria-reliability.md`
+for the measured effect.
 
 ### 4.1 Aggregation — resolves Open Question #8
 

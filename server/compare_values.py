@@ -20,8 +20,10 @@ from enum import Enum
 from criteria import Status
 from ocr_extract import norm
 
-#: Below this, a matching read still needs a human -- the value agreed but the
-#: reader was not sure it read it right.
+#: Below this, a read is too unsure to trust for escalation -- see
+#: `field_escalation.judge`, the remaining consumer. `compare` below used to
+#: also downgrade an outright match under this line to `low_conf`; it no
+#: longer does; see `compare`'s docstring.
 LOW_CONF = 0.7
 
 #: Edit-ratio at or above which a non-exact name is a near miss rather than a
@@ -32,17 +34,14 @@ NAME_SIM = 0.8
 class Verdict(str, Enum):
     MATCH = "match"
     FUZZY = "fuzzy"          # near miss -- a person must look
-    LOW_CONF = "low_conf"    # agreed, but the read was unsure
     MISMATCH = "mismatch"
 
 
 _TO_STATUS = {
     Verdict.MATCH: Status.OK,
     Verdict.MISMATCH: Status.NO,
-    # Both mean the same thing to a reviewer: look at it. The distinction
-    # between them lives in the cell's note, not in its glyph.
+    # A near miss: only a person can say whether it's the same value.
     Verdict.FUZZY: Status.REVIEW,
-    Verdict.LOW_CONF: Status.REVIEW,
 }
 
 
@@ -127,16 +126,18 @@ def compare(
 ) -> Verdict:
     """How `value` stands against `expected` under the rule for `kind`.
 
-    `confidence` downgrades an outright match to `low_conf`; it never softens a
-    mismatch, because that would hide a disagreement behind "unsure", and it
-    never touches `fuzzy`, which already says a person must look.
+    `confidence` is accepted -- every caller has one to hand -- but never
+    consulted. It used to downgrade an outright match below `LOW_CONF` to
+    `low_conf`; measured on the July batch that rule was wrong on both sides
+    at once: a genuine match read at confidence 0.02 (packet 25, số tài
+    khoản), while a confident *mis*read at 0.93 (packet 34's CCCD) sailed
+    through, because confidence is `min(word confidence)` -- legibility, not
+    correctness (docs/handoff-ver3.md). An outright match is trusted at any
+    confidence. A mismatch is never softened by unsureness, because that would
+    hide a disagreement, and `fuzzy` already means "a person must look"
+    regardless of how sure the read was.
     """
-    base = _base(expected, value, kind, allowed)
-    if base is not Verdict.MATCH:
-        return base
-    if confidence is not None and confidence < LOW_CONF:
-        return Verdict.LOW_CONF
-    return base
+    return _base(expected, value, kind, allowed)
 
 
 def _base(expected: str, value: str, kind: str, allowed: tuple[str, ...]) -> Verdict:

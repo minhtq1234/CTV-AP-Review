@@ -392,12 +392,12 @@ def _compare_reads(
                     tuple(evidence))
 
     worst = min(readable, key=lambda r: _VERDICT_RANK[r[0]])
-    verdict, value, confidence, bbox = worst
+    verdict, value, _, bbox = worst
     values = sorted({v for _, v, _, _ in readable})
     return Cell(
         name, cv.to_status(verdict),
         " · ".join(values),
-        _compare_note(verdict, reference, value, values, confidence, bbox,
+        _compare_note(verdict, reference, value, values, bbox,
                       copies, len(readable), kind),
         tuple(evidence),
     )
@@ -406,8 +406,7 @@ def _compare_reads(
 _VERDICT_RANK = {
     cv.Verdict.MISMATCH: 0,
     cv.Verdict.FUZZY: 1,
-    cv.Verdict.LOW_CONF: 2,
-    cv.Verdict.MATCH: 3,
+    cv.Verdict.MATCH: 2,
 }
 
 
@@ -437,7 +436,7 @@ def _digit_gap(kind: str, reference: str, values: list[str]) -> str:
 
 
 def _compare_note(
-    verdict, reference, value, values, confidence, bbox, copies, readable, kind,
+    verdict, reference, value, values, bbox, copies, readable, kind,
 ) -> str:
     """Acc's rule: never just "không khớp" -- name the value and the reference."""
     parts: list[str] = []
@@ -449,10 +448,6 @@ def _compare_note(
             parts.append(hint)
     elif verdict is cv.Verdict.FUZZY:
         parts.append(_fuzzy_note(reference, value, kind))
-    elif verdict is cv.Verdict.LOW_CONF:
-        shown = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "?"
-        parts.append(f"Khớp bảng kê nhưng độ tin cậy đọc thấp ({shown}) — "
-                     "cần người xác nhận.")
     else:
         parts.append(f"Khớp bảng kê ({reference}).")
         if copies > 1:

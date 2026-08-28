@@ -157,7 +157,10 @@ class TestComparingDocumentsAgainstTheReference:
         assert cell.status is Status.REVIEW
         assert "dấu" in cell.note
 
-    def test_a_low_confidence_agreement_needs_a_human(self):
+    def test_a_low_confidence_agreement_is_a_clean_match_not_a_review(self):
+        """Confidence measures legibility, not correctness (docs/handoff-ver3.md):
+        an exact match against the roster is no longer downgraded just because
+        the read was unsure."""
         packet = manifest(
             docs=[doc("contract-0", "contract")],
             fields=[("cccd", "079203031329",
@@ -166,8 +169,8 @@ class TestComparingDocumentsAgainstTheReference:
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
         cell = cells_by_doc(result)[cr.CONTRACT]
 
-        assert cell.status is Status.REVIEW
-        assert "0.4" in cell.note or "40" in cell.note
+        assert cell.status is Status.OK
+        assert "0.4" not in cell.note and "40" not in cell.note
 
     def test_the_evidence_carries_the_page_and_box(self):
         result = by_stt(ev.evaluate_packet(full_packet(), ROSTER))[2]
