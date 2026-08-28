@@ -1140,12 +1140,32 @@ _TITLE_TOKEN_MAX_WORDS = 5
 # above found nothing -- see `classify_page`).
 _FULL_PAGE_MARKERS: list[tuple[list[str], str, str]] = [
     (["ban cam ket", "08/ck-tncn", "mau so: 08"], "commitment", "Bản cam kết"),
+    # #012: "co quan thue" dropped -- every contract's own Điều 2 TTNCN-
+    # withholding clause says "...trích nộp cho Cơ quan Thuế trước khi thanh
+    # toán..."; when that clause happens to land on one long OCR line (no
+    # hanging-indent line break splitting "quan" from "Thuế"), this marker
+    # matched it and mis-started a `pit` document on the contract's own body
+    # (measured on packets 8/15/16 of the July case). The other three
+    # markers below are portal-specific ("Thông tin về người nộp thuế TNCN",
+    # "Bảng thông tin tra cứu", the gdt.gov.vn URL) and were never observed
+    # to false-fire; every genuine tax-lookup page in the July/February
+    # audit was still caught by at least one of them.
     (["bang thong tin tra cuu", "thong tin ve nguoi nop thue", "tra cuu thong tin",
-      "gdt.gov.vn", "co quan thue"], "pit", "Tra cứu thuế"),
+      "gdt.gov.vn"], "pit", "Tra cứu thuế"),
     # #010: a rotated Phụ lục (SOW/KPI evaluation appendix) OCRs with a
     # noisy/garbled title band even once upright (the surrounding table text
     # is itself low-quality) -- these markers catch it wherever they land.
-    (["phu luc", "danh gia chat luong dich vu", "sow", "kpi"], "appendix", "Phụ lục"),
+    # #012: "phu luc" dropped from this list -- a contract routinely refers
+    # to its own attachment in passing ("...cụ thể tại Phụ lục đính kèm."),
+    # and that reference mis-started an `appendix` document on packet 5 of
+    # the July case. A genuine (even rotated/garbled) Phụ lục title is still
+    # caught either by the heading-shaped `_PAGE_KEYWORDS` "phu luc" rule
+    # above (classify_page tries that first) or by the other three,
+    # non-generic markers here -- measured directly on a real rotated
+    # appendix page (July packet 5) whose garbled title missed "phu luc" but
+    # still matched "danh gia chat luong dich vu", and on a February
+    # appendix page whose table matched "sow".
+    (["danh gia chat luong dich vu", "sow", "kpi"], "appendix", "Phụ lục"),
 ]
 
 # A real document title is a short, standalone heading line (occasionally
@@ -1175,12 +1195,44 @@ def _title_candidates(lines: list[str]) -> list[str]:
     sometimes wraps across two lines) -- long lines never participate, which
     is what rejects a body-prose sentence that merely mentions a document's
     own name in passing (see `_TITLE_MAX_WORDS`).
+
+    #012: word count alone is not a strong enough shape test -- a numbered
+    contract clause routinely wraps into an OCR line short enough to slip
+    under this cap. Callers additionally require `_looks_like_heading` on
+    each candidate before treating it as a real title.
     """
     short = [i for i, line in enumerate(lines) if 0 < len(line.split()) <= _TITLE_MAX_WORDS]
     short_set = set(short)
     candidates = [lines[i] for i in short]
     candidates += [lines[i] + " " + lines[i + 1] for i in short if i + 1 in short_set]
     return candidates
+
+
+def _looks_like_heading(candidate: str) -> bool:
+    """Whether a `_title_candidates` string is shaped like a real printed
+    title, not just short enough to be one.
+
+    #012: every genuine title observed across the July and February
+    submissions is set in full capitals (these templates print headings in
+    block caps) -- including ones OCR mangles, e.g. "HỢP DỊCH VỤ" for a
+    contract cover. Ordinary Vietnamese legal prose, by contrast, Title-Cases
+    its own defined terms ("Biên Bản", "Hợp Đồng") but is not full-caps, even
+    when a sentence about them is short. Two real OCR fragments found on
+    packets that mis-segmented as a result (July case `68ddc1f0`, both short
+    enough to pass `_TITLE_MAX_WORDS`, both containing a document keyword as
+    an ordinary defined-term mention rather than a title):
+
+        "của Hợp Đồng và được VNG ý nghiệm thu. Trong"   (packet 35, p1)
+        "quy 2 của Biên Bản này, Hợp sẽ"                  (packet 9, p5)
+
+    `str.isupper()` rejects both (correctly) while still accepting every
+    real title in the corpus, including ones with digits/punctuation
+    ("BẰNG THÔNG TIN TRA CỨU:") and Vietnamese diacritics (composed
+    upper-case code points, e.g. "PHỤ LỤC ĐÁNH GIÁ CHẤT LƯỢNG DỊCH VỤ") --
+    `isupper()` only requires every *cased* character to be upper-case, so
+    digits/punctuation/whitespace don't disqualify a candidate.
+    """
+    return candidate.isupper()
 
 
 def classify_page(text: str) -> tuple[str, str] | None:
@@ -1193,25 +1245,33 @@ def classify_page(text: str) -> tuple[str, str] | None:
     picked up, but a keyword found only outside the top is a weaker signal
     than one at the top (see `segment_docs`, which uses that distinction to
     avoid false-starting a new document on a boilerplate closing clause).
-    Only short, heading-shaped lines are considered (`_title_candidates`),
-    so a keyword mentioned in passing within ordinary body prose is ignored.
+    Only short, heading-shaped lines are considered (`_title_candidates`,
+    gated by `_looks_like_heading` -- #012), so a keyword mentioned in
+    passing within ordinary body prose is ignored even when the OCR line
+    happens to be short.
 
     #009: if neither pass matches, a last check searches the WHOLE page text
-    -- unrestricted by line length/shape -- for `_FULL_PAGE_MARKERS`, since a
-    tax-lookup screenshot or a cam-kết page's identifying text doesn't always
-    land in a clean heading-shaped line. This stays scoped to just those two
-    marker sets (distinctive enough to be safe anywhere); the ambiguous,
-    frequently-repeated "biên bản"/"hợp đồng" titles above are untouched.
+    -- unrestricted by line length/shape/case -- for `_FULL_PAGE_MARKERS`,
+    since a tax-lookup screenshot or a cam-kết page's identifying text
+    doesn't always land in a clean heading-shaped line. This stays scoped to
+    just those marker sets (distinctive enough to be safe anywhere, #012
+    having trimmed the two that weren't -- see `_FULL_PAGE_MARKERS`); the
+    ambiguous, frequently-repeated "biên bản"/"hợp đồng" titles above are
+    untouched.
     """
     lines = text.splitlines() or [text]
     top_n = max(1, len(lines) // 3)
     for line_group in (lines[:top_n], lines):
-        candidates = [_flatten(norm(c)) for c in _title_candidates(line_group)]
+        candidates = [
+            _flatten(norm(c)) for c in _title_candidates(line_group) if _looks_like_heading(c)
+        ]
         for kw, kind, label in _PAGE_KEYWORDS:
             if any(kw in c for c in candidates):
                 return kind, label
     for line_group in (lines[:top_n], lines):
         for candidate in _title_candidates(line_group):
+            if not _looks_like_heading(candidate):
+                continue
             tokens = _flatten(norm(candidate)).split()
             if len(tokens) > _TITLE_TOKEN_MAX_WORDS:
                 continue

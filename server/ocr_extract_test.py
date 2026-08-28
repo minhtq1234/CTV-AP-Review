@@ -4,6 +4,7 @@ from ocr_extract import (
     classify_page, segment_docs, locate_field, _upright_rotation,
     ocr_words,
     ocr_packet,
+    _looks_like_heading, _FULL_PAGE_MARKERS,
 )
 
 def W(text, x, y, w, h, conf=90): return {"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf}
@@ -583,11 +584,21 @@ def test_build_manifest_shape():
 # ---------------------------------------------------------------------------
 
 def test_classify_page_contract():
-    assert classify_page("Something HỢP ĐỒNG DỊCH VỤ something else on the cover") == \
+    # #012: was a single mixed-case line ("Something HỢP ĐỒNG DỊCH VỤ
+    # something else on the cover") -- no real cover in this corpus ever
+    # renders its title inline inside a lowercase sentence like that; every
+    # real title is its own clean line, which is what `_looks_like_heading`
+    # now requires. Reshaped to the two-line form real covers actually take
+    # (title alone on its line, unrelated text on another) while keeping the
+    # original intent: the title is found alongside other page content.
+    assert classify_page("Something else on the cover\nHỢP ĐỒNG DỊCH VỤ") == \
         ("contract", "Hợp đồng dịch vụ")
 
 def test_classify_page_bbnt():
-    assert classify_page("BIÊN BẢN NGHIỆM THU công việc đã hoàn thành") == \
+    # #012: reshaped for the same reason as test_classify_page_contract --
+    # the title now needs its own line, not to be embedded in lowercase
+    # prose on the same line as the keyword.
+    assert classify_page("BIÊN BẢN NGHIỆM THU\ncông việc đã hoàn thành") == \
         ("bbnt", "Biên bản nghiệm thu")
 
 def test_classify_page_bbnt_thanh_ly_synonym():
@@ -606,20 +617,42 @@ def test_classify_page_bbnt_thanh_ly_synonym():
     assert classify_page(text) == ("bbnt", "Biên bản thanh lý hợp đồng")
 
 def test_classify_page_commitment():
+    # #012: this mixed-case single line no longer matches via the
+    # heading-shaped pass ("không chịu thuế thu nhập cá nhân" is ordinary
+    # lowercase prose sharing the line) -- it still passes only because
+    # "ban cam ket" is also one of `_FULL_PAGE_MARKERS`'s commitment
+    # markers, which is case/shape-unrestricted by design (#009). Left as a
+    # single line deliberately: it now doubles as coverage that the
+    # unrestricted marker fallback still catches this text.
     assert classify_page("BẢN CAM KẾT không chịu thuế thu nhập cá nhân") == \
         ("commitment", "Bản cam kết")
 
 def test_classify_page_phu_luc():
     # #010: Phụ lục is its own "appendix" kind, not "pit" (it no longer
     # shares a kind with Tra cứu thuế).
-    assert classify_page("PHỤ LỤC đánh giá kết quả công việc") == ("appendix", "Phụ lục")
+    # #012: reshaped to a two-line form (see test_classify_page_contract) --
+    # the single mixed-case line this used to be has no full-page-marker
+    # fallback for this exact wording ("đánh giá kết quả công việc" doesn't
+    # match the marker's "đánh giá chất lượng dịch vụ"), so unlike
+    # commitment/tra_cuu above this one is a genuine change in how the
+    # title must be shaped, not just an incidental pass via the fallback.
+    assert classify_page("PHỤ LỤC\nđánh giá kết quả công việc") == ("appendix", "Phụ lục")
 
 def test_classify_page_tra_cuu():
+    # #012: still passes, but now only via `_FULL_PAGE_MARKERS`'s
+    # "bang thong tin tra cuu" (case/shape-unrestricted, #009) rather than
+    # the heading-shaped pass -- same situation as test_classify_page_commitment.
     assert classify_page("BẢNG THÔNG TIN TRA CỨU người nộp thuế TNCN") == \
         ("pit", "Tra cứu thuế")
 
 def test_classify_page_id_front():
-    assert classify_page("CĂN CƯỚC CÔNG DÂN Số: 048091001309") == ("id_front", "CCCD")
+    # #012: reshaped to a two-line form (see test_classify_page_contract) --
+    # id_front has no `_FULL_PAGE_MARKERS` entry at all, so unlike
+    # commitment/tra_cuu above there is no fallback and the title must be on
+    # its own heading-shaped line, exactly as a real CCCD page's "Số:" field
+    # already sits on its own line below the heading elsewhere in this file
+    # (e.g. "HỢP ĐỒNG DỊCH VỤ\nSố: 01" in TestTheContractTitleSurvivesOcr).
+    assert classify_page("CĂN CƯỚC CÔNG DÂN\nSố: 048091001309") == ("id_front", "CCCD")
 
 def test_classify_page_body_text_returns_none():
     assert classify_page("Nội dung công việc thực hiện trong tháng theo bảng chấm công") is None
@@ -812,6 +845,89 @@ def test_segment_docs_first_page_unclassified_defaults_to_contract():
     assert len(docs) == 1
     assert docs[0]["kind"] == "contract"
     assert docs[0]["pages"] == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# #012: a `_title_candidates` string additionally has to look like a printed
+# heading (`_looks_like_heading`, i.e. full caps), not just be short. Found
+# by measuring real packets: `_TITLE_MAX_WORDS`'s 10-word cap alone let a
+# short OCR-line-wrapped fragment of ordinary contract prose pass as a
+# "title" purely because a numbered clause happened to wrap onto a short
+# line. Real, page-structure counts across the two production cases this was
+# measured against (68ddc1f0, 41 packets; f5e7be63, 32 packets): 23/41 and
+# 3/32 packets carried a spurious duplicate document from exactly this gap
+# before the fix, 0/41 and 0/32 after, with zero packets losing a genuine
+# document.
+# ---------------------------------------------------------------------------
+
+def test_looks_like_heading_rejects_real_ocr_prose_fragments():
+    # Both fragments below are copied verbatim from real Tesseract output
+    # (July case `68ddc1f0`) that mis-started a document before this fix --
+    # not invented text. Both are short enough to pass `_TITLE_MAX_WORDS`
+    # and both contain a document keyword ("nghiệm thu", "biên bản") as an
+    # ordinary defined-term mention, not a title.
+    assert not _looks_like_heading("của Hợp Đồng và được VNG ý nghiệm thu. Trong")  # packet 35, p1
+    assert not _looks_like_heading("quy 2 của Biên Bản này, Hợp sẽ")                # packet 9, p5
+
+def test_looks_like_heading_accepts_real_titles():
+    # Real titles from the same case, including OCR noise (mangled diacritics,
+    # a trailing colon, digits) that must not defeat the check.
+    for title in ("HỢP ĐÒNG DỊCH VỤ", "NGHIỆM THU VÀ THANH LÝ HỢP ĐỎNG",
+                  "BẲNG THÔNG TIN TRA CỨU:", "PHỤ LỤC ĐÁNH GIÁ CHÁT LƯỢNG DỊCH VỤ"):
+        assert _looks_like_heading(title), title
+
+def test_classify_page_rejects_short_prose_fragment_mentioning_nghiem_thu():
+    # Real bug: this exact fragment (packet 35, p1 -- the contract's own
+    # Điều 2 payment clause, conditioned on VNG's acceptance of the work)
+    # used to classify as a fresh "Biên bản nghiệm thu", truncating the
+    # contract to its cover page alone.
+    assert classify_page("của Hợp Đồng và được VNG ý nghiệm thu. Trong") is None
+
+def test_classify_page_rejects_short_prose_fragment_mentioning_bien_ban():
+    # Real bug: this fragment (packet 9, p5 -- a contract general-terms
+    # clause self-referencing "Biên Bản này") used to hit the generic
+    # "bien ban" catch-all and split one real 2-page BBNT into two documents,
+    # because the catch-all always emits the "Biên bản nghiệm thu" label --
+    # which never matches whichever bbnt label is actually open, so
+    # `segment_docs`'s same-label continuation guard never engages.
+    assert classify_page("quy 2 của Biên Bản này, Hợp sẽ") is None
+
+def test_classify_page_still_accepts_all_caps_titles_at_the_shape_boundary():
+    # The gate must not just reject prose -- real titles, including ones
+    # OCR already mangles, still have to classify.
+    assert classify_page("HỢP ĐÒNG DỊCH VỤ") == ("contract", "Hợp đồng dịch vụ")
+    assert classify_page("NGHIỆM THU VÀ THANH LÝ HỢP ĐỎNG") == \
+        ("bbnt", "Biên bản thanh lý hợp đồng")
+
+def test_segment_docs_does_not_split_contract_on_its_own_nghiem_thu_clause():
+    # End-to-end reproduction of the real bug (packet 35 shape): a 4-page
+    # contract whose 2nd page contains the real "nghiệm thu" prose fragment
+    # above must stay one document, not fork a spurious "bbnt" at page 1.
+    pages = [
+        "HỢP ĐÒNG DỊCH VỤ",
+        "của Hợp Đồng và được VNG ý nghiệm thu. Trong",
+        "..body continues..",
+        "..body continues..",
+        "NGHIỆM THU VÀ THANH LÝ HỢP ĐỎNG",
+        "..body continues..",
+    ]
+    docs = segment_docs(pages)
+    assert [d["kind"] for d in docs] == ["contract", "bbnt"]
+    assert [d["pages"] for d in docs] == [[0, 1, 2, 3], [4, 5]]
+
+def test_full_page_markers_no_longer_carry_the_generic_boilerplate_phrases():
+    # Pins #012's marker trim: "co quan thue" (pit) and "phu luc" (appendix)
+    # are gone -- both are ordinary contract boilerplate ("...trích nộp cho
+    # Cơ quan Thuế...", "...cụ thể tại Phụ lục đính kèm.") that a real
+    # `_FULL_PAGE_MARKERS` pass (unrestricted by line shape/case) would
+    # otherwise match on the contract body itself. The other markers in each
+    # group -- kept because every genuine case in the July/February audit
+    # was still caught by at least one of them -- must still be present.
+    by_kind = {kind: markers for markers, kind, _ in _FULL_PAGE_MARKERS}
+    assert "co quan thue" not in by_kind["pit"]
+    assert "phu luc" not in by_kind["appendix"]
+    assert {"bang thong tin tra cuu", "thong tin ve nguoi nop thue", "gdt.gov.vn"} <= set(by_kind["pit"])
+    assert {"danh gia chat luong dich vu", "sow", "kpi"} <= set(by_kind["appendix"])
 
 
 if __name__ == "__main__":
