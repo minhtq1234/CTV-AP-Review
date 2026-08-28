@@ -24,6 +24,9 @@ interface Props {
   onOpenPacket: (index: number) => void
   onBack: () => void
   onExport: () => void
+  /** Which tab to land on. The criteria matrix's roster-level cell sends the
+   *  reviewer here to check the bảng kê, and that check lives on Tổng hợp. */
+  initialTab?: CaseTab
   /** Ver 3: back to the CCCD review step. Absent in contexts without one. */
   onOpenCccd?: () => void
 }
@@ -31,11 +34,13 @@ interface Props {
 // The case-detail screen: header (name + case status + review progress) over the
 // same packet-card grid the splitter's own result view uses (see SplitResultScreen),
 // with each card now also carrying its derived review status badge.
-export default function CaseDetail({ detail, onOpenPacket, onBack, onExport, onOpenCccd }: Props) {
+export default function CaseDetail({
+  detail, onOpenPacket, onBack, onExport, onOpenCccd, initialTab = 'packets',
+}: Props) {
   const { summary, packets } = detail
   const [filter, setFilter] = useState<PacketDashboardFilter>('all')
   const [attentionFirst, setAttentionFirst] = useState(false)
-  const [tab, setTab] = useState<CaseTab>('packets')
+  const [tab, setTab] = useState<CaseTab>(initialTab)
   // The packet a "Xem chứng từ" click asked to preview -- null when the
   // dialog is closed. Kept here (not in PacketDashboardView) because opening
   // the full reviewer from inside the dialog needs the same onOpenPacket a

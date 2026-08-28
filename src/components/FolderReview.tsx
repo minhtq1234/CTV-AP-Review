@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Bbox } from '../types'
-import type { CtvFolder } from '../ctv/types'
+import type { CtvFolder, EvidenceKind } from '../ctv/types'
 import { rankFolder } from '../ctv/checks'
 import {
   assignCccdCard,
@@ -29,6 +29,7 @@ import CccdCardPicker from './CccdCardPicker'
 import PacketGrid from './PacketGrid'
 import PacketEvidenceDrawer from './PacketEvidenceDrawer'
 import CriteriaMatrix from './CriteriaMatrix'
+import PacketDocsDialog from './PacketDocsDialog'
 
 interface Props {
   folder: CtvFolder
@@ -40,6 +41,9 @@ interface Props {
   caseId?: string | null
   packetIndex?: number | null
   onCardAssigned?: () => void
+  /** Leave this packet for the case-level Tổng hợp tab, where the roster-level
+   *  criterion is actually checked. Absent in the offline demo. */
+  onShowSummary?: () => void
 }
 
 const SAVE_ERROR = 'Không lưu được. Vui lòng thử lại.'
@@ -57,6 +61,7 @@ export default function FolderReview({
   caseId = null,
   packetIndex = null,
   onCardAssigned,
+  onShowSummary,
 }: Props) {
   const ranked = useMemo(() => rankFolder(folder), [folder])
   const [selection, setSelection] = useState<ReviewSelection>(
@@ -77,6 +82,12 @@ export default function FolderReview({
   const [cardPickerOpen, setCardPickerOpen] = useState(false)
   const [cardBusy, setCardBusy] = useState(false)
   const [cardError, setCardError] = useState<string | null>(null)
+  // Which document a criteria cell asked to open, with the cell's own note and
+  // value so the popup header carries what the detail row used to show.
+  const [docPopup, setDocPopup] = useState<{
+    docKind: EvidenceKind
+    context: { label: string; note?: string; value?: string }
+  } | null>(null)
 
   // The CCCD card the ingest could not place. OCR fails on roughly half of
   // them (the images Excel stores are too small to read digits off), so the
@@ -270,7 +281,12 @@ export default function FolderReview({
         </button>
       </div>
       {viewMode === 'criteria' && caseId != null && packetIndex != null ? (
-        <CriteriaMatrix caseId={caseId} packetIndex={packetIndex} />
+        <CriteriaMatrix
+          caseId={caseId}
+          packetIndex={packetIndex}
+          onOpenDocument={(docKind, context) => setDocPopup({ docKind, context })}
+          onShowSummary={onShowSummary}
+        />
       ) : viewMode === 'grid' ? (
         <PacketGrid
           folder={folder}
@@ -390,6 +406,18 @@ export default function FolderReview({
           onUndo={review.rejection
             ? () => { void commitPacketReview(undoRejectedReview(review, fieldKeys)) }
             : undefined}
+        />
+      )}
+      {docPopup && caseId != null && packetIndex != null && (
+        /* No `onOpenPacket`: the reviewer is already inside this packet, so a
+           button offering to open it would go nowhere. */
+        <PacketDocsDialog
+          caseId={caseId}
+          packetIndex={packetIndex}
+          packetName={folder.name}
+          initialDocKind={docPopup.docKind}
+          context={docPopup.context}
+          onClose={() => setDocPopup(null)}
         />
       )}
     </div>

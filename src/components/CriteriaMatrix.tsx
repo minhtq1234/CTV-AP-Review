@@ -19,10 +19,19 @@ import {
   visibleColumns,
 } from '../logic/criteriaMatrix'
 import { SUMMARY_STATUS_PRESENTATION } from '../logic/summaryTab'
+import { cellAction } from '../logic/criteriaDocument'
+import type { EvidenceKind } from '../ctv/types'
 
 interface Props {
   caseId: string
   packetIndex: number
+  /** Open the document a cell's column refers to. FolderReview owns the dialog. */
+  onOpenDocument?: (
+    docKind: EvidenceKind,
+    context: { label: string; note?: string; value?: string },
+  ) => void
+  /** Leave for the Tổng hợp tab, where the roster-level criterion is checked. */
+  onShowSummary?: () => void
 }
 
 const SAVE_ERROR = 'Không lưu được quyết định. Vui lòng thử lại.'
@@ -30,7 +39,7 @@ const SAVE_ERROR = 'Không lưu được quyết định. Vui lòng thử lại.
 // Acc's 25 criteria for one packet, computed rather than hand-typed. Rows are in
 // checklist order inside their sections, because a reviewer works the list; the
 // worst-first ordering belongs to the packet list, not to the checklist itself.
-export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
+export default function CriteriaMatrix({ caseId, packetIndex, onOpenDocument, onShowSummary }: Props) {
   const [payload, setPayload] = useState<CriteriaPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openStt, setOpenStt] = useState<number | null>(null)
@@ -129,6 +138,8 @@ export default function CriteriaMatrix({ caseId, packetIndex }: Props) {
                 open={openStt === row.stt}
                 onToggle={() => setOpenStt(openStt === row.stt ? null : row.stt)}
                 onDecide={(document, to) => void decide(row, document, to)}
+                onOpenDocument={onOpenDocument}
+                onShowSummary={onShowSummary}
               />
             ))}
           </tbody>
@@ -150,12 +161,21 @@ export function MatrixRow({
   open,
   onToggle,
   onDecide,
+  onOpenDocument,
+  onShowSummary,
 }: {
   row: CriterionRow
   columns: string[]
   open: boolean
   onToggle: () => void
   onDecide: (document: string, to: SummaryStatus) => void
+  /** Ask the parent to open the document this cell's column refers to. */
+  onOpenDocument?: (
+    docKind: EvidenceKind,
+    context: { label: string; note?: string; value?: string },
+  ) => void
+  /** The roster-level column is checked on the Tổng hợp tab, not in a packet. */
+  onShowSummary?: () => void
 }) {
   const status = SUMMARY_STATUS_PRESENTATION[row.status]
 
@@ -185,8 +205,10 @@ export function MatrixRow({
             )
           }
           return (
-            <MatrixCell key={document} row={row} cell={cell} open={open}
-                        onOpen={onToggle} />
+            <MatrixCell key={document} row={row} cell={cell}
+                        onOpen={onToggle}
+                        onOpenDocument={onOpenDocument}
+                        onShowSummary={onShowSummary} />
           )
         })}
       </tr>
@@ -211,28 +233,52 @@ export function MatrixRow({
   )
 }
 
-function MatrixCell({ row, cell, open, onOpen }: {
+function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
   row: CriterionRow
   cell: CriterionCell
-  open: boolean
   onOpen: () => void
+  onOpenDocument?: (
+    docKind: EvidenceKind,
+    context: { label: string; note?: string; value?: string },
+  ) => void
+  onShowSummary?: () => void
 }) {
   const status = SUMMARY_STATUS_PRESENTATION[cell.status]
   const located = cell.evidence.some(e => e.bbox)
   const decided = isDecided(cell)
+  const action = cellAction(cell.document, cell.status)
 
   return (
     <td className={`criteria-cell ${status.tone}`}>
-      {/* Opens the detail row, not a popover: the table scrolls horizontally so
-          a popover anchored to a cell would clip — and a reviewer should read
-          the note and the value before deciding, not decide from a glyph. */}
+      {/* Opens the column's document full-page, carrying this cell's note and
+          value into the popup's header. The detail row stays: the caret still
+          opens it, and it is the only place that lists every column's note at
+          once. `Excel` is a reference value with no document, so it stays inert;
+          `Bảng Kê Thu Mua` is roster-level and goes to Tổng hợp. */}
       <button
         type="button"
         className={`criteria-mark${decided ? ' decided' : ''}`}
         title={cell.note}
-        aria-expanded={open}
+        aria-haspopup={action.kind === 'open' ? 'dialog' : undefined}
+        disabled={action.kind === 'none'}
         aria-label={`${row.label} · ${cell.document}: ${status.label}`}
-        onClick={onOpen}
+        onClick={() => {
+          if (action.kind === 'open') {
+            if (onOpenDocument) {
+              onOpenDocument(action.docKind, {
+                label: `${row.label} · ${cell.document}`,
+                note: cell.note,
+                value: cell.value,
+              })
+            } else {
+              // No handler wired: fall back to the detail row rather than
+              // becoming a button that does nothing.
+              onOpen()
+            }
+          } else if (action.kind === 'summary') {
+            onShowSummary?.()
+          }
+        }}
       >
         <span aria-hidden="true">{status.icon}</span>
       </button>
@@ -249,6 +295,13 @@ function CellDecision({ row, cell, onDecide }: {
   row: CriterionRow
   cell: CriterionCell
   onDecide: (document: string, to: SummaryStatus) => void
+  /** Ask the parent to open the document this cell's column refers to. */
+  onOpenDocument?: (
+    docKind: EvidenceKind,
+    context: { label: string; note?: string; value?: string },
+  ) => void
+  /** The roster-level column is checked on the Tổng hợp tab, not in a packet. */
+  onShowSummary?: () => void
 }) {
   const choices = choicesFor(cell)
   if (!choices.length) return null
