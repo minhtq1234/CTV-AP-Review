@@ -138,10 +138,19 @@ A reviewer confirms that in seconds, before a 51-minute run commits to it. That 
 flexibility with a declaration's auditability — and it is why notes 1 and 3 are really one piece
 of work, not two.
 
-### Still open
+### Settled
 
-- How many templates exist beyond these two, and do they come from the same team each period?
-- Does the `Mã eform` header block appear on the PDF cover, and should it be checked against it?
+- **Two templates, and no more expected for now.** Scope is exactly the July pair
+  (`roster.xlsx` + `cccd.xlsx`) and the PUBGm combined workbook. The inference approach still
+  stands at two, and not because a third is anticipated: the roster half already reads both with
+  no work at all, the sheet-selection fix is required regardless because it is a live bug, and
+  mapping image columns by header costs about the same as hard-coding them for two files. A third
+  template would then be free rather than another rebuild — but that is a side effect, not the
+  justification.
+- **`Mã eform` is not checked.** The header block carries `Mã eform plan` and `Mã eform thanh
+  toán`, and they look like the join back to the payment request, but nothing compares them
+  against the PDF cover and nothing should. Read them if they are free to read; do not build a
+  criterion on them.
 
 ## 2. Clicking a status cell should open the document
 
