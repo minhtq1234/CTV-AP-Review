@@ -185,7 +185,7 @@ export default function PacketTable({ packets, onOpenPacket, onPreviewDocs }: Pr
                       </td>
                     )}
                     {hasDocumentData && (
-                      <td className="pt-docs">
+                      <td className={`pt-docs${onPreviewDocs ? ' pt-docs-interactive' : ''}`}>
                         {onPreviewDocs ? (
                           <button
                             type="button"

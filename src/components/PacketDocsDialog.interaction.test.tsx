@@ -130,6 +130,20 @@ describe('PacketDocsDialog', () => {
     expect(host.textContent).toContain('Hợp đồng')
   })
 
+  // overviewMode is permanent in this dialog, and lock view only ever gates
+  // behaviour overview mode already skips (EvidenceViewer's own
+  // hideLockControl doc comment) -- so this dialog passes hideLockControl,
+  // and the toolbar should never offer a lock toggle that would do nothing.
+  it('never offers the lock-view toggle, unlike the full reviewer', async () => {
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render()
+    expect(host.querySelector('[aria-label="Khoá khung nhìn"]')).toBeNull()
+    // Every other viewer tool stays -- this isn't a viewer stripped down,
+    // just the one control with nothing to do here.
+    expect(host.querySelector('[aria-label="Vừa khung"]')).not.toBeNull()
+    expect(host.querySelector('[aria-label="Di chuyển (pan)"]')).not.toBeNull()
+  })
+
   it('titles the dialog with the given packet name', async () => {
     fetchPacketManifest.mockResolvedValue(folder())
     await render({ packetName: 'Nguyễn Văn A' })

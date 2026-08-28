@@ -28,6 +28,16 @@ interface Props {
   onToggleLock: () => void
   rosterLabel?: string
   rosterValue?: string | null
+  /**
+   * Omits the lock-view toggle from the toolbar. Lock view only ever gates
+   * the autofocus-zoom and scroll-to-field effects below (both start with
+   * `if (overviewMode || lockView) return`), so in a caller that is always
+   * in overview mode there is nothing for it to lock -- the button would
+   * respond to clicks and visibly do nothing. Optional and false by
+   * default, so every existing caller (the field-focused review flow) is
+   * unaffected and keeps showing it.
+   */
+  hideLockControl?: boolean
 }
 
 const inputHasFocus = (target: EventTarget | null) => {
@@ -47,6 +57,7 @@ export default function EvidenceViewer({
   onToggleLock,
   rosterLabel,
   rosterValue,
+  hideLockControl = false,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
@@ -351,14 +362,16 @@ export default function EvidenceViewer({
           >
             ✋
           </button>
-          <button
-            className={lockView ? 'on' : ''}
-            onClick={onToggleLock}
-            aria-label="Khoá khung nhìn"
-            title="Khoá khung nhìn"
-          >
-            🔒
-          </button>
+          {!hideLockControl && (
+            <button
+              className={lockView ? 'on' : ''}
+              onClick={onToggleLock}
+              aria-label="Khoá khung nhìn"
+              title="Khoá khung nhìn"
+            >
+              🔒
+            </button>
+          )}
           <button
             onClick={() => setShowHelp(value => !value)}
             aria-label="Danh sách phím tắt"

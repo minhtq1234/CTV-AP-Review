@@ -246,6 +246,7 @@ describe('CHỨNG TỪ preview button (PacketTable)', () => {
       '<td class="pt-docs"><span class="pt-pill good">Đầy đủ (6/6)</span></td>',
     )
     expect(html).not.toContain('pt-docs-preview')
+    expect(html).not.toContain('pt-docs-interactive')
     expect(html).not.toContain('<button')
   })
 
@@ -258,7 +259,7 @@ describe('CHỨNG TỪ preview button (PacketTable)', () => {
       />,
     )
     expect(html).toContain(
-      '<td class="pt-docs"><button type="button" class="pt-docs-preview" '
+      '<td class="pt-docs pt-docs-interactive"><button type="button" class="pt-docs-preview" '
       + 'aria-label="Xem chứng từ — Synthetic Docs Packet">'
       + '<span class="pt-pill good">Đầy đủ (6/6)</span></button></td>',
     )
@@ -276,7 +277,7 @@ describe('CHỨNG TỪ preview button (PacketTable)', () => {
       />,
     )
     expect(html).toContain(
-      '<td class="pt-docs"><button type="button" class="pt-docs-preview" '
+      '<td class="pt-docs pt-docs-interactive"><button type="button" class="pt-docs-preview" '
       + 'aria-label="Xem chứng từ — Synthetic No-Docs Packet">'
       + '<span class="pt-pill muted">—</span></button></td>',
     )

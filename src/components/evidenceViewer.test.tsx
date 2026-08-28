@@ -82,6 +82,39 @@ describe('complete-document evidence viewer', () => {
     }
   })
 
+  // hideLockControl is new and optional -- the test above already proves the
+  // default (omitting the prop entirely, as every existing caller does)
+  // keeps showing the lock toggle. This proves the opt-in side: a caller
+  // that passes it loses only that one button, none of the others.
+  it('omits only the lock toggle when hideLockControl is set, keeping every other tool', () => {
+    const html = renderToStaticMarkup(
+      <EvidenceViewer
+        docs={docs}
+        activeDocId="doc"
+        activePage={0}
+        focusBbox={null}
+        lockView={false}
+        overviewMode={false}
+        overviewResetVersion={0}
+        onSelectDoc={() => undefined}
+        onToggleLock={() => undefined}
+        hideLockControl
+      />,
+    )
+    expect(html).not.toContain('aria-label="Khoá khung nhìn"')
+    for (const label of [
+      'Vừa khung',
+      'Thu nhỏ',
+      'Phóng to',
+      'Ẩn/hiện khung tô sáng',
+      'Ẩn/hiện giá trị bảng kê',
+      'Di chuyển (pan)',
+      'Danh sách phím tắt',
+    ]) {
+      expect(html).toContain(`aria-label="${label}"`)
+    }
+  })
+
   it('renders Overview at 100% in paired mode without field overlays', () => {
     const html = renderToStaticMarkup(
       <EvidenceViewer

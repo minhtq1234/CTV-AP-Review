@@ -29,8 +29,9 @@ const LOAD_ERROR = 'Không tải được chứng từ của gói này.'
  * Reuses EvidenceViewer exactly as the full reviewer does, in its overview
  * presentation: there is no field selection here to focus a value against, so
  * `focusBbox` stays null and `lockView` stays false for the dialog's whole
- * life (the viewer's own lock toggle has nothing to toggle as a result --
- * see the batch report's reuse note).
+ * life. Overview mode already makes lock view a no-op (see EvidenceViewer's
+ * own `hideLockControl` doc comment), so its toggle is omitted here rather
+ * than shown inert.
  *
  * Backdrop-click + Escape follow CccdCardPicker's pattern. styles.css's
  * .packet-docs-backdrop deliberately mirrors .cccd-picker-backdrop's rules
@@ -123,6 +124,11 @@ export default function PacketDocsDialog({
               overviewResetVersion={0}
               onSelectDoc={id => { setActiveDocId(id); setActivePage(0) }}
               onToggleLock={() => {}}
+              // Lock view only gates behaviour overview mode already skips
+              // (see EvidenceViewer's own note on this prop) -- overview mode
+              // is permanent here, so the toggle would be a control that
+              // visibly does nothing. Omit it rather than ship it inert.
+              hideLockControl
             />
           )
         )}

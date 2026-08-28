@@ -1139,6 +1139,10 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .packet-table .pt-name { min-width: 180px; }          /* flexible, never collapses */
 .packet-table .pt-camket { width: 96px; }
 .packet-table .pt-docs { width: 168px; }
+/* The preview button (below) owns this cell's padding instead of the <td>
+   when it's rendered, so its own box is the whole cell -- see the button's
+   own comment for why. */
+.packet-table .pt-docs.pt-docs-interactive { padding: 0; }
 .packet-table .pt-ai { width: 168px; }
 .packet-table .pt-fa { width: 132px; }
 .packet-table .pt-pages { width: 104px; color: var(--text-muted); white-space: nowrap;
@@ -1166,9 +1170,30 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
    onPreviewDocs): a plain button reset so the cell reads exactly as it does
    without the prop -- the pill(s) inside are the same markup either way --
    plus a focus/hover ring on the pill so the row's own click target isn't
-   the only sign this is now interactive. */
+   the only sign this is now interactive.
+
+   width/height 100% + box-sizing:border-box + the 9px/10px .packet-table td
+   used to hold (moved here via .pt-docs.pt-docs-interactive above, zeroed
+   there) makes this button's box the cell's whole box in most rows, not
+   just the pill's natural size -- confirmed by measuring both boxes in a
+   real browser (not by eye): width is exact on every row, and height is
+   exact whenever this cell's OWN content is what makes the row tall (e.g.
+   the "Thiếu: ..." second line).
+
+   KNOWN GAP, not yet fixed: when a SIBLING cell is what stretches the row
+   (e.g. Kết quả FA's second .pt-sub line, on an otherwise single-line docs
+   cell) the button stays sized to ITS OWN content and falls short of the
+   row's real height by ~13-16.5px in this table's own type scale (real
+   measurement, a real case, 3 of 41 rows) -- table cells only propagate a
+   row-stretched height to a percentage-height child when that same cell's
+   content is what caused the stretch, not when a sibling did. A click in
+   that leftover strip still falls through the <td> (no handler of its own)
+   to the row's own onClick -- the wrong-action-on-misclick this button
+   exists to prevent, just with a smaller footprint. See the batch report
+   for the measurements and candidate fixes; none is applied here yet. */
 .pt-docs-preview {
-  display: block; width: 100%; padding: 0; margin: 0; border: 0; background: none;
+  display: block; width: 100%; height: 100%; box-sizing: border-box;
+  padding: 9px 10px; margin: 0; border: 0; background: none;
   font: inherit; text-align: left; cursor: pointer; border-radius: 6px;
 }
 .pt-docs-preview:hover .pt-pill,
