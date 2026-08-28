@@ -73,6 +73,68 @@ def test_fill_expected_with_no_row_is_all_empty():
     assert filled[0]["expected"] == ""
 
 
+def test_all_roster_rows_reads_the_combined_template_header():
+    """The combined workbook labels its columns differently, and matching broke
+    silently on it: `_ROSTER_HEADER_MAP` was an exact-string table wanting
+    "số cccd", so "CCCD/ PP" never matched, `all_roster_rows` returned [], every
+    matching index was empty and all 25 packets came out `unmatched` -- while the
+    roster count still said 25, because roster_checks parses the same sheet with
+    regexes and got it right. One template, two parsers, one of them updated."""
+    rows = [
+        ["THANH TOÁN DỊCH VỤ"],
+        ["Mã eform plan:", None],
+        [None, None],
+        ["STT", "Họ và tên", "CCCD/ PP", "MST", "Ngày/ tháng/ năm sinh",
+         "Giới tính", "Số tài khoản", "Ngân hàng"],
+        [None, None, None, None, None, None, None, None],
+        ["1", "NGUYEN VAN MOT", "001100000001", "001100000001", "07/05/2001",
+         "NAM", "1900000001", "Techcombank"],
+        ["2", "TRAN THI HAI", "001100000002", "001100000002", "19/08/2005",
+         "NỮ", "1900000002", "Vietcombank"],
+    ]
+
+    out = all_roster_rows(rows)
+
+    assert [r["name"] for r in out] == ["NGUYEN VAN MOT", "TRAN THI HAI"]
+    assert [r["cccd"] for r in out] == ["001100000001", "001100000002"]
+    assert out[0]["mst"] == "001100000001"
+    assert out[0]["ngaysinh"] == "07/05/2001"
+    assert out[0]["tk"] == "1900000001"
+
+
+def test_all_roster_rows_finds_a_pay_column_labelled_a_row_lower():
+    """The combined template stacks "Chi Phí (+ PIT)" over "Gross", so the pay
+    column is named one row below the row that names the person. Reading only the
+    name row left `phi` empty, which silently disables the Gross comparison."""
+    rows = [
+        ["STT", "Họ và tên", "CCCD/ PP", "Chi Phí (+ PIT)", None],
+        [None, None, None, "Gross", "Thuế PIT"],
+        ["1", "NGUYEN VAN MOT", "001100000001", "4400000", "0"],
+    ]
+
+    out = all_roster_rows(rows)
+
+    assert len(out) == 1
+    assert out[0]["phi"] == "4400000"
+
+
+def test_build_roster_index_indexes_the_combined_template():
+    """The end of the same failure: an empty index means every packet is
+    unmatched no matter how cleanly its identity was read."""
+    rows = [
+        ["STT", "Họ và tên", "CCCD/ PP", "MST", "Số tài khoản"],
+        ["1", "NGUYEN VAN MOT", "001100000001", "001100000001", "1900000001"],
+    ]
+
+    by_cccd, by_name, by_mst = build_roster_index(rows)
+
+    assert "001100000001" in by_cccd
+    assert by_cccd["001100000001"]["name"] == "NGUYEN VAN MOT"
+    row, how = match_roster("001100000001", "NGUYÊN VAN MOT", by_cccd, by_name,
+                            by_mst=by_mst)
+    assert how == "cccd"
+
+
 def test_all_roster_rows_reads_header_and_data():
     rows = [
         ["BẢNG KÊ THANH TOÁN CTV"],

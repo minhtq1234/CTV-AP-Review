@@ -50,6 +50,9 @@ _HEADER_PATTERNS = {
     "commitment": (r"ban cam ket",),
     "pit": (r"thue pit", r"^pit"),
     "net": (r"thuc nhan",),
+    # Only pipeline.py reads this one (product name), but the table is
+    # shared now, so it lives here with the rest.
+    "note": (r"^note$", r"ghi chu"),
 }
 
 _DATE = re.compile(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}$")

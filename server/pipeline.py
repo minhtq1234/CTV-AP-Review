@@ -35,15 +35,23 @@ from roster_workbook import load_roster_rows  # noqa: E402
 # preceded by decorative rows (title, "Sản phẩm:", "Mã Plan:") and followed
 # by one merged sub-header row (Gross/Bản cam kết/Thuế PIT/Thực Nhận under
 # "Chi Phí (+ PIT)") before the real data starts.
-_ROSTER_HEADER_MAP = {
-    "họ và tên": "name",
-    "số cccd": "cccd",
+#: This module's field names, in terms of `roster_checks._HEADER_PATTERNS`
+#: keys. There used to be a second, exact-string header table here; it wanted
+#: "số cccd" and so read nothing at all from the combined template, whose column
+#: is headed "CCCD/ PP" -- matching then failed on every packet while the roster
+#: count still looked right, because roster_checks parsed the same sheet
+#: correctly with regexes. One parser now, not two.
+_FIELD_FROM_ROSTER_KEY = {
+    "name": "name",
+    "cccd": "cccd",
     "mst": "mst",
-    "ngày tháng năm sinh": "ngaysinh",
-    "số tk": "tk",
-    "phí dịch vụ": "phi",
+    "dob": "ngaysinh",
+    "account": "tk",
     "note": "note",
 }
+#: `phi` is whichever pay column the template carries: the older sheet heads it
+#: "Phí dịch vụ", the combined one "Gross". First present wins.
+_PHI_KEYS = ("fee", "gross")
 
 
 def _find_roster_header(rows: list[list]) -> tuple[int, dict[str, int]] | None:
@@ -53,15 +61,61 @@ def _find_roster_header(rows: list[list]) -> tuple[int, dict[str, int]] | None:
     column, so the decorative title/"Sản phẩm:"/"Mã Plan:" rows above it
     (which could otherwise stray-match a lone keyword) are skipped.
     """
+    import re
+
+    import roster_checks
+
+    # Row-by-row, first row carrying both name and cccd wins -- as before. Only
+    # the label matching changed: `roster_checks._HEADER_PATTERNS` are accent-
+    # folded regexes, so "CCCD/ PP", "Số CCCD", "Số tài khoản" and "Số TK" all
+    # land. Deliberately NOT `roster_checks.locate_columns`: that one finds the
+    # first data row by looking for a numeric STT cell, and the older template
+    # has no STT column at all.
     for r, row in enumerate(rows):
-        cols: dict[str, int] = {}
+        found: dict[str, int] = {}
         for c, cell in enumerate(row):
-            if not cell:
+            folded = roster_checks._fold(cell)
+            if not folded:
                 continue
-            field = _ROSTER_HEADER_MAP.get(str(cell).strip().casefold())
-            if field:
-                cols[field] = c
+            for key, patterns in roster_checks._HEADER_PATTERNS.items():
+                if key in found:
+                    continue
+                if any(re.search(p, folded) for p in patterns):
+                    found[key] = c
+        cols = {
+            field: found[key]
+            for key, field in _FIELD_FROM_ROSTER_KEY.items()
+            if key in found
+        }
+        for key in _PHI_KEYS:
+            if key in found:
+                cols["phi"] = found[key]
+                break
         if "name" in cols and "cccd" in cols:
+            # Headers can span rows: the combined template puts "Chi Phí (+ PIT)"
+            # over "Gross", so the pay column is labelled a row BELOW the one
+            # naming the person. Keep reading header rows for anything still
+            # missing, stopping at the first row with a value in the name column
+            # -- that is data.
+            name_col = cols["name"]
+            for extra in rows[r + 1:]:
+                head = extra[name_col] if name_col < len(extra) else None
+                if head and str(head).strip():
+                    break
+                for c, cell in enumerate(extra):
+                    folded = roster_checks._fold(cell)
+                    if not folded:
+                        continue
+                    for key, patterns in roster_checks._HEADER_PATTERNS.items():
+                        if key in found:
+                            continue
+                        if any(re.search(pat, folded) for pat in patterns):
+                            found[key] = c
+                if "phi" not in cols:
+                    for key in _PHI_KEYS:
+                        if key in found:
+                            cols["phi"] = found[key]
+                            break
             return r, cols
     return None
 
