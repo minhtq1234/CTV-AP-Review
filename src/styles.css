@@ -1369,3 +1369,21 @@ button.cccd-review-tile-image { cursor: pointer; }
   display: flex; align-items: center; justify-content: flex-end; gap: 10px;
   flex: none; padding: 12px 18px; border-top: 0.5px solid var(--border);
 }
+
+/* The upload pre-flight declaration: what the tool read the workbooks as, shown
+   before a ~50-minute run commits to it (docs/ver3-scope.md §1). */
+.upload-inspect-state { margin: 12px 0 0; font-size: 13px; color: var(--text-muted); }
+.upload-inspect {
+  margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+  border: 0.5px solid var(--border); background: var(--surface-2, transparent);
+  font-size: 13px;
+}
+.upload-inspect.attention { border-color: var(--warn, #b7791f); }
+.upload-inspect.rejected { border-color: var(--danger); }
+.upload-inspect-title { margin: 0 0 6px; font-weight: 600; }
+.upload-inspect-roster { margin: 0; }
+.upload-inspect-reason { margin: 0; color: var(--danger); }
+.upload-inspect-images { margin: 8px 0 0; padding-left: 18px; }
+.upload-inspect-images li { margin: 2px 0; color: var(--text-muted); }
+.upload-inspect-images li.unrecognised { color: var(--warn, #b7791f); font-weight: 600; }
+.upload-inspect-warn { margin: 8px 0 0; color: var(--warn, #b7791f); }

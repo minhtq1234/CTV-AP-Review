@@ -102,3 +102,14 @@ def classify_image_columns(header: dict[int, str], sheet_name: str) -> dict[int,
             elif "mst" in norm(sheet_name) or "mst" in left:
                 kinds[index] = TAX
     return kinds
+
+
+def column_letter(index: int) -> str:
+    """0-based column index to its spreadsheet letter, so the declaration names
+    columns the way the reviewer sees them in Excel."""
+    letters = ""
+    index += 1
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters

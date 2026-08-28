@@ -556,3 +556,53 @@ export async function decideCriterionCell(
   if (!res.ok) throw new Error(`decideCriterionCell: HTTP ${res.status}`)
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// Upload pre-flight: what the backend inferred from these workbooks, declared
+// before a ~50-minute run commits to it (docs/ver3-scope.md §1). Inference that
+// is wrong and silent is the failure this exists to prevent.
+// ---------------------------------------------------------------------------
+
+export type ImageColumnKind = 'card' | 'bank' | 'tax' | null
+
+export interface InspectedImageColumn {
+  sheet: string
+  column: string
+  kind: ImageColumnKind
+  count: number
+}
+
+export interface UploadInspection {
+  /** The sheet chosen as the bảng kê, by content rather than by which tab was
+   *  saved open. Null when no sheet qualified. */
+  rosterSheet: string | null
+  people: number
+  columns: string[]
+  images: InspectedImageColumn[]
+}
+
+export class RosterRejected extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+    this.name = 'RosterRejected'
+  }
+}
+
+export async function inspectUpload(
+  roster: File,
+  cccd?: File,
+): Promise<UploadInspection> {
+  const form = new FormData()
+  form.append('roster', roster)
+  if (cccd) form.append('cccd', cccd)
+  const res = await fetch(`${API_BASE}/api/uploads/inspect`, {
+    method: 'POST',
+    body: form,
+  })
+  if (res.status === 422) {
+    const body = await res.json().catch(() => null)
+    throw new RosterRejected(body?.detail?.reason ?? 'invalid-roster-workbook')
+  }
+  if (!res.ok) throw new Error(`inspectUpload: HTTP ${res.status}`)
+  return res.json()
+}

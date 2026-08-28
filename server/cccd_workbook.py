@@ -709,3 +709,58 @@ def _header_row(archive, sheet_part, byte_budget) -> dict[int, str]:
         for column in range(_column_index(start), _column_index(end) + 1):
             header.setdefault(column, source)
     return header
+
+
+def describe_image_columns(xlsx_path: str) -> list[dict]:
+    """Which columns hold how many images, and what this reads them as.
+
+    Counts drawing anchors without decoding or storing a single image, so the
+    reviewer can be shown what was inferred before committing to a full run.
+    Unclassified columns are reported too, with `kind` None: a column the header
+    did not explain is exactly what the reviewer needs to see.
+    """
+    if os.path.getsize(xlsx_path) > MAX_WORKBOOK_BYTES:
+        raise CccdWorkbookError("workbook-too-large")
+    with zipfile.ZipFile(xlsx_path) as archive:
+        _validate_archive(archive)
+        byte_budget = _ExtractionByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+        counts: dict[tuple[str, int], int] = {}
+        kinds: dict[tuple[str, int], str | None] = {}
+        seen = 0
+        for sheet_name, sheet_part in _worksheet_parts_in_workbook_order(
+            archive, byte_budget
+        ):
+            sheet_kinds = _image_kinds_for_sheet(
+                archive, sheet_part, sheet_name, byte_budget
+            )
+            for drawing_part in _drawing_parts_for_sheet(
+                archive, sheet_part, byte_budget
+            ):
+                try:
+                    records, _, instances = _drawing_records(
+                        archive,
+                        sheet_name,
+                        drawing_part,
+                        seen + 1,
+                        MAX_DRAWINGS - seen,
+                        byte_budget,
+                    )
+                except ET.ParseError:
+                    continue
+                seen += instances
+                for _, anchor, _ in records:
+                    key = (sheet_name, anchor.from_col)
+                    counts[key] = counts.get(key, 0) + 1
+                    kinds[key] = sheet_kinds.get(anchor.from_col)
+
+    from workbook_layout import column_letter  # lazy: pulls OCR deps
+
+    return [
+        {
+            "sheet": sheet,
+            "column": column_letter(column),
+            "kind": kinds[(sheet, column)],
+            "count": count,
+        }
+        for (sheet, column), count in sorted(counts.items())
+    ]

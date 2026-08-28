@@ -26,6 +26,13 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 from typing import Literal
 import threading
+import tempfile
+
+import openpyxl
+
+import cccd_workbook
+import roster_checks
+import workbook_layout
 
 from cases import CaseStore, compact_cccd_summary, progress_of
 from cccd_manual import (
@@ -739,3 +746,85 @@ async def put_cccd_card(cid: str, card_id: str, body: CccdAssignBody):
         "cards": list_cards(updated),
         "cccdSummary": compact_cccd_summary(updated["cccdWorkbook"]),
     }
+@app.post("/api/uploads/inspect")
+async def post_inspect(
+    roster: UploadFile = File(...),
+    cccd: UploadFile | None = File(None),
+):
+    """What the tool inferred from these workbooks, before anything is committed.
+
+    Inference can be confidently wrong and silent -- reading the CCCD sheet as
+    the bảng kê used to look exactly like a roster with empty columns. So it is
+    declared: which sheet was read, how many people it holds, and which column
+    each population of images was found in. A reviewer confirms that in seconds
+    rather than discovering it after a ~50-minute run.
+    """
+    reason = await run_in_threadpool(_roster_rejection, roster)
+    if reason is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid-roster-workbook", "reason": reason},
+        )
+
+    def describe() -> dict:
+        roster.file.seek(0)
+        rows = load_roster_rows(roster.file)
+        columns, first_data = roster_checks.locate_columns(rows)
+        people, _ = roster_checks.read_people(rows, columns or {}, first_data)
+        roster.file.seek(0)
+        sheet = _selected_sheet_name(roster.file)
+
+        images: list[dict] = []
+        for upload in _distinct_workbooks(roster, cccd):
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as scratch:
+                upload.file.seek(0)
+                shutil.copyfileobj(upload.file, scratch)
+                scratch_path = scratch.name
+            upload.file.seek(0)
+            try:
+                images.extend(cccd_workbook.describe_image_columns(scratch_path))
+            except Exception:
+                # A workbook whose drawings cannot be walked still has a usable
+                # roster half; report what is known rather than failing the
+                # whole declaration.
+                pass
+            finally:
+                os.unlink(scratch_path)
+        return {
+            "rosterSheet": sheet,
+            "people": len(people),
+            "columns": sorted(columns or {}),
+            "images": images,
+        }
+
+    return await run_in_threadpool(describe)
+
+
+def _distinct_workbooks(roster: UploadFile, cccd: UploadFile | None):
+    """The workbooks to walk for images, without walking the same one twice --
+    the combined template arrives in both fields."""
+    if cccd is None:
+        return [roster]
+    cccd.file.seek(0)
+    roster.file.seek(0)
+    same = hashlib.sha256(roster.file.read()).digest() == hashlib.sha256(
+        cccd.file.read()
+    ).digest()
+    roster.file.seek(0)
+    cccd.file.seek(0)
+    return [roster] if same else [roster, cccd]
+
+
+def _selected_sheet_name(xlsx_source) -> str | None:
+    """Which sheet `load_roster_rows` chose, for the declaration to name."""
+    xlsx_source.seek(0)
+    workbook = openpyxl.load_workbook(xlsx_source, read_only=True, data_only=True)
+    try:
+        sheets = {
+            name: [list(row) for row in workbook[name].iter_rows(values_only=True)]
+            for name in workbook.sheetnames
+        }
+        return workbook_layout.select_roster_sheet(sheets)
+    finally:
+        workbook.close()
+        xlsx_source.seek(0)

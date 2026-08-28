@@ -294,3 +294,110 @@ def test_two_different_workbooks_are_still_stored_separately(tmp_path, monkeypat
 
     assert seen["roster"] != seen["cccd"]
     assert os.path.isfile(seen["cccd"])
+
+
+from workbook_layout import column_letter
+
+
+def test_column_letters_match_what_excel_shows():
+    assert column_letter(0) == "A"
+    assert column_letter(3) == "D"
+    assert column_letter(6) == "G"
+    assert column_letter(25) == "Z"
+    assert column_letter(26) == "AA"
+    assert column_letter(27) == "AB"
+
+
+def test_describing_a_workbook_names_every_image_column_and_its_kind():
+    """The declaration the reviewer confirms before a full run. Counts come from
+    anchors alone -- no image is decoded or written."""
+    from cccd_workbook import describe_image_columns
+
+    directory = tempfile.mkdtemp()
+    path = build(os.path.join(directory, "combined.xlsx"))
+    described = describe_image_columns(path)
+
+    by_column = {(d["sheet"], d["column"]): d for d in described}
+    assert by_column[("CCCD", "D")] == {
+        "sheet": "CCCD", "column": "D", "kind": "card", "count": 3,
+    }
+    assert by_column[("CCCD", "E")]["kind"] == "card"
+    assert by_column[("CCCD", "G")]["kind"] == "bank"
+    assert by_column[("MST", "D")]["kind"] == "tax"
+    # Nothing was written: describing is a preview, not an extraction.
+    assert os.listdir(directory) == ["combined.xlsx"]
+
+
+def test_describing_reports_an_unrecognised_image_column_rather_than_hiding_it():
+    """A column the header did not explain is what the reviewer most needs to
+    see -- silence there is the failure mode this whole declaration exists for."""
+    from cccd_workbook import describe_image_columns
+
+    directory = tempfile.mkdtemp()
+    path = build(os.path.join(directory, "combined.xlsx"))
+    # Strip the headers so nothing can be classified.
+    workbook = openpyxl.load_workbook(path)
+    sheet = workbook["CCCD"]
+    # Passing value=None to openpyxl cell() is a no-op -- it assigns only when
+    # the value is not None -- and a MergedCell refuses assignment outright, so
+    # the range has to come apart first.
+    sheet.unmerge_cells("D1:E1")
+    for column in range(1, 8):
+        sheet.cell(row=1, column=column).value = None
+    stripped = os.path.join(directory, "stripped.xlsx")
+    workbook.save(stripped)
+
+    described = describe_image_columns(stripped)
+    cccd_columns = [d for d in described if d["sheet"] == "CCCD"]
+    assert cccd_columns, "the images are still there and must still be reported"
+    assert all(d["kind"] is None for d in cccd_columns)
+
+
+def test_the_inspect_endpoint_declares_what_was_inferred(tmp_path, monkeypatch):
+    """ver3-scope §1: inference has to be shown, because being confidently wrong
+    and silent is the failure this whole feature exists to prevent."""
+    import app as appmod
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    path = build(os.path.join(tempfile.mkdtemp(), "combined.xlsx"))
+    with open(path, "rb") as handle:
+        payload = handle.read()
+    sheet_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    response = TestClient(appmod.app).post("/api/uploads/inspect", files={
+        "roster": ("combined.xlsx", payload, sheet_type),
+        "cccd": ("combined.xlsx", payload, sheet_type),
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    # It names the sheet it chose -- the whole point, since `active` is CCCD.
+    assert body["rosterSheet"] == "CTV"
+    assert body["people"] == 3
+    assert "gross" in body["columns"]
+    # The same file in both fields is walked once, not twice.
+    cards = [i for i in body["images"] if i["kind"] == "card"]
+    assert sorted(c["column"] for c in cards) == ["D", "E"]
+    assert all(c["count"] == 3 for c in cards)
+    assert [i["column"] for i in body["images"] if i["kind"] == "bank"] == ["G"]
+    assert [i["sheet"] for i in body["images"] if i["kind"] == "tax"] == ["MST"]
+
+
+def test_the_inspect_endpoint_refuses_the_same_workbooks_the_upload_does(tmp_path, monkeypatch):
+    import app as appmod
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    path = _workbook_with_only(os.path.join(tempfile.mkdtemp(), "bad.xlsx"),
+                               ["STT", "Họ tên", "Số CCCD"])
+    with open(path, "rb") as handle:
+        payload = handle.read()
+
+    response = TestClient(appmod.app).post("/api/uploads/inspect", files={
+        "roster": ("roster.xlsx", payload,
+                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    })
+
+    assert response.status_code == 422
+    assert "money" in response.json()["detail"]["reason"]
