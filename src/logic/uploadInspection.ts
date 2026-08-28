@@ -24,9 +24,17 @@ export function rosterLine(inspection: UploadInspection): string {
   return `Bảng kê đọc từ sheet “${inspection.rosterSheet}” · ${inspection.people} người`
 }
 
-/** Whether anything here needs a second look before committing to a run. */
+/** Whether anything here needs a second look before committing to a run.
+ *
+ *  Unclassified images are only a warning when the workbook classified some
+ *  others: that means it HAS image headers and they did not cover everything.
+ *  A workbook where nothing at all is classified is the July `cccd.xlsx`, which
+ *  has no image headers by design and pairs by proximity -- warning there would
+ *  cry wolf on the normal path. Measured: July is 42 images, none classified;
+ *  the PUBGm workbook classifies 91 and leaves 9 in unexpected columns. */
 export function needsAttention(inspection: UploadInspection): boolean {
   if (!inspection.rosterSheet) return true
   if (inspection.people === 0) return true
-  return inspection.images.some(image => image.kind === null)
+  const classified = inspection.images.some(image => image.kind !== null)
+  return classified && inspection.images.some(image => image.kind === null)
 }

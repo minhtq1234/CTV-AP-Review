@@ -62,4 +62,17 @@ describe('what deserves a second look', () => {
     expect(needsAttention(inspection({ rosterSheet: null }))).toBe(true)
     expect(needsAttention(inspection({ people: 0 }))).toBe(true)
   })
+
+  it('does not cry wolf on a workbook with no image headers at all', () => {
+    // The real July cccd.xlsx: 42 images across nine sheets, none classified,
+    // because that template has no image headers and pairs by proximity. It is
+    // a supported input, not an anomaly.
+    const images = Array.from({ length: 42 }, (_, index) => ({
+      sheet: `Trang 0${(index % 9) + 1}`,
+      column: index % 2 ? 'H' : 'B',
+      kind: null,
+      count: 5,
+    }))
+    expect(needsAttention(inspection({ images }))).toBe(false)
+  })
 })
