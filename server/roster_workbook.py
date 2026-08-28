@@ -11,6 +11,7 @@ import openpyxl
 from openpyxl.xml.constants import CONTYPES_NS, XLSM, XLSX, XLTM, XLTX
 
 from ooxml import OoxmlRelationshipError, resolve_internal_relationship_target
+import workbook_layout
 
 
 MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
@@ -92,7 +93,15 @@ class _BoundedReader:
 
 
 def load_roster_rows(xlsx_source) -> list[list]:
-    """Preflight an XLSX, then load its active worksheet within those bounds."""
+    """Preflight an XLSX, then load the sheet that looks like the bảng kê.
+
+    Not `workbook.active`: that is whichever tab the submitter happened to have
+    selected when they saved, and on the combined template it resolves to the
+    CCCD sheet -- which parses cleanly with only name, CCCD and STT, leaving
+    every money and identity criterion with nothing to compare against, and no
+    error anywhere. The sheet is chosen by which one maps the most known
+    columns (`workbook_layout.select_roster_sheet`).
+    """
     preflight_roster_workbook(xlsx_source)
     _seek_start(xlsx_source)
     workbook = openpyxl.load_workbook(
@@ -101,8 +110,16 @@ def load_roster_rows(xlsx_source) -> list[list]:
         data_only=True,
     )
     try:
-        worksheet = workbook.active
-        return [list(row) for row in worksheet.iter_rows(values_only=True)]
+        sheets = {
+            name: [list(row) for row in workbook[name].iter_rows(values_only=True)]
+            for name in workbook.sheetnames
+        }
+        chosen = workbook_layout.select_roster_sheet(sheets)
+        if chosen is None:
+            # Preflight should already have refused this; treat it as a bug
+            # rather than silently reading an arbitrary sheet.
+            raise RosterWorkbookError("no-roster-sheet")
+        return sheets[chosen]
     finally:
         workbook.close()
         _seek_start(xlsx_source)

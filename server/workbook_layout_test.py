@@ -61,3 +61,23 @@ def test_select_on_a_single_sheet_workbook_picks_that_sheet():
 
 def test_select_returns_none_when_no_sheet_looks_like_a_roster():
     assert select_roster_sheet({"Sheet1": [["hello"], ["world"]]}) is None
+
+
+from roster_workbook import load_roster_rows
+
+
+def test_load_roster_rows_reads_the_ctv_sheet_not_the_active_one():
+    path = build(os.path.join(tempfile.mkdtemp(), "combined.xlsx"))
+    with open(path, "rb") as handle:
+        rows = load_roster_rows(handle)
+    flat = [str(c) for row in rows for c in row if c is not None]
+    # The bảng kê carries MST and a bank name; the CCCD sheet carries neither.
+    assert any("MST" in s for s in flat), "read a sheet with no MST column — probably CCCD"
+    assert any("Ngân hàng" in s for s in flat)
+
+
+def test_load_roster_rows_still_reads_a_single_sheet_workbook():
+    path = build_july(os.path.join(tempfile.mkdtemp(), "roster.xlsx"))
+    with open(path, "rb") as handle:
+        rows = load_roster_rows(handle)
+    assert any("Họ và tên" in str(c) for row in rows for c in row if c is not None)
