@@ -196,7 +196,65 @@ piece:
   `Phụ lục` — do nothing on click. The reason is already in the cell's note; the click should not
   open an empty viewer to say so.
 
-## 3. Validate the bảng kê first — thinking it through
+## 3. Bảng kê validation lives in the Excel column, not in a new screen
+
+**Decided, replacing the pre-flight sketch below.** The Excel column of the matrix already *is*
+per-row bảng kê validation. Measured on one person today, it asserts:
+
+| criterion | what the Excel cell already says |
+|---|---|
+| #2 | `đúng định dạng 12 chữ số hoặc hộ chiếu 8 ký tự` — format |
+| #3 | `đúng định dạng text dd/mm/yyyy` — format |
+| #5 | `đúng định dạng 10 chữ số hoặc 12 chữ số` — format |
+| #16 | `Net dương: 8,000,000` — arithmetic |
+| #17 | `Tính lại đúng: 8,888,889 − 888,889 = 8,000,000` — arithmetic |
+| #8–#11 | `Bảng kê không có giá trị cho tiêu chí này` — presence |
+| #15 | PIT — explicitly not auto-checked |
+
+Four of the six checks a validation pass would perform already run here. So the work is **filling
+gaps in an existing column**, not building a screen: the PIT rule (#15), and whatever the second
+template needs now that it fills different columns.
+
+This also resolves the earlier note about moving #16, #17 and #4 out of the per-packet matrix.
+They do not need to move — the Excel column is already where their roster-side answer is shown.
+
+### What a per-person column structurally cannot show
+
+Two classes of problem do not belong to any one row, and both already have a home in **Tổng hợp**,
+which computes roster-spanning checks "from the roster as uploaded plus the packets'
+duplicate-identity flags" (`app.py:367`):
+
+- **cross-row** — two people sharing a CCCD or an MST, which makes packet→person matching ambiguous
+- **cross-sheet**, once the second template lands — `CTV`, `CCCD` and `MST` listing different
+  numbers for the same person
+
+### The one real gap left
+
+**A wrong-sheet read is indistinguishable from a normal absence.** If the tool reads the `CCCD`
+sheet as the bảng kê — which `workbook.active` makes possible today, see §1 — then MST, gross and
+net have no column, and every Excel cell reports `Bảng kê không có giá trị cho tiêu chí này`. That
+is character-for-character what a legitimately unfilled column reports. A reviewer cannot tell a
+catastrophe from a normal case, and only finds out after a 51-minute run.
+
+Minimal answer, and it is small: at upload, after choosing the roster sheet by content (§1),
+check it has the columns without which nothing works — name, CCCD, and at least one money column.
+If it does not, refuse the upload and say which sheet was read and what was missing. That is a
+guard against reading the wrong thing, not the general-purpose validation gate sketched below —
+per-row validation stays in the Excel column where it already lives.
+
+### Deliberately not doing
+
+- A separate validation screen or a standalone "check my bảng kê" upload.
+- A fatal-versus-warning severity scheme. Without a gate there is nothing to gate, and the Excel
+  column already expresses severity through the same statuses as every other cell.
+- Moving #16, #17, #4 or #15 out of the matrix.
+
+---
+
+## Appendix — the original pre-flight sketch, superseded
+
+Kept because the reasoning about *what* to check is still the checklist for filling the Excel
+column's gaps, even though the *where* was wrong.
 
 **The ask:** if the bảng kê is wrong, nothing else matters, so check it before doing anything else.
 
