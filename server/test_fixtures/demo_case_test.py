@@ -52,3 +52,73 @@ def test_every_fabricated_number_is_recognisably_synthetic():
             assert value.startswith(("0011", "1900")), (
                 f"{key}={value} is outside the synthetic ranges"
             )
+
+
+def test_built_case_is_shaped_the_way_the_app_reads_it(tmp_path):
+    case_dir = demo_case.build(str(tmp_path / "demo"))
+
+    import json
+    import os
+
+    case = json.loads(open(os.path.join(case_dir, "case.json"), encoding="utf-8").read())
+    assert case["status"] == "ready"
+    assert len(case["packets"]) == len(demo_case.PEOPLE)
+    # Matching is by identity, so every packet must carry one.
+    assert all(p["ocrIdentity"]["cccd"] for p in case["packets"])
+    assert all(p["matchedBy"] == "cccd" for p in case["packets"])
+
+    manifest = json.loads(
+        open(os.path.join(case_dir, "packets", "0", "manifest.json"), encoding="utf-8").read()
+    )
+    kinds = [d["kind"] for d in manifest["docs"]]
+    assert "contract" in kinds and "bbnt" in kinds
+    assert all(k in {"id_front", "id_back", "contract", "commitment", "pit",
+                     "bbnt", "appendix"} for k in kinds)
+
+    # Every page a doc claims must exist on disk, or the viewer shows nothing.
+    for doc in manifest["docs"]:
+        for page in doc["pages"]:
+            assert os.path.isfile(os.path.join(case_dir, "packets", "0",
+                                               os.path.basename(page["src"])))
+
+
+def test_built_case_contains_no_real_looking_identity(tmp_path):
+    """The whole point. Every number is sequential from a fabricated base."""
+    case_dir = demo_case.build(str(tmp_path / "demo"))
+    import pathlib
+    import re
+
+    text = "\n".join(
+        p.read_text(encoding="utf-8", errors="ignore")
+        for p in pathlib.Path(case_dir).rglob("*.json")
+    )
+    for number in re.findall(r"\b\d{9,13}\b", text):
+        assert number.startswith(("0011", "1900")), f"unexpected identifier {number}"
+
+
+def test_the_demo_shows_a_mismatch_an_absence_and_something_pending(tmp_path):
+    """A demo where every cell is green teaches nobody anything. Assert the three
+    states a reviewer needs to see actually occur."""
+    import json
+    import os
+
+    case_dir = demo_case.build(str(tmp_path / "demo"))
+
+    def manifest(index):
+        path = os.path.join(case_dir, "packets", str(index), "manifest.json")
+        return json.loads(open(path, encoding="utf-8").read())
+
+    # A red cell: the documents disagree with the bảng kê on one account number.
+    mismatch = manifest(demo_case._MISMATCH_PACKET)
+    account = next(f for f in mismatch["fields"] if f["key"] == "tk")
+    assert account["sources"], "the mismatch packet must still have a reading"
+    assert all(s["value"] != account["expected"] for s in account["sources"])
+
+    # An absence: one packet has no appendix at all.
+    absent = manifest(demo_case._NO_APPENDIX_PACKET)
+    assert "appendix" not in [d["kind"] for d in absent["docs"]]
+
+    # Something pending: one field was never extracted.
+    pending = manifest(demo_case._UNEXTRACTED_PACKET)
+    date = next(f for f in pending["fields"] if f["key"] == "ngaysinh")
+    assert date["sources"] == []

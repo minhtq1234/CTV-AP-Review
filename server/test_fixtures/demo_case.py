@@ -81,3 +81,192 @@ def page_png(heading: str, lines: list[str], *, width: int, height: int) -> byte
     out = io.BytesIO()
     image.save(out, format="PNG", optimize=False)
     return out.getvalue()
+
+
+#: The documents each packet carries, as (kind, label, page count). Matches the
+#: closed EvidenceKind set in src/ctv/types.ts.
+_DOCS = [
+    ("contract", "Hợp đồng dịch vụ", 2),
+    ("bbnt", "Biên bản nghiệm thu", 1),
+    ("appendix", "Phụ lục KPI", 1),
+    ("pit", "Tra cứu thuế", 1),
+    ("id_front", "CCCD mặt trước", 1),
+    ("id_back", "CCCD mặt sau", 1),
+]
+
+#: Field metadata, copied from a real manifest rather than invented, so the
+#: reviewer groups and comparators behave exactly as they do on a real case.
+_FIELDS = [
+    ("hoten", "Họ tên", "Danh tính", "person", "name"),
+    ("cccd", "Số CCCD", "Danh tính", "text", "cccd"),
+    ("mst", "Mã số thuế", "Danh tính", "text", "mst"),
+    ("tk", "Số tài khoản", "Ngân hàng", "text", "tk"),
+    ("ngaysinh", "Ngày sinh", "Danh tính", "date", "dob"),
+    ("phi", "Phí dịch vụ", "Thanh toán", "number", "gross"),
+]
+
+_PAGE_WIDTH, _PAGE_HEIGHT = 1000, 1400
+
+#: The packet that gets a wrong account number, so the demo has a red cell.
+_MISMATCH_PACKET = 1
+#: The packet with no appendix, so `na` appears rather than every cell green.
+_NO_APPENDIX_PACKET = 2
+#: The packet whose date was never extracted, so `pending` appears.
+_UNEXTRACTED_PACKET = 0
+
+
+def _docs_for(index: int) -> list[tuple[str, str, int]]:
+    return [
+        entry for entry in _DOCS
+        if not (index == _NO_APPENDIX_PACKET and entry[0] == "appendix")
+    ]
+
+
+def _value_for(person: dict, field_key: str, source_key: str, index: int) -> str:
+    """What the documents say. Usually the roster value; deliberately not on the
+    one packet that exists to show a mismatch."""
+    raw = person[source_key]
+    text = f"{raw:,}".replace(",", ".") if isinstance(raw, int) else str(raw)
+    if field_key == "tk" and index == _MISMATCH_PACKET:
+        # One digit out: the reviewer should see a red cell and be able to say
+        # why without reading the whole page.
+        return text[:-1] + ("0" if text[-1] != "0" else "1")
+    return text
+
+
+def build(target_dir: str) -> str:
+    """Write a whole already-processed case, ready to browse, and return its path.
+
+    Shaped from a real ingested case rather than from a specification: case.json
+    also carries `cccdWorkbook`, `purchaseTotal` and a per-packet `review`, and
+    every packet carries both an `ocrIdentity` and a `rosterIdentity`.
+    """
+    import json
+    import os
+
+    os.makedirs(target_dir, exist_ok=True)
+    packets = []
+
+    for index, person in enumerate(PEOPLE):
+        packet_dir = os.path.join(target_dir, "packets", str(index))
+        os.makedirs(packet_dir, exist_ok=True)
+
+        docs, page_number = [], 0
+        for kind, label, page_count in _docs_for(index):
+            pages = []
+            for offset in range(page_count):
+                name = f"pg{page_number}.png"
+                with open(os.path.join(packet_dir, name), "wb") as handle:
+                    handle.write(page_png(
+                        label.upper(),
+                        [
+                            f"Họ và tên: {person['name']}",
+                            f"Số CCCD: {person['cccd']}",
+                            f"Mã số thuế: {person['mst']}",
+                            f"Số tài khoản: {person['tk']}",
+                            f"Trang {offset + 1}/{page_count}",
+                        ],
+                        width=_PAGE_WIDTH,
+                        height=_PAGE_HEIGHT,
+                    ))
+                pages.append({
+                    "src": name,
+                    "width": _PAGE_WIDTH,
+                    "height": _PAGE_HEIGHT,
+                })
+                page_number += 1
+            docs.append({
+                "id": f"{kind}-0",
+                "kind": kind,
+                "label": label,
+                "pages": pages,
+            })
+
+        readable = [d for d in docs if d["kind"] in {"contract", "bbnt"}]
+        fields = []
+        for field_key, label, group, kind, source_key in _FIELDS:
+            expected = person[source_key]
+            expected_text = (
+                f"{expected:,}".replace(",", ".")
+                if isinstance(expected, int) else str(expected)
+            )
+            sources = []
+            # One field on one packet is left unextracted, so `pending` shows.
+            if not (index == _UNEXTRACTED_PACKET and field_key == "ngaysinh"):
+                for position, doc in enumerate(readable):
+                    sources.append({
+                        "docId": doc["id"],
+                        "page": 0,
+                        "value": _value_for(person, field_key, source_key, index),
+                        "bbox": {
+                            "x": 120,
+                            "y": 220 + position * 60,
+                            "width": 420,
+                            "height": 38,
+                        },
+                        "confidence": 0.96,
+                    })
+            fields.append({
+                "key": field_key,
+                "label": label,
+                "group": group,
+                "check": "compare",
+                "kind": kind,
+                "expected": expected_text,
+                "sources": sources,
+            })
+
+        with open(os.path.join(packet_dir, "manifest.json"), "w", encoding="utf-8") as handle:
+            json.dump({
+                "id": f"demo-{index}",
+                "name": person["name"],
+                "product": "Danh Tướng 3Q",
+                "heading": person["name"],
+                "status": "pending",
+                "exempt": False,
+                "docs": docs,
+                "fields": fields,
+            }, handle, ensure_ascii=False, indent=2)
+
+        packets.append({
+            "index": index,
+            "name": person["name"],
+            "pages": [page_number * index, page_number * index + page_number - 1],
+            "n_pages": page_number,
+            "confidence": "green",
+            "flags": [],
+            "labels": [label for _, label, count in _docs_for(index) for _ in range(count)],
+            "matchedBy": "cccd",
+            "ocrIdentity": {"cccd": person["cccd"], "name": person["name"]},
+            "rosterIdentity": {"cccd": person["cccd"], "name": person["name"]},
+            "review": {"done": False, "fields": {}, "rejection": None, "overrides": {}},
+        })
+
+    with open(os.path.join(target_dir, "case.json"), "w", encoding="utf-8") as handle:
+        json.dump({
+            "id": os.path.basename(target_dir.rstrip(os.sep)),
+            "name": "demo.pdf",
+            "createdAt": "2026-01-01T00:00:00+00:00",
+            "status": "ready",
+            "pdfName": "demo.pdf",
+            "rosterName": "demo-roster.xlsx",
+            "cccdName": None,
+            "summary": {
+                "found": len(PEOPLE),
+                "roster_n": len(PEOPLE),
+                "matched": len(PEOPLE),
+                "auto_merged": 0,
+                "duplicate_identities": 0,
+                "boundaries_snapped": len(PEOPLE),
+                "boundaries_offset": 0,
+                "boundaries_reason": "",
+                "boundaries_inferred": 0,
+                "boundaries_inserted": 0,
+            },
+            "cccdWorkbook": None,
+            "purchaseTotal": None,
+            "error": None,
+            "packets": packets,
+        }, handle, ensure_ascii=False, indent=2)
+
+    return target_dir
