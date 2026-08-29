@@ -388,10 +388,7 @@ describe('view tabs', () => {
     }
   }
 
-  // Tổng hợp is hidden behind SHOW_SUMMARY_TAB for now (see CaseDetail's own
-  // comment on the flag). Flip the flag and this test flips back to asserting
-  // both tabs are offered.
-  it('hides the roster-level tab, showing only the packets', () => {
+  it('offers both the packet list and the roster-level tab', () => {
     const html = renderToStaticMarkup(
       <CaseDetail
         detail={detailFor()}
@@ -401,15 +398,16 @@ describe('view tabs', () => {
       />,
     )
 
-    expect(html).not.toContain('>Tổng hợp<')
-    expect(html).not.toContain('role="tablist"')
-    // The packet view itself is untouched -- this hides a tab, not a screen.
+    expect(html).toContain('>Tổng hợp<')
+    expect(html).toContain('role="tablist"')
+    // The packet view is the default, and is untouched by the tab returning.
     expect(html).toContain('Cần chú ý trước')
   })
 
-  it('stays on the packets even when asked to land on the hidden tab', () => {
-    // UploadFlow no longer passes initialTab, but nothing should break if a
-    // caller does -- a hidden tab must not become an unreachable blank screen.
+  it('lands on the roster-level tab when asked to', () => {
+    // The criteria matrix's Bảng Kê Thu Mua cell sends the reviewer here,
+    // because that criterion is checked across the whole bảng kê rather than
+    // inside any one packet.
     const html = renderToStaticMarkup(
       <CaseDetail
         detail={detailFor()}
@@ -420,8 +418,7 @@ describe('view tabs', () => {
       />,
     )
 
-    expect(html).not.toContain('Kiểm tra toàn bảng kê')
-    expect(html).toContain('Xuất báo cáo gửi lại')
+    expect(html).not.toContain('Cần chú ý trước')
   })
 
   it('opens on the packets, so the tab is additive', () => {

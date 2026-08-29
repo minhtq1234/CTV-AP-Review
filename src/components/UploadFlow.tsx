@@ -17,7 +17,7 @@ import {
 import { cccdReviewSeenKey, shouldOpenCccdReview } from '../logic/cccdReview'
 import CaseList from './CaseList'
 import UploadScreen from './UploadScreen'
-import CaseDetail from './CaseDetail'
+import CaseDetail, { type CaseTab } from './CaseDetail'
 import CccdReviewScreen from './CccdReviewScreen'
 import FolderReview from './FolderReview'
 import ReportPanel from './ReportPanel'
@@ -59,7 +59,10 @@ export default function UploadFlow() {
   const [detail, setDetail] = useState<CaseDetailT | null>(null)
   // Which tab CaseDetail should land on next time it renders. The criteria
   // matrix's roster-level cell leaves the packet for the bảng kê check, which
-  // lives on Tổng hợp.
+  // lives on Tổng hợp. Cleared the moment a packet is opened, so the jump
+  // happens once instead of pinning every later return to Tổng hợp -- that
+  // stickiness is what made backing out of a packet land on the wrong tab.
+  const [detailTab, setDetailTab] = useState<CaseTab>('packets')
   const [packetIndex, setPacketIndex] = useState<number | null>(null)
   const [folder, setFolder] = useState<CtvFolder | null>(null)
   const [review, setReviewState] = useState<PacketReview>(
@@ -95,6 +98,9 @@ export default function UploadFlow() {
       // where its row shows live progress.
       if (d.status === 'processing') { setScreen('list'); refreshList(); return }
       setCaseId(id); setDetail(d)
+      // Opening a case always starts on the packet list: a jump to Tổng hợp is
+      // one-shot, not a preference the case remembers.
+      setDetailTab('packets')
       // Ver 3 step 1: confirm the CCCD mapping before the packet list. Shown
       // once per case per browser — a case with no workbook never sees it.
       const seen = cccdReviewSeen(id)
@@ -168,6 +174,7 @@ export default function UploadFlow() {
       const f = await fetchPacketManifest(caseId, index)
       const meta = detail?.packets.find(p => p.index === index)
       setReviewState(normalizePacketReview(meta?.review))
+      setDetailTab('packets')
       setPacketIndex(index); setFolder(f); setScreen('review')
     } catch { setErr(CONN_ERR) }
   }
@@ -261,6 +268,7 @@ export default function UploadFlow() {
     return (
       <>
         <CaseDetail detail={detail} onOpenPacket={onOpenPacket} onBack={backToList}
+          initialTab={detailTab}
           onExport={() => setShowReport(true)}
           onOpenCccd={detail.cccdSummary ? () => setScreen('cccd') : undefined} />
         {showReport && caseId && <ReportPanel caseId={caseId} onClose={() => setShowReport(false)} />}
@@ -301,6 +309,7 @@ export default function UploadFlow() {
           onCardAssigned={() => {
             if (packetIndex != null) void onOpenPacket(packetIndex)
           }}
+          onShowSummary={() => { setDetailTab('summary'); setScreen('detail') }}
         />
       </div>
     )

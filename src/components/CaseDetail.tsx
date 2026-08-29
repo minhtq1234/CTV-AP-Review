@@ -177,7 +177,7 @@ const CASE_TABS: Array<{ value: CaseTab; label: string }> = [
  * and still passing. Restoring the matrix's jump to it needs `onShowSummary`
  * wired again in UploadFlow, and `detailTab` cleared once consumed.
  */
-const SHOW_SUMMARY_TAB = false
+const SHOW_SUMMARY_TAB = true
 
 export interface PacketDashboardViewProps {
   packets: PacketMeta[]
