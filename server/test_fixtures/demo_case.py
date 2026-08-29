@@ -134,7 +134,7 @@ def _value_for(person: dict, field_key: str, source_key: str, index: int) -> str
     return text
 
 
-def build(target_dir: str) -> str:
+def build(target_dir: str, *, case_id: str | None = None) -> str:
     """Write a whole already-processed case, ready to browse, and return its path.
 
     Shaped from a real ingested case rather than from a specification: case.json
@@ -244,7 +244,7 @@ def build(target_dir: str) -> str:
 
     with open(os.path.join(target_dir, "case.json"), "w", encoding="utf-8") as handle:
         json.dump({
-            "id": os.path.basename(target_dir.rstrip(os.sep)),
+            "id": case_id or os.path.basename(target_dir.rstrip(os.sep)),
             "name": "demo.pdf",
             "createdAt": "2026-01-01T00:00:00+00:00",
             "status": "ready",
