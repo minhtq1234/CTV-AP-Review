@@ -1,0 +1,41 @@
+# Python dependencies for the server and the packet splitter.
+#
+# Regenerate the import list with, from this directory:
+#   grep -rhoE "^(import|from) [a-zA-Z_][a-zA-Z0-9_]*" *.py | awk '{print $2}' | sort -u
+# and again in ../splitter, which pipeline.py puts on sys.path (see its
+# _SPLITTER_DIR block) -- a scan of server/ alone misses numpy and the app then
+# fails the moment a real ingest runs.
+#
+# Four packages here are NOT importable names in that output:
+#   uvicorn           serves the app
+#   python-multipart  FastAPI needs it to accept file uploads, and raises at
+#                     route-registration time without it
+#   httpx             fastapi.testclient needs it, so the test suite does not
+#                     collect without it
+#   numpy             imported by ../splitter/detect_packets.py
+#
+# NOT a Python package, and so not installable from this file: Tesseract itself,
+# plus its Vietnamese language data. server/ocr_extract.py reads with lang="vie"
+# and every OCR read returns nonsense without it.
+#   macOS    brew install tesseract tesseract-lang
+#   Debian   apt install tesseract-ocr tesseract-ocr-vie
+#   Windows  install the UB-Mannheim build, then put vie.traineddata beside its
+#            eng.traineddata (or point TESSDATA_PREFIX at a directory holding
+#            all three of eng/osd/vie)
+#
+# On Windows also set PYTHONUTF8=1: without it Python reads source as cp1252 and
+# roster_checks.py fails on its own UTF-8 contents.
+
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+httpx>=0.27
+pymupdf>=1.24
+openpyxl>=3.1
+pillow>=10.2
+pytesseract>=0.3.10
+numpy>=1.26
+pytest>=8.0
+
+# pydantic and starlette are omitted deliberately: both are FastAPI's own
+# dependencies, and pinning them separately invites a version conflict.
