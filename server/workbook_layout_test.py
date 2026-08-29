@@ -401,3 +401,81 @@ def test_the_inspect_endpoint_refuses_the_same_workbooks_the_upload_does(tmp_pat
 
     assert response.status_code == 422
     assert "money" in response.json()["detail"]["reason"]
+
+
+def test_a_column_header_word_is_matched_whole_not_as_a_substring():
+    """`anh` sits inside `thanh`, so a bare substring test called a money column
+    a tax screenshot. Since classification now decides whether a drawing is a
+    card at all, a false positive silently drops it from the candidate pool."""
+    from workbook_layout import classify_image_columns
+
+    # None of these are image columns.
+    for label in ("Thành tiền", "Danh sách CTV", "Ngành nghề", "Doanh nghiệp"):
+        assert classify_image_columns({0: "MST", 1: label}, sheet_name="MST") == {}
+
+    # The genuine ones still classify.
+    assert classify_image_columns(
+        {0: "MST", 1: "Hình Ảnh"}, sheet_name="MST",
+    ) == {1: "tax"}
+
+
+def test_a_drawing_is_classified_by_every_column_it_covers():
+    """A picture is anchored where its top-left corner falls, which drifts a
+    column left of the header describing it. On the real combined workbook that
+    is 9 of 100 drawings -- 7 tax screenshots and 2 card fronts -- all anchored
+    in an unheaded column and spanning into the headed one."""
+    from cccd_workbook import Anchor, _kind_for
+
+    spanning = Anchor("CCCD", 4, 2, 4, 3)      # anchored in C, covers D
+    assert _kind_for(spanning, {3: "card"}) == "card"
+
+    # Nothing to find in any covered column stays unknown, which is what keeps
+    # the July workbook's headerless sheets on the proximity path.
+    assert _kind_for(spanning, {}) is None
+
+    # The first classified column the drawing covers wins.
+    assert _kind_for(spanning, {2: "bank", 3: "card"}) == "bank"
+
+
+def test_the_header_row_is_the_one_that_labels_columns_not_a_title():
+    """Both real templates open with a title merged across the whole table. Read
+    as the header and expanded, it would stamp one label into every column -- and
+    a title containing an image word would classify the entire sheet as one
+    kind, undoing the candidate-pool filter."""
+    import zipfile as _zipfile
+
+    from cccd_workbook import (
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        _ExtractionByteBudget,
+        _header_row,
+    )
+
+    book = os.path.join(tempfile.mkdtemp(), "titled.xlsx")
+    with _zipfile.ZipFile(book, "w") as archive:
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            '<worksheet xmlns="http://schemas.openxmlformats.org/'
+            'spreadsheetml/2006/main"><sheetData>'
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>BẢNG KÊ HÌNH CCCD</t>'
+            '</is></c></row>'
+            '<row r="2">'
+            '<c r="A2" t="inlineStr"><is><t>STT</t></is></c>'
+            '<c r="D2" t="inlineStr"><is><t>Hình CCCD</t></is></c>'
+            '</row></sheetData>'
+            '<mergeCells><mergeCell ref="A1:H1"/><mergeCell ref="D2:E2"/>'
+            '</mergeCells></worksheet>',
+        )
+
+    with _zipfile.ZipFile(book) as archive:
+        header = _header_row(
+            archive,
+            "xl/worksheets/sheet1.xml",
+            _ExtractionByteBudget(MAX_ARCHIVE_UNCOMPRESSED_BYTES),
+        )
+
+    # Row 2 labels the columns; the row-1 title is not the header and its merge
+    # is not expanded across the sheet.
+    assert header.get(0) == "STT"
+    assert header.get(3) == "Hình CCCD"
+    assert header.get(4) == "Hình CCCD", "the header row's own merge still expands"
+    assert 7 not in header, "the title's A1:H1 merge must not reach column H"

@@ -352,7 +352,7 @@ def _decode_and_store(
             height=height,
             sha256=hashlib.sha256(content).hexdigest(),
             stored_path=stored_path,
-            kind=(kinds_by_sheet or {}).get(anchor.sheet, {}).get(anchor.from_col),
+            kind=_kind_for(anchor, (kinds_by_sheet or {}).get(anchor.sheet, {})),
         ))
     return ExtractionResult(drawing_instances, drawings, issues)
 
@@ -696,51 +696,89 @@ def _shared_strings(archive, byte_budget) -> list[str]:
 
 
 def _header_row(archive, sheet_part, byte_budget) -> dict[int, str]:
-    """Column index -> text for the sheet's first non-empty row.
+    """Column index -> text for the row that labels the sheet's columns.
+
+    Not simply the first non-empty row: on both real templates that is a
+    decorative title merged across the whole table (`A1:L1` on the July sheets,
+    `A1:S1` on the combined CTV sheet). Expanding that merge would stamp the
+    title into every column, and a title that happened to contain an image word
+    would then classify the entire sheet as one kind. A labelling row names
+    several columns, so the first row carrying at least two distinct values is
+    the header; a sheet that never has one falls back to its first non-empty row.
 
     Read from the sheet XML rather than through openpyxl: this module's whole
-    contract is that nothing unbounded runs against a submitted workbook, and
-    a merged header has to be expanded across the columns it spans anyway,
-    which read-only openpyxl does not report.
+    contract is that nothing unbounded runs against a submitted workbook, and a
+    merged header has to be expanded across the columns it spans anyway, which
+    read-only openpyxl does not report.
     """
     root = _parse_xml(archive, sheet_part, byte_budget)
     strings = _shared_strings(archive, byte_budget)
 
+    first_populated: tuple[int, dict[int, str]] | None = None
+    header_row_index: int | None = None
     header: dict[int, str] = {}
     for row in root.findall(f".//{_SHEET_NS}sheetData/{_SHEET_NS}row"):
+        values: dict[int, str] = {}
+        row_index = None
         for cell in row.findall(f"{_SHEET_NS}c"):
             reference = cell.attrib.get("r", "")
             if not reference:
                 continue
-            if cell.attrib.get("t") == "s":
-                value_node = cell.find(f"{_SHEET_NS}v")
-                position = int(value_node.text) if value_node is not None else -1
-                text = strings[position] if 0 <= position < len(strings) else ""
-            elif cell.attrib.get("t") == "inlineStr":
-                inline = cell.find(f"{_SHEET_NS}is")
-                text = "".join(inline.itertext()) if inline is not None else ""
-            else:
-                value_node = cell.find(f"{_SHEET_NS}v")
-                text = value_node.text or "" if value_node is not None else ""
+            text = _cell_text(cell, strings)
             if text.strip():
-                header[_column_index(reference)] = text
-        if header:
+                values[_column_index(reference)] = text
+                if row_index is None:
+                    row_index = _row_index(reference)
+        if not values:
+            continue
+        if first_populated is None:
+            first_populated = (row_index or 0, values)
+        if len(values) >= 2:
+            header_row_index, header = (row_index or 0), values
             break
+
+    if not header and first_populated is not None:
+        header_row_index, header = first_populated
 
     # A merged label reports its text only in the range's top-left cell, but it
     # describes every column it covers -- `Hình CCCD` over D:E is what says the
-    # two columns are the card's two sides.
+    # two columns are the card's two sides. Only merges on the header row say
+    # anything about columns; a title merged across row 1 does not.
     for merge in root.findall(f".//{_SHEET_NS}mergeCells/{_SHEET_NS}mergeCell"):
         span = merge.attrib.get("ref", "")
         if ":" not in span:
             continue
         start, end = span.split(":", 1)
+        if _row_index(start) != header_row_index:
+            continue
         source = header.get(_column_index(start))
         if not source:
             continue
         for column in range(_column_index(start), _column_index(end) + 1):
             header.setdefault(column, source)
     return header
+
+
+def _cell_text(cell, strings: list[str]) -> str:
+    """One cell's text, resolving shared and inline strings."""
+    if cell.attrib.get("t") == "s":
+        value_node = cell.find(f"{_SHEET_NS}v")
+        try:
+            position = int(value_node.text) if value_node is not None else -1
+        except (TypeError, ValueError):
+            return ""
+        return strings[position] if 0 <= position < len(strings) else ""
+    if cell.attrib.get("t") == "inlineStr":
+        inline = cell.find(f"{_SHEET_NS}is")
+        return "".join(inline.itertext()) if inline is not None else ""
+    value_node = cell.find(f"{_SHEET_NS}v")
+    return (value_node.text or "") if value_node is not None else ""
+
+
+def _row_index(reference: str) -> int:
+    """0-based row index from a cell reference like `AD7`."""
+    digits = "".join(character for character in reference if character.isdigit())
+    return int(digits) - 1 if digits else 0
 
 
 def describe_image_columns(xlsx_path: str) -> list[dict]:
@@ -783,7 +821,10 @@ def describe_image_columns(xlsx_path: str) -> list[dict]:
                 for _, anchor, _ in records:
                     key = (sheet_name, anchor.from_col)
                     counts[key] = counts.get(key, 0) + 1
-                    kinds[key] = sheet_kinds.get(anchor.from_col)
+                    # Resolved the same way extraction resolves it, or the
+                    # declaration would promise a classification the run does
+                    # not make.
+                    kinds[key] = _kind_for(anchor, sheet_kinds)
 
     from workbook_layout import column_letter  # lazy: pulls OCR deps
 
@@ -887,3 +928,19 @@ def _extent_cy(element) -> int | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def _kind_for(anchor: Anchor, kinds: dict[int, str]) -> str | None:
+    """What kind of image this drawing is, from the columns it covers.
+
+    Not `kinds[anchor.from_col]`: a picture is anchored where its top-left
+    corner falls, which routinely drifts a column left of the one its header
+    describes. On the real combined workbook 9 of 100 drawings anchor in an
+    unheaded column and span into the headed one -- 7 tax screenshots and 2 card
+    fronts -- and an exact-column lookup called all 9 unknown.
+    """
+    for column in range(anchor.from_col, anchor.to_col + 1):
+        kind = kinds.get(column)
+        if kind is not None:
+            return kind
+    return None

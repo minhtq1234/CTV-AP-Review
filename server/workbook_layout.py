@@ -92,16 +92,35 @@ def classify_image_columns(header: dict[int, str], sheet_name: str) -> dict[int,
     for index, text in flat.items():
         if not text:
             continue
-        if any(marker in text for marker in _CARD_HEADERS):
+        if any(_has_phrase(text, marker) for marker in _CARD_HEADERS):
             kinds[index] = CARD
             continue
-        if any(marker in text for marker in _ANY_IMAGE_HEADERS):
+        if any(_has_phrase(text, marker) for marker in _ANY_IMAGE_HEADERS):
             left = flat.get(index - 1, "")
-            if "stk" in left or "tai khoan" in left:
+            if _has_phrase(left, "stk") or _has_phrase(left, "tai khoan"):
                 kinds[index] = BANK
-            elif "mst" in norm(sheet_name) or "mst" in left:
+            elif _has_phrase(norm(sheet_name), "mst") or _has_phrase(left, "mst"):
                 kinds[index] = TAX
     return kinds
+
+
+def _has_phrase(text: str, marker: str) -> bool:
+    """Whether the marker's words appear in text as consecutive whole words.
+
+    Substring matching is far too loose here: "anh" alone is inside "thanh", so
+    a "Thành tiền" column classified as a tax screenshot and a "Danh sách CTV"
+    column as one too. Since a mistyped column now decides whether its drawings
+    are treated as cards at all, a false positive silently removes them from the
+    candidate pool rather than merely mislabelling them.
+    """
+    words = text.split()
+    wanted = marker.split()
+    if not wanted or len(wanted) > len(words):
+        return False
+    return any(
+        words[start:start + len(wanted)] == wanted
+        for start in range(len(words) - len(wanted) + 1)
+    )
 
 
 def column_letter(index: int) -> str:
