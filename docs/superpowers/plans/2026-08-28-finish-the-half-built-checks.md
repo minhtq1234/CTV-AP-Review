@@ -37,8 +37,9 @@ symbol against *this* checkout (`stable/2026-08-25-cccd-idp`). Never `main`, nev
 `node_modules/.bin/vitest run` plus `node_modules/.bin/tsc -b`. At the time of writing: **821
 server, 367 UI, tsc clean.** Establish your own baseline first.
 
-**Do not touch `server/app.py` or `server/app_test.py`.** Another session has ~208 lines of
-uncommitted work in them. If a task needs to change either, stop and report.
+**`server/app.py` and `server/app_test.py` are free to change.** They were held back while
+another session had uncommitted work in them; that work landed in `7624a3e` on 2026-08-28 and
+the tree is clean. Do not stop on this.
 
 **Everything in Tasks 1–4 needs a re-ingest to show up.** Results are baked at upload time, so
 existing cases keep their old answers until the submission is put through again. Say this in your

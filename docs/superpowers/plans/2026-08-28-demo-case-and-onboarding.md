@@ -57,10 +57,12 @@ symbol against *this* checkout (`stable/2026-08-25-cccd-idp`). Never `main`, nev
   flat (`import roster_checks`), so running from the repo root fails on imports
 
 **Green before every commit:** `cd server && python3 -m pytest -q`. At the time of writing that is
-**821 passing**; establish your own baseline first and compare against it.
+**836 passing** with `cwd=server/` (the earlier figure of 821 was never reproducible here);
+establish your own baseline first and compare against it.
 
-**Do not touch `server/app.py` or `server/app_test.py`.** Another session has ~208 lines of
-uncommitted work in them. If a task here needs to change either file, stop and report instead.
+**`server/app.py` and `server/app_test.py` are free to change.** They were held back while
+another session had uncommitted work in them; that work landed in `7624a3e` on 2026-08-28 and
+the tree is clean. Do not stop on this.
 
 ---
 

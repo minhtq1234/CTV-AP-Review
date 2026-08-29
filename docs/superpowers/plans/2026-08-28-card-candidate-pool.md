@@ -78,8 +78,9 @@ symbol against *this* checkout (`stable/2026-08-25-cccd-idp`). Never `main`, nev
 
 - **`pytest` must run with `server/` as the working directory.**
 - Establish your own test baseline before changing anything and compare against it.
-- **Do not touch `server/app.py` or `server/app_test.py`** — another session has uncommitted work
-  in them.
+- **`server/app.py` and `server/app_test.py` are free to change.** They were held back while
+  another session had uncommitted work in them; that work landed in `7624a3e` on 2026-08-28 and
+  the tree is clean. Do not stop on this.
 
 **This fix changes ingest output, so an existing case keeps its wrong count until it is put through
 again.** Say so in your report.
@@ -251,3 +252,54 @@ Say plainly:
 - whether you removed the `_pairable` check at line 92, and why
 - whether `/api/uploads/inspect` already answered Task 3
 - that an existing case keeps its wrong count until it is re-ingested
+
+---
+
+## Outcome — completed 2026-08-29
+
+**Tasks 1 and 2 implemented; Task 3 was correctly a no-op.**
+
+| | before | after |
+|---|---|---|
+| candidates | 100 | 25 |
+| pairs formed | 0 | 25 of 25 |
+| attached | 19, **all false** | 7, all genuine card pairs |
+
+**The defect was worse than this plan describes.** It was not only a wrong count: all 19 of the
+"attached" cards were tax-lookup screenshots from `MST!D` attached as ID card *fronts*. A tax page
+carries a 12-digit number, `_reads_as_front` inferred "front" from it, and resolution matched it to
+a packet by that number. No card side had ever been attached on this template, so the yield was
+zero rather than low.
+
+**Task 3 needed nothing.** `POST /api/uploads/inspect` (`server/app.py`) already calls
+`describe_image_columns`, which reports every image column with its kind and count — including
+unclassified ones — *before* a run starts. Checked against the real workbook rather than reasoned
+about.
+
+### Two fixes this plan did not contain, without which the above is not reachable
+
+Both were found afterwards, by measuring the real workbook rather than reading it.
+
+**Pairing measured row indices, so nothing could pair.** Every card on this template sits inside one
+row, so `to_row == from_row`, so `_vertical_overlap_ratio` sized it at zero and returned `0.0` — for
+39 of 50 drawings. `abs(from_row diff) <= 1` was then both the only rule linking a front to its back
+*and* the thing chaining all 48 sides into one component of 50, which `_component_candidates` will
+never pair. `Anchor` now carries absolute top/bottom in EMU from the sheet's real row heights, and a
+`oneCellAnchor` takes its height from `ext/@cy` — that is 100% of the July workbook, whose 42 pairs
+were surviving only because equal fabrications score 1.0.
+
+**Classification read the wrong column, off the wrong row, with the wrong matcher.** A drawing is
+anchored where its top-left corner falls, which drifts a column left of its header — 9 of 100 real
+drawings. The header row was whichever came first with any content, which on both real templates is
+a title merged across the whole table. And markers matched as bare substrings, so `anh` matched
+`thanh` and a `Thành tiền` column read as a tax screenshot.
+
+### What is still not fixed
+
+The 18 remaining unresolved are **OCR failures, not pipeline failures**: `no-number-region` 10,
+`unreadable-identity` 5, `low-cccd-confidence` 3. Pairing, classification and roster matching are
+correct end to end; what caps the rate is reading 12 digits off small embedded images. That is what
+the GreenNode IDP card reader is for — credentials, not code.
+
+Also unverified: that a formed pair is the *same person's* front and back. The 25 pairs are
+confirmed to form and 7 to attach; with 18 unread, sameness cannot be established from OCR alone.

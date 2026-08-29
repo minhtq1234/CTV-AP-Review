@@ -64,8 +64,9 @@ symbol against *this* checkout (`stable/2026-08-25-cccd-idp`). Never `main`, nev
 **Green before every commit:** `cd server && python3 -m pytest -q`. At the time of writing, **821
 passing**; establish your own baseline.
 
-**Do not touch `server/app.py` or `server/app_test.py`** — another session has ~208 uncommitted
-lines in them. If a task needs to, stop and report.
+**`server/app.py` and `server/app_test.py` are free to change.** They were held back while
+another session had uncommitted work in them; that work landed in `7624a3e` on 2026-08-28 and
+the tree is clean. Do not stop on this.
 
 **Never put a real contractor's details in a test.** Use the synthetic series the repo already
 uses: `001100000001`, `NGUYEN VAN MOT`, `1900000001`. A real number in a fixture goes to a public
