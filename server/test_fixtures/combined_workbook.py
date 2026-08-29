@@ -14,11 +14,14 @@ import openpyxl
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image
 
-#: Invented people. Sequential numbers, obviously not real.
+#: Invented people, as (name, CCCD, MST). Sequential numbers, obviously not
+#: real. This is the repository's ONE fabricated identity series -- the demo
+#: case builds on it rather than inventing a second set, so a number seen in a
+#: fixture always means the same person.
 PEOPLE = [
-    ("NGUYEN VAN MOT", "001100000001", "8000000001"),
-    ("TRAN THI HAI", "001100000002", "8000000002"),
-    ("LE VAN BA", "001100000003", "8000000003"),
+    ("NGUYEN VAN MOT", "001100000001", "0011000001"),
+    ("TRAN THI HAI", "001100000002", "0011000002"),
+    ("LE VAN BA", "001100000003", "0011000003"),
 ]
 
 
