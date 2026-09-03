@@ -825,6 +825,12 @@ green, commit.
   local OCR alone it matches 24. You will have neither the credentials nor the cards. Do not treat
   a low match count in your own testing as a regression — assert on *structure* (which drawing was
   classified as which kind, which sheet was read), never on match counts.
+  **Measured 2026-09-03:** those are *automatic* rates, and they are July's. On local OCR the July
+  case matched 25 of 42 automatically and reached 41 attached only because a person hand-assigned
+  16 in the UI; the combined workbook matches **7 of 25 (28%)** automatically with 18 still queued.
+  So a July number is not a combined-workbook number — this template yields a readable card number
+  on 40% of cards against July's 69%, and a readable *name*, which is the fallback claim path, on
+  4% against 17%.
 - **Segmentation and criteria counts.** Every "N of 41 packets" figure in the docs came from real
   submissions. Your fixture has three invented people.
 - **The 51-minute run.** Ingest on a real submission is ~13 minutes of OCR and ~36 minutes of card

@@ -263,7 +263,8 @@ Say plainly:
 |---|---|---|
 | candidates | 100 | 25 |
 | pairs formed | 0 | 25 of 25 |
-| attached | 19, **all false** | 7, all genuine card pairs |
+| attached automatically | 19, **all false** | 7, all genuine card pairs |
+| queued for manual assignment | — | 18 |
 
 **The defect was worse than this plan describes.** It was not only a wrong count: all 19 of the
 "attached" cards were tax-lookup screenshots from `MST!D` attached as ID card *fronts*. A tax page
@@ -296,10 +297,37 @@ a title merged across the whole table. And markers matched as bare substrings, s
 
 ### What is still not fixed
 
-The 18 remaining unresolved are **OCR failures, not pipeline failures**: `no-number-region` 10,
-`unreadable-identity` 5, `low-cccd-confidence` 3. Pairing, classification and roster matching are
-correct end to end; what caps the rate is reading 12 digits off small embedded images. That is what
-the GreenNode IDP card reader is for — credentials, not code.
+The 18 remaining are **awaiting a human, not broken**: `state=manual`, with
+`no-number-region` 10, `unreadable-identity` 5, `low-cccd-confidence` 3. Pairing, classification and
+roster matching are correct end to end; what caps the *automatic* rate is reading the card image.
 
-Also unverified: that a formed pair is the *same person's* front and back. The 25 pairs are
-confirmed to form and 7 to attach; with 18 unread, sameness cannot be established from OCR alone.
+**Measured like-for-like against the July submission, which is the only baseline anyone quotes:**
+
+| | July | combined |
+|---|---|---|
+| matched automatically (`matchMethod=cccd`) | **25 / 42 (60%)** | **7 / 25 (28%)** |
+| assigned by hand in the UI (`manual`) | 16 | 0 |
+| total attached | 41 | 7 |
+| still queued for a human | 1 | **18** |
+
+**Do not compare July's 41 with the combined workbook's 7.** July's 41 includes 16 cards a person
+assigned by hand; its automatic rate was 25 of 42, which is what the repo's "24 of 42 on local OCR"
+figure refers to. The combined workbook has had no manual work at all.
+
+The gap sits upstream of matching, and in both claim paths: the combined workbook yields a readable
+**number** on 10 of 25 cards (40%) against 29 of 42 (69%), and a readable **name** on **1 of 25**
+against 7 of 42. The name matters because it is the *fallback* claim —
+`cccd_matching._candidate_claims` accepts a roster row by CCCD **or** by a name above a confidence
+threshold. On July that fallback rescues cards whose number will not read; here it rescues almost
+nothing, which is why the automatic rate is less than half July's.
+
+So the reviewer's real burden on this template is **18 manual assignments out of 25**, not 18 broken
+cards. The UI path for that exists and works — it is how July got its 16.
+
+**IDP is aimed at the right step** (reading number and name off the card) but is **unmeasured here**:
+no `GREENNODE_*` credential has ever been set on this machine, so every figure above is local
+Tesseract. The documented 39-of-42-with-IDP is a July number; do not assume it transfers, because
+this workbook is measurably harder for both number *and* name.
+
+Also unverified: that a formed pair is the *same person's* front and back. The 25 pairs are confirmed
+to form and 7 to attach automatically; with 18 unread, sameness cannot be established from OCR alone.
