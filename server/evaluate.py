@@ -476,6 +476,32 @@ def _fuzzy_note(reference: str, value: str, kind: str) -> str:
 
 # --- presence ----------------------------------------------------------------
 
+def _block_evidence(document: dict, anchor: str | None) -> Evidence:
+    """Where to look on this document for the party's signature block.
+
+    Recorded during the read (`signature_anchors.find_anchors`), because the
+    saved manifest keeps only `{src, width, height}` per page and there is
+    nothing left to search by the time a criterion runs.
+
+    When the asked-for party has no box, fall back to the page some other block
+    was found on rather than to page 0: the two parties sign the same sheet, so
+    that page is right even when only one side read. It is what carries #22 and
+    #24, whose `Đại diện VNG` line is often mangled by OCR, and what lets #25
+    point at an appendix's signing page when only one party is legible.
+    """
+    anchors = document.get("anchors") or {}
+    hit = anchors.get(anchor) if anchor else None
+    if hit:
+        return Evidence(document.get("id", ""), int(hit.get("page", 0)),
+                        hit.get("bbox"), "", None, "ocr")
+    seen = [
+        int(other["page"]) for other in anchors.values()
+        if isinstance(other, dict) and "page" in other
+    ]
+    return Evidence(document.get("id", ""), max(seen) if seen else 0,
+                    None, "", None, "ocr")
+
+
 def _presence(criterion: Criterion, ctx: _Context) -> CriterionResult:
     """Locate and look. The tool navigates to the block; the person decides.
 
@@ -507,7 +533,7 @@ def _presence(criterion: Criterion, ctx: _Context) -> CriterionResult:
             name, Status.REVIEW, "",
             f"Cần người kiểm tra chữ ký/dấu trên {name} — công cụ chỉ dẫn đến "
             "vị trí, không tự kết luận.",
-            tuple(Evidence(d.get("id", ""), 0, None, "", None, "ocr")
+            tuple(_block_evidence(d, (criterion.params or {}).get("anchor"))
                   for d in ctx.documents_for(name)),
         ))
     return _result(criterion, cells)

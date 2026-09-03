@@ -1647,3 +1647,41 @@ def test_find_name_legible_row_value_is_published_from_the_same_shape():
     # VNG's column is never published; the merged line's own 9-token read is
     # not name-shaped, so it stays the "cần xem" it has always been.
     assert all("Trịnh" not in h["value"] for h in hits)
+
+
+def test_assemble_docs_records_where_each_party_signs():
+    """Locating has to happen during the read: the saved manifest keeps only
+    {src, width, height} per page, so nothing can be searched afterwards."""
+    from ocr_extract import assemble_docs
+
+    header = [
+        {"text": t, "x": 600 + i * 70, "y": 900, "w": 60, "h": 20, "conf": 90}
+        for i, t in enumerate(["BÊN", "CUNG", "ỨNG", "DỊCH", "VỤ"])
+    ]
+    pages = [
+        {"src": "pg0.png", "width": 1000, "height": 1400},
+        {"src": "pg1.png", "width": 1000, "height": 1400},
+    ]
+    segments = [{"kind": "contract", "label": "Hợp đồng", "pages": [0, 1]}]
+
+    docs, _, _ = assemble_docs(
+        segments, pages, {0: [], 1: header},
+    )
+
+    # The page is the index WITHIN the document, which is what a source means.
+    assert docs[0]["anchors"]["ctv"]["page"] == 1
+    assert docs[0]["anchors"]["ctv"]["bbox"]["height"] > 0
+
+
+def test_assemble_docs_always_records_an_anchors_key():
+    """A missing key and `no signature block on this document` are different
+    answers, and the reader must not have to guess which it is looking at."""
+    from ocr_extract import assemble_docs
+
+    docs, _, _ = assemble_docs(
+        [{"kind": "pit", "label": "Tra cứu thuế", "pages": [0]}],
+        [{"src": "pg0.png", "width": 1000, "height": 1400}],
+        {0: [{"text": "MST", "x": 10, "y": 10, "w": 40, "h": 12, "conf": 90}]},
+    )
+
+    assert docs[0]["anchors"] == {}

@@ -1716,6 +1716,53 @@ def _escalate_weak_fields(
     return merge_sources(fields, extract_fields(swapped, {}), set(reread))
 
 
+def assemble_docs(
+    segments: list[dict],
+    pages: list[dict],
+    words_by_page: dict[int, list[dict]],
+) -> tuple[list[dict], dict[str, dict[int, list[dict]]], dict[tuple[str, int], int]]:
+    """Turn segmented pages into `(docs, words_by_doc, page_of)`.
+
+    Pulled out of `ocr_packet` so it can be tested at all: nothing calls
+    `ocr_packet` in the suite -- it needs a real PDF and a page reader -- while
+    everything this returns is decided here, from data a test can build.
+
+    Each doc records where each party signs (`anchors`), because the words are
+    only in hand during the read: the saved manifest keeps `{src, width, height}`
+    per page and nothing else, so a criterion evaluated later has nothing left
+    to search.
+    """
+    from signature_anchors import find_anchors  # lazy: it imports this module
+
+    docs: list[dict] = []
+    words_by_doc: dict[str, dict[int, list[dict]]] = {}
+    #: (docId, page-within-doc) -> page index within the packet, so an
+    #: escalation can find the rendered PNG for a page a field points at.
+    page_of: dict[tuple[str, int], int] = {}
+    kind_counts: dict[str, int] = {}
+    for seg in segments:
+        n = kind_counts.get(seg["kind"], 0)
+        kind_counts[seg["kind"]] = n + 1
+        doc_id = f"{seg['kind']}-{n}"
+        docs.append({
+            "id": doc_id,
+            "kind": seg["kind"],
+            "label": seg["label"],
+            "pages": [pages[pk] for pk in seg["pages"]],
+        })
+        words_by_doc[doc_id] = {
+            j: words_by_page[pk] for j, pk in enumerate(seg["pages"])
+        }
+        page_of.update({(doc_id, j): pk for j, pk in enumerate(seg["pages"])})
+        # Always set, `{}` when nothing matched: a missing key and "no signature
+        # block found" are different answers and the reader must not confuse them.
+        docs[-1]["anchors"] = find_anchors(
+            words_by_doc[doc_id],
+            {j: pages[pk].get("height") for j, pk in enumerate(seg["pages"])},
+        )
+    return docs, words_by_doc, page_of
+
+
 def ocr_packet(
     pdf_path: str,
     start: int,
@@ -1768,26 +1815,9 @@ def ocr_packet(
     page_texts = [_page_text(words_by_page[i]) for i in range(len(pages))]
     segments = segment_docs(page_texts)
 
-    docs: list[dict] = []
-    words_by_doc: dict[str, dict[int, list[dict]]] = {}
-    #: (docId, page-within-doc) -> page index within the packet, so an
-    #: escalation can find the rendered PNG for a page a field points at.
-    page_of: dict[tuple[str, int], int] = {}
-    kind_counts: dict[str, int] = {}
-    for seg in segments:
-        n = kind_counts.get(seg["kind"], 0)
-        kind_counts[seg["kind"]] = n + 1
-        doc_id = f"{seg['kind']}-{n}"
-        docs.append({
-            "id": doc_id,
-            "kind": seg["kind"],
-            "label": seg["label"],
-            "pages": [pages[pk] for pk in seg["pages"]],
-        })
-        words_by_doc[doc_id] = {
-            j: words_by_page[pk] for j, pk in enumerate(seg["pages"])
-        }
-        page_of.update({(doc_id, j): pk for j, pk in enumerate(seg["pages"])})
+    docs, words_by_doc, page_of = assemble_docs(
+        segments, pages, words_by_page,
+    )
 
     fields = extract_fields(words_by_doc, {})
     if page_reader is not None:

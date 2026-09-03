@@ -12,9 +12,10 @@ def source(doc_id, value, page=0, conf=0.95, bbox=True):
             else None}
 
 
-def doc(doc_id, kind, label=""):
+def doc(doc_id, kind, label="", anchors=None):
     return {"id": doc_id, "kind": kind, "label": label or kind,
-            "pages": [{"src": "pg0.png", "width": 100, "height": 100}]}
+            "pages": [{"src": "pg0.png", "width": 100, "height": 100}],
+            "anchors": anchors or {}}
 
 
 def manifest(docs=(), fields=()):
@@ -740,3 +741,46 @@ class TestTheOverrideReachesThePayload:
 
         assert after["ok"] == before["ok"] + 1
         assert after["rv"] == before["rv"] - 1
+
+
+def test_a_signature_criterion_points_at_the_block_it_asks_about():
+    """These five criteria are locate-and-look: a person decides, but the tool
+    has to point first. Evidence used to be built with page 0 and no box, which
+    pointed at the top of the first page -- that is, nowhere."""
+    box = {"x": 616, "y": 973, "width": 268, "height": 225}
+    packet = manifest([doc("contract-0", "contract",
+                           anchors={"ctv": {"page": 3, "bbox": box}})])
+
+    cells = by_stt(ev.evaluate_packet(packet, {}))[21].cells
+
+    assert cells[0].evidence[0].page == 3
+    assert cells[0].evidence[0].bbox == box
+    # Still a person's call: locating never resolves the verdict.
+    assert cells[0].status is Status.REVIEW
+
+
+def test_the_other_party_gets_the_signing_page_even_with_no_box_of_its_own():
+    """Both parties sign the same sheet, so the page is right even when only one
+    side reads -- and on real contracts `Đại diện VNG` is routinely mangled by
+    OCR, so this is the common case for #22 and #24, not an edge one."""
+    packet = manifest([doc("contract-0", "contract", anchors={
+        "ctv": {"page": 3, "bbox": {"x": 616, "y": 973, "width": 268, "height": 225}},
+    })])
+
+    cells = by_stt(ev.evaluate_packet(packet, {}))[22].cells
+
+    assert cells[0].evidence[0].page == 3, "the signing page is known"
+    assert cells[0].evidence[0].bbox is None, "but no box is invented for it"
+    assert cells[0].status is Status.REVIEW
+
+
+def test_a_document_with_no_block_found_points_at_no_particular_place():
+    """One real appendix carries no signature phrase at all. The honest answer
+    is the right document and nothing more -- not a box that means nothing."""
+    packet = manifest([doc("contract-0", "contract", anchors={})])
+
+    cells = by_stt(ev.evaluate_packet(packet, {}))[21].cells
+
+    assert cells[0].evidence[0].page == 0
+    assert cells[0].evidence[0].bbox is None
+    assert cells[0].status is Status.REVIEW

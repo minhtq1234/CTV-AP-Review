@@ -244,24 +244,28 @@ CRITERIA: tuple[Criterion, ...] = (
     _c(21, "Hợp đồng có chữ ký CTV", "05",
        [CONTRACT], Kind.PRESENCE, "matrix",
        "Kiểm tra có chữ ký của đúng CTV tại vị trí dành cho bên cung cấp dịch "
-       "vụ; không chấp nhận trang ký bị thiếu hoặc không xác định được người ký."),
+       "vụ; không chấp nhận trang ký bị thiếu hoặc không xác định được người ký.",
+       anchor="ctv"),
     _c(22, "Hợp đồng có chữ ký và dấu/giáp lai VNG", "05",
        [CONTRACT], Kind.PRESENCE, "matrix",
        "Kiểm tra có chữ ký đúng thẩm quyền hoặc đúng luồng phê duyệt; có dấu "
-       "công ty và giáp lai/đóng dấu theo yêu cầu đối với hồ sơ nhiều trang."),
+       "công ty và giáp lai/đóng dấu theo yêu cầu đối với hồ sơ nhiều trang.",
+       anchor="vng"),
     _c(23, "BBNT có chữ ký CTV", "05",
        [BBNT], Kind.PRESENCE, "matrix",
-       "Kiểm tra có chữ ký đúng CTV và thông tin người ký khớp với Hợp đồng."),
+       "Kiểm tra có chữ ký đúng CTV và thông tin người ký khớp với Hợp đồng.",
+       anchor="ctv"),
     _c(24, "BBNT có chữ ký và dấu/giáp lai VNG", "05",
        [BBNT], Kind.PRESENCE, "matrix",
        "Kiểm tra có chữ ký người đại diện/người phê duyệt phía VNG; có dấu và "
-       "giáp lai theo yêu cầu."),
+       "giáp lai theo yêu cầu.",
+       anchor="vng"),
     _c(25, "Phụ lục/KPI có ký, dấu đầy đủ (nếu có)", "05",
        [APPENDIX], Kind.PRESENCE, "matrix",
        "Kiểm tra Phụ lục/KPI có đủ chữ ký các bên, dấu/giáp lai và dẫn chiếu "
        "đúng Hợp đồng. Nội dung, kỳ thực hiện và mức phí phải thống nhất với "
        "hồ sơ.",
-       optional=True),
+       optional=True, anchor="ctv"),
     _c(28, "Bảng Kê Thu Mua có chữ ký người lập & dấu doanh nghiệp", "05",
        [PURCHASE], Kind.PRESENCE, "matrix",
        "Bảng Kê Thu Mua (mẫu 02/TNDN) là chứng từ hợp lý hoá chi phí không hoá "
