@@ -82,8 +82,13 @@ from typing import Protocol
 
 from ocr_extract import group_lines, norm, union_bbox
 
-#: Below this many words a quote is refused rather than located.
-MIN_WORDS = 6
+#: Below this many words a quote is refused rather than located. Eight, not
+#: six: measured wrong-occurrence on a real contract was 2.74% at six words,
+#: 1.05% at seven and 0.95% at eight.
+MIN_WORDS = 8
+
+#: Above this many words a quote is refused too -- see `locate_quote`.
+MAX_WORDS = 60
 
 #: Minimum SequenceMatcher ratio for the fuzzy fallback.
 MIN_RATIO = 0.90
@@ -94,6 +99,13 @@ MIN_RATIO = 0.90
 WIDTH_SLACK = 2
 
 _PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
+_NON_DIGIT = re.compile(r"\D")
+
+
+def _digits(text: str) -> str:
+    return _NON_DIGIT.sub("", text)
+
+
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -216,8 +228,23 @@ def locate_quote(
     Exact matching is tried on every page before any fuzzy matching on any
     page -- a verbatim hit elsewhere beats a 0.91 near-miss on the claimed one.
     """
+    # Counted on `norm`, BEFORE punctuation becomes spaces. Counting after it
+    # made the gate depend on how much punctuation a value carries rather than
+    # on how much clause surrounds it: `15/07/2026 - 15/08/2026` inflated to 6
+    # words and was accepted, which is #13's `term` -- the very case the
+    # docstring names as refused.
+    if len(norm(quote).split()) < MIN_WORDS:
+        return None
+    # And an upper bound, because the fuzzy sweep is O(window x quote) and the
+    # quote is a model-controlled string. Measured on one real 940-token page:
+    # 8 words 38ms, 80 words 674ms, 160 words 15.9s, 320 words 105s, 480 words
+    # still running after 8 minutes. `ocr_packet` runs on a daemon thread, so
+    # that is a case stuck in `processing` for ever with no error. A model that
+    # echoes a paragraph instead of a clause is not quoting.
+    if len(norm(quote).split()) > MAX_WORDS:
+        return None
     folded = fold(quote)
-    if len(folded.split()) < MIN_WORDS:
+    if not folded:
         return None
 
     order = ([page] if page in pages else []) \
@@ -229,13 +256,31 @@ def locate_quote(
         indexed.append((number, tokens, text, spans, kept))
 
     for number, tokens, text, spans, kept in indexed:
-        at = text.find(folded)
-        if at < 0:
-            continue
-        hit = _covering(spans, at, at + len(folded))
-        if hit:
-            box = union_bbox([tokens[kept[i]] for i in hit])
-            return {"page": number, "bbox": box, "exact": True, "ratio": 1.0}
+        starts = {start for start, _ in spans}
+        ends = {end for _, end in spans}
+        at = -1
+        while True:
+            at = text.find(folded, at + 1)
+            if at < 0:
+                break
+            # On token boundaries, or it is not the quote. `str.find` has no
+            # word-boundary condition and `_index` flattens the page to one
+            # string, so a quote starting or ending INSIDE a token matched and
+            # was stamped exact: True, ratio: 1.0 -- the strongest claim this
+            # makes -- while `_covering` widened the box to the whole
+            # straddled token. Measured on real contract pages, 15,499 of
+            # 15,499 deliberately mid-token quotes came back "exact", and the
+            # tokens it lands on are the value-bearing ones: an amount, a
+            # date, an account number are each a single token. A highlight on
+            # a different number than the value claims is the one outcome this
+            # module exists to prevent.
+            if at not in starts or at + len(folded) not in ends:
+                continue
+            hit = _covering(spans, at, at + len(folded))
+            if hit:
+                box = union_bbox([tokens[kept[i]] for i in hit])
+                return {"page": number, "bbox": box,
+                        "exact": True, "ratio": 1.0}
 
     best: tuple[int, dict, float] | None = None
     for number, tokens, text, spans, kept in indexed:
@@ -243,6 +288,15 @@ def locate_quote(
         if window is None:
             continue
         first, last, ratio = window
+        # A near-miss that disagrees on DIGITS is not a near-miss. MIN_RATIO
+        # scores characters, so one substituted digit in a ~55-character clause
+        # costs about 0.02 of a 0.10 budget -- the threshold is blind to
+        # exactly the substitution that matters, and 95.9% of quotes with one
+        # altered digit were boxed. An amount, a date and an account number are
+        # the values these criteria are about.
+        span_text = text[spans[first][0]:spans[last][1]]
+        if _digits(span_text) != _digits(folded):
+            continue
         if best is None or ratio > best[2]:
             box = union_bbox([tokens[kept[i]] for i in range(first, last + 1)])
             best = (number, box, ratio)

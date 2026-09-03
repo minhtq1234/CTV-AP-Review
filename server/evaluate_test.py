@@ -1123,6 +1123,25 @@ class TestPartsPresenceWiring:
         assert len(cell.evidence) == 3
         assert all(e.provenance == "llm" for e in cell.evidence)
 
+    def test_a_fuzzily_located_part_does_not_earn_an_automatic_pass(self):
+        """A near-miss on characters is nearly blind to a changed digit.
+
+        MIN_RATIO scores characters, so one substituted digit in a clause
+        costs about 0.02 of a 0.10 budget -- measured, 95.9% of quotes with an
+        altered digit were still boxed. `ocr_extract` records the distinction
+        as confidence 1.0 (exact) against 0.9 (fuzzy); testing only for a box
+        threw it away at the moment it decides an automatic pass.
+        """
+        packet = self._packet(
+            self._llm("contract-0", "bank"),
+            self._llm("contract-0", "branch"),
+            self._llm("contract-0", "province"),
+        )
+        packet["fields"][-1]["sources"][0]["confidence"] = 0.9
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.REVIEW
+
     def test_a_part_found_but_not_locatable_goes_to_a_person(self):
         # A value the reviewer cannot see is a claim, not an answer.
         packet = self._packet(
