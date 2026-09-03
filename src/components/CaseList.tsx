@@ -42,11 +42,28 @@ export default function CaseList({ cases, live, onOpen, onNew, onDelete }: Props
           {cases.map(c => {
             const processing = c.status === 'processing'
             const lp = live?.[c.id]
+            // Follows PacketTable's row pattern: a div carrying role/tabIndex
+            // rather than a real <button>, because the row contains its own
+            // delete button and nesting one button inside another is invalid.
             return (
               <div
                 key={c.id}
                 className={`case-row${processing ? ' processing' : ''}`}
+                role="button"
+                tabIndex={processing ? -1 : 0}
+                aria-disabled={processing || undefined}
+                aria-label={`${c.name} · ${STATUS_LABEL[c.status]}`}
                 onClick={() => { if (!processing) onOpen(c.id) }}
+                onKeyDown={event => {
+                  // Enter on the delete button must delete and nothing else;
+                  // without this the keypress bubbles and also opens the case.
+                  if (event.target !== event.currentTarget) return
+                  if (processing) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onOpen(c.id)
+                  }
+                }}
               >
                 <div className="case-row-main">
                   <span className="case-row-name">{c.name}</span>

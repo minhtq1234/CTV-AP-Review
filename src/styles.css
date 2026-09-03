@@ -220,6 +220,9 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
 .case-row { display: flex; align-items: center; gap: 14px; background: var(--surface);
   border: 0.5px solid var(--border); border-radius: 8px; padding: 12px 14px; cursor: pointer; }
 .case-row:hover { border-color: var(--accent); }
+/* The row is a role="button" div, so focus has to be visible or tabbing to a
+   case is invisible. Matches .packet-card:focus-visible. */
+.case-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .case-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .case-row-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case-row-date { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
