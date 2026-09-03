@@ -601,6 +601,56 @@ def _party_of(bbox: dict, blocks: list[dict]) -> str | None:
     return None
 
 
+#: Longest label neighbourhood recorded, in characters. Enough for a label, a
+#: colon and a number OCR has broken into groups; short enough that one per
+#: field per document stays a rounding error on the manifest.
+_NEIGHBOURHOOD_CHARS = 120
+
+
+def _label_neighbourhood(
+    lines: list[list[dict]], idx: int, lookahead: int, anchors_norm: list[str],
+) -> str:
+    """The text printed at this field's own label on line `idx`.
+
+    Recorded during the read so `evaluate` can ask, later, whether the bảng
+    kê's value is actually printed here -- which is what separates the reader
+    misreading a digit from the paperwork genuinely disagreeing. It has to
+    happen now: the saved manifest keeps only `{src, width, height}` per page.
+
+    The region is the one `locate_field` itself searches -- the label's
+    reassembled visual row plus the lines it may look ahead into -- recorded
+    whether or not a pattern matched, since an unread label is exactly where a
+    reviewer needs to know what is printed.
+
+    **Bounded at the next field's label**, using the same global vocabulary
+    `_next_label_start` checks against. A visual row routinely carries two
+    labels, and a Vietnamese personal tax code IS the citizen's ID number
+    (`cccd == mst` on 564 of 564 roster rows on disk) -- so a neighbourhood
+    that ran on into the CCCD's value would let a genuinely different MST be
+    excused as a misread against it. It also starts AT the label rather than
+    after it, because `confirm_expected.confirm_at_label` re-anchors on what is
+    recorded here.
+    """
+    words = list(_row_words(lines, idx))
+    for ahead in range(idx + 1, min(idx + 1 + lookahead, len(lines))):
+        words.extend(lines[ahead])
+
+    mine = {tuple(a.split()) for a in anchors_norm}
+    occurrences = _anchor_occurrences(words, _all_anchor_tokens())
+    start, stop = 0, len(words)
+    for position, (at, n, _) in enumerate(occurrences):
+        found = tuple(_clean_tok(norm(w["text"])) for w in words[at:at + n])
+        if found not in mine:
+            continue
+        start = at
+        if position + 1 < len(occurrences):
+            stop = occurrences[position + 1][0]
+        break
+
+    text = " ".join(w["text"] for w in words[start:stop])
+    return " ".join(text.split())[:_NEIGHBOURHOOD_CHARS]
+
+
 def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
     """For each line whose text contains one of `spec["anchors"]` (accent-
     insensitively), produce exactly one hit -- never zero for a matching
@@ -653,6 +703,7 @@ def locate_field(lines: list[list[dict]], spec: dict) -> list[dict]:
                 break
         if hit is None:
             hit = {"value": "", "bbox": _label_region_bbox(line, anchors_norm, lines), "confidence": 0.0}
+        hit["near"] = _label_neighbourhood(lines, idx, lookahead, anchors_norm)
         hits.append(hit)
     return hits
 
@@ -1400,7 +1451,7 @@ FIELD_SPECS = [
     },
 ]
 
-_EMPTY_SOURCE = {"docId": "", "page": 0, "value": "", "bbox": {"x": 0, "y": 0, "width": 0, "height": 0}, "confidence": 0.0}
+_EMPTY_SOURCE = {"docId": "", "page": 0, "value": "", "bbox": {"x": 0, "y": 0, "width": 0, "height": 0}, "confidence": 0.0, "near": ""}
 
 
 def _hits_for_doc(spec: dict, pages: dict[int, list[dict]]) -> list[tuple[int, dict]]:
@@ -1469,6 +1520,10 @@ def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: d
                 "value": hit["value"],
                 "bbox": hit["bbox"],
                 "confidence": hit["confidence"],
+                # What was printed at the label, so `evaluate` can tell a
+                # misread from a real disagreement (#05/#07). Empty for the
+                # name field, whose hits come from `find_name`.
+                "near": hit.get("near", ""),
             })
         if not sources:
             sources = [dict(_EMPTY_SOURCE)]

@@ -12,9 +12,9 @@ from criteria import Status
 
 # --- fixtures ----------------------------------------------------------------
 
-def source(doc_id, value, page=0, conf=0.95, bbox=True):
+def source(doc_id, value, page=0, conf=0.95, bbox=True, near=""):
     return {"docId": doc_id, "page": page, "value": value,
-            "confidence": conf,
+            "confidence": conf, "near": near,
             "bbox": {"x": 10, "y": 20, "width": 100, "height": 30} if bbox
             else None}
 
@@ -964,3 +964,114 @@ class TestTheNameIsConfirmedRatherThanDiscovered:
         packet = manifest(docs=[doc("contract-0", "contract")],
                           fields=[("hoten", "NGUYEN VAN MOT", [])])
         assert self.cell(packet).status is Status.PENDING
+
+
+# --- #05/#07: a misread is not a mismatch ------------------------------------
+
+class TestAMisreadIsToldFromAMismatch:
+    """A `Không khớp` a reviewer must adjudicate is expensive, and four of eight
+    hand-checked disagreements turned out to be the reader misreading a digit
+    rather than the paperwork disagreeing. The label neighbourhood recorded
+    during the read says which: if the expected value IS printed there, the
+    reader misread it.
+    """
+
+    ROSTER = dict(ROSTER, mst="001100000001", account="1900000001")
+
+    @staticmethod
+    def packet(key, read, near, doc_kind="contract"):
+        return manifest(
+            docs=[doc(f"{doc_kind}-0", doc_kind)],
+            fields=[(key, "", [source(f"{doc_kind}-0", read, near=near)])],
+        )
+
+    def cell(self, stt, document, packet):
+        results = by_stt(ev.evaluate_packet(packet, self.ROSTER))
+        return cells_by_doc(results[stt])[document]
+
+    def test_a_one_digit_misread_is_reported_as_a_misread_not_a_mismatch(self):
+        """Measured on case 935e37e5: an MST read one digit off the bảng kê at
+        0.84 confidence. Today that is an indistinguishable `Không khớp`."""
+        cell = self.cell(5, cr.CONTRACT, self.packet(
+            "mst", "001100000004", "MSTTNCN : 001100000001"))
+        assert cell.status is Status.REVIEW
+        assert "đọc sai" in cell.note
+
+    def test_a_genuine_disagreement_is_still_a_mismatch(self):
+        """The point of the tool. If the expected value is NOT printed at that
+        label, the paperwork really does disagree and must still say so."""
+        cell = self.cell(5, cr.CONTRACT, self.packet(
+            "mst", "001100000009", "MSTTNCN : 001100000009"))
+        assert cell.status is Status.NO
+
+    def test_confirming_a_number_never_upgrades_a_cell_to_dat(self):
+        """The direction that matters. A confirmation says the expected digits
+        are printed at the label; it does not entitle the tool to conclude the
+        paperwork is right, which would let the bảng kê certify itself -- the
+        opposite of an audit. It only ever moves `no` to `rv`."""
+        for read in ("001100000004", "001100000009", ""):
+            cell = self.cell(5, cr.CONTRACT, self.packet(
+                "mst", read, "MSTTNCN : 001100000001"))
+            assert cell.status is not Status.OK
+
+    def test_the_account_number_gets_the_same_treatment(self):
+        cell = self.cell(7, cr.BBNT, self.packet(
+            "tk", "1900000007", "Số tài khoản : 1900000001", doc_kind="bbnt"))
+        assert cell.status is Status.REVIEW
+
+    def test_an_mst_is_not_confirmed_by_the_cccd_printed_at_its_own_label(self):
+        """cccd == mst on 564 of 564 roster rows, because a Vietnamese personal
+        tax code IS the citizen's ID number. A neighbourhood that drifted onto
+        the CCCD label would confirm the MST against the CCCD occurrence and
+        report a misread that never happened."""
+        cell = self.cell(5, cr.CONTRACT, self.packet(
+            "mst", "001100000004", "CCCD số : 001100000001"))
+        assert cell.status is Status.NO
+
+    def test_a_cell_that_already_agrees_is_untouched(self):
+        cell = self.cell(5, cr.CONTRACT, self.packet(
+            "mst", "001100000001", "MSTTNCN : 001100000001"))
+        assert cell.status is Status.OK
+
+    def test_a_source_with_no_recorded_neighbourhood_still_mismatches(self):
+        """Manifests written before this existed, and the escalation path's
+        card documents, carry none."""
+        packet = manifest(
+            docs=[doc("contract-0", "contract")],
+            fields=[("mst", "", [{"docId": "contract-0", "page": 0,
+                                  "value": "001100000004", "confidence": 0.84,
+                                  "bbox": None}])],
+        )
+        assert self.cell(5, cr.CONTRACT, packet).status is Status.NO
+
+    def test_the_note_still_names_the_value_and_the_reference(self):
+        """Acc's rule: never just `không khớp`."""
+        cell = self.cell(5, cr.CONTRACT, self.packet(
+            "mst", "001100000004", "MSTTNCN : 001100000001"))
+        assert "001100000001" in cell.note and "001100000004" in cell.note
+
+    def test_a_clean_copy_does_not_explain_away_a_disagreeing_one(self):
+        """Worst wins, and the question is asked of the copy that PRODUCED the
+        disagreement. A packet holding two BBNTs where one names a different
+        account is a mis-split; the other's label reading correctly says
+        nothing about it, and must not talk the finding down."""
+        packet = manifest(
+            docs=[doc("bbnt-0", "bbnt"), doc("bbnt-1", "bbnt")],
+            fields=[("tk", "", [
+                source("bbnt-0", "1900000001", near="Số tài khoản : 1900000001"),
+                source("bbnt-1", "1900000007", near="Số tài khoản : 1900000007"),
+            ])],
+        )
+        assert self.cell(7, cr.BBNT, packet).status is Status.NO
+
+    def test_the_disagreeing_copys_own_label_is_what_is_read(self):
+        """The same two copies, but this time the disagreeing one's own label
+        does carry the expected digits -- so this one IS a misread."""
+        packet = manifest(
+            docs=[doc("bbnt-0", "bbnt"), doc("bbnt-1", "bbnt")],
+            fields=[("tk", "", [
+                source("bbnt-0", "1900000001", near="Số tài khoản : 1900000001"),
+                source("bbnt-1", "1900000007", near="Số tài khoản : 1900000001"),
+            ])],
+        )
+        assert self.cell(7, cr.BBNT, packet).status is Status.REVIEW

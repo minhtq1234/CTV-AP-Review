@@ -1581,7 +1581,9 @@ def test_extract_fields_hoten_source_is_the_ctv_column():
     src = hoten["sources"][0]
     assert src["value"] == "Bùi Quang Vinh"
     assert src["page"] == 1
-    assert set(src) == {"docId", "page", "value", "bbox", "confidence"}
+    # `near` is part of the shape deliberately (the label neighbourhood #05/#07
+    # read); `rank` is `locate_field` bookkeeping and must still not leak.
+    assert set(src) == {"docId", "page", "value", "bbox", "confidence", "near"}
 
 
 def test_locate_field_still_associates_a_label_across_a_large_gap():
@@ -1777,3 +1779,80 @@ def test_assemble_docs_always_records_a_name_candidates_key():
     )
 
     assert docs[0]["nameCandidates"] == []
+
+
+# --- the label's neighbourhood, recorded during the read (#05/#07) ------------
+
+def _mst_line():
+    def w(text, x, y=100):
+        return {"text": text, "x": x, "y": y, "w": len(text) * 18,
+                "h": 40, "conf": 95.0}
+    return [[w("MSTTNCN", 100), w(":", 220), w("001100000004", 260)]]
+
+
+def test_locate_field_records_the_text_found_at_the_label():
+    """What lets evaluation ask later `was the expected value actually printed
+    here?`, and so tell a misread from a real disagreement. The words are gone
+    after ingest, so it has to be recorded now."""
+    from ocr_extract import FIELD_SPECS, locate_field
+
+    spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
+    hits = locate_field(_mst_line(), spec)
+
+    assert "001100000004" in hits[0]["near"]
+    assert "MSTTNCN" in hits[0]["near"], "the label itself must be recorded, " \
+        "or the neighbourhood cannot be re-anchored to it"
+
+
+def test_the_neighbourhood_is_recorded_even_when_the_value_would_not_read():
+    """`whether or not the digits parsed` -- an unread label is exactly where a
+    reviewer needs to know what is printed."""
+    from ocr_extract import FIELD_SPECS, locate_field
+
+    def w(text, x):
+        return {"text": text, "x": x, "y": 100, "w": len(text) * 18,
+                "h": 40, "conf": 95.0}
+    spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
+    hits = locate_field([[w("MSTTNCN", 100), w(":", 220), w("...", 260)]], spec)
+
+    assert hits[0]["value"] == ""
+    assert "MSTTNCN" in hits[0]["near"]
+
+
+def test_extract_fields_carries_the_neighbourhood_onto_the_source():
+    from ocr_extract import extract_fields
+
+    fields = {f["key"]: f for f in extract_fields(
+        {"bbnt-0": {0: _mst_line()[0]}}, {})}
+
+    assert "001100000004" in fields["mst"]["sources"][0]["near"]
+
+
+def test_a_name_source_has_an_empty_neighbourhood():
+    """`find_name` produces the name hits and does not record one; the key is
+    still present, so a reader never has to guess whether it looked."""
+    from ocr_extract import extract_fields
+
+    fields = {f["key"]: f for f in extract_fields(
+        {"bbnt-0": {0: _mst_line()[0]}}, {})}
+
+    assert fields["hoten"]["sources"][0]["near"] == ""
+
+
+def test_the_neighbourhood_stops_at_the_next_fields_label():
+    """A visual row can carry two labels. A personal tax code IS the citizen's
+    ID number, so a neighbourhood running on into the CCCD's value would let a
+    genuinely different MST be excused as a misread against it."""
+    from ocr_extract import FIELD_SPECS, locate_field
+
+    def w(text, x):
+        return {"text": text, "x": x, "y": 100, "w": len(text) * 18,
+                "h": 40, "conf": 95.0}
+    spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
+    line = [w("MSTTNCN", 100), w(":", 260), w("001100000004", 320),
+            w("CCCD", 700), w("số", 820), w(":", 880), w("001100000001", 940)]
+
+    near = locate_field([line], spec)[0]["near"]
+
+    assert "001100000004" in near, "its own value must still be recorded"
+    assert "001100000001" not in near, "the CCCD's value must not be"

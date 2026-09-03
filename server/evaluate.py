@@ -470,7 +470,7 @@ def _compare_reads(
             continue
         readable.append((
             cv.compare(reference, value, kind, confidence, allowed),
-            value, confidence, src.get("bbox"),
+            value, confidence, src.get("bbox"), src,
         ))
 
     if not readable:
@@ -480,13 +480,27 @@ def _compare_reads(
                     tuple(evidence))
 
     worst = min(readable, key=lambda r: _VERDICT_RANK[r[0]])
-    verdict, value, _, bbox = worst
-    values = sorted({v for _, v, _, _ in readable})
+    verdict, value, _, bbox, worst_src = worst
+    values = sorted({v for _, v, _, _, _ in readable})
+
+    # A disagreement the document itself explains: the bảng kê's value IS
+    # printed at this field's own label, so the reader misread it. That changes
+    # what the finding MEANS -- and only that. See `_expected_is_at_the_label`.
+    #
+    # Asked of the copy that PRODUCED the disagreement, not of any copy: a
+    # packet holding two contracts where one names a different CTV is a
+    # mis-split, and a clean copy's label must not explain away the other's.
+    status = cv.to_status(verdict)
+    misread = status is Status.NO and _expected_is_at_the_label(
+        criterion, worst_src, reference)
+    if misread:
+        status = Status.REVIEW
+
     return Cell(
-        name, cv.to_status(verdict),
+        name, status,
         " · ".join(values),
         _compare_note(verdict, reference, value, values, bbox,
-                      copies, len(readable), kind),
+                      copies, len(readable), kind, misread),
         tuple(evidence),
     )
 
@@ -523,17 +537,73 @@ def _digit_gap(kind: str, reference: str, values: list[str]) -> str:
             "scan.")
 
 
+#: Fields a disagreement can be re-read at. Both have a label of their own that
+#: no other value on the page shares, which is what makes the check safe --
+#: see `confirm_expected`. #02's CCCD is deliberately absent: this change is
+#: scoped to #05 and #07.
+_CONFIRMABLE_AT_LABEL = ("mst", "tk")
+
+
+def _expected_is_at_the_label(
+    criterion: Criterion, src: dict, reference: str,
+) -> bool:
+    """Is the bảng kê's value printed at this field's own label on the page?
+
+    `no` says the paperwork disagrees with the bảng kê. Sometimes it does; on
+    case 935e37e5 an MST read one digit off at 0.84 confidence, and four of
+    eight hand-checked disagreements were the reader missing a digit rather
+    than the documents being wrong. The two are indistinguishable in the cell,
+    and cost a reviewer the same adjudication.
+
+    They are distinguishable on the page: the label's neighbourhood is recorded
+    during the read (`ocr_extract._label_neighbourhood`), so this can ask
+    whether the expected digits are actually printed there.
+
+    **A `True` here may only ever move `no` to `rv`.** It says the reader
+    misread; it does NOT say the paperwork is right. Letting it reach `ok`
+    would have the tool confirm whatever the bảng kê claims, which is the
+    opposite of an audit -- so the caller downgrades and never upgrades, and
+    nothing here is consulted for a cell that is not already `no`.
+
+    The search is anchored to the field's own label rather than run over the
+    neighbourhood text, and that is not belt-and-braces: a Vietnamese personal
+    tax code IS the citizen's ID number (`cccd == mst` on 564 of 564 roster
+    rows on disk), so a search that reached the CCCD would confirm the MST
+    against it and report a misread that never happened.
+    """
+    field_key = FIELD_BY_STT.get(criterion.stt)
+    if field_key not in _CONFIRMABLE_AT_LABEL or not reference:
+        return False
+    from ocr_extract import FIELD_SPECS   # lazy, as `roster_checks` is above
+
+    anchors = next((spec["anchors"] for spec in FIELD_SPECS
+                    if spec["key"] == field_key), ())
+    near = str(src.get("near", "") or "")
+    return bool(near and ce.confirm_at_label(reference, near.split(), anchors))
+
+
 def _compare_note(
     verdict, reference, value, values, bbox, copies, readable, kind,
+    misread: bool = False,
 ) -> str:
     """Acc's rule: never just "không khớp" -- name the value and the reference."""
     parts: list[str] = []
 
     if verdict is cv.Verdict.MISMATCH:
         parts.append(f"Không khớp bảng kê ({reference}).")
-        hint = _digit_gap(kind, reference, values)
-        if hint:
-            parts.append(hint)
+        if misread:
+            # Supersedes `_digit_gap`'s guess rather than joining it: that
+            # sentence says a misread is possible, this says the expected value
+            # was found printed at the label, which is a different claim.
+            parts.append(
+                f"Nhưng giá trị bảng kê ({reference}) có in ngay tại nhãn trên "
+                f"chứng từ, máy đọc thành \"{value}\" — nhiều khả năng máy "
+                "đọc sai chứ không phải hồ sơ sai; cần đối chiếu trên bản scan."
+            )
+        else:
+            hint = _digit_gap(kind, reference, values)
+            if hint:
+                parts.append(hint)
     elif verdict is cv.Verdict.FUZZY:
         parts.append(_fuzzy_note(reference, value, kind))
     else:
