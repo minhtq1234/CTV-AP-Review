@@ -13,7 +13,13 @@ interface Props {
   /** Name shown in the title so the reviewer knows who they are matching to. */
   packetLabel: string
   onCancel: () => void
-  onAssigned: () => void
+  /** The assign PUT's own card list. The parent used to learn the assignment
+   *  through a second, independently-failable GET -- and when that GET failed
+   *  the screen kept its pre-assign rows while the server had the card
+   *  attached, so the row still offered `Gán thẻ` and re-picking answered
+   *  `packet-already-has-card` for a packet showing no card and no `Gỡ`.
+   *  `detach` on the same screen already renders straight from its own PUT. */
+  onAssigned: (cards: CccdCard[]) => void
 }
 
 const ERROR_TEXT: Record<string, string> = {
@@ -21,6 +27,12 @@ const ERROR_TEXT: Record<string, string> = {
   'card-not-found': 'Không tìm thấy ảnh này.',
   'unknown-packet': 'Không tìm thấy gói hồ sơ.',
   'no-cccd-workbook': 'Hồ sơ này không có file CCCD.',
+  // Without these three the fallback asks the reviewer to try again, which
+  // cannot work: the card has no image, or the attach/reconcile already failed
+  // server-side. Say so instead.
+  'card-has-no-image': 'Ảnh này không có tệp hình để gán.',
+  'attach-failed': 'Không đính kèm được ảnh vào gói. Thử ảnh khác.',
+  'reconcile-failed': 'Đã gán nhưng không cập nhật được hồ sơ. Tải lại trang.',
 }
 
 // The reviewer picks by eye: OCR already failed on these cards (that is why
@@ -38,7 +50,17 @@ export default function CccdCardPicker({
   const [error, setError] = useState<string | null>(null)
   const titleId = useId()
   const panel = useRef<HTMLElement | null>(null)
-  useDialogFocus(panel, onCancel)
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+
+  // One PUT rewrites up to 25 manifests, so the in-flight window is not tight.
+  // Dismissing during it used to commit the assign anyway and then close
+  // whichever picker was open by then -- the parent's setPicking(null) closes
+  // what is open, not the caller. All three gestures are gated: Đóng, the
+  // backdrop, and Escape.
+  const busy = busyCardId !== null
+  const dismiss = () => { if (!busy) onCancel() }
+  useDialogFocus(panel, dismiss)
 
   useEffect(() => {
     let cancelled = false
@@ -57,20 +79,26 @@ export default function CccdCardPicker({
     setBusyCardId(cardId)
     setError(null)
     try {
-      await assignCccdCard(caseId, cardId, packetIndex)
-      onAssigned()
+      const result = await assignCccdCard(caseId, cardId, packetIndex)
+      onAssigned(result.cards)
     } catch (caught) {
       const code = caught instanceof Error ? caught.message : ''
+      // A dismissal mid-flight unmounts this, and setError on an unmounted
+      // component threw the message away silently -- a rejected
+      // `packet-already-has-card` vanished without trace. The dismissals are
+      // gated on `busyCardId` now, so this is the belt to that braces.
+      if (!mounted.current) return
       setError(ERROR_TEXT[code] ?? 'Không gán được ảnh. Vui lòng thử lại.')
       setBusyCardId(null)
     }
   }
 
+
   return (
     <div
       className="cccd-picker-backdrop"
       onMouseDown={event => {
-        if (event.target === event.currentTarget) onCancel()
+        if (event.target === event.currentTarget) dismiss()
       }}
     >
       <section
@@ -88,7 +116,7 @@ export default function CccdCardPicker({
               Máy không đọc được số trên những ảnh này — bạn chọn bằng mắt.
             </p>
           </div>
-          <button type="button" onClick={onCancel}>Đóng</button>
+          <button type="button" disabled={busy} onClick={dismiss}>Đóng</button>
         </header>
 
         {error && <p className="cccd-picker-error" role="alert">{error}</p>}

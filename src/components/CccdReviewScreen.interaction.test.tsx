@@ -17,16 +17,22 @@ vi.mock('../upload/api', () => ({
   ),
 }))
 
+// The stub threads the assign PUT's own card list up, the way the real picker
+// now does. `pickerResponse` is what the test wants that PUT to have returned.
+let pickerResponse: CccdCard[] = []
+
 vi.mock('./CccdCardPicker', () => ({
   default: ({ packetIndex, packetLabel, onAssigned, onCancel }: {
     packetIndex: number
     packetLabel: string
-    onAssigned: () => void
+    onAssigned: (cards: CccdCard[]) => void
     onCancel: () => void
   }) => (
     <div data-testid="picker">
       <span>{`picker:${packetIndex}:${packetLabel}`}</span>
-      <button type="button" onClick={onAssigned}>mock-assigned</button>
+      <button type="button" onClick={() => onAssigned(pickerResponse)}>
+        mock-assigned
+      </button>
       <button type="button" onClick={onCancel}>mock-cancel</button>
     </div>
   ),
@@ -76,6 +82,7 @@ let root: Root
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   listCccdCards.mockReset()
+  pickerResponse = []
   assignCccdCard.mockReset()
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -244,14 +251,19 @@ describe('CccdReviewScreen', () => {
     expect(host.textContent).toContain('picker:1:Synthetic B')
   })
 
-  it('refetches after the picker reports an assignment, and closes it', async () => {
-    listCccdCards
-      .mockResolvedValueOnce([card('card-00', 0)])
-      .mockResolvedValueOnce([card('card-00', 0), card('card-09', 1)])
+  it('renders an assignment from the PUT itself, with no second GET', async () => {
+    // It used to learn the assignment through a refetch, which could fail on
+    // its own: the screen then kept its pre-assign rows while the server had
+    // the card attached, so the row still offered `Gán thẻ` and re-picking
+    // answered `packet-already-has-card` for a packet showing no card and no
+    // `Gỡ`. Detach on this screen always rendered from its own PUT.
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    pickerResponse = [card('card-00', 0), card('card-09', 1)]
     await mount()
     await act(async () => { button('Gán thẻ').click() })
     await act(async () => { button('mock-assigned').click() })
-    expect(listCccdCards).toHaveBeenCalledTimes(2)
+
+    expect(listCccdCards).toHaveBeenCalledOnce()
     expect(host.querySelector('[data-testid="picker"]')).toBeNull()
     expect(host.textContent).toContain('0 gói chưa có thẻ')
   })
@@ -265,24 +277,6 @@ describe('CccdReviewScreen', () => {
     expect(listCccdCards).toHaveBeenCalledOnce()
   })
 
-  it('keeps the current rows on screen while an assignment refetches', async () => {
-    const second = deferred<CccdCard[]>()
-    listCccdCards
-      .mockResolvedValueOnce([card('card-00', 0)])
-      .mockReturnValueOnce(second.promise)
-    await mount()
-    await act(async () => { button('Gán thẻ').click() })
-    await act(async () => { button('mock-assigned').click() })
-    // The refetch is in flight: the list the reviewer was reading must still be
-    // there, not replaced by the loading state.
-    expect(host.textContent).toContain('Synthetic B')
-    expect(host.textContent).not.toContain('Đang tải…')
-    await act(async () => {
-      second.resolve([card('card-00', 0), card('card-09', 1)])
-      await second.promise
-    })
-    expect(host.textContent).toContain('0 gói chưa có thẻ')
-  })
 
   it('closes a picker opened against the previous case', async () => {
     listCccdCards.mockImplementation((cid: string) => Promise.resolve(
@@ -297,22 +291,18 @@ describe('CccdReviewScreen', () => {
     expect(host.querySelector('[data-testid="picker"]')).toBeNull()
   })
 
-  it('disables the rows while an assignment refetches', async () => {
-    const second = deferred<CccdCard[]>()
-    listCccdCards
-      .mockResolvedValueOnce([card('card-00', 0)])
-      .mockReturnValueOnce(second.promise)
+  it('leaves no in-flight window after an assignment', async () => {
+    // These two assertions replace a pair of tests that held the rows on
+    // screen, and the buttons disabled, while a post-assign refetch was in
+    // flight. There is no such refetch now, so there is no window to guard --
+    // what must hold is that the screen is immediately actionable again.
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    pickerResponse = [card('card-00', 0), card('card-09', 1)]
     await mount()
     await act(async () => { button('Gán thẻ').click() })
     await act(async () => { button('mock-assigned').click() })
-    // Rows still on screen (the flicker fix), but not actionable — a detach
-    // started here would race the refetch's write.
-    expect(host.textContent).toContain('Synthetic B')
-    expect(button('Gỡ').disabled).toBe(true)
-    await act(async () => {
-      second.resolve([card('card-00', 0), card('card-09', 1)])
-      await second.promise
-    })
+
+    expect(host.textContent).not.toContain('Đang tải…')
     expect(button('Gỡ').disabled).toBe(false)
   })
 

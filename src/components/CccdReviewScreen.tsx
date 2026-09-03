@@ -404,15 +404,15 @@ export default function CccdReviewScreen({
   // it runs in the same commit as the cleanup that set it.
   const liveCaseIdRef = useRef<string | null>(null)
 
-  const fetchCards = useCallback(async (clearFirst: boolean) => {
-    // `clearFirst` is the difference between "we know nothing yet" and "we have
-    // rows and are updating them". Nulling `cards` mid-update would collapse the
-    // whole screen for a one-row change.
-    if (clearFirst) setCards(null)
+  // Always clears first. There used to be a `clearFirst: false` mode for the
+  // post-assign refetch, so a one-row change would not collapse the screen --
+  // but both mutations now render from their own PUT response, so the only
+  // fetch left is the one that owns the whole screen and has nothing to keep.
+  const fetchCards = useCallback(async () => {
+    setCards(null)
     setError(null)
-    // A refetch holds `busy` too. Without it, a refresh that deliberately keeps
-    // the rows on screen also keeps the buttons live, and a detach started
-    // mid-refetch races it — last write wins, silently.
+    // The fetch holds `busy` too: without it a detach started mid-fetch races
+    // it, and last write wins silently.
     setBusy(true)
     try {
       const result = await listCccdCards(caseId)
@@ -427,8 +427,7 @@ export default function CccdReviewScreen({
     }
   }, [caseId])
 
-  const load = useCallback(() => fetchCards(true), [fetchCards])
-  const refresh = useCallback(() => fetchCards(false), [fetchCards])
+  const load = useCallback(() => fetchCards(), [fetchCards])
 
   useEffect(() => {
     liveCaseIdRef.current = caseId
@@ -477,11 +476,17 @@ export default function CccdReviewScreen({
           packetIndex={picking.packetIndex}
           packetLabel={picking.label}
           onCancel={() => setPicking(null)}
-          onAssigned={() => {
-            // The picker keeps its own response, so refresh rather than guess —
-            // but keep today's rows on screen while that GET is in flight.
+          onAssigned={next => {
+            // Render straight from the PUT's own response, exactly as detach
+            // does. Going back for a second GET meant the assignment could be
+            // lost to an independently-failable request: when it rejected, the
+            // screen kept its pre-assign rows while the server had the card
+            // attached, so the row still offered `Gán thẻ` and re-picking
+            // answered `packet-already-has-card` for a packet showing no card
+            // and no `Gỡ`. Also drops a round trip, 3 per assign to 2.
             setPicking(null)
-            void refresh()
+            setError(null)
+            setCards(next)
           }}
         />
       )}
