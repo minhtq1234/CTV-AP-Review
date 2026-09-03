@@ -1,3 +1,10 @@
+# Identifiers in this file -- CCCDs, tax codes, bank accounts and person
+# names, in fixtures and in the comments recording what was measured -- are
+# synthetic stand-ins. The observations are real; the values are not, because
+# this branch is published to a public remote. Substituted stand-ins preserve
+# the shape the observation depended on: digit count, a one-digit misread, an
+# accent-only difference, a truncation.
+
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
@@ -40,10 +47,10 @@ def test_find_mst_on_anchor_line():
 
 def test_find_cccd_spaced_boxes_joins_digits():
     # boxed CCCD: single-digit words across the line
-    digs = [W(d, 100 + i*20, 80, 12, 18) for i, d in enumerate("048091001309")]
+    digs = [W(d, 100 + i*20, 80, 12, 18) for i, d in enumerate("001100000041")]
     lines = [[W("Mã", 10, 80, 20, 18), W("số", 35, 80, 15, 18), W("thuế", 55, 80, 25, 18)] + digs]
     hits = find_in_lines(lines, anchors=["ma so thue"], pattern=PATTERNS["CCCD_SPACED"])
-    assert hits and hits[0]["value"] == "048091001309"
+    assert hits and hits[0]["value"] == "001100000041"
     # bbox spans the 12 digit words
     assert hits[0]["bbox"]["x"] == 100 and hits[0]["bbox"]["width"] == 12*20 - 8
 
@@ -252,10 +259,10 @@ def test_locate_field_unread_region_covers_gap_when_value_has_no_ocr_tokens():
 
 def test_locate_field_works_with_real_mst_spec():
     mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
-    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("048091001309")]
+    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("001100000041")]
     lines = [[W("MSTTNCN", 10, 50, 70, 18), W(":", 85, 50, 10, 18)] + digs]
     hits = locate_field(lines, mst_spec)
-    assert len(hits) == 1 and hits[0]["value"] == "048091001309"
+    assert len(hits) == 1 and hits[0]["value"] == "001100000041"
 
 def _mst_hits(lines):
     mst_spec = next(s for s in FIELD_SPECS if s["key"] == "mst")
@@ -276,11 +283,11 @@ def test_mst_field_ignores_bare_company_label():
 def test_mst_field_matches_msttncn_individual_marker():
     # spaced-box format (matches the cam-kết doc's boxed MSTTNCN digits, per
     # "Keep the digit pattern (plain + spaced-box)").
-    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("048091001309")]
+    digs = [W(d, 120 + i * 15, 50, 12, 18, conf=93) for i, d in enumerate("001100000041")]
     lines = [[W("MSTTNCN", 10, 50, 70, 18), W(":", 85, 50, 10, 18)] + digs]
     hits = _mst_hits(lines)
     assert len(hits) == 1
-    assert hits[0]["value"] == "048091001309"
+    assert hits[0]["value"] == "001100000041"
     assert hits[0]["bbox"]["x"] == 120
 
 def test_mst_field_ignores_bare_mst_label_near_search_box_number():
@@ -297,10 +304,10 @@ def test_extract_fields_assembles_manifest_fields():
             # test_mst_field_ignores_bare_company_label. It must remain tax
             # evidence even when its digits happen to equal the CCCD below.
             W("MSTTNCN", 10, 40, 70, 18), W(":", 85, 40, 10, 18),
-            *[W(d, 120 + i * 15, 40, 12, 18, conf=93) for i, d in enumerate("048091001309")],
+            *[W(d, 120 + i * 15, 40, 12, 18, conf=93) for i, d in enumerate("001100000041")],
 
             W("Căn", 10, 100, 25, 18), W("cước", 40, 100, 30, 18),
-            *[W(d, 100 + i * 20, 130, 12, 18) for i, d in enumerate("048091001309")],
+            *[W(d, 100 + i * 20, 130, 12, 18) for i, d in enumerate("001100000041")],
             # ALL-CAPS signature line -- the labeled-context form real contracts
             # use (see test_find_name_accepts_all_caps_signature_line); a mixed
             # case in-prose occurrence should NOT produce a hoten source.
@@ -310,13 +317,13 @@ def test_extract_fields_assembles_manifest_fields():
         ]},
         "tra_cuu_mst": {0: [
             W("MSTTNCN", 10, 40, 70, 18), W(":", 85, 40, 10, 18),
-            *[W(d, 120 + i * 15, 40, 12, 18, conf=90) for i, d in enumerate("048091001309")],
+            *[W(d, 120 + i * 15, 40, 12, 18, conf=90) for i, d in enumerate("001100000041")],
         ]},
     }
     roster_row = {
         "name": "Nguyễn Văn A",
-        "cccd": "048091001309",
-        "mst": "048091001309",
+        "cccd": "001100000041",
+        "mst": "001100000041",
         "tk": "19001234567",
         "ngaysinh": "24/04/1991",
         "phi": "10.000.000",
@@ -328,11 +335,11 @@ def test_extract_fields_assembles_manifest_fields():
     for f in fields:
         assert f["check"] == "compare"
 
-    assert by_key["mst"]["expected"] == "048091001309"
+    assert by_key["mst"]["expected"] == "001100000041"
     assert len(by_key["mst"]["sources"]) == 2
     assert {s["docId"] for s in by_key["mst"]["sources"]} == {"bbnt", "tra_cuu_mst"}
     for s in by_key["mst"]["sources"]:
-        assert s["value"] == "048091001309"
+        assert s["value"] == "001100000041"
         assert s["page"] == 0
         assert 0 < s["confidence"] <= 1
 
@@ -343,10 +350,10 @@ def test_extract_fields_assembles_manifest_fields():
 
     # CCCD evidence comes only from an identity-card/passport label. The
     # matching MSTTNCN values remain separate tax evidence.
-    assert by_key["cccd"]["expected"] == "048091001309"
+    assert by_key["cccd"]["expected"] == "001100000041"
     assert len(by_key["cccd"]["sources"]) == 1
     assert by_key["cccd"]["sources"][0]["docId"] == "bbnt"
-    assert by_key["cccd"]["sources"][0]["value"] == "048091001309"
+    assert by_key["cccd"]["sources"][0]["value"] == "001100000041"
 
     # phi has no OCR hit anywhere -> single empty/low-confidence fallback source,
     # so it reads as an exception in the reviewer rather than silently vanishing.
@@ -362,17 +369,17 @@ def test_extract_fields_keeps_cccd_separate_from_same_value_msttncn():
     words_by_doc = {
         "bbnt": {0: [
             W("Căn", 10, 40, 25, 18), W("cước", 40, 40, 30, 18),
-            *[W(d, 100 + i * 20, 40, 12, 18, conf=80) for i, d in enumerate("048091001309")],
+            *[W(d, 100 + i * 20, 40, 12, 18, conf=80) for i, d in enumerate("001100000041")],
             W("MSTTNCN", 10, 100, 70, 18), W(":", 85, 100, 10, 18),
-            *[W(d, 120 + i * 15, 100, 12, 18, conf=97) for i, d in enumerate("048091001309")],
+            *[W(d, 120 + i * 15, 100, 12, 18, conf=97) for i, d in enumerate("001100000041")],
         ]},
     }
-    fields = extract_fields(words_by_doc, {"cccd": "048091001309"})
+    fields = extract_fields(words_by_doc, {"cccd": "001100000041"})
     by_key = {f["key"]: f for f in fields}
     assert len(by_key["cccd"]["sources"]) == 1
     only = by_key["cccd"]["sources"][0]
     assert only["docId"] == "bbnt"
-    assert only["value"] == "048091001309"
+    assert only["value"] == "001100000041"
     assert abs(only["confidence"] - 0.80) < 1e-6
 
 
@@ -440,16 +447,16 @@ def test_find_name_rejects_prose_anchor_followed_by_boilerplate_phrase():
     assert find_name(lines, anchors=["ben cung ung dich vu"]) == []
 
 def test_find_name_accepts_all_caps_signature_line():
-    # Real pattern OCR'd from the contract: "BÊN CUNG ỨNG DỊCH VỤ Huỳnh Thị Thúy Phượng"
+    # Real pattern OCR'd from the contract: "BÊN CUNG ỨNG DỊCH VỤ Vũ Thị Kim Ngân"
     lines = [[
         W("BÊN", 10, 160, 30, 18), W("CUNG", 45, 160, 40, 18), W("ỨNG", 90, 160, 35, 18),
         W("DỊCH", 130, 160, 35, 18), W("VỤ", 170, 160, 25, 18),
-        W("Huỳnh", 210, 160, 50, 18), W("Thị", 265, 160, 30, 18),
-        W("Thúy", 300, 160, 40, 18), W("Phượng", 345, 160, 55, 18),
+        W("Vũ", 210, 160, 50, 18), W("Thị", 265, 160, 30, 18),
+        W("Kim", 300, 160, 40, 18), W("Ngân", 345, 160, 55, 18),
     ]]
     hits = find_name(lines, anchors=["ben cung ung dich vu"])
     assert len(hits) == 1
-    assert hits[0]["value"] == "Huỳnh Thị Thúy Phượng"
+    assert hits[0]["value"] == "Vũ Thị Kim Ngân"
     assert hits[0]["bbox"]["x"] == 210
 
 def test_find_name_accepts_colon_attached_to_anchor():
@@ -652,7 +659,7 @@ def test_classify_page_id_front():
     # its own heading-shaped line, exactly as a real CCCD page's "Số:" field
     # already sits on its own line below the heading elsewhere in this file
     # (e.g. "HỢP ĐỒNG DỊCH VỤ\nSố: 01" in TestTheContractTitleSurvivesOcr).
-    assert classify_page("CĂN CƯỚC CÔNG DÂN\nSố: 048091001309") == ("id_front", "CCCD")
+    assert classify_page("CĂN CƯỚC CÔNG DÂN\nSố: 001100000041") == ("id_front", "CCCD")
 
 def test_classify_page_body_text_returns_none():
     assert classify_page("Nội dung công việc thực hiện trong tháng theo bảng chấm công") is None
@@ -1118,7 +1125,7 @@ class TestALabelAndItsValueOnOneVisualRow:
     submission is exactly this: the CCCD row came out as six lines, with the
     number two lines above its own label.
 
-        line 44  y=1785..1829  x=814   '060203014847 Ngày'
+        line 44  y=1785..1829  x=814   '001100000061 Ngày'
         line 45  y=1794..1800  x=556   ','
         line 46  y=1804..1841  x=391   'CCCD sô :'
 
@@ -1133,7 +1140,7 @@ class TestALabelAndItsValueOnOneVisualRow:
         return [
             [w("Nơicấp:", 1696, 1759, 50), w("QLNHC", 1810, 1759, 50)],
             [w("câp:", 1275, 1774, 50), w("15/04/2022", 1350, 1774, 50)],
-            [w("060203014847", 814, 1785, 44), w("Ngày", 1000, 1785, 44)],
+            [w("001100000061", 814, 1785, 44), w("Ngày", 1000, 1785, 44)],
             [w(",", 556, 1794, 6)],
             [w("CCCD", 391, 1804, 37), w("sô", 470, 1804, 37),
              w(":", 500, 1804, 37)],
@@ -1147,7 +1154,7 @@ class TestALabelAndItsValueOnOneVisualRow:
         hits = locate_field(self._row(), self.SPEC)
 
         assert len(hits) == 1
-        assert hits[0]["value"] == "060203014847"
+        assert hits[0]["value"] == "001100000061"
         assert hits[0]["confidence"] > 0
 
     def test_it_marks_where_the_value_is_not_where_the_label_is(self):
@@ -1158,18 +1165,18 @@ class TestALabelAndItsValueOnOneVisualRow:
         def w(text, x):
             return {"text": text, "x": x, "y": 100, "w": len(text) * 18,
                     "h": 40, "conf": 95.0}
-        lines = [[w("CCCD", 100), w("sô:", 180), w("079203031329", 260)],
-                 [w("060203014847", 260)]]
+        lines = [[w("CCCD", 100), w("sô:", 180), w("001100000021", 260)],
+                 [w("001100000061", 260)]]
 
         hits = locate_field(lines, self.SPEC)
 
-        assert hits[0]["value"] == "079203031329"
+        assert hits[0]["value"] == "001100000021"
 
     def test_a_row_far_above_is_not_borrowed_from(self):
         def w(text, x, y):
             return {"text": text, "x": x, "y": y, "w": len(text) * 18,
                     "h": 40, "conf": 95.0}
-        lines = [[w("060203014847", 800, 100)],          # a different row
+        lines = [[w("001100000061", 800, 100)],          # a different row
                  [w("CCCD", 391, 900), w("sô:", 470, 900)]]
 
         hits = locate_field(lines, self.SPEC)
@@ -1182,11 +1189,11 @@ class TestALabelAndItsValueOnOneVisualRow:
             return {"text": text, "x": x, "y": y, "w": len(text) * 18,
                     "h": 40, "conf": 95.0}
         lines = [[w("CCCD", 391, 100), w("sô:", 470, 100)],
-                 [w("060203014847", 391, 160)]]          # the row below
+                 [w("001100000061", 391, 160)]]          # the row below
 
         hits = locate_field(lines, self.SPEC)
 
-        assert hits[0]["value"] == "060203014847"
+        assert hits[0]["value"] == "001100000061"
 
 
 class TestTheIdentityCarriesTheMst:
@@ -1203,11 +1210,11 @@ class TestTheIdentityCarriesTheMst:
     def test_best_value_takes_the_most_confident_read(self):
         field = {"sources": [
             {"value": "", "confidence": 0.0},
-            {"value": "060203014847", "confidence": 0.95},
+            {"value": "001100000061", "confidence": 0.95},
             {"value": "999999999999", "confidence": 0.4},
         ]}
         from ocr_extract import _best_value
-        assert _best_value(field) == "060203014847"
+        assert _best_value(field) == "001100000061"
 
 
 # ---------------------------------------------------------------------------
@@ -1260,24 +1267,24 @@ def _p82_name_lines():
     """
     return [
         [W("Họ", 231, 675, 25, 18, conf=95), W("và", 263, 675, 20, 16), W("tên:", 290, 676, 30, 16),
-         W("Trần", 330, 671, 40, 20, conf=96), W("Lê", 378, 677, 22, 16, conf=96),
-         W("Hoài", 407, 677, 42, 16, conf=96), W("Anh", 456, 678, 38, 16, conf=96)],
+         W("Ngô", 330, 671, 40, 20, conf=96), W("Gia", 378, 677, 22, 16, conf=96),
+         W("Bảo", 407, 677, 42, 16, conf=96), W("Long", 456, 678, 38, 16, conf=96)],
         [W("Họ", 659, 682, 26, 19), W("và", 692, 682, 20, 16), W("tên:", 720, 682, 32, 16),
-         W("Nhan", 758, 683, 48, 16, conf=96), W("Kiến", 813, 680, 44, 20, conf=96),
-         W("Phát", 862, 684, 40, 16, conf=96)],
+         W("Bùi", 758, 683, 48, 16, conf=96), W("Quang", 813, 680, 44, 20, conf=96),
+         W("Vinh", 862, 684, 40, 16, conf=96)],
     ]
 
 
 def test_find_name_prefers_ctv_column_over_vng_signatory():
-    # abs page 82 (packet 9's contract; roster name 'Nhan Kiến Phát'). Both
+    # abs page 82 (packet 9's contract; roster name 'Bùi Quang Vinh'). Both
     # columns print "Họ và tên:" and both read at 0.96, so confidence cannot
-    # tell the parties apart -- VNG's 'Trần Lê Hoài Anh' used to win and the
+    # tell the parties apart -- VNG's 'Ngô Gia Bảo Long' used to win and the
     # packet was reported as a name mismatch, i.e. "cần gửi lại" on valid
     # paperwork. The page's own column header is the evidence that decides.
     lines = [_vng_and_ctv_header_row(), *_p82_name_lines(), *_email_and_phone_rows()]
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
     assert len(hits) == 1
-    assert hits[0]["value"] == "Nhan Kiến Phát"
+    assert hits[0]["value"] == "Bùi Quang Vinh"
     assert hits[0]["rank"] == 1               # party-certain: the page said so
     assert hits[0]["bbox"]["x"] == 758        # the loupe points at the CTV's own words
     # VNG's signatory is not evidence about the CTV: it is not a source at all.
@@ -1285,8 +1292,8 @@ def test_find_name_prefers_ctv_column_over_vng_signatory():
 
 
 def test_find_name_ignores_vng_column_name_at_higher_confidence():
-    # abs page 247 (packet 31; roster name 'Phan Tấn Tài'). Measured minimum
-    # word confidences: VNG's 'Trịnh Đức Minh' 0.94, the CTV's 'Phan Tắn Tài'
+    # abs page 247 (packet 31; roster name 'Hồ Tấn Nghĩa'). Measured minimum
+    # word confidences: VNG's 'Vương Đức Khoa' 0.94, the CTV's 'Hồ Tắn Nghĩa'
     # 0.85 -- so the CORRECT read is the LESS legible one. Confidence is
     # legibility, not correctness; if anyone reintroduces a confidence gate to
     # choose between the parties, this test fails.
@@ -1295,11 +1302,11 @@ def test_find_name_ignores_vng_column_name_at_higher_confidence():
          W("Dịch", 790, 624, 44, 20), W("Vụ", 840, 624, 26, 20)],
         [W("VNG", 236, 630, 48, 16, conf=92)],
         [W("Họ", 643, 686, 26, 18), W("và", 676, 684, 20, 16), W("tên:", 703, 684, 32, 16),
-         W("Phan", 742, 684, 44, 16, conf=93), W("Tắn", 792, 678, 34, 20, conf=85),
-         W("Tài", 833, 682, 28, 16, conf=97)],
+         W("Hồ", 742, 684, 44, 16, conf=93), W("Tắn", 792, 678, 34, 20, conf=85),
+         W("Nghĩa", 833, 682, 28, 16, conf=97)],
         [W("Họ", 238, 690, 25, 18, conf=55), W("và", 271, 689, 19, 16), W("tên:", 297, 690, 32, 15),
-         W("Trịnh", 336, 688, 50, 20, conf=96), W("Đức", 393, 688, 38, 16, conf=94),
-         W("Minh", 437, 687, 47, 16, conf=96)],
+         W("Vương", 336, 688, 50, 20, conf=96), W("Đức", 393, 688, 38, 16, conf=94),
+         W("Khoa", 437, 687, 47, 16, conf=96)],
         [W("Email:", 238, 740, 58, 16), W("minhtd4)vng.com.vn", 304, 738, 202, 21, conf=70),
          W("Email:", 644, 734, 58, 17), W("taiwan1903w(0gmail.com", 710, 732, 236, 22, conf=12)],
         [W("Số", 238, 792, 26, 16), W("điện", 270, 792, 40, 16), W("thoại:", 316, 792, 52, 20),
@@ -1312,13 +1319,13 @@ def test_find_name_ignores_vng_column_name_at_higher_confidence():
     # 'Tắn' is what OCR reads (the roster has 'Tấn'); compare_values folds
     # accents to a FUZZY -> "cần xem", which is a cleared false `no`, not a
     # match. What this test pins is which PARTY's words get published.
-    assert hits[0]["value"] == "Phan Tắn Tài"
+    assert hits[0]["value"] == "Hồ Tắn Nghĩa"
     assert abs(hits[0]["confidence"] - 0.85) < 1e-9
-    assert all("Trịnh" not in h["value"] for h in hits)
+    assert all("Vương" not in h["value"] for h in hits)
 
 
 def test_find_name_merged_columns_publish_the_ctv_column_not_the_splice():
-    # abs page 275 (packet 35; roster name 'Hoàng Nguyễn Hải Đăng'). Here
+    # abs page 275 (packet 35; roster name 'Trương Nguyễn Bảo Khang'). Here
     # `group_lines` interleaved the two columns: one fragment holds 'Trần'
     # (x=338) 'Tiến' (x=430) and the RIGHT column's 'và tên:' + name, the
     # other holds the left 'Họ và tên:', 'Văn' (x=387) and the right column's
@@ -1335,8 +1342,8 @@ def test_find_name_merged_columns_publish_the_ctv_column_not_the_splice():
         [W("VNG", 236, 637, 50, 25, conf=91), W("|", 1087, 640, 16, 19, conf=26)],
         [W("Trần", 338, 692, 42, 21, conf=96), W("Tiến", 430, 692, 40, 20, conf=96),
          W("và", 702, 692, 21, 16), W("tên:", 730, 692, 31, 16),
-         W("Hoàng", 770, 690, 61, 20, conf=96), W("Nguyễn", 837, 684, 75, 26, conf=96),
-         W("Hải", 920, 688, 32, 17, conf=96), W("Đăng", 958, 688, 50, 20, conf=90)],
+         W("Trương", 770, 690, 61, 20, conf=96), W("Nguyễn", 837, 684, 75, 26, conf=96),
+         W("Bảo", 920, 688, 32, 17, conf=96), W("Khang", 958, 688, 50, 20, conf=90)],
         [W("Họ", 240, 699, 25, 18, conf=94), W("và", 273, 698, 20, 16),
          W("tên:", 300, 698, 30, 15), W("Văn", 387, 696, 38, 16, conf=96),
          W("Họ", 670, 693, 26, 18, conf=96)],
@@ -1355,7 +1362,7 @@ def test_find_name_merged_columns_publish_the_ctv_column_not_the_splice():
     # The CTV's own name exists only on the REASSEMBLED row (its label's words
     # are spread across both fragments), and the divide places it in the CTV's
     # column, so it is read rather than downgraded to "cần xem".
-    assert [h["value"] for h in readable] == ["Hoàng Nguyễn Hải Đăng"]
+    assert [h["value"] for h in readable] == ["Trương Nguyễn Bảo Khang"]
     assert readable[0]["bbox"]["x"] == 770
 
 
@@ -1368,7 +1375,7 @@ def test_find_name_without_party_headers_keeps_current_behaviour():
     # would get published on a parties-swapped page.
     lines = _p82_name_lines()
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
-    assert sorted(h["value"] for h in hits) == ["Nhan Kiến Phát", "Trần Lê Hoài Anh"]
+    assert sorted(h["value"] for h in hits) == ["Bùi Quang Vinh", "Ngô Gia Bảo Long"]
     assert all(h["rank"] == 0 for h in hits)
 
 
@@ -1391,34 +1398,34 @@ def test_find_name_ignores_a_name_above_the_detected_block():
     # scopes it.
     lines = [
         [W("Họ", 231, 300, 25, 18), W("và", 263, 300, 20, 16), W("tên:", 290, 300, 30, 16),
-         W("Nhan", 330, 300, 48, 16, conf=91), W("Kiến", 385, 300, 44, 20, conf=91),
-         W("Phát", 434, 300, 40, 16, conf=91)],
+         W("Bùi", 330, 300, 48, 16, conf=91), W("Quang", 385, 300, 44, 20, conf=91),
+         W("Vinh", 434, 300, 40, 16, conf=91)],
         _vng_and_ctv_header_row(), *_p82_name_lines(), *_email_and_phone_rows(),
     ]
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
     values = sorted(h["value"] for h in hits)
-    assert values == ["Nhan Kiến Phát"]      # deduped: same value, one source
+    assert values == ["Bùi Quang Vinh"]      # deduped: same value, one source
     assert all("Trần" not in h["value"] for h in hits)
 
 
 def test_find_name_row_reassembly_completes_a_split_name():
     # abs page 85 (packet 9's biên bản). `_row_words` reassembles
-    # 'BÊN CUNG ỨNG DỊCH VỤ : Nhan Kiến Phát' from two `group_lines`
+    # 'BÊN CUNG ỨNG DỊCH VỤ : Bùi Quang Vinh' from two `group_lines`
     # fragments: the standalone ':' (x=512, y=684) and 'Phát' (x=648) sort into
-    # a DIFFERENT fragment than the label and 'Nhan Kiến'. Reading the line
-    # alone gave 'Nhan Kiến', and `compare_values._person_verdict` makes a
+    # a DIFFERENT fragment than the label and 'Bùi Quang'. Reading the line
+    # alone gave 'Bùi Quang', and `compare_values._person_verdict` makes a
     # differing token count an outright MISMATCH -- so packet 9 stayed `no`
     # even once its contract page read the right party.
     lines = [
         [W("BÊN", 196, 671, 46, 22, conf=88), W("CUNG", 251, 676, 67, 16, conf=93),
          W("ỨNG", 326, 672, 52, 22, conf=91), W("DỊCH", 385, 678, 60, 20, conf=95),
          W("VỤ", 453, 678, 32, 21, conf=83),
-         W("Nhan", 534, 679, 52, 16, conf=96), W("Kiến", 594, 674, 47, 22, conf=96)],
-        [W(":", 512, 684, 2, 10, conf=91), W("Phát", 648, 680, 46, 16, conf=96)],
+         W("Bùi", 534, 679, 52, 16, conf=96), W("Quang", 594, 674, 47, 22, conf=96)],
+        [W(":", 512, 684, 2, 10, conf=91), W("Vinh", 648, 680, 46, 16, conf=96)],
     ]
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
     assert len(hits) == 1
-    assert hits[0]["value"] == "Nhan Kiến Phát"
+    assert hits[0]["value"] == "Bùi Quang Vinh"
 
 
 def test_find_name_row_reassembly_only_extends_a_prefix():
@@ -1429,11 +1436,11 @@ def test_find_name_row_reassembly_only_extends_a_prefix():
     lines = [
         [W("BÊN", 196, 671, 46, 22), W("CUNG", 251, 671, 67, 16), W("ỨNG", 326, 671, 52, 22),
          W("DỊCH", 385, 671, 60, 20), W("VỤ", 453, 671, 32, 21),
-         W("Nhan", 534, 671, 52, 16), W("Kiến", 594, 671, 47, 22)],
+         W("Bùi", 534, 671, 52, 16), W("Quang", 594, 671, 47, 22)],
         [W("Phạm", 300, 676, 50, 16), W("Thị", 360, 676, 30, 16)],
     ]
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
-    assert [h["value"] for h in hits] == ["Nhan Kiến"]
+    assert [h["value"] for h in hits] == ["Bùi Quang"]
 
 
 def test_find_name_extension_never_swallows_a_neighbouring_label():
@@ -1510,12 +1517,12 @@ def test_party_of_classifies_against_the_gutter():
 
 def test_best_hit_ranks_party_evidence_above_confidence():
     from ocr_extract import _best_hit
-    ctv = (1, {"value": "Nhan Kiến Phát", "bbox": {}, "confidence": 0.60, "rank": 1})
-    vng = (0, {"value": "Trần Lê Hoài Anh", "bbox": {}, "confidence": 0.95, "rank": 0})
-    assert _best_hit([vng, ctv])[1]["value"] == "Nhan Kiến Phát"
+    ctv = (1, {"value": "Bùi Quang Vinh", "bbox": {}, "confidence": 0.60, "rank": 1})
+    vng = (0, {"value": "Ngô Gia Bảo Long", "bbox": {}, "confidence": 0.95, "rank": 0})
+    assert _best_hit([vng, ctv])[1]["value"] == "Bùi Quang Vinh"
     # a readable hit still beats an unread one regardless of rank
     unread = (2, {"value": "", "bbox": {}, "confidence": 0.0, "rank": 1})
-    assert _best_hit([unread, vng])[1]["value"] == "Trần Lê Hoài Anh"
+    assert _best_hit([unread, vng])[1]["value"] == "Ngô Gia Bảo Long"
 
 
 def test_party_certainty_has_one_level_so_confidence_breaks_the_tie():
@@ -1526,9 +1533,9 @@ def test_party_certainty_has_one_level_so_confidence_breaks_the_tie():
     # "cần xem" (their contract page 1 reads the same name a diacritic worse
     # than the party-labeled block on page 0) and fixed nothing extra.
     from ocr_extract import _best_hit
-    from_column = (1, {"value": "Lê Định Lương Thiện", "bbox": {}, "confidence": 0.91, "rank": 1})
-    from_anchor = (0, {"value": "Lê Đinh Lương Thiện", "bbox": {}, "confidence": 0.93, "rank": 1})
-    assert _best_hit([from_column, from_anchor])[1]["value"] == "Lê Đinh Lương Thiện"
+    from_column = (1, {"value": "Lý Định Trường Sơn", "bbox": {}, "confidence": 0.91, "rank": 1})
+    from_anchor = (0, {"value": "Lý Đinh Trường Sơn", "bbox": {}, "confidence": 0.93, "rank": 1})
+    assert _best_hit([from_column, from_anchor])[1]["value"] == "Lý Đinh Trường Sơn"
 
 
 def test_best_hit_is_unchanged_for_hits_without_a_rank():
@@ -1537,12 +1544,12 @@ def test_best_hit_is_unchanged_for_hits_without_a_rank():
     # tie, where `max` returns the FIRST maximal element either way.
     from ocr_extract import _best_hit
     hits = [
-        (0, {"value": "079189016370", "bbox": {}, "confidence": 0.91}),
-        (1, {"value": "079189016371", "bbox": {}, "confidence": 0.95}),
-        (2, {"value": "079189016372", "bbox": {}, "confidence": 0.95}),
+        (0, {"value": "001100000051", "bbox": {}, "confidence": 0.91}),
+        (1, {"value": "001100000052", "bbox": {}, "confidence": 0.95}),
+        (2, {"value": "001100000053", "bbox": {}, "confidence": 0.95}),
     ]
     assert _best_hit(hits) == max(hits, key=lambda ph: ph[1]["confidence"])
-    assert _best_hit(hits)[1]["value"] == "079189016371"
+    assert _best_hit(hits)[1]["value"] == "001100000052"
 
 
 def test_dedupe_and_cap_keeps_the_party_confirmed_hit():
@@ -1554,10 +1561,10 @@ def test_dedupe_and_cap_keeps_the_party_confirmed_hit():
         {"value": "A A", "bbox": {}, "confidence": 0.99, "rank": 0},
         {"value": "B B", "bbox": {}, "confidence": 0.98, "rank": 0},
         {"value": "C C", "bbox": {}, "confidence": 0.97, "rank": 0},
-        {"value": "Nhan Kiến Phát", "bbox": {}, "confidence": 0.60, "rank": 1},
+        {"value": "Bùi Quang Vinh", "bbox": {}, "confidence": 0.60, "rank": 1},
     ]
     kept = _dedupe_and_cap(hits)
-    assert kept[0]["value"] == "Nhan Kiến Phát"
+    assert kept[0]["value"] == "Bùi Quang Vinh"
     assert len(kept) == 3
 
 
@@ -1568,11 +1575,11 @@ def test_extract_fields_hoten_source_is_the_ctv_column():
     # source dict explicitly).
     words = [w for line in [_vng_and_ctv_header_row(), *_p82_name_lines(),
                             *_email_and_phone_rows()] for w in line]
-    fields = extract_fields({"contract-0": {1: words}}, {"name": "Nhan Kiến Phát"})
+    fields = extract_fields({"contract-0": {1: words}}, {"name": "Bùi Quang Vinh"})
     hoten = next(f for f in fields if f["key"] == "hoten")
     assert len(hoten["sources"]) == 1
     src = hoten["sources"][0]
-    assert src["value"] == "Nhan Kiến Phát"
+    assert src["value"] == "Bùi Quang Vinh"
     assert src["page"] == 1
     assert set(src) == {"docId", "page", "value", "bbox", "confidence"}
 
@@ -1581,16 +1588,16 @@ def test_locate_field_still_associates_a_label_across_a_large_gap():
     # The party divide CLASSIFIES words; it never cuts a line, and
     # `group_lines` is untouched -- so the label-to-value association the
     # other five fields depend on is unaffected even when the gap between a
-    # label and its value is gutter-sized ("CCCD số      :      079189016370"
+    # label and its value is gutter-sized ("CCCD số      :      001100000051"
     # measures ~120px on the real pages).
     cccd_spec = next(s for s in FIELD_SPECS if s["key"] == "cccd")
     lines = [[
         W("CCCD", 231, 500, 60, 18), W("số", 300, 500, 24, 18), W(":", 420, 500, 8, 18),
-        W("079189016370", 540, 500, 150, 18, conf=93),
+        W("001100000051", 540, 500, 150, 18, conf=93),
     ]]
     hits = locate_field(lines, cccd_spec)
     assert len(hits) == 1
-    assert hits[0]["value"] == "079189016370"
+    assert hits[0]["value"] == "001100000051"
     assert abs(hits[0]["confidence"] - 0.93) < 1e-9
 
 
@@ -1599,8 +1606,8 @@ def test_find_name_row_value_ignores_scanner_edge_specks():
     # into one line here, and the same VISUAL row also carries two
     # scanner-edge specks in the right margin: 'ZZ' at conf 2 and 'NI' at conf
     # 1, x=1222..1240. Both are capitalised and alphabetic, so the shape check
-    # accepts them, and the CTV's 'Trần Văn Ninh' came out as the 5-token
-    # 'Trần Văn Ninh ZZ NI' at confidence 0.01 -- a differing token count,
+    # accepts them, and the CTV's 'Tạ Văn Cường' came out as the 5-token
+    # 'Tạ Văn Cường ZZ NI' at confidence 0.01 -- a differing token count,
     # which `compare_values._person_verdict` makes an outright MISMATCH. A
     # value assembled from a whole row must be legible end to end or not be
     # published at all; the label is still worth a "cần xem" chip.
@@ -1610,11 +1617,11 @@ def test_find_name_row_value_ignores_scanner_edge_specks():
          W("Ứng", 740, 626, 40, 25), W("Dịch", 787, 630, 44, 20),
          W("Vụ", 838, 630, 26, 20)],
         [W("Họ", 236, 694, 25, 18), W("và", 268, 693, 20, 15), W("tên:", 295, 693, 32, 15),
-         W("Trịnh", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16, conf=93),
-         W("Minh", 440, 690, 50, 17),
+         W("Vương", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16, conf=93),
+         W("Khoa", 440, 690, 50, 17),
          W("Họ", 640, 690, 26, 19, conf=95), W("và", 674, 690, 20, 16),
-         W("tên:", 701, 690, 30, 16), W("Trần", 740, 685, 42, 20),
-         W("Văn", 788, 690, 37, 15), W("Ninh", 830, 689, 44, 16)],
+         W("tên:", 701, 690, 30, 16), W("Tạ", 740, 685, 42, 20),
+         W("Văn", 788, 690, 37, 15), W("Cường", 830, 689, 44, 16)],
         [W("ZZ", 1222, 704, 18, 14, conf=2), W("NI", 1224, 676, 16, 18, conf=1)],
         *_email_and_phone_rows(),
     ]
@@ -1635,18 +1642,18 @@ def test_find_name_legible_row_value_is_published_from_the_same_shape():
          W("Ứng", 740, 626, 40, 25), W("Dịch", 787, 630, 44, 20),
          W("Vụ", 838, 630, 26, 20)],
         [W("Họ", 236, 694, 25, 18), W("và", 268, 693, 20, 15), W("tên:", 295, 693, 32, 15),
-         W("Trịnh", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16), W("Minh", 440, 690, 50, 17),
+         W("Vương", 335, 692, 52, 20), W("Đức", 394, 692, 38, 16), W("Khoa", 440, 690, 50, 17),
          W("Họ", 640, 690, 26, 19), W("và", 674, 690, 20, 16), W("tên:", 701, 690, 30, 16),
-         W("Trần", 740, 685, 42, 20), W("Văn", 788, 690, 37, 15), W("Ninh", 830, 689, 44, 16)],
+         W("Tạ", 740, 685, 42, 20), W("Văn", 788, 690, 37, 15), W("Cường", 830, 689, 44, 16)],
         *_email_and_phone_rows(),
     ]
     hits = find_name(lines, anchors=HOTEN_ANCHORS)
     readable = [h for h in hits if h["value"]]
-    assert [h["value"] for h in readable] == ["Trần Văn Ninh"]
+    assert [h["value"] for h in readable] == ["Tạ Văn Cường"]
     assert readable[0]["rank"] == 1
     # VNG's column is never published; the merged line's own 9-token read is
     # not name-shaped, so it stays the "cần xem" it has always been.
-    assert all("Trịnh" not in h["value"] for h in hits)
+    assert all("Vương" not in h["value"] for h in hits)
 
 
 def test_assemble_docs_records_where_each_party_signs():

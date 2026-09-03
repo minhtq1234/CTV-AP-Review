@@ -1,3 +1,10 @@
+# Identifiers in this file -- CCCDs, tax codes, bank accounts and person
+# names, in fixtures and in the comments recording what was measured -- are
+# synthetic stand-ins. The observations are real; the values are not, because
+# this branch is published to a public remote. Substituted stand-ins preserve
+# the shape the observation depended on: digit count, a one-digit misread, an
+# accent-only difference, a truncation.
+
 import criteria as cr
 import evaluate as ev
 from criteria import Status
@@ -25,11 +32,11 @@ def manifest(docs=(), fields=()):
 
 
 ROSTER = {
-    "name": "Đinh Hữu Phúc",
-    "cccd": "079203031329",
-    "mst": "079203031329",
+    "name": "Đặng Hữu Lộc",
+    "cccd": "001100000021",
+    "mst": "001100000021",
     "dob": "23/04/2003",
-    "account": "0081001142415",
+    "account": "0022000000415",
     "gross": "7777778",
     "pit": "777778",
     "net": "7000000",
@@ -41,13 +48,13 @@ def full_packet():
     return manifest(
         docs=[doc("contract-0", "contract"), doc("bbnt-0", "bbnt")],
         fields=[
-            ("hoten", "Đinh Hữu Phúc", [
-                source("contract-0", "Đinh Hữu Phúc"),
-                source("bbnt-0", "Đinh Hữu Phúc"),
+            ("hoten", "Đặng Hữu Lộc", [
+                source("contract-0", "Đặng Hữu Lộc"),
+                source("bbnt-0", "Đặng Hữu Lộc"),
             ]),
-            ("cccd", "079203031329", [
-                source("contract-0", "079203031329"),
-                source("bbnt-0", "079203031329"),
+            ("cccd", "001100000021", [
+                source("contract-0", "001100000021"),
+                source("bbnt-0", "001100000021"),
             ]),
         ],
     )
@@ -86,7 +93,7 @@ class TestShape:
 class TestTheExcelColumnIsTheReference:
     def test_it_shows_the_roster_value_verbatim(self):
         result = by_stt(ev.evaluate_packet(full_packet(), ROSTER))[1]
-        assert cells_by_doc(result)[cr.EXCEL].value == "Đinh Hữu Phúc"
+        assert cells_by_doc(result)[cr.EXCEL].value == "Đặng Hữu Lộc"
 
     def test_a_well_formed_reference_passes_its_format_rule(self):
         results = by_stt(ev.evaluate_packet(full_packet(), ROSTER))
@@ -94,7 +101,7 @@ class TestTheExcelColumnIsTheReference:
         assert cells_by_doc(results[3])[cr.EXCEL].status is Status.OK
 
     def test_a_malformed_reference_is_the_finding(self):
-        roster = {**ROSTER, "cccd": "07920303132"}   # 11 digits
+        roster = {**ROSTER, "cccd": "00110000002"}   # 11 digits
         results = by_stt(ev.evaluate_packet(full_packet(), roster))
         cell = cells_by_doc(results[2])[cr.EXCEL]
 
@@ -135,22 +142,22 @@ class TestComparingDocumentsAgainstTheReference:
     def test_a_disagreeing_document_is_the_finding_and_shows_both_values(self):
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("cccd", "079203031329",
-                     [source("contract-0", "079189016370")])],
+            fields=[("cccd", "001100000021",
+                     [source("contract-0", "001100000051")])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
         cell = cells_by_doc(result)[cr.CONTRACT]
 
         assert cell.status is Status.NO
         # Acc's rule: state the wrong value, not just "không khớp"
-        assert "079189016370" in cell.value
-        assert "079203031329" in cell.note
+        assert "001100000051" in cell.value
+        assert "001100000021" in cell.note
 
     def test_a_tone_mark_only_name_difference_needs_a_human(self):
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("hoten", "Đinh Hữu Phúc",
-                     [source("contract-0", "Dinh Huu Phuc")])],
+            fields=[("hoten", "Đặng Hữu Lộc",
+                     [source("contract-0", "Dang Huu Loc")])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[1]
         cell = cells_by_doc(result)[cr.CONTRACT]
@@ -164,8 +171,8 @@ class TestComparingDocumentsAgainstTheReference:
         the read was unsure."""
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("cccd", "079203031329",
-                     [source("contract-0", "079203031329", conf=0.4)])],
+            fields=[("cccd", "001100000021",
+                     [source("contract-0", "001100000021", conf=0.4)])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
         cell = cells_by_doc(result)[cr.CONTRACT]
@@ -185,8 +192,8 @@ class TestComparingDocumentsAgainstTheReference:
     def test_a_value_read_with_no_box_is_labelled_not_smoothed_over(self):
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("cccd", "079203031329",
-                     [source("contract-0", "079203031329", bbox=None)])],
+            fields=[("cccd", "001100000021",
+                     [source("contract-0", "001100000021", bbox=None)])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
         cell = cells_by_doc(result)[cr.CONTRACT]
@@ -198,7 +205,7 @@ class TestComparingDocumentsAgainstTheReference:
 class TestMissingAndUnread:
     def test_a_document_absent_from_the_packet_is_missing(self):
         packet = manifest(docs=[doc("contract-0", "contract")], fields=[
-            ("cccd", "079203031329", [source("contract-0", "079203031329")]),
+            ("cccd", "001100000021", [source("contract-0", "001100000021")]),
         ])
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
 
@@ -207,8 +214,8 @@ class TestMissingAndUnread:
     def test_a_present_document_with_nothing_extracted_is_pending(self):
         packet = manifest(docs=[doc("contract-0", "contract"),
                                 doc("bbnt-0", "bbnt")],
-                          fields=[("cccd", "079203031329",
-                                   [source("contract-0", "079203031329")])])
+                          fields=[("cccd", "001100000021",
+                                   [source("contract-0", "001100000021")])])
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
         cell = cells_by_doc(result)[cr.BBNT]
 
@@ -218,7 +225,7 @@ class TestMissingAndUnread:
     def test_a_document_that_read_nothing_is_pending_not_a_mismatch(self):
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("cccd", "079203031329",
+            fields=[("cccd", "001100000021",
                      [source("contract-0", "", conf=0.0)])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
@@ -245,9 +252,9 @@ class TestSeveralCopiesOfOneDocument:
     def test_agreeing_copies_still_pass(self):
         packet = manifest(
             docs=[doc("contract-0", "contract"), doc("contract-1", "contract")],
-            fields=[("cccd", "079203031329", [
-                source("contract-0", "079203031329"),
-                source("contract-1", "079203031329"),
+            fields=[("cccd", "001100000021", [
+                source("contract-0", "001100000021"),
+                source("contract-1", "001100000021"),
             ])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
@@ -259,9 +266,9 @@ class TestSeveralCopiesOfOneDocument:
         agree."""
         packet = manifest(
             docs=[doc("contract-0", "contract"), doc("contract-1", "contract")],
-            fields=[("hoten", "Đinh Hữu Phúc", [
-                source("contract-0", "Huỳnh Thị Thúy Phượng"),
-                source("contract-1", "Đinh Hữu Phúc"),
+            fields=[("hoten", "Đặng Hữu Lộc", [
+                source("contract-0", "Vũ Thị Kim Ngân"),
+                source("contract-1", "Đặng Hữu Lộc"),
             ])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[1]
@@ -276,9 +283,9 @@ class TestSeveralCopiesOfOneDocument:
         cell go pending."""
         packet = manifest(
             docs=[doc("contract-0", "contract"), doc("contract-1", "contract")],
-            fields=[("cccd", "079203031329", [
+            fields=[("cccd", "001100000021", [
                 source("contract-0", "", conf=0.0),
-                source("contract-1", "079203031329"),
+                source("contract-1", "001100000021"),
             ])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[2]
@@ -290,7 +297,7 @@ class TestSeveralCopiesOfOneDocument:
     def test_every_copy_unreadable_is_pending(self):
         packet = manifest(
             docs=[doc("contract-0", "contract"), doc("contract-1", "contract")],
-            fields=[("cccd", "079203031329", [
+            fields=[("cccd", "001100000021", [
                 source("contract-0", "", conf=0.0),
                 source("contract-1", "", conf=0.0),
             ])],
@@ -440,16 +447,16 @@ class TestTheNoteHelpsTriage:
     """Acc's rule: "Không chỉ báo 'Không khớp'; phải nêu trường sai, giá trị tại
     từng chứng từ, chênh lệch và nội dung cần kiểm tra lại."."""
 
-    #: Real July packet 0's roster row: account 104883868364.
-    ROW = {**ROSTER, "account": "104883868364"}
+    #: Real July packet 0's roster row: account 112200000364.
+    ROW = {**ROSTER, "account": "112200000364"}
 
     def test_a_one_digit_difference_says_so(self):
         # Real July packet 0: the contract's account reads 13 digits where the
         # roster has 12 — an inserted digit, not a different account.
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("tk", "104883868364",
-                     [source("contract-0", "1048836868364")])],
+            fields=[("tk", "112200000364",
+                     [source("contract-0", "1122009000364")])],
         )
         result = by_stt(ev.evaluate_packet(packet, self.ROW))[7]
         cell = cells_by_doc(result)[cr.CONTRACT]
@@ -463,21 +470,21 @@ class TestTheNoteHelpsTriage:
         # Real July packet 0: the BBNT carries another CTV's account entirely.
         packet = manifest(
             docs=[doc("bbnt-0", "bbnt")],
-            fields=[("tk", "104883868364",
-                     [source("bbnt-0", "0081001142415")])],
+            fields=[("tk", "112200000364",
+                     [source("bbnt-0", "0022000000415")])],
         )
         result = by_stt(ev.evaluate_packet(packet, self.ROW))[7]
         cell = cells_by_doc(result)[cr.BBNT]
 
         assert cell.status is Status.NO
         assert "chênh" not in cell.note.casefold()
-        assert "0081001142415" in cell.value
+        assert "0022000000415" in cell.value
 
     def test_a_name_mismatch_gets_no_digit_hint(self):
         packet = manifest(
             docs=[doc("bbnt-0", "bbnt")],
-            fields=[("hoten", "Đinh Hữu Phúc",
-                     [source("bbnt-0", "Huỳnh Thị Thúy Phượng")])],
+            fields=[("hoten", "Đặng Hữu Lộc",
+                     [source("bbnt-0", "Vũ Thị Kim Ngân")])],
         )
         result = by_stt(ev.evaluate_packet(packet, ROSTER))[1]
         assert "chữ số" not in cells_by_doc(result)[cr.BBNT].note
@@ -548,8 +555,8 @@ class TestTheNoteMustBeTrue:
     def test_a_tone_mark_difference_is_described_as_one(self):
         packet = manifest(
             docs=[doc("contract-0", "contract")],
-            fields=[("hoten", "Đinh Hữu Phúc",
-                     [source("contract-0", "Dinh Huu Phuc")])],
+            fields=[("hoten", "Đặng Hữu Lộc",
+                     [source("contract-0", "Dang Huu Loc")])],
         )
         note = cells_by_doc(
             by_stt(ev.evaluate_packet(packet, ROSTER))[1])[cr.CONTRACT].note

@@ -20,8 +20,8 @@ Two things make the targeting precise:
     BUT THE CONVERSE IS FALSE, and an earlier version of this comment claimed
     it. Confidence does NOT mean correct. Hand-checked against the scans on the
     July batch: 8 of the 14 disagreements are at or above 0.7, and packet 34
-    read the same digits on the same page two ways -- CCCD `070198011354` at
-    0.93 and 0.90 (wrong) while MST read `079198011354` at 0.86 (right).
+    read the same digits on the same page two ways -- CCCD `001100000151` at
+    0.93 and 0.90 (wrong) while MST read `001100000101` at 0.86 (right).
     Packet 39 read a date correctly at 0.06.
 
     So this threshold is a floor on what is CLEARLY unusable, not a boundary
@@ -31,6 +31,13 @@ Two things make the targeting precise:
     better one) and is not solved here.
 
 Pure: no IO, no network, no OCR. `ocr_packet` owns the actual re-read.
+
+Identifiers in this file -- CCCDs, tax codes, bank accounts and person
+names, in fixtures and in the comments recording what was measured -- are
+synthetic stand-ins. The observations are real; the values are not, because
+this branch is published to a public remote. Substituted stand-ins preserve
+the shape the observation depended on: digit count, a one-digit misread, an
+accent-only difference, a truncation.
 """
 
 from __future__ import annotations

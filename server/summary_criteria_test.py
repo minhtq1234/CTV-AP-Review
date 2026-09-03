@@ -147,7 +147,7 @@ class TestDuplicatePayment:
     def test_packets_with_distinct_identities_pass(self):
         cells = by_stt(sc.assess(
             sheet([GOOD]),
-            packets=[packet(0, "001100000011"), packet(1, "001204004530")],
+            packets=[packet(0, "001100000011"), packet(1, "001100000071")],
         ))
         assert cells[31].status is Status.OK
 
@@ -171,7 +171,7 @@ class TestDuplicatePayment:
         cells = by_stt(sc.assess(sheet([GOOD]), packets=[
             unflagged(0, "001100000011"),
             unflagged(1, "001100000011"),
-            unflagged(2, "001204004530"),
+            unflagged(2, "001100000071"),
         ]))
         assert cells[31].status is Status.NO
         assert cells[31].detail == ("gói 1 + 2",)

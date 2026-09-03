@@ -51,7 +51,7 @@ describe('compareField', () => {
     })
 
     it('unrelated names mismatch', () => {
-      expect(p('Nguyễn Đào Hồng Hạnh', 'Nguyễn Thảo Ly')).toBe('mismatch')
+      expect(p('Nguyễn Diệu Hồng Nhung', 'Nguyễn Thúy Vy')).toBe('mismatch')
     })
 
     it('a single mangled letter still reads as close', () => {

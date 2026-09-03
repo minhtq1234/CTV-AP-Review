@@ -8,6 +8,13 @@ docs/superpowers/specs/2026-07-13-upload-split-ocr-validate-design.md).
 
 Output shape matches src/ctv/types.ts exactly (CtvFolder/EvidenceDoc/DocPage/
 CtvField/CtvSource) so manifests load straight into the existing reviewer.
+
+Identifiers in this file -- CCCDs, tax codes, bank accounts and person
+names, in fixtures and in the comments recording what was measured -- are
+synthetic stand-ins. The observations are real; the values are not, because
+this branch is published to a public remote. Substituted stand-ins preserve
+the shape the observation depended on: digit count, a one-digit misread, an
+accent-only difference, a truncation.
 """
 from __future__ import annotations
 
@@ -367,8 +374,8 @@ def _row_words(lines: list[list[dict]], idx: int) -> list[dict]:
 # the roster names -- on the right. `find_name` used to reduce a page to one
 # name by CONFIDENCE, and confidence is legibility, not correctness: measured
 # on the July batch, VNG's signatory reads just as crisply as the CTV's name
-# (abs page 82: 'Trần Lê Hoài Anh' 0.96 vs 'Nhan Kiến Phát' 0.96; abs page
-# 247: 'Trịnh Đức Minh' 0.94 vs 'Phan Tắn Tài' 0.85), so the wrong party won
+# (abs page 82: 'Ngô Gia Bảo Long' 0.96 vs 'Bùi Quang Vinh' 0.96; abs page
+# 247: 'Vương Đức Khoa' 0.94 vs 'Hồ Tắn Nghĩa' 0.85), so the wrong party won
 # and a correctly-matched packet was reported as a name mismatch -- a `no`,
 # which drives "cần gửi lại" on valid paperwork.
 #
@@ -404,7 +411,7 @@ _AMBIGUOUS_NAME_ANCHORS = {"ho va ten"}
 #: display_dpi=150, but nothing here depends on that). Measured gutters on the
 #: three failing pages are 158-198px on a 1241px-wide page, i.e. 13-16%; the
 #: floor sits well under that and still well over ordinary intra-column
-#: label-value gaps (the widest measured, "CCCD số  :  079189016370", is
+#: label-value gaps (the widest measured, "CCCD số  :  001100000051", is
 #: ~120px ≈ 10%, and it is never a candidate anyway -- see `_party_of`: the
 #: gutter CLASSIFIES words, it never cuts a line).
 _MIN_GUTTER_FRAC = 0.045
@@ -822,7 +829,7 @@ def _legible_row_value(words: list[dict]) -> bool:
     170 (packet 20's contract) it did -- two scanner-edge specks, 'ZZ' at conf
     2 and 'NI' at conf 1, sitting at x=1222..1240 in the page margin. Both are
     capitalised and alphabetic, so `_looks_like_person_name` accepts them, and
-    'Trần Văn Ninh' became the 5-token 'Trần Văn Ninh ZZ NI' at confidence
+    'Tạ Văn Cường' became the 5-token 'Tạ Văn Cường ZZ NI' at confidence
     0.01 -- a wrong token count, which `compare_values._person_verdict` makes
     an outright MISMATCH: a NEW false `no`.
 
@@ -844,7 +851,7 @@ def _row_value_extension(
     line's value had, in order (identity, not text), and adds at least one
     more. That is the only shape a `group_lines` split of ONE value can take:
     abs page 85 (packet 9's biên bản) put 'Phát' in a different fragment from
-    'Nhan Kiến', and the truncated 'Nhan Kiến' is a hard MISMATCH under
+    'Bùi Quang', and the truncated 'Bùi Quang' is a hard MISMATCH under
     `compare_values._person_verdict`'s token-count rule -- the packet stayed
     `no` even after the contract page was read correctly.
 
@@ -1019,7 +1026,7 @@ def find_name(lines: list[list[dict]], anchors: list[str], allow_next_line: bool
     - the value may be extended by the label's own REASSEMBLED ROW
       (`_row_words`), but only as a strict prefix extension
       (`_row_value_extension`). Measured on abs page 85 (packet 9's biên bản):
-      `group_lines` split 'BÊN CUNG ỨNG DỊCH VỤ : Nhan Kiến Phát' so that
+      `group_lines` split 'BÊN CUNG ỨNG DỊCH VỤ : Bùi Quang Vinh' so that
       'Phát' landed in a different fragment, and the truncated read 'Nhan
       Kiến' is a hard mismatch rather than a near miss -- `compare_values`
       `_person_verdict` makes a differing token count an outright MISMATCH.

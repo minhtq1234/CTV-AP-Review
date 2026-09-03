@@ -436,7 +436,7 @@ def _bang_ke_bytes(people=((1, "001100000011", 10_000_000, 1_000_000, 9_000_000)
                               "Thực Nhận\n(3 = 1-2)"])
     for stt, cccd, gross, pit, net in people:
         sheet.append([stt, f"Người {stt}", cccd, cccd, "03/09/2003", "Nam",
-                      "0081001142415", "Bank", "01/07 - 25/07/2026", gross,
+                      "0022000000415", "Bank", "01/07 - 25/07/2026", gross,
                       gross, "không", pit, net, ""])
     workbook.save(content)
     workbook.close()

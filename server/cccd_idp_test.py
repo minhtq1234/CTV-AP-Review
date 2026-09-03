@@ -31,8 +31,8 @@ def envelope(values, *, classification=True, title="Căn cước công dân"):
 
 ROSTER = [
     {"name": "Phạm Hoài Vân Anh", "cccd": "001100000011"},
-    {"name": "Nguyễn Văn An", "cccd": "001204004530"},
-    {"name": "Lê Thị Thu Hà", "cccd": "042198013828"},
+    {"name": "Nguyễn Văn An", "cccd": "001100000071"},
+    {"name": "Lê Thị Thu Hà", "cccd": "001100000081"},
 ]
 
 
@@ -144,7 +144,7 @@ class Polling(unittest.TestCase):
         empty = {"data": {"status": "COMPLETED", "documents": [
             {"ocr_data": [{"name": "eid", "value": []}]}
         ]}}
-        full = envelope({"id_number": "042198013828", "name": "Lê Thị Thu Hà"})
+        full = envelope({"id_number": "001100000081", "name": "Lê Thị Thu Hà"})
         responses = [empty, empty, full]
         calls = []
 
@@ -160,7 +160,7 @@ class Polling(unittest.TestCase):
             sleep=lambda _s: None,
         )
         # status said COMPLETED on the first read; only content ends the wait
-        self.assertEqual(read.id_number, "042198013828")
+        self.assertEqual(read.id_number, "001100000081")
         self.assertEqual(len(calls), 3)
 
     def test_a_missing_request_id_is_an_error(self):

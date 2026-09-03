@@ -17,13 +17,13 @@ import {
 function P(over: Partial<PacketMeta> = {}): PacketMeta {
   return {
     index: 0,
-    name: 'Huỳnh Thị Thúy Phượng',
+    name: 'Vũ Thị Kim Ngân',
     pages: [8, 15],
     confidence: 'green',
     flags: [],
     matchedBy: 'cccd',
     ocrIdentity: { cccd: '', name: '' },
-    rosterIdentity: { cccd: '079189016370', name: 'Huỳnh Thị Thúy Phượng' },
+    rosterIdentity: { cccd: '001100000051', name: 'Vũ Thị Kim Ngân' },
     review: { done: false, fields: {}, rejection: null },
     reviewFieldCount: 6,
     ...over,
@@ -131,15 +131,15 @@ describe('documentsLabel', () => {
 
 describe('filterRows', () => {
   const rows = packetRows([
-    P({ index: 0, name: 'Huỳnh Thị Thúy Phượng', aiStatus: 'no',
+    P({ index: 0, name: 'Vũ Thị Kim Ngân', aiStatus: 'no',
         documents: { span: 6, missing: [] }, hasCommitment: false }),
-    P({ index: 1, name: 'Đoàn Dương Thanh Vân', aiStatus: 'missing',
+    P({ index: 1, name: 'Cao Thị Mỹ Duyên', aiStatus: 'missing',
         documents: { span: 6, missing: ['BBNT'] }, hasCommitment: true,
-        rosterIdentity: { cccd: '2', name: 'Đoàn Dương Thanh Vân' } }),
-    P({ index: 2, name: 'Lý Gia Huy', aiStatus: 'ok',
+        rosterIdentity: { cccd: '2', name: 'Cao Thị Mỹ Duyên' } }),
+    P({ index: 2, name: 'Phùng Gia Khánh', aiStatus: 'ok',
         documents: { span: 6, missing: [] }, hasCommitment: false,
         review: { done: true, fields: {}, rejection: null },
-        rosterIdentity: { cccd: '3', name: 'Lý Gia Huy' } }),
+        rosterIdentity: { cccd: '3', name: 'Phùng Gia Khánh' } }),
   ])
 
   it('passes everything through with no filters set', () => {
@@ -147,8 +147,8 @@ describe('filterRows', () => {
   })
 
   it('searches the name case-insensitively', () => {
-    expect(filterRows(rows, { ...NO_FILTERS, q: 'gia huy' }).map(r => r.index)).toEqual([2])
-    expect(filterRows(rows, { ...NO_FILTERS, q: 'HUỲNH' }).map(r => r.index)).toEqual([0])
+    expect(filterRows(rows, { ...NO_FILTERS, q: 'gia khánh' }).map(r => r.index)).toEqual([2])
+    expect(filterRows(rows, { ...NO_FILTERS, q: 'NGÂN' }).map(r => r.index)).toEqual([0])
   })
 
   it('ignores surrounding whitespace in the query', () => {

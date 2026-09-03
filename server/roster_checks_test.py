@@ -42,7 +42,7 @@ def sheet(people, *, residence=False, total=None):
     return rows
 
 
-GOOD = (1, "001100000011", "001100000011", "03/09/2003", "0081001142415",
+GOOD = (1, "001100000011", "001100000011", "03/09/2003", "0022000000415",
         10_000_000, "không", 1_000_000, 9_000_000)
 
 
@@ -106,7 +106,7 @@ class TestSharedValues:
 
     def test_two_people_sharing_a_bank_account(self):
         twin = (2, "001100000012", "001100000012", "03/09/2003",
-                "0081001142415", 1_000_000, "không", 100_000, 900_000)
+                "0022000000415", 1_000_000, "không", 100_000, 900_000)
         assert "duplicate-account" in codes(rc.check(sheet([GOOD, twin])))
 
 

@@ -6,16 +6,16 @@ from compare_values import Verdict
 
 class TestPersonNames:
     def test_identical_matches(self):
-        assert cv.compare("Đinh Hữu Phúc", "Đinh Hữu Phúc", "person") is Verdict.MATCH
+        assert cv.compare("Đặng Hữu Lộc", "Đặng Hữu Lộc", "person") is Verdict.MATCH
 
     def test_a_tone_mark_difference_is_never_a_pass(self):
         """Tesseract drops Vietnamese diacritics routinely — but so does the
         difference between Anh and Ánh, who are two people."""
-        assert cv.compare("Đinh Hữu Phúc", "Dinh Huu Phuc", "person") is Verdict.FUZZY
+        assert cv.compare("Đặng Hữu Lộc", "Dang Huu Loc", "person") is Verdict.FUZZY
         assert cv.compare("Nguyễn Thị Ánh", "Nguyễn Thị Anh", "person") is Verdict.FUZZY
 
     def test_case_differences_fold(self):
-        assert cv.compare("ĐINH HỮU PHÚC", "Đinh Hữu Phúc", "person") is Verdict.FUZZY
+        assert cv.compare("ĐẶNG HỮU LỘC", "Đặng Hữu Lộc", "person") is Verdict.FUZZY
 
     def test_a_different_word_count_is_a_mismatch_not_a_near_miss(self):
         # "Lê Thị Thu Hà" and "Lê Thị Thu Hà Vy" are two people however close
@@ -27,12 +27,12 @@ class TestPersonNames:
 
     def test_two_different_people_mismatch(self):
         assert cv.compare(
-            "Đinh Hữu Phúc", "Huỳnh Thị Thúy Phượng", "person",
+            "Đặng Hữu Lộc", "Vũ Thị Kim Ngân", "person",
         ) is Verdict.MISMATCH
 
     def test_an_empty_side_is_a_mismatch_not_a_match(self):
-        assert cv.compare("Đinh Hữu Phúc", "", "person") is Verdict.MISMATCH
-        assert cv.compare("", "Đinh Hữu Phúc", "person") is Verdict.MISMATCH
+        assert cv.compare("Đặng Hữu Lộc", "", "person") is Verdict.MISMATCH
+        assert cv.compare("", "Đặng Hữu Lộc", "person") is Verdict.MISMATCH
 
 
 class TestOrganisationNames:
@@ -54,25 +54,25 @@ class TestOrganisationNames:
 
 class TestIdentityNumbers:
     def test_identical_digits_match(self):
-        assert cv.compare("079203031329", "079203031329", "digits") is Verdict.MATCH
+        assert cv.compare("001100000021", "001100000021", "digits") is Verdict.MATCH
 
     def test_punctuation_and_spaces_are_ignored(self):
-        assert cv.compare("079203031329", "079 203 031 329", "digits") is Verdict.MATCH
-        assert cv.compare("0792-0303-1329", "079203031329", "digits") is Verdict.MATCH
+        assert cv.compare("001100000021", "001 100 000 021", "digits") is Verdict.MATCH
+        assert cv.compare("0011-0000-0021", "001100000021", "digits") is Verdict.MATCH
 
     def test_a_leading_zero_is_significant(self):
         """An ID is a string, not a quantity. Comparing these as integers would
         pass a bank account that has lost its leading zero."""
-        assert cv.compare("079203031329", "79203031329", "digits") is Verdict.MISMATCH
-        assert cv.compare("0081001142415", "81001142415", "digits") is Verdict.MISMATCH
+        assert cv.compare("001100000021", "01100000021", "digits") is Verdict.MISMATCH
+        assert cv.compare("0022000000415", "22000000415", "digits") is Verdict.MISMATCH
 
     def test_one_wrong_digit_is_a_mismatch(self):
         # No fuzzy tier for identity numbers: a near miss is a different person.
-        assert cv.compare("079203031329", "079203031328", "digits") is Verdict.MISMATCH
+        assert cv.compare("001100000021", "001100000029", "digits") is Verdict.MISMATCH
 
     def test_a_missing_side_is_a_mismatch(self):
-        assert cv.compare("079203031329", "", "digits") is Verdict.MISMATCH
-        assert cv.compare("079203031329", "không rõ", "digits") is Verdict.MISMATCH
+        assert cv.compare("001100000021", "", "digits") is Verdict.MISMATCH
+        assert cv.compare("001100000021", "không rõ", "digits") is Verdict.MISMATCH
 
 
 class TestMoney:
@@ -134,7 +134,7 @@ class TestConfidence:
     def test_an_exact_match_passes_regardless_of_confidence(self):
         for confidence in (0.99, 0.7, 0.5, 0.02, 0.0):
             assert cv.compare(
-                "079203031329", "079203031329", "digits", confidence=confidence,
+                "001100000021", "001100000021", "digits", confidence=confidence,
             ) is Verdict.MATCH
 
     def test_an_exact_match_at_the_lowest_confidence_measured_is_a_clean_pass(self):
@@ -142,34 +142,34 @@ class TestConfidence:
         # roster exactly, off a faint scan, at confidence 0.02. Before this was
         # fixed, that was downgraded to `low_conf` (-> `rv`) despite being right.
         assert cv.compare(
-            "079203031329", "079203031329", "digits", confidence=0.02,
+            "001100000021", "001100000021", "digits", confidence=0.02,
         ) is Verdict.MATCH
 
     def test_a_mismatch_stays_a_mismatch_however_unsure_the_read(self):
         # Downgrading a disagreement to "unsure" would hide it.
         assert cv.compare(
-            "079203031329", "111111111111", "digits", confidence=0.1,
+            "001100000021", "111111111111", "digits", confidence=0.1,
         ) is Verdict.MISMATCH
 
     def test_a_fuzzy_result_is_not_further_downgraded_by_confidence(self):
         # Fuzzy already means "a person must look"; there is no lower tier.
         assert cv.compare(
-            "Đinh Hữu Phúc", "Dinh Huu Phuc", "person", confidence=0.1,
+            "Đặng Hữu Lộc", "Dang Huu Loc", "person", confidence=0.1,
         ) is Verdict.FUZZY
 
     def test_no_confidence_supplied_is_fine(self):
         assert cv.compare(
-            "079203031329", "079203031329", "digits", confidence=None,
+            "001100000021", "001100000021", "digits", confidence=None,
         ) is Verdict.MATCH
 
 
 class TestFormats:
     @pytest.mark.parametrize("value,ok", [
-        ("079203031329", True),
-        ("079 203 031 329", True),
-        ("07920303132", False),      # 11 digits
-        ("0792030313299", False),    # 13
-        ("07920303132A", False),
+        ("001100000021", True),
+        ("001 100 000 021", True),
+        ("00110000002", False),      # 11 digits
+        ("0011000000219", False),    # 13
+        ("00110000002A", False),
         ("", False),
     ])
     def test_cccd_is_twelve_digits(self, value, ok):
@@ -187,13 +187,13 @@ class TestFormats:
     def test_either_format_satisfies_a_pair(self):
         # #02 accepts a 12-digit CCCD or an 8-character passport.
         both = ("cccd12", "passport8")
-        assert cv.matches_format("079203031329", both) is True
+        assert cv.matches_format("001100000021", both) is True
         assert cv.matches_format("C1234567", both) is True
         assert cv.matches_format("0792", both) is False
 
     @pytest.mark.parametrize("value,ok", [
         ("0303490096", True),        # 10
-        ("079203031329", True),      # 12
+        ("001100000021", True),      # 12
         ("03034900", False),         # 8
         # The `-001` sub-unit form is 13 digits and belongs to a company
         # branch. #05 is "MST cá nhân": 10 or 12, per Acc's rule.
@@ -239,8 +239,8 @@ class TestWhyItIsFuzzy:
     false."""
 
     def test_accent_folding_only(self):
-        assert cv.fuzzy_reason("Đinh Hữu Phúc", "Dinh Huu Phuc", "person") == "folded"
-        assert cv.fuzzy_reason("ĐINH HỮU PHÚC", "Đinh Hữu Phúc", "person") == "folded"
+        assert cv.fuzzy_reason("Đặng Hữu Lộc", "Dang Huu Loc", "person") == "folded"
+        assert cv.fuzzy_reason("ĐẶNG HỮU LỘC", "Đặng Hữu Lộc", "person") == "folded"
 
     def test_a_genuinely_different_string_that_is_close(self):
         assert cv.fuzzy_reason("Trần Văn Bảy", "Trần Văn Bải", "person") == "near"
@@ -252,4 +252,4 @@ class TestWhyItIsFuzzy:
 
     def test_it_is_empty_when_the_verdict_is_not_fuzzy(self):
         assert cv.fuzzy_reason("A", "A", "person") == ""
-        assert cv.fuzzy_reason("Đinh Hữu Phúc", "Lê Thanh Hải", "person") == ""
+        assert cv.fuzzy_reason("Đặng Hữu Lộc", "Mai Thanh Tùng", "person") == ""

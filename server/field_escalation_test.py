@@ -28,15 +28,15 @@ def test_best_read_is_empty_when_nothing_was_read():
     assert best_read(F("phi", [S("contract-0", 1, "", 0.0)])) == ("", None)
 
 def test_best_read_ignores_empty_sources_entirely():
-    f = F("cccd", [S("contract-0", 0, "", 0.0), S("bbnt-0", 1, "079189016370", 0.91)])
-    assert best_read(f) == ("079189016370", 0.91)
+    f = F("cccd", [S("contract-0", 0, "", 0.0), S("bbnt-0", 1, "001100000051", 0.91)])
+    assert best_read(f) == ("001100000051", 0.91)
 
 def test_best_read_picks_the_most_confident_not_the_first():
     # A field read on several documents should be judged on its best evidence,
     # not on whichever source happened to sort first.
     f = F("hoten", [S("contract-0", 0, "NujI Van", 0.10),
-                    S("bbnt-0", 1, "Đoàn Dương Thanh Vân", 0.95)])
-    assert best_read(f) == ("Đoàn Dương Thanh Vân", 0.95)
+                    S("bbnt-0", 1, "Cao Thị Mỹ Duyên", 0.95)])
+    assert best_read(f) == ("Cao Thị Mỹ Duyên", 0.95)
 
 def test_best_read_handles_a_field_with_no_sources_at_all():
     assert best_read(F("phi", [])) == ("", None)
@@ -46,7 +46,7 @@ def test_best_read_handles_a_field_with_no_sources_at_all():
 # --- judge ------------------------------------------------------------------
 
 def test_a_confident_read_is_not_weak():
-    v = judge(F("cccd", [S("contract-0", 0, "079189016370", 0.96)]))
+    v = judge(F("cccd", [S("contract-0", 0, "001100000051", 0.96)]))
     assert not v.weak and v.reason == ""
 
 def test_an_unread_field_is_weak_as_unread():
@@ -55,9 +55,9 @@ def test_an_unread_field_is_weak_as_unread():
 
 def test_a_read_below_the_threshold_is_weak_as_low_confidence():
     # The real February/July garbage reads sat at 0.00-0.16.
-    v = judge(F("cccd", [S("contract-0", 0, "0929901205", 0.16)]))
+    v = judge(F("cccd", [S("contract-0", 0, "0033000011", 0.16)]))
     assert v.weak and v.reason == "low-confidence"
-    assert v.value == "0929901205"
+    assert v.value == "0033000011"
 
 def test_the_threshold_itself_counts_as_usable():
     assert not judge(F("cccd", [S("contract-0", 0, "x", LOW_CONF)])).weak
@@ -80,7 +80,7 @@ def test_the_threshold_is_overridable():
 
 def test_only_weak_fields_contribute_pages():
     fields = [
-        F("cccd", [S("contract-0", 0, "079189016370", 0.96)]),   # fine
+        F("cccd", [S("contract-0", 0, "001100000051", 0.96)]),   # fine
         F("phi",  [S("contract-0", 1, "", 0.0)]),                # weak
     ]
     assert pages_to_reread(fields) == {("contract-0", 1)}
@@ -106,7 +106,7 @@ def test_a_source_without_a_docid_is_skipped():
 # --- the whole plan ---------------------------------------------------------
 
 def test_a_fully_read_packet_needs_no_second_read():
-    fields = [F("cccd", [S("contract-0", 0, "079189016370", 0.96)]),
+    fields = [F("cccd", [S("contract-0", 0, "001100000051", 0.96)]),
               F("phi",  [S("contract-0", 1, "8.888.889", 0.84)])]
     p = plan(fields)
     assert p.weak == ()
@@ -130,7 +130,7 @@ def test_pages_come_out_sorted_so_the_plan_is_deterministic():
 
 def test_the_note_says_what_the_calls_would_buy():
     fields = [F("phi", [S("contract-0", 1, "", 0.0)]),
-              F("cccd", [S("contract-0", 1, "0929901205", 0.16)])]
+              F("cccd", [S("contract-0", 1, "0033000011", 0.16)])]
     note = plan(fields).note()
     assert "phi (unread)" in note
     assert "cccd (low-confidence)" in note
@@ -154,21 +154,21 @@ def test_merge_does_not_union_a_local_garbage_read_with_a_good_one():
     # Unioning would leave two readable copies disagreeing on the same page,
     # which _compare_reads treats as worst-wins -- turning a field the
     # escalation just fixed into a false mismatch.
-    local = [F("cccd", [S("contract-0", 0, "0929901205", 0.16)])]
-    idp   = [F("cccd", [S("contract-0", 0, "079303013038", 0.95)])]
+    local = [F("cccd", [S("contract-0", 0, "0033000011", 0.16)])]
+    idp   = [F("cccd", [S("contract-0", 0, "001100000091", 0.95)])]
     out = merge_sources(local, idp, {("contract-0", 0)})
-    assert [s["value"] for s in out[0]["sources"]] == ["079303013038"]
+    assert [s["value"] for s in out[0]["sources"]] == ["001100000091"]
 
 def test_merge_keeps_a_confident_read_on_a_page_that_was_not_escalated():
-    local = [F("cccd", [S("bbnt-0", 1, "079189016370", 0.91),
+    local = [F("cccd", [S("bbnt-0", 1, "001100000051", 0.91),
                         S("contract-0", 0, "", 0.0)])]
-    idp   = [F("cccd", [S("contract-0", 0, "079189016370", 0.94)])]
+    idp   = [F("cccd", [S("contract-0", 0, "001100000051", 0.94)])]
     out = merge_sources(local, idp, {("contract-0", 0)})
     vals = sorted((s["docId"], s["value"]) for s in out[0]["sources"])
-    assert vals == [("bbnt-0", "079189016370"), ("contract-0", "079189016370")]
+    assert vals == [("bbnt-0", "001100000051"), ("contract-0", "001100000051")]
 
 def test_merge_leaves_untouched_fields_alone():
-    local = [F("mst", [S("contract-0", 0, "079189016370", 0.96)])]
+    local = [F("mst", [S("contract-0", 0, "001100000051", 0.96)])]
     out = merge_sources(local, [], {("contract-0", 9)})
     assert out[0]["sources"] == local[0]["sources"]
 

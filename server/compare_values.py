@@ -9,7 +9,7 @@ quietly different answers on two screens.
 One deliberate departure from `verdict.ts`: identity numbers compare as digit
 *strings*, not as integers. `verdict.ts` normalises its `number` kind through
 `parseInt`, which is right for a quantity and wrong for a bank account -- it
-would pass `81001142415` against `0081001142415`. Money keeps the integer rule
+would pass `22000000415` against `0022000000415`. Money keeps the integer rule
 under its own kind.
 """
 from __future__ import annotations
