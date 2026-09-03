@@ -1692,3 +1692,88 @@ def test_assemble_docs_always_records_an_anchors_key():
     )
 
     assert docs[0]["anchors"] == {}
+
+
+# --- name candidates, recorded during the read (#01) --------------------------
+
+def _identity_block_page():
+    """A contractor block as a real contract prints it: the name on a bare line
+    with no label saying whose it is, the ID number labelled below it, and
+    VNG's signatory named far away at the top."""
+    def w(text, x, y):
+        return {"text": text, "x": x, "y": y, "w": len(text) * 18,
+                "h": 40, "conf": 95.0}
+    return (
+        [w("HỢP", 100, 40), w("ĐỒNG", 180, 40), w("DỊCH", 280, 40),
+         w("VỤ", 370, 40)]
+        + [w("Bà", 100, 120), w("TRAN", 150, 120), w("THI", 250, 120),
+           w("HAI", 320, 120), w("Trưởng", 400, 120), w("Phòng", 520, 120)]
+        + [w("NGUYEN", 100, 600), w("VAN", 250, 600), w("MOT", 340, 600)]
+        + [w("Ngày", 100, 660), w("sinh:", 190, 660), w("01/01/1990", 280, 660)]
+        + [w("CCCD", 100, 720), w("số:", 200, 720), w("001100000001", 280, 720)]
+    )
+
+
+def test_name_candidates_records_the_lines_around_an_id_label():
+    """#01 cannot discover a name -- it has no shape, and on a real contract no
+    label says whose it is. So the lines near the ID label are recorded during
+    the read, for the roster's own name to be looked for in later."""
+    from ocr_extract import name_candidates
+
+    found = name_candidates({0: _identity_block_page()})
+
+    texts = [c["text"] for c in found]
+    assert any("NGUYEN VAN MOT" in t for t in texts)
+    assert all(c["page"] == 0 for c in found)
+    assert all(c["bbox"]["width"] > 0 and c["bbox"]["height"] > 0 for c in found)
+
+
+def test_name_candidates_stay_near_the_label():
+    """Kept small deliberately: the manifest is read on every request, and
+    recording the page's words would be both large and the discovery problem
+    over again. VNG's signatory at the top of the page is far from the ID
+    label and is not recorded."""
+    from ocr_extract import name_candidates
+
+    found = name_candidates({0: _identity_block_page()})
+
+    from ocr_extract import _MAX_NAME_CANDIDATES
+
+    assert len(found) <= _MAX_NAME_CANDIDATES
+    assert not any("TRAN THI HAI" in c["text"] for c in found)
+
+
+def test_name_candidates_are_empty_when_no_id_label_is_found():
+    from ocr_extract import name_candidates
+
+    assert name_candidates({0: [
+        {"text": "Tổng", "x": 10, "y": 10, "w": 40, "h": 12, "conf": 90},
+    ]}) == []
+
+
+def test_assemble_docs_records_name_candidates():
+    """Same reason as `anchors`: the words are only in hand during the read."""
+    from ocr_extract import assemble_docs
+
+    docs, _, _ = assemble_docs(
+        [{"kind": "contract", "label": "Hợp đồng", "pages": [0]}],
+        [{"src": "pg0.png", "width": 1000, "height": 1400}],
+        {0: _identity_block_page()},
+    )
+
+    assert any("NGUYEN VAN MOT" in c["text"]
+               for c in docs[0]["nameCandidates"])
+
+
+def test_assemble_docs_always_records_a_name_candidates_key():
+    """A missing key and `nothing near an ID label on this document` are
+    different answers."""
+    from ocr_extract import assemble_docs
+
+    docs, _, _ = assemble_docs(
+        [{"kind": "pit", "label": "Tra cứu thuế", "pages": [0]}],
+        [{"src": "pg0.png", "width": 1000, "height": 1400}],
+        {0: [{"text": "Tổng", "x": 10, "y": 10, "w": 40, "h": 12, "conf": 90}]},
+    )
+
+    assert docs[0]["nameCandidates"] == []

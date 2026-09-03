@@ -890,3 +890,77 @@ class TestPendingReason:
         payload = ev.as_dict(row)
         assert any(c["pendingReason"] == "not-automated"
                    for c in payload["cells"])
+
+
+# --- #01: confirm the bảng kê's name rather than discover one -----------------
+
+class TestTheNameIsConfirmedRatherThanDiscovered:
+    """#01's field is the only one with no pattern, and on a real contract no
+    label says whose the name on the bare line is -- so it answered `?` on
+    documents that plainly carried the name. It cannot discover which name is
+    the contractor's, but it can confirm the one the bảng kê already states.
+    """
+
+    ROSTER = dict(ROSTER, name="NGUYEN VAN MOT")
+
+    @staticmethod
+    def packet(candidates, sources=()):
+        contract = doc("contract-0", "contract")
+        contract["nameCandidates"] = list(candidates)
+        return manifest(
+            docs=[contract],
+            fields=[("hoten", "NGUYEN VAN MOT", list(sources))],
+        )
+
+    @staticmethod
+    def candidate(text, page=0):
+        return {"page": page, "text": text,
+                "bbox": {"x": 40, "y": 600, "width": 220, "height": 40}}
+
+    def cell(self, packet, roster=None):
+        results = by_stt(ev.evaluate_packet(packet, roster or self.ROSTER))
+        return cells_by_doc(results[1])[cr.CONTRACT]
+
+    def test_the_rosters_name_on_the_document_answers_the_criterion(self):
+        cell = self.cell(self.packet([self.candidate("NGUYEN VAN MOT")]))
+        assert cell.status is Status.OK
+        assert cell.value == "NGUYEN VAN MOT"
+
+    def test_it_points_at_the_line_it_found(self):
+        """A tick a reviewer cannot check is worth nothing."""
+        cell = self.cell(self.packet([self.candidate("NGUYEN VAN MOT")]))
+        assert cell.evidence
+        assert cell.evidence[-1].bbox == {"x": 40, "y": 600,
+                                          "width": 220, "height": 40}
+
+    def test_someone_elses_name_on_the_document_does_not_answer_it(self):
+        cell = self.cell(self.packet([self.candidate("TRAN THI HAI")]))
+        assert cell.status is Status.PENDING
+
+    def test_a_packet_that_matched_no_roster_row_confirms_nothing(self):
+        """There is nothing to search for, and falling back to `find any name`
+        is the discovery problem this exists to avoid."""
+        results = by_stt(ev.evaluate_packet(
+            self.packet([self.candidate("NGUYEN VAN MOT")]), None))
+        assert cells_by_doc(results[1])[cr.CONTRACT].status is Status.PENDING
+
+    def test_a_name_that_did_read_is_never_overruled(self):
+        """Confirmation fills a gap; it does not overturn the reader. A
+        contract naming a different CTV is a mis-split, and must keep saying so
+        even though the roster's name is printed elsewhere on the page."""
+        packet = self.packet(
+            [self.candidate("NGUYEN VAN MOT")],
+            sources=[source("contract-0", "TRAN THI HAI")],
+        )
+        assert self.cell(packet).status is Status.NO
+
+    def test_a_document_recording_no_candidates_is_still_pending(self):
+        cell = self.cell(self.packet([]))
+        assert cell.status is Status.PENDING
+
+    def test_a_document_predating_the_recorder_is_still_pending(self):
+        """`cccd_ingest` attaches card documents that carry no candidates key
+        at all, and manifests written before this existed have none either."""
+        packet = manifest(docs=[doc("contract-0", "contract")],
+                          fields=[("hoten", "NGUYEN VAN MOT", [])])
+        assert self.cell(packet).status is Status.PENDING

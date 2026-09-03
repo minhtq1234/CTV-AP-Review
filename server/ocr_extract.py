@@ -1723,6 +1723,85 @@ def _escalate_weak_fields(
     return merge_sources(fields, extract_fields(swapped, {}), set(reread))
 
 
+# ---------------------------------------------------------------------------
+# Where the contractor's name could be (#01), recorded during the read
+# ---------------------------------------------------------------------------
+
+#: How far from an identity label a line is still a candidate for the
+#: contractor's name, in multiples of that label line's own height. Measured in
+#: line-heights rather than line indices for the reason `group_lines` makes
+#: obvious: index distance ignores whitespace, so "three lines above" can be
+#: three lines up or half a page up. A contractor block prints the name within
+#: about three lines of the ID number; VNG's signatory is printed far from it.
+_NAME_CANDIDATE_HEIGHTS = 5
+
+#: Longest line kept. A manifest-size guard rather than a name heuristic -- the
+#: manifest is read on every request -- and a printed name line is short.
+_NAME_CANDIDATE_CHARS = 80
+
+#: Most lines kept per document, nearest to a label first. Measured on case
+#: `935e37e5` after a cap of 8 left #01 pending on three BBNTs that plainly
+#: carried the name: a BBNT labels the identity block twice, so 7-16 lines fall
+#: within reach and the name line -- 4.5-4.9 line-heights out -- sat below the
+#: eight nearest. At 111 bytes a line this costs ~2.7 KB per document, against
+#: a manifest that is ~8 KB without it.
+_MAX_NAME_CANDIDATES = 24
+
+
+def _identity_anchors() -> list[str]:
+    """The labels marking the individual's own identity block.
+
+    Both the CCCD's and the personal MST's: the `mst` spec records that its
+    MSTTNCN label survives OCR where the CCCD label sometimes does not, and
+    either lands on the same block. Read off `FIELD_SPECS` rather than copied,
+    so a label added there is found here too.
+    """
+    return [anchor for spec in FIELD_SPECS if spec["key"] in ("cccd", "mst")
+            for anchor in spec["anchors"]]
+
+
+def name_candidates(pages: dict[int, list[dict]]) -> list[dict]:
+    """`[{"page", "text", "bbox"}]` -- the lines near this document's identity
+    labels, for #01 to look for the bảng kê's name in later.
+
+    #01 is the one field that cannot be discovered. It has no shape (`hoten` is
+    the only `FIELD_SPECS` entry with `"patterns": []`), and on a real contract
+    no label says whose the name on the bare line is -- the contractor's looks
+    exactly like VNG's signatory printed two lines above. So this records only
+    *where a name could be* and leaves *which name* to
+    `confirm_expected.confirm_name`, once `pipeline.match_roster` has
+    established who the packet belongs to.
+
+    It has to happen during the read, for the same reason `signature_anchors`
+    and `semantic_read` do it: the saved manifest keeps only
+    `{src, width, height}` per page, so there are no words left to search
+    afterwards. And it stays a handful of short lines rather than the page's
+    words, because the manifest is read on every request.
+    """
+    anchors = _identity_anchors()
+    found: list[tuple[float, dict]] = []
+    for page, words in sorted(pages.items()):
+        lines = group_lines(words)
+        boxes = [union_bbox(line) for line in lines]
+        labelled = [
+            i for i, line in enumerate(lines)
+            if any(_anchor_word_span(line, a) for a in anchors)
+        ]
+        if not labelled:
+            continue
+        for j, line in enumerate(lines):
+            gap = min(abs(boxes[j]["y"] - boxes[i]["y"])
+                      / max(1, boxes[i]["height"]) for i in labelled)
+            if gap > _NAME_CANDIDATE_HEIGHTS:
+                continue
+            text = " ".join(w["text"] for w in line).strip()
+            if not text or len(text) > _NAME_CANDIDATE_CHARS:
+                continue
+            found.append((gap, {"page": page, "text": text, "bbox": boxes[j]}))
+    found.sort(key=lambda pair: pair[0])
+    return [candidate for _, candidate in found[:_MAX_NAME_CANDIDATES]]
+
+
 def assemble_docs(
     segments: list[dict],
     pages: list[dict],
@@ -1773,6 +1852,10 @@ def assemble_docs(
             words_by_doc[doc_id],
             {j: pages[pk].get("height") for j, pk in enumerate(seg["pages"])},
         )
+        # Same reason as `anchors` above, and the same caveat: `cccd_ingest`
+        # attaches card documents afterwards that carry no `nameCandidates`
+        # key, so a reader must use `.get(...) or []`.
+        docs[-1]["nameCandidates"] = name_candidates(words_by_doc[doc_id])
     return docs, words_by_doc, page_of
 
 

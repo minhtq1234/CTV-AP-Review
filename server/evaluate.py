@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 import compare_values as cv
+import confirm_expected as ce
 import criteria as cr
 from criteria import Criterion, Status
 
@@ -273,7 +274,65 @@ def _document_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
         return _reference_cell(criterion, ctx)
     if name == cr.PURCHASE:
         return _batch_level_cell(criterion, name)
-    return _scanned_cell(criterion, name, ctx)
+    cell = _scanned_cell(criterion, name, ctx)
+    # A name that would not read gets one more question asked of it -- not
+    # "whose name is on this page?", which is unanswerable, but "is the one the
+    # bảng kê names on it?". Only from PENDING: confirmation fills a gap, it
+    # never overturns a read (see `_confirmed_name_cell`).
+    if cell.status is Status.PENDING and FIELD_BY_STT.get(criterion.stt) == "hoten":
+        return _confirmed_name_cell(criterion, name, ctx) or cell
+    return cell
+
+
+def _confirmed_name_cell(
+    criterion: Criterion, name: str, ctx: _Context,
+) -> Cell | None:
+    """#01 answered by confirming the roster's name on the document, or None.
+
+    #01 is the one criterion whose value cannot be discovered: `hoten` is the
+    only `FIELD_SPECS` entry with no pattern, and a real contract carries the
+    contractor's name on a bare line that looks exactly like VNG's signatory
+    two lines above it. So it required a label saying whose name it was, and
+    where there is none it answered `?` on documents that plainly carry the
+    name.
+
+    It does not need to discover the name. The bảng kê states it, and a
+    *specific* name is safe to search for where "find any name" is not:
+    measured across the 79 distinct people on disk, no two different people
+    reach `confirm_expected`'s threshold.
+
+    Three restrictions, each closing a way this could certify a lie:
+
+    * only from PENDING, so a read that disagrees still says so -- a contract
+      naming a different CTV is a mis-split and must not be talked out of it by
+      the roster's name appearing elsewhere on the same page;
+    * only against lines recorded near an identity label during the read, not
+      the whole page;
+    * never without a roster row, because then there is nothing to confirm.
+
+    An `ok` here means *the bảng kê's name is printed on this document*, which
+    is what #01 asks. It is not the name read independently.
+    """
+    expected = ctx.reference(criterion.stt)
+    if not expected:
+        return None
+    for document in ctx.documents_for(name):
+        for candidate in document.get("nameCandidates") or []:
+            text = str(candidate.get("text", "") or "")
+            hit = ce.confirm_name(expected, text.split())
+            if hit is None:
+                continue
+            page = int(candidate.get("page", 0) or 0)
+            bbox = candidate.get("bbox")
+            return Cell(
+                name, Status.OK, expected,
+                f"Tên trên bảng kê ({expected}) có trên chứng từ "
+                f"(mức trùng {hit.score:.2f}). Chứng từ không có nhãn tên nên "
+                "chỉ đối chiếu được bằng cách tìm đúng tên này.",
+                (Evidence(document.get("id", ""), page, bbox, expected,
+                          None, "ocr"),),
+            )
+    return None
 
 
 def _reference_cell(criterion: Criterion, ctx: _Context) -> Cell:
