@@ -101,7 +101,7 @@ class TestTotals:
 
     def test_the_real_july_reconciliation(self):
         """Two CTVs summing to the total printed on the purchase listing."""
-        second = (2, "079303009458", "079303009458", "01/01/1990", "222",
+        second = (2, "001100000012", "001100000012", "01/01/1990", "222",
                   5_000_000, "không", 500_000, 4_500_000)
         cells = by_stt(sc.assess(
             sheet([GOOD, second]),
@@ -118,14 +118,14 @@ class TestSharedValues:
         assert cells[30].status is Status.OK
 
     def test_a_shared_cccd_is_a_finding_naming_the_rows(self):
-        twin = (2, GOOD[1], "079303009459", "01/01/1990", "222",
+        twin = (2, GOOD[1], "001100000013", "01/01/1990", "222",
                 1_000_000, "không", 100_000, 900_000)
         cells = by_stt(sc.assess(sheet([GOOD, twin])))
         assert cells[30].status is Status.NO
         assert any("dòng 1+2" in d for d in cells[30].detail)
 
     def test_a_shared_bank_account_is_a_finding(self):
-        twin = (2, "079303009459", "079303009459", "01/01/1990", GOOD[4],
+        twin = (2, "001100000013", "001100000013", "01/01/1990", GOOD[4],
                 1_000_000, "không", 100_000, 900_000)
         cells = by_stt(sc.assess(sheet([GOOD, twin])))
         assert cells[30].status is Status.NO
@@ -147,7 +147,7 @@ class TestDuplicatePayment:
     def test_packets_with_distinct_identities_pass(self):
         cells = by_stt(sc.assess(
             sheet([GOOD]),
-            packets=[packet(0, "079303009457"), packet(1, "001204004530")],
+            packets=[packet(0, "001100000011"), packet(1, "001204004530")],
         ))
         assert cells[31].status is Status.OK
 
@@ -155,8 +155,8 @@ class TestDuplicatePayment:
         cells = by_stt(sc.assess(
             sheet([GOOD]),
             packets=[
-                packet(0, "079303009457", duplicate_of=[1]),
-                packet(1, "079303009457", duplicate_of=[0]),
+                packet(0, "001100000011", duplicate_of=[1]),
+                packet(1, "001100000011", duplicate_of=[0]),
             ],
         ))
         assert cells[31].status is Status.NO
@@ -169,8 +169,8 @@ class TestDuplicatePayment:
         appear on two packets each and not one packet carries the flag. The
         criterion must read the identities, not trust a persisted flag."""
         cells = by_stt(sc.assess(sheet([GOOD]), packets=[
-            unflagged(0, "079303009457"),
-            unflagged(1, "079303009457"),
+            unflagged(0, "001100000011"),
+            unflagged(1, "001100000011"),
             unflagged(2, "001204004530"),
         ]))
         assert cells[31].status is Status.NO
@@ -269,8 +269,8 @@ class TestSerialisation:
     def test_detail_survives_as_a_list(self):
         cells = by_stt(sc.assess(
             sheet([GOOD]),
-            packets=[packet(0, "079303009457", duplicate_of=[1]),
-                     packet(1, "079303009457", duplicate_of=[0])],
+            packets=[packet(0, "001100000011", duplicate_of=[1]),
+                     packet(1, "001100000011", duplicate_of=[0])],
         ))
         assert sc.as_dict(cells[31])["detail"] == ["gói 1 + 2"]
 
@@ -296,7 +296,7 @@ class TestSerialisation:
     def test_nothing_is_reported_missing_once_supplied(self):
         payload = sc.as_payload(
             sheet([GOOD]),
-            packets=[packet(0, "079303009457")],
+            packets=[packet(0, "001100000011")],
             purchase_total={"gross": 10_000_000},
         )
         assert payload["missing"] == []
@@ -311,7 +311,7 @@ class TestDetailIsWhatToLookAt:
         cases = (
             ([], None, None),
             (sheet([GOOD]), None, None),
-            (sheet([GOOD]), [packet(0, "079303009457")], {"gross": 10_000_000}),
+            (sheet([GOOD]), [packet(0, "001100000011")], {"gross": 10_000_000}),
             (sheet([GOOD]), [packet(0), packet(1)], None),
             (sheet([GOOD], total=(10_000_000, 1_000_000, 8_000_000)), None, None),
         )

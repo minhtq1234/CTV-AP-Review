@@ -42,7 +42,7 @@ def sheet(people, *, residence=False, total=None):
     return rows
 
 
-GOOD = (1, "079303009457", "079303009457", "03/09/2003", "0081001142415",
+GOOD = (1, "001100000011", "001100000011", "03/09/2003", "0081001142415",
         10_000_000, "không", 1_000_000, 9_000_000)
 
 
@@ -64,7 +64,7 @@ class TestLayouts:
 
 class TestAmounts:
     def test_recomputes_the_formula_rather_than_trusting_it(self):
-        bad = (2, "079303009458", "079303009458", "03/09/2003", "111",
+        bad = (2, "001100000012", "001100000012", "03/09/2003", "111",
                10_000_000, "không", 1_000_000, 8_000_000)  # net is 1m short
         report = rc.check(sheet([GOOD, bad]))
         assert "formula-mismatch" in codes(report)
@@ -89,14 +89,14 @@ class TestAmounts:
             assert not [c for c in codes(report) if c.startswith("pit-zero")]
 
     def test_missing_amounts_are_reported_separately(self):
-        blank = (2, "079303009458", "079303009458", "03/09/2003", "111",
+        blank = (2, "001100000012", "001100000012", "03/09/2003", "111",
                  None, "không", None, None)
         assert "amount-missing" in codes(rc.check(sheet([GOOD, blank])))
 
 
 class TestSharedValues:
     def test_two_people_sharing_a_cccd(self):
-        twin = (2, "079303009457", "079303009458", "03/09/2003", "222",
+        twin = (2, "001100000011", "001100000012", "03/09/2003", "222",
                 1_000_000, "không", 100_000, 900_000)
         report = rc.check(sheet([GOOD, twin]))
         assert "duplicate-cccd" in codes(report)
@@ -105,14 +105,14 @@ class TestSharedValues:
         ).rows
 
     def test_two_people_sharing_a_bank_account(self):
-        twin = (2, "079303009458", "079303009458", "03/09/2003",
+        twin = (2, "001100000012", "001100000012", "03/09/2003",
                 "0081001142415", 1_000_000, "không", 100_000, 900_000)
         assert "duplicate-account" in codes(rc.check(sheet([GOOD, twin])))
 
 
 class TestFormats:
     def test_a_short_cccd_is_flagged_with_its_length(self):
-        short = (2, "0793030094", "079303009458", "03/09/2003", "111",
+        short = (2, "0011000011", "001100000012", "03/09/2003", "111",
                  1_000_000, "không", 100_000, 900_000)
         report = rc.check(sheet([GOOD, short]))
         assert "cccd-format" in codes(report)
@@ -121,12 +121,12 @@ class TestFormats:
         ).rows[0]
 
     def test_a_malformed_date_of_birth(self):
-        odd = (2, "079303009458", "079303009458", "2003-09-03", "111",
+        odd = (2, "001100000012", "001100000012", "2003-09-03", "111",
                1_000_000, "không", 100_000, 900_000)
         assert "dob-format" in codes(rc.check(sheet([GOOD, odd])))
 
     def test_a_missing_account(self):
-        none = (2, "079303009458", "079303009458", "03/09/2003", "",
+        none = (2, "001100000012", "001100000012", "03/09/2003", "",
                 1_000_000, "không", 100_000, 900_000)
         assert "account-missing" in codes(rc.check(sheet([GOOD, none])))
 

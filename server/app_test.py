@@ -421,7 +421,7 @@ if __name__ == "__main__":
     print("BASIC OK (run monkeypatch tests via pytest)")
 
 
-def _bang_ke_bytes(people=((1, "079303009457", 10_000_000, 1_000_000, 9_000_000),)):
+def _bang_ke_bytes(people=((1, "001100000011", 10_000_000, 1_000_000, 9_000_000),)):
     """A roster shaped like Acc's real one, as an actual workbook."""
     content = io.BytesIO()
     workbook = openpyxl.Workbook()
@@ -452,7 +452,7 @@ def _fake_pipeline_matched(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
             "packets": [{"index": 0, "name": "Người 1", "pages": [8, 15],
                          "confidence": "green", "flags": [], "labels": [],
                          "matchedBy": "cccd",
-                         "rosterIdentity": {"cccd": "079303009457",
+                         "rosterIdentity": {"cccd": "001100000011",
                                             "name": "Người 1"}}],
             "cccdWorkbook": None}
 
@@ -502,8 +502,8 @@ class TestSummaryEndpoint:
             assert item["message"]
 
     def test_the_duplicate_check_reads_the_real_roster(self, tmp_path, monkeypatch):
-        twins = ((1, "079303009457", 10_000_000, 1_000_000, 9_000_000),
-                 (2, "079303009457", 5_000_000, 500_000, 4_500_000))
+        twins = ((1, "001100000011", 10_000_000, 1_000_000, 9_000_000),
+                 (2, "001100000011", 5_000_000, 500_000, 4_500_000))
         c, cid = _case_with_roster(monkeypatch, tmp_path, _bang_ke_bytes(twins))
 
         body = c.get(f"/api/cases/{cid}/summary").json()

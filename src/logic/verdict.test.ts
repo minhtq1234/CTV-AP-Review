@@ -34,7 +34,7 @@ describe('compareField', () => {
       compareField(expected, pred(read), 'person')
 
     it('identical is a match', () => {
-      expect(p('Trần Thanh Vân Anh', 'Trần Thanh Vân Anh')).toBe('match')
+      expect(p('Phạm Hoài Vân Anh', 'Phạm Hoài Vân Anh')).toBe('match')
     })
 
     it('a tone-mark-only difference is never a pass', () => {
@@ -55,7 +55,7 @@ describe('compareField', () => {
     })
 
     it('a single mangled letter still reads as close', () => {
-      expect(p('Trần Thanh Vân Anh', 'Trần Thanh Vân Anb')).toBe('fuzzy')
+      expect(p('Phạm Hoài Vân Anh', 'Phạm Hoài Vân Anb')).toBe('fuzzy')
     })
 
     it('company-suffix stripping does not apply to people', () => {

@@ -191,7 +191,7 @@ def _src(doc_id, value, conf=0.95):
 ROSTER = sheet([GOOD])
 DISAGREEING = {
     "name": "FA.pdf",
-    "packets": [_packet(0, "Người 1", "079303009457", None, None)],
+    "packets": [_packet(0, "Người 1", "001100000011", None, None)],
 }
 DISAGREEING_MANIFESTS = {
     0: _manifest(
@@ -269,7 +269,7 @@ class TestTheEngineFindingsReachTheReport:
     def test_a_clean_packet_is_still_excluded(self):
         clean = {
             "name": "FA.pdf",
-            "packets": [_packet(0, "Người 1", "079303009457", None, None)],
+            "packets": [_packet(0, "Người 1", "001100000011", None, None)],
         }
         manifests = {0: _manifest(
             [_doc("contract-0", "contract", "Hợp đồng dịch vụ"),
@@ -310,7 +310,7 @@ class TestAMissingDocumentIsOneFactNotFive:
 
     def _packet_missing_everything(self):
         case = {"name": "FA.pdf",
-                "packets": [_packet(0, "Người 1", "079303009457", None, None)]}
+                "packets": [_packet(0, "Người 1", "001100000011", None, None)]}
         manifests = {0: _manifest(
             [_doc("contract-0", "contract", "Hợp đồng dịch vụ")],
             [("hoten", "Họ tên", "person", "Người 1",

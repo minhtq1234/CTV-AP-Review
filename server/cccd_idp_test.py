@@ -30,7 +30,7 @@ def envelope(values, *, classification=True, title="Căn cước công dân"):
 
 
 ROSTER = [
-    {"name": "Trần Thanh Vân Anh", "cccd": "079303009457"},
+    {"name": "Phạm Hoài Vân Anh", "cccd": "001100000011"},
     {"name": "Nguyễn Văn An", "cccd": "001204004530"},
     {"name": "Lê Thị Thu Hà", "cccd": "042198013828"},
 ]
@@ -39,13 +39,13 @@ ROSTER = [
 class ParsingResults(unittest.TestCase):
     def test_reads_the_named_fields(self):
         read = idp.parse_result(envelope({
-            "id_number": "079303009457",
-            "name": "Trần Thanh Vân Anh",
+            "id_number": "001100000011",
+            "name": "Phạm Hoài Vân Anh",
             "dob": "03/09/2003",
             "address": "somewhere",
         }))
-        self.assertEqual(read.id_number, "079303009457")
-        self.assertEqual(read.name, "Trần Thanh Vân Anh")
+        self.assertEqual(read.id_number, "001100000011")
+        self.assertEqual(read.name, "Phạm Hoài Vân Anh")
         self.assertEqual(read.dob, "03/09/2003")
         self.assertTrue(read.has_identity)
         self.assertIn("address", read.fields)
@@ -67,8 +67,8 @@ class ParsingResults(unittest.TestCase):
         self.assertEqual(read.id_number, "")
 
     def test_spaced_numbers_are_normalised(self):
-        read = idp.parse_result(envelope({"id_number": "079 303 009 457"}))
-        self.assertEqual(read.id_number, "079303009457")
+        read = idp.parse_result(envelope({"id_number": "001 100 000 011"}))
+        self.assertEqual(read.id_number, "001100000011")
 
 
 class Deciding(unittest.TestCase):
@@ -80,8 +80,8 @@ class Deciding(unittest.TestCase):
 
     def test_number_and_name_agreeing_may_attach(self):
         decision = self.decide({
-            "id_number": "079303009457",
-            "name": "Trần Thanh Vân Anh",
+            "id_number": "001100000011",
+            "name": "Phạm Hoài Vân Anh",
         })
         self.assertEqual(decision.action, "attach")
         self.assertEqual(decision.roster_index, 0)
@@ -90,14 +90,14 @@ class Deciding(unittest.TestCase):
     def test_accent_loss_still_agrees(self):
         # OCR drops Vietnamese tone marks routinely; that alone must not block.
         decision = self.decide({
-            "id_number": "079303009457",
-            "name": "TRAN THANH VAN ANH",
+            "id_number": "001100000011",
+            "name": "PHAM HOAI VAN ANH",
         })
         self.assertEqual(decision.action, "attach")
 
     def test_a_disagreeing_name_never_attaches(self):
         decision = self.decide({
-            "id_number": "079303009457",
+            "id_number": "001100000011",
             "name": "Nguyễn Văn An",
         })
         self.assertEqual(decision.action, "review")
@@ -105,14 +105,14 @@ class Deciding(unittest.TestCase):
         self.assertEqual(decision.roster_index, 0)
 
     def test_a_number_alone_is_not_enough(self):
-        decision = self.decide({"id_number": "079303009457"})
+        decision = self.decide({"id_number": "001100000011"})
         self.assertEqual(decision.action, "review")
         self.assertEqual(decision.reason, "no-name-to-corroborate")
 
     def test_a_number_matching_nobody_goes_to_review(self):
         decision = self.decide({
             "id_number": "999999999999",
-            "name": "Trần Thanh Vân Anh",
+            "name": "Phạm Hoài Vân Anh",
         })
         self.assertEqual(decision.action, "review")
         self.assertEqual(decision.reason, "no-roster-match")
@@ -123,16 +123,16 @@ class Deciding(unittest.TestCase):
 
     def test_an_unrecognised_document_goes_to_review(self):
         decision = self.decide(
-            {"id_number": "079303009457", "name": "Trần Thanh Vân Anh"},
+            {"id_number": "001100000011", "name": "Phạm Hoài Vân Anh"},
             classification=False,
         )
         self.assertEqual(decision.reason, "not-recognised-as-id")
 
     def test_a_duplicated_roster_cccd_is_ambiguous(self):
-        roster = ROSTER + [{"name": "Someone Else", "cccd": "079303009457"}]
+        roster = ROSTER + [{"name": "Someone Else", "cccd": "001100000011"}]
         read = idp.parse_result(envelope({
-            "id_number": "079303009457",
-            "name": "Trần Thanh Vân Anh",
+            "id_number": "001100000011",
+            "name": "Phạm Hoài Vân Anh",
         }))
         self.assertEqual(idp.decide(read, roster).reason, "duplicate-roster-cccd")
 
@@ -207,10 +207,10 @@ class AdaptingToThePipeline(unittest.TestCase):
         return idp.as_image_ocr(idp.parse_result(payload))
 
     def test_a_face_with_a_number_is_a_front(self):
-        ocr = self.ocr({"id_number": "079303009457", "name": "Trần Thanh Vân Anh"})
+        ocr = self.ocr({"id_number": "001100000011", "name": "Phạm Hoài Vân Anh"})
         self.assertEqual(ocr.side, "front")
-        self.assertEqual(ocr.cccd, "079303009457")
-        self.assertEqual(ocr.name, "Trần Thanh Vân Anh")
+        self.assertEqual(ocr.cccd, "001100000011")
+        self.assertEqual(ocr.name, "Phạm Hoài Vân Anh")
         self.assertGreater(ocr.cccd_confidence, 0.9)
 
     def test_issue_and_authority_fields_make_a_back(self):
@@ -223,25 +223,25 @@ class AdaptingToThePipeline(unittest.TestCase):
         self.assertEqual(self.ocr({"address": "somewhere"}).side, "unknown")
 
     def test_corner_coordinates_become_a_box(self):
-        ocr = self.ocr({"id_number": "079303009457"}, coordinates=[10, 20, 110, 60])
+        ocr = self.ocr({"id_number": "001100000011"}, coordinates=[10, 20, 110, 60])
         self.assertEqual(
             ocr.number_bbox, {"x": 10, "y": 20, "width": 100, "height": 40}
         )
 
     def test_origin_and_size_coordinates_also_work(self):
         # (x, y, w, h): the last two do not exceed the first two
-        ocr = self.ocr({"id_number": "079303009457"}, coordinates=[100, 200, 80, 30])
+        ocr = self.ocr({"id_number": "001100000011"}, coordinates=[100, 200, 80, 30])
         self.assertEqual(
             ocr.number_bbox, {"x": 100, "y": 200, "width": 80, "height": 30}
         )
 
     def test_a_missing_or_degenerate_box_is_none(self):
         self.assertIsNone(
-            self.ocr({"id_number": "079303009457"}, coordinates=self.OMIT).number_bbox
+            self.ocr({"id_number": "001100000011"}, coordinates=self.OMIT).number_bbox
         )
         self.assertIsNone(
-            self.ocr({"id_number": "079303009457"}, coordinates=[5, 5, 0, 0]).number_bbox
+            self.ocr({"id_number": "001100000011"}, coordinates=[5, 5, 0, 0]).number_bbox
         )
         self.assertIsNone(
-            self.ocr({"id_number": "079303009457"}, coordinates=["a", "b", "c", "d"]).number_bbox
+            self.ocr({"id_number": "001100000011"}, coordinates=["a", "b", "c", "d"]).number_bbox
         )

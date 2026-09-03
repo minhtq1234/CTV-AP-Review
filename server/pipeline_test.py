@@ -343,7 +343,7 @@ def _packet(index, cccd="", name=""):
 def test_two_packets_claiming_one_roster_row_are_both_flagged():
     # The bảng kê holds one row per person -- one payment. Both packets must be
     # told about each other; neither may look clean on its own.
-    packets = [_packet(0, "079303009457"), _packet(1, "079303009457")]
+    packets = [_packet(0, "001100000011"), _packet(1, "001100000011")]
 
     pl.flag_duplicate_identities(packets)
 
@@ -353,7 +353,7 @@ def test_two_packets_claiming_one_roster_row_are_both_flagged():
 
 
 def test_a_unique_identity_is_not_flagged():
-    packets = [_packet(0, "079303009457"), _packet(1, "001204004530")]
+    packets = [_packet(0, "001100000011"), _packet(1, "001204004530")]
 
     pl.flag_duplicate_identities(packets)
 
@@ -372,8 +372,8 @@ def test_packets_with_no_roster_row_are_left_alone():
 def test_a_name_only_match_still_collides():
     # A packet matched by name has no CCCD on its roster identity; the name is
     # then the only key available, and two of them still contend for one row.
-    packets = [_packet(0, name="Trần Thanh Vân Anh"),
-               _packet(1, name="TRAN THANH VAN ANH")]
+    packets = [_packet(0, name="Phạm Hoài Vân Anh"),
+               _packet(1, name="PHAM HOAI VAN ANH")]
 
     pl.flag_duplicate_identities(packets)
 
@@ -381,7 +381,7 @@ def test_a_name_only_match_still_collides():
 
 
 def test_three_packets_all_reference_each_other():
-    packets = [_packet(i, "079303009457") for i in range(3)]
+    packets = [_packet(i, "001100000011") for i in range(3)]
 
     pl.flag_duplicate_identities(packets)
 
@@ -703,7 +703,7 @@ _MST_ROWS = [
      "Phí dịch vụ", "Note"],
     ["Phan Tấn Tài", "060203014847", "060203014847", "01/01/2003",
      "19001234567", "1.000.000", "Demo"],
-    ["Nguyễn Văn B", "079303009457", "8765432109", "02/02/1990",
+    ["Nguyễn Văn B", "001100000011", "8765432109", "02/02/1990",
      "19009876543", "2.000.000", "Demo"],
 ]
 
@@ -734,7 +734,7 @@ class TestMatchingOnTheMst:
         by_cccd, by_name, by_mst = self._index()
 
         row, how = pl.match_roster(
-            "079303009457", "", by_cccd, by_name, mst="060203014847",
+            "001100000011", "", by_cccd, by_name, mst="060203014847",
             by_mst=by_mst,
         )
 
