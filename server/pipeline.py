@@ -197,26 +197,40 @@ def digits(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")
 
 
-def build_roster_index(
-    rows: list[list],
+def index_roster_rows(
+    parsed: list[dict[str, str]],
 ) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
-    """Build `{digits(cccd): row}`, `{norm(name): row}` and `{digits(mst): row}`
-    indexes once from the roster, for `match_roster` to look packets up in (by
-    identity, instead of by position). First row wins on a repeated key."""
+    """Index ALREADY-PARSED roster rows by CCCD, name and MST.
+
+    Split out of `build_roster_index` so a caller holding parsed rows -- the
+    CCCD ingest does, and `sheet_identity` needs the same three indexes to
+    join a sheet screenshot to its person -- reuses this key logic instead of
+    writing a third copy of it. First row wins on a repeated key.
+    """
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     by_mst: dict[str, dict] = {}
-    for row in all_roster_rows(rows):
-        c = digits(row["cccd"])
+    for row in parsed:
+        c = digits(row.get("cccd", ""))
         if c and c not in by_cccd:
             by_cccd[c] = row
-        n = oc.norm(row["name"]) if row["name"] else ""
+        name = row.get("name", "")
+        n = oc.norm(name) if name else ""
         if n and n not in by_name:
             by_name[n] = row
         m = digits(row.get("mst", ""))
         if m and m not in by_mst:
             by_mst[m] = row
     return by_cccd, by_name, by_mst
+
+
+def build_roster_index(
+    rows: list[list],
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+    """Build `{digits(cccd): row}`, `{norm(name): row}` and `{digits(mst): row}`
+    indexes once from the roster, for `match_roster` to look packets up in (by
+    identity, instead of by position)."""
+    return index_roster_rows(all_roster_rows(rows))
 
 
 def match_roster(

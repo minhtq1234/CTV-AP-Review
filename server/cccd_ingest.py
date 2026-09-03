@@ -307,6 +307,19 @@ def _owned_doc_id(candidate_id: str, side: str) -> str:
     return f"cccd-excel-{candidate_id}-{side}"
 
 
+#: Document id prefixes this ingest owns, and therefore cleans up when the
+#: workbook is read again. Two families, because two different things in the
+#: workbook become evidence: a card side, paired and OCR'd and resolved by the
+#: number on its face; and a sheet screenshot, which has no face and is
+#: attributed by the identity written on its own row (`sheet_identity`). Both
+#: are written by this ingest and must not survive it going stale.
+_OWNED_PREFIXES = ("cccd-excel-", "sheet-excel-")
+
+
+def _sheet_doc_id(drawing_id: str, kind: str) -> str:
+    return f"sheet-excel-{drawing_id}-{kind}"
+
+
 def _packet_filename(
     plan: PlannedMapping,
     analyzed,
@@ -325,6 +338,179 @@ def _packet_filename(
         f"cccd-{candidate_token}-{image_token}{orientation_token}-{side}."
         f"{analyzed.drawing.extension}"
     )
+
+
+#: Which sheet image kind becomes which manifest document kind, and its label.
+#:
+#: `bank` is deliberately absent. `evaluate.DOC_KINDS` has no bank entry and
+#: `EvidenceKind` in the frontend has no bank member, so a bank document would
+#: be written into the manifest and then reach no criterion and render nowhere
+#: -- storage with no reader. Wiring it needs a criterion that consumes it
+#: first. `tax` has both halves already: DOC_KINDS maps MST_LOOKUP to `pit`,
+#: which is what #6 reads.
+_SHEET_DOC_KINDS: dict[str, tuple[str, str]] = {
+    "tax": ("pit", "Tra cứu MST (Excel)"),
+}
+
+
+def _sheet_packet_filename(drawing, kind: str) -> str:
+    token = hashlib.sha256(drawing.id.encode("utf-8")).hexdigest()[:12]
+    return f"sheet-{kind}-{token}-{drawing.sha256[:12]}.{drawing.extension}"
+
+
+def _sheet_rows(xlsx_path: str) -> dict[str, list]:
+    """Every sheet's rows, for reading the identity beside an image.
+
+    Values-only and read-only: this needs the text in the name/CCCD/MST
+    columns and nothing else. Returns `{}` rather than raising -- a workbook
+    whose drawings extracted fine but whose cells cannot be read should cost
+    the sheet evidence, not the whole card ingest.
+    """
+    try:
+        import openpyxl
+
+        book = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+        try:
+            return {
+                name: [list(row) for row in book[name].iter_rows(values_only=True)]
+                for name in book.sheetnames
+            }
+        finally:
+            book.close()
+    except Exception:
+        return {}
+
+
+def attach_sheet_evidence(
+    drawings: list,
+    sheet_rows: dict[str, list],
+    roster_rows: list[dict[str, str]],
+    packets: list[dict],
+    case_dir: str,
+    packet_manifest_paths: dict[int, str],
+) -> tuple[dict[int, set[str]], dict[str, str]]:
+    """Write each attributable sheet screenshot into its packet as evidence.
+
+    Returns `({packet index: doc ids written}, {drawing id: why not})`. The
+    first is what `reconcile_owned_evidence` must keep; the second is a reason
+    per screenshot that stayed unattached, because "we could not tell whose
+    this is" is a different thing from "there was none" and only the second is
+    a finding.
+
+    The join is `sheet_identity`'s, not a positional one: on the real combined
+    workbook the MST sheet lists the same 25 people as the roster in a
+    different order, agreeing on 8 of 25 positions, so row N of that sheet is
+    not person N. See that module for the measurements.
+    """
+    import pipeline
+    import sheet_identity
+
+    wanted = [
+        drawing for drawing in drawings
+        if getattr(drawing, "kind", None) in _SHEET_DOC_KINDS
+    ]
+    if not wanted:
+        return {}, {}
+
+    by_cccd, by_name, by_mst = pipeline.index_roster_rows(roster_rows)
+    matched, refused = sheet_identity.attribute(
+        wanted, sheet_rows, by_cccd, by_name, by_mst,
+    )
+
+    written: dict[int, set[str]] = {}
+    for drawing in wanted:
+        row = matched.get(drawing.id)
+        if row is None:
+            continue
+        roster_cccd = _digits(row.get("cccd"))
+        targets = [
+            index
+            for packet in packets
+            if (index := _packet_target_index(packet, roster_cccd)) is not None
+        ]
+        if len(targets) != 1:
+            # Zero means the roster row has no packet; more than one means two
+            # packets claim the same identity. Neither may be guessed at.
+            refused[drawing.id] = (
+                "no-packet-for-person" if not targets
+                else "several-packets-for-person"
+            )
+            continue
+        packet_index = targets[0]
+        manifest_path = packet_manifest_paths.get(packet_index)
+        if not isinstance(manifest_path, str):
+            refused[drawing.id] = "no-manifest"
+            continue
+
+        kind, label = _SHEET_DOC_KINDS[drawing.kind]
+        doc_id = _sheet_doc_id(drawing.id, kind)
+        packet_dir = os.path.dirname(manifest_path)
+        destination = os.path.join(
+            packet_dir, _sheet_packet_filename(drawing, kind),
+        )
+        # Path validation is a precondition, not an I/O failure, and it gets
+        # its own reason: folded into "attachment-failed" it reads as a disk
+        # problem when it means the extraction directory sits outside the case.
+        try:
+            _case_relative(case_dir, drawing.stored_path)
+            _case_relative(case_dir, destination)
+        except ValueError:
+            refused[drawing.id] = "asset-outside-case-dir"
+            continue
+        try:
+            if not os.path.exists(destination):
+                shutil.copyfile(drawing.stored_path, destination)
+            if not _write_sheet_doc(
+                manifest_path, doc_id, kind, label, destination, drawing,
+            ):
+                refused[drawing.id] = "manifest-write-failed"
+                continue
+        except Exception:
+            refused[drawing.id] = "attachment-failed"
+            continue
+        written.setdefault(packet_index, set()).add(doc_id)
+    return written, refused
+
+
+def _write_sheet_doc(
+    manifest_path: str,
+    doc_id: str,
+    kind: str,
+    label: str,
+    destination: str,
+    drawing,
+) -> bool:
+    """Put one sheet-sourced document into a manifest, replacing its own.
+
+    Keyed on the doc id, which is derived from the drawing, so re-reading the
+    same workbook rewrites the same entry rather than accumulating copies.
+    """
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if not isinstance(manifest, dict):
+            return False
+        docs = manifest.get("docs")
+        if not isinstance(docs, list):
+            return False
+        manifest["docs"] = [
+            document for document in docs
+            if not (isinstance(document, dict)
+                    and document.get("id") == doc_id)
+        ] + [{
+            "id": doc_id,
+            "kind": kind,
+            "label": label,
+            "pages": [{
+                "src": destination,
+                "width": drawing.width,
+                "height": drawing.height,
+            }],
+        }]
+        _atomic_json_write(manifest_path, manifest)
+        return True
+    except Exception:
+        return False
 
 
 def _attachment_failure(plan: PlannedMapping) -> dict:
@@ -367,7 +553,7 @@ def _remove_stale_owned_files(
 
 
 def _is_owned_doc_id(value: object) -> bool:
-    return isinstance(value, str) and value.startswith("cccd-excel-")
+    return isinstance(value, str) and value.startswith(_OWNED_PREFIXES)
 
 
 def _kept_owned_ids_by_packet(mappings: list[dict]) -> dict[int, set[str]]:
@@ -458,8 +644,19 @@ def reconcile_owned_evidence(
     manifest_paths: dict[int, str],
     case_dir: str,
     mappings: list[dict],
+    sheet_keep: dict[int, set[str]] | None = None,
 ) -> bool:
+    """Drop every owned document a fresh read of the workbook did not produce.
+
+    `sheet_keep` is the sheet-evidence half: `{packet index: doc ids}` from
+    `attach_sheet_evidence`. Without it a re-ingest would delete the pit
+    documents it had just written, since they are owned (`_OWNED_PREFIXES`)
+    and would not appear in the card keep-set. Defaults to none kept, which is
+    what the two failure paths want -- nothing was written, so nothing stays.
+    """
     kept_by_packet = _kept_owned_ids_by_packet(mappings)
+    for packet_index, ids in (sheet_keep or {}).items():
+        kept_by_packet.setdefault(packet_index, set()).update(ids)
     successful = True
     for packet_index, manifest_path in manifest_paths.items():
         if (
@@ -690,10 +887,24 @@ def ingest_cccd_workbook(
         mappings.append(mapping)
         _report_progress(progress_cb, done, len(plans))
 
+    # The sheet screenshots: evidence the workbook has always carried and
+    # nothing could reach. Classified at upload and then used only to keep
+    # themselves out of the card candidate pool, so on the combined template
+    # 25 tax lookups sat in the file while #6 read "Hồ sơ thiếu Website tra
+    # cứu MST" on all 25 packets -- missing, when the document was right there.
+    sheet_written, sheet_refused = attach_sheet_evidence(
+        extraction.drawings,
+        _sheet_rows(xlsx_path),
+        roster_rows,
+        packets,
+        case_dir,
+        manifest_paths,
+    )
     reconciliation_failed = not reconcile_owned_evidence(
         manifest_paths,
         case_dir,
         mappings,
+        sheet_keep=sheet_written,
     )
     attached = sum(
         mapping.get("attachedPacketIndex") is not None
