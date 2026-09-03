@@ -53,6 +53,7 @@ function render(cards: CccdCard[]) {
       onAssign={() => {}}
       onDetach={() => {}}
       onRetry={() => {}}
+      onDismissError={() => {}}
       onContinue={() => {}}
     />,
   )
@@ -226,10 +227,12 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={buildCccdReview(packets, [])}
         busy={false}
-        error="Gói này đã có ảnh CCCD. Gỡ ảnh cũ trước."
+        error={{ text: 'Gói này đã có ảnh CCCD. Gỡ ảnh cũ trước.',
+                 kind: 'mutate' }}
         onAssign={() => {}}
         onDetach={() => {}}
         onRetry={() => {}}
+        onDismissError={() => {}}
         onContinue={() => {}}
       />,
     )
@@ -247,6 +250,7 @@ describe('CccdReviewView', () => {
         onAssign={() => {}}
         onDetach={() => {}}
         onRetry={() => {}}
+        onDismissError={() => {}}
         onContinue={() => {}}
       />,
     )
@@ -263,10 +267,11 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={null}
         busy={true}
-        error="Không tải được danh sách ảnh."
+        error={{ text: 'Không tải được danh sách ảnh.', kind: 'load' }}
         onAssign={() => {}}
         onDetach={() => {}}
         onRetry={() => {}}
+        onDismissError={() => {}}
         onContinue={() => {}}
       />,
     )
@@ -295,6 +300,7 @@ describe('when the card workbook could not be read', () => {
         onAssign={() => undefined}
         onDetach={() => undefined}
         onRetry={() => undefined}
+        onDismissError={() => undefined}
         onContinue={() => undefined}
       />,
     )
@@ -316,6 +322,7 @@ describe('when the card workbook could not be read', () => {
         onAssign={() => undefined}
         onDetach={() => undefined}
         onRetry={() => undefined}
+        onDismissError={() => undefined}
         onContinue={() => undefined}
       />,
     )
@@ -335,6 +342,7 @@ describe('when the card workbook could not be read', () => {
         onAssign={() => undefined}
         onDetach={() => undefined}
         onRetry={() => undefined}
+        onDismissError={() => undefined}
         onContinue={() => undefined}
       />,
     )

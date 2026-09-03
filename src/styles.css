@@ -1217,7 +1217,13 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-list { list-style: none; margin: 8px 0 0; padding: 0; }
 .cccd-review-row {
   display: grid;
-  grid-template-columns: 40px minmax(160px, 1fr) 160px 140px minmax(160px, 1fr) auto;
+  /* minmax(0, ...) not minmax(160px, ...): a fixed 160px floor on both
+     flexible tracks meant the row could not reflow at all -- measured 37px of
+     horizontal overflow at 768px and 415px at 375px, pushing `Gán thẻ` off
+     screen entirely. The 160px and 140px thumbnail/number tracks are also
+     vestigial: this row renders four children and its state spans columns
+     3-5, because the shape they belonged to became the tile grid below. */
+  grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
@@ -1228,7 +1234,7 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
    (Orphan cards used to be a row here too, with their own grid-template
    override; they are tiles now, in the grid below, so that override is
    gone -- this is the only row left, and its own template is unchanged.) */
-.cccd-review-needs .cccd-review-state { grid-column: 3 / 6; }
+.cccd-review-needs .cccd-review-state { grid-column: 3; }
 .cccd-review-stt { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cccd-review-name { font-weight: 600; }
 .cccd-review-number { font-variant-numeric: tabular-nums; }
@@ -1236,7 +1242,21 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-hint { color: var(--text-muted); font-size: 12px; }
 .cccd-review-nothumb { color: var(--text-muted); font-size: 12px; }
 .cccd-review-empty { color: var(--text-muted); margin: 8px 0 0; }
-.cccd-review-error { color: var(--danger); margin: 10px 0 0; }
+/* Sticky at the top of the scrolling body, because it reports failures whose
+   button is thousands of pixels away: every `Gỡ` sits inside the collapsed
+   `Đã gán` disclosure at the end of the list, so on a real case a failed
+   detach put this message 3,869-6,163px above the viewport, and the button's
+   own `disabled` was set and cleared 5.5ms apart -- it never painted. The
+   component also scrollIntoView()s and focuses it. */
+.cccd-review-error {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 12px;
+  color: var(--danger); margin: 10px 0 0; padding: 10px 12px;
+  border: 0.5px solid var(--danger); border-radius: 8px;
+  background: var(--surface);
+}
+.cccd-review-error p { margin: 0; }
+.cccd-review-error:focus-visible { outline: 2px solid var(--danger); outline-offset: 2px; }
 /* Always visible, because it is the only way forward off this screen and it
    used to sit in normal flow at the end of the list: on a real 25-packet case
    with 18 cards to assign the page is 1760px against an 800px viewport, so the
@@ -1261,7 +1281,13 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-grid {
   list-style: none; margin: 8px 0 0; padding: 0;
   display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+  /* 300px, not 520px. Measured rendered widths on a real case: 14 of 18
+     cards paint at 26-43% of a 520px-floor track, and since rows size to
+     their tallest tile, 1,966px -- 44% of the grid -- was blank filler. The
+     CSS comment below assumes a ~622px source; exactly one card in the
+     workbook is near that, and it is already attached. */
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  align-items: start;
 }
 /* Shell modelled on .cccd-card (styles.css:821). */
 .cccd-review-tile {
@@ -1299,6 +1325,13 @@ button.cccd-review-tile-image { cursor: pointer; }
   width: auto; max-width: 100%; height: auto;
   margin: 0 auto;
 }
+/* Reserve a plausible card height so the page does not grow from ~1,800px to
+   ~5,500px as lazy images land, moving the `Đã gán` disclosure 3,741px down
+   under the reviewer. A min-height on the CONTAINER, not the image: the
+   stored side dimensions are transposed on every case ingested before
+   fccded7, so nothing may be derived from them, and the image rule above
+   deliberately never distorts a real crop. */
+.cccd-review-tile-image { min-height: 180px; }
 .cccd-review-tile-foot {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 13px;
 }

@@ -22,12 +22,15 @@ export interface CccdReviewViewProps {
    * about which packets need a card should be claimed yet either. */
   review: CccdReview | null
   busy: boolean
-  error: string | null
+  /** `load` can be retried by reloading; `mutate` cannot -- reloading
+   *  re-issues no PUT and blanks the screen. */
+  error: { text: string; kind: 'load' | 'mutate' } | null
   /** The ingest's verdict on the card workbook, when there is one. */
   workbook?: CccdSummary | null
   onAssign: (packetIndex: number, packetLabel: string) => void
   onDetach: (cardId: string) => void
   onRetry: () => void
+  onDismissError: () => void
   onContinue: () => void
 }
 
@@ -219,6 +222,7 @@ export function CccdReviewView({
   onAssign,
   onDetach,
   onRetry,
+  onDismissError,
   onContinue,
 }: CccdReviewViewProps) {
   // The ingest could not read the card workbook at all, so there is nothing to
@@ -227,6 +231,21 @@ export function CccdReviewView({
   // under a headline ("0 đã gắn · 0 chưa ghép") that reads as "nothing matched
   // yet" rather than "the file could not be read".
   const workbookFailed = workbook?.status === 'error'
+  const errorRef = useRef<HTMLDivElement | null>(null)
+
+  // role="alert" already announces, so this defect was scoped to sighted
+  // reviewers -- the primary population.
+  useEffect(() => {
+    const node = errorRef.current
+    if (!error || !node) return
+    // Guarded: jsdom implements neither, and neither is load-bearing -- the
+    // message is sticky and `role="alert"` announces it either way.
+    if (typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'nearest' })
+    }
+    if (typeof node.focus === 'function') node.focus()
+  }, [error])
+
   return (
     <div className="cccd-review">
       {/* Scrolls on its own so the footer below is a sibling, never an
@@ -238,6 +257,19 @@ export function CccdReviewView({
         <div className="case-detail-head">
           <h2>{caseName}</h2>
         </div>
+
+        {/* The counts changed silently: only errors had a live region, so an
+            assign or a detach reorganised the queue with nothing announced.
+            It matters most for the destructive direction, `Gỡ`. */}
+        <p className="sr-only" role="status">
+          {busy
+            ? 'Đang cập nhật…'
+            : review
+              ? `${review.counts.attached} thẻ đã gắn, `
+                + `${review.counts.packetsWithoutCard} gói chưa có thẻ, `
+                + `${review.counts.unattachedCards} ảnh chưa ghép.`
+              : ''}
+        </p>
 
         <div className="banner result-banner">
           <b>Ghép ảnh CCCD</b>
@@ -261,11 +293,30 @@ export function CccdReviewView({
           </div>
         )}
 
+        {/* Sticky, and scrolled to. Every `Gỡ` sits inside the collapsed
+            `Đã gán` disclosure at the very end of the list, so on a real case
+            a failed detach reported itself 3,869-6,163px above the viewport
+            with nothing perceptible at the click site -- a MutationObserver
+            caught the button's `disabled` set and cleared 5.5ms apart, i.e.
+            never painted. On the 41-packet July case, where `Gỡ` is the only
+            mutating control, the message was unreachable even on the first
+            button. */}
         {error && (
-          <>
-            <p className="cccd-review-error" role="alert">{error}</p>
-            <button type="button" className="btn" onClick={onRetry}>Thử lại</button>
-          </>
+          <div className="cccd-review-error" role="alert" ref={errorRef}
+               tabIndex={-1}>
+            <p>{error.text}</p>
+            {error.kind === 'load' ? (
+              <button type="button" className="btn" onClick={onRetry}>
+                Thử lại
+              </button>
+            ) : (
+              // Not `Thử lại`: it re-issued no PUT and unmounted the review
+              // subtree, so the screen blanked and `Đã gán` reopened collapsed.
+              <button type="button" className="btn" onClick={onDismissError}>
+                Đóng thông báo
+              </button>
+            )}
+          </div>
         )}
 
         {review && (
@@ -393,7 +444,12 @@ export default function CccdReviewScreen({
   onContinue,
 }: Props) {
   const [cards, setCards] = useState<CccdCard[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Kinded, because the two failures need different offers. `Thử lại` reloads,
+  // which is right for a load failure and wrong for a mutation: it re-issued no
+  // PUT, nulled `cards` and so unmounted the whole review subtree -- the screen
+  // blanked to "Đang tải…" and the DOM-owned <details> came back collapsed.
+  const [error, setError] =
+    useState<{ text: string; kind: 'load' | 'mutate' } | null>(null)
   const [busy, setBusy] = useState(false)
   const [picking, setPicking] = useState<{ packetIndex: number; label: string } | null>(null)
 
@@ -418,7 +474,8 @@ export default function CccdReviewScreen({
       const result = await listCccdCards(caseId)
       if (liveCaseIdRef.current === caseId) setCards(result)
     } catch {
-      if (liveCaseIdRef.current === caseId) setError(LOAD_ERROR)
+      if (liveCaseIdRef.current === caseId)
+        setError({ text: LOAD_ERROR, kind: 'load' })
     } finally {
       // Guarded like the setters above: a request for a case the screen has left
       // must not clear the `busy` that the live case's own operation set. Every
@@ -446,7 +503,8 @@ export default function CccdReviewScreen({
       if (liveCaseIdRef.current === caseId) setCards(result.cards)
     } catch (caught) {
       const code = caught instanceof Error ? caught.message : ''
-      if (liveCaseIdRef.current === caseId) setError(ERROR_TEXT[code] ?? MUTATE_ERROR)
+      if (liveCaseIdRef.current === caseId)
+        setError({ text: ERROR_TEXT[code] ?? MUTATE_ERROR, kind: 'mutate' })
     } finally {
       // Guarded like the setters above: a request for a case the screen has left
       // must not clear the `busy` that the live case's own operation set. Every
@@ -467,6 +525,7 @@ export default function CccdReviewScreen({
         onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}
         onDetach={cardId => { void detach(cardId) }}
         onRetry={() => { void load() }}
+        onDismissError={() => setError(null)}
         onContinue={onContinue}
       />
 
