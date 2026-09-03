@@ -708,7 +708,51 @@ of that rejects the approach outright, whatever the rate.
 **Do not tune the prompt against a single contract until the numbers look good.** Report what the
 first honest attempt produced.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run it three times, and measure how much the answer moves**
+
+Step 4 asks whether the answers are *right*. This asks whether they are *the same twice*, which is a
+different question and the one a reviewer actually feels. A field that is 90% accurate but returns a
+different value on each run is worse than one that is 80% accurate and steady: the reviewer stops
+being able to build any intuition about which cells to trust, and re-opening a packet becomes a
+lottery rather than a re-read.
+
+Run **the same ten contracts three times**, with the temperature and prompt you intend to ship and
+nothing else changed between runs. For each of the fifty (contract × part) pairs, record whether the
+three runs agreed.
+
+Report exactly this table:
+
+| | count | of 50 |
+|---|---|---|
+| identical value all three runs | | |
+| value differs in wording only (same meaning, e.g. `15 ngày` vs `15 ngay`) | | |
+| **value differs in substance** (a different date, a different amount, a different account) | | |
+| returned on some runs and absent on others | | |
+| quote differs while the value agrees | | |
+
+**The gate for this step, also named in advance:**
+
+- **A value differing in substance across runs is the disqualifying case.** More than **1 in 50**
+  and the field is not fit to show a reviewer, however good its accuracy looked in Step 4. Report
+  which part it was — the five parts of #13 will not behave alike, and a per-part answer is far more
+  useful than one number for the criterion.
+- **A quote differing while the value agrees is acceptable**, and worth reporting separately. The
+  quote is evidence for the reviewer's eye, not an identifier; two different sentences supporting
+  the same value are both correct.
+- **Present-on-some-runs-only counts as substance.** A cell that is `?` on Monday and answered on
+  Tuesday, with nothing in the paperwork changed, teaches the reviewer to distrust every `?`.
+
+**A note on why this is not optional.** A language model is not deterministic the way the OCR path
+is: `pytesseract` on the same image returns the same string every time, so every existing figure in
+this repository is reproducible by re-running it. That stops being true here, and it is the first
+thing in this system that will move under a reviewer without any input having changed. Measure it
+before shipping it, not after somebody notices.
+
+If temperature is configurable on the endpoint, report what you used. Zero is the obvious first
+choice, and if the substance-differs count is still above the gate at temperature zero, that is a
+finding about the task rather than about the setting.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add server/semantic_maas.py server/semantic_maas_test.py
@@ -724,6 +768,8 @@ Say plainly:
 - whether `INCOMPLETE → REVIEW` felt right once you saw real cells
 - what `list_models.py` listed, and which model you used
 - for #13: parts returned, quotes located, and values whose quote could not be found
+- the repeatability table from Step 5, and the temperature you ran at
+- which of #13's five parts moved most between runs — they will not behave alike
 - what you did NOT do, and why
 - that Tasks 5–6 need a re-ingest before anything shows on an existing case
 
