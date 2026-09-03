@@ -186,7 +186,46 @@ def test_extract_drawings_preserves_full_anchor_offsets(tmp_path):
         # default: 7 * 15 * 12700 + 111, and 18 * 15 * 12700 + 333.
         top_emu=1333611,
         bottom_emu=3429333,
+        # The row holding the drawing's centre, which is what says whose row
+        # an image is on: (1333611 + 3429333) // 2 = 2381472, over 190500 EMU
+        # rows, is row 12. Note this is neither from_row (7) nor to_row (18).
+        center_row=12,
     )
+
+
+def test_row_at_inverts_top_for_default_and_sized_rows():
+    from cccd_workbook import RowGeometry
+
+    # row 3 is double height; every other row is the 190500 default
+    geometry = RowGeometry.build(190500, {3: 381000})
+
+    for row in (0, 1, 2, 3, 4, 5, 40):
+        assert geometry.row_at(geometry.top(row)) == row, row
+
+    # a point one EMU short of the next row still belongs to this one
+    for row in (0, 3, 4, 9):
+        assert geometry.row_at(geometry.top(row + 1) - 1) == row, row
+
+    # and the tall row really is twice as deep
+    assert geometry.top(4) - geometry.top(3) == 381000
+    assert geometry.row_at(geometry.top(3) + 380999) == 3
+
+
+def test_row_at_is_not_fooled_by_an_offset_deep_inside_a_row():
+    """The defect `center_row` exists for.
+
+    `from_row_offset` reaches 1,730,886 EMU on the real combined workbook,
+    close to a whole row height, so an image starting low in one row spills
+    into the next while still reporting the first.
+    """
+    from cccd_workbook import RowGeometry
+
+    geometry = RowGeometry.build(190500, {})
+    # starts 90% of the way down row 5, one row tall
+    top = geometry.top(5) + 171450
+    bottom = top + 190500
+    assert geometry.row_at(top) == 5
+    assert geometry.row_at((top + bottom) // 2) == 6
 
 
 def test_extract_drawings_follows_relationships_not_media_names(tmp_path):

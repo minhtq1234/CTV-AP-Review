@@ -47,6 +47,10 @@ class Anchor:
     #: None when the anchor was built without a sheet to measure against.
     top_emu: int | None = None
     bottom_emu: int | None = None
+    #: The row containing the drawing's vertical centre. This, not `from_row`,
+    #: is which person's row an image sits on -- see `RowGeometry.row_at`.
+    #: None whenever `top_emu`/`bottom_emu` are.
+    center_row: int | None = None
 
 
 @dataclass(frozen=True)
@@ -261,6 +265,8 @@ def _drawing_records(
                     )
                     anchor = dataclasses.replace(
                         anchor, top_emu=top_emu, bottom_emu=bottom_emu,
+                        center_row=row_geometry.row_at(
+                            (top_emu + bottom_emu) // 2),
                     )
             except (AttributeError, TypeError, ValueError):
                 issues.append(ExtractionIssue("malformed-drawing", drawing_id))
@@ -903,6 +909,36 @@ class RowGeometry:
         above = bisect.bisect_left(self.rows, row)
         correction = self.running[above - 1] if above else 0
         return row * self.default + correction
+
+    def row_at(self, emu: int) -> int:
+        """The row containing `emu` measured down the sheet -- `top`'s inverse.
+
+        `top` is non-decreasing in `row`, so this is a bisection over it. Rows
+        are walked rather than solved because a correction applies from the row
+        it belongs to onward, so there is no closed form.
+
+        This exists because `from_row` is the wrong way to ask which person an
+        image belongs to. A picture is anchored where its top-left corner
+        falls, and `from_row_offset` reaches 1,730,886 EMU on the real combined
+        workbook -- close to a whole row height -- so a tall image starting low
+        in one row spills into the next while still reporting the first. On
+        that workbook `from_row` puts two tax images on one row and none on
+        another (4 of 25 misplaced), and is ragged for 24 of the CCCD sheet's
+        75. The row containing a drawing's vertical CENTRE gives one image per
+        person on both sheets.
+        """
+        if emu < 0:
+            return 0
+        low, high = 0, 1
+        while self.top(high) <= emu:
+            low, high = high, high * 2
+        while low + 1 < high:
+            middle = (low + high) // 2
+            if self.top(middle) <= emu:
+                low = middle
+            else:
+                high = middle
+        return low
 
 
 def _row_top_emu(row: int, geometry: RowGeometry) -> int:
