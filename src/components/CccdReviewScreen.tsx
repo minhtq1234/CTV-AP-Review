@@ -161,7 +161,14 @@ function AttachedTile({ caseId, row, busy, onDetach }: {
       <div className="cccd-review-tile-foot">
         <span className="cccd-review-tile-number">{card.number || 'Không đọc được số'}</span>
         <span className="cccd-review-tile-state">{describeCard(card)}</span>
-        <button type="button" disabled={busy} onClick={() => onDetach(card.cardId)}>Gỡ</button>
+        <button
+          type="button"
+          disabled={busy}
+          aria-label={`Gỡ ảnh CCCD khỏi gói ${row.packetIndex + 1} ${row.name}`}
+          onClick={() => onDetach(card.cardId)}
+        >
+          Gỡ
+        </button>
       </div>
     </li>
   )
@@ -172,7 +179,14 @@ function AttachedTile({ caseId, row, busy, onDetach }: {
 // its cardId -- instead of an STT and a name. No Gỡ button (nothing
 // attached to detach), and still no assign control of its own: assignment
 // goes through the packet's own "Gán thẻ" row above, unchanged.
-function OrphanTile({ caseId, card }: { caseId: string; card: CccdCard }) {
+function OrphanTile({ caseId, card, assignable }: {
+  caseId: string
+  card: CccdCard
+  /** Whether any packet still needs a card. When none does, the hint below
+   *  would send the reviewer to a row that is not on the screen: placing this
+   *  card means detaching another packet's first, and nothing here says so. */
+  assignable: boolean
+}) {
   return (
     <li
       className="cccd-review-tile"
@@ -185,7 +199,11 @@ function OrphanTile({ caseId, card }: { caseId: string; card: CccdCard }) {
       <div className="cccd-review-tile-foot">
         <span className="cccd-review-tile-number">{card.number || 'Không đọc được số'}</span>
         <span className="cccd-review-tile-state">{describeCard(card)}</span>
-        <span className="cccd-review-hint">Gán từ dòng của gói cần thẻ.</span>
+        <span className="cccd-review-hint">
+          {assignable
+            ? 'Gán từ dòng của gói cần thẻ.'
+            : 'Mọi gói đã có thẻ — gỡ thẻ của một gói trước khi gán ảnh này.'}
+        </span>
       </div>
     </li>
   )
@@ -254,7 +272,11 @@ export function CccdReviewView({
           <>
             <section className="cccd-review-section" aria-label="Cần xử lý">
               <h3>Cần xử lý</h3>
-              {review.needsAction.length === 0 && (
+              {/* Gated on packets, not on needsAction: needsAction holds
+                  orphan CARD rows too, so one leftover card suppressed this
+                  on a case where every packet really did have its card --
+                  which is the shape of the 41-packet July submission. */}
+              {review.counts.packetsWithoutCard === 0 && (
                 <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
               )}
               {/* The packets waiting for a card, then the cards waiting for a
@@ -276,9 +298,17 @@ export function CccdReviewView({
                       <span className="cccd-review-stt">{row.packetIndex + 1}</span>
                       <span className="cccd-review-name">{row.name}</span>
                       <span className="cccd-review-state">Chưa có thẻ CCCD</span>
+                      {/* The identity is on the <li>, which is announced when
+                          browsing a list but not when Tab lands on a
+                          descendant -- and the first 18 tab stops here are 18
+                          consecutively identical "Gán thẻ". */}
                       <button
                         type="button"
-                        disabled={busy}
+                        disabled={busy || workbookFailed}
+                        title={workbookFailed
+                          ? 'Không đọc được file ảnh CCCD nên chưa có ảnh để gán.'
+                          : undefined}
+                        aria-label={`Gán thẻ cho gói ${row.packetIndex + 1} ${row.name}`}
                         onClick={() => onAssign(row.packetIndex, row.name)}
                       >
                         Gán thẻ
@@ -290,7 +320,12 @@ export function CccdReviewView({
                 {review.needsAction
                   .filter((row): row is CccdCardRow => row.kind === 'card')
                   .map(row => (
-                    <OrphanTile key={`card-${row.card.cardId}`} caseId={caseId} card={row.card} />
+                    <OrphanTile
+                      key={`card-${row.card.cardId}`}
+                      caseId={caseId}
+                      card={row.card}
+                      assignable={review.counts.packetsWithoutCard > 0}
+                    />
                   ))}
               </ul>
             </section>
@@ -314,7 +349,12 @@ export function CccdReviewView({
       </div>
 
       <div className="cccd-review-foot">
-        <button className="btn primary" type="button" onClick={onContinue}>
+        {/* Gated on `busy` like every other control. It used to be the only
+            live one mid-mutation, and leaving then defeats the single getCase
+            that continueFromCccdReview does precisely because a mutation moves
+            the summary and the per-packet rollups. */}
+        <button className="btn primary" type="button" disabled={busy}
+                onClick={onContinue}>
           Tiếp tục →
         </button>
       </div>

@@ -91,7 +91,12 @@ export default function CaseDetail({
         </div>
       )}
 
-      {detail.cccdName && detail.cccdSummary && (
+      {/* Gated on the summary alone, as the CCCD step itself is. A combined
+          workbook posted in the `roster` field only is promoted to the card
+          source, which leaves cccdName null and never backfills it -- so
+          requiring both hid the count line AND `Xem thẻ CCCD`, the last route
+          back once the one-shot gate had been passed. */}
+      {detail.cccdSummary && (
         <div className={`cccd-summary ${detail.cccdSummary.status}`}>
           {formatCccdSummary(detail.cccdSummary)}
           {onOpenCccd && (

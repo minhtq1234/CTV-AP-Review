@@ -432,6 +432,37 @@ describe('CccdReviewScreen', () => {
     expect(dialog.contains(document.activeElement)).toBe(true)
   })
 
+  it('gates Tiếp tục on busy like every other control', async () => {
+    // It was the only live control mid-mutation, and leaving then defeats the
+    // single getCase that continueFromCccdReview does because a mutation moves
+    // the summary and the per-packet rollups.
+    const pending = deferred<{ cards: CccdCard[] }>()
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    assignCccdCard.mockReturnValue(pending.promise)
+
+    await act(async () => { button('Gỡ').click() })
+    expect(button('Tiếp tục').disabled).toBe(true)
+
+    await act(async () => { pending.resolve({ cards: [] }) })
+  })
+
+  it('does not tell the reviewer to use a row that is not on the screen', async () => {
+    // Every packet has its card and one orphan remains -- the shape of the
+    // 41-packet July submission. The reassurance used to be suppressed (it was
+    // gated on needsAction, which counts orphan CARD rows too) and the orphan
+    // tile pointed at a "gói cần thẻ" row that does not exist.
+    listCccdCards.mockResolvedValue([
+      card('card-00', 0), card('card-01', 1), card('card-02', 2),
+      card('card-orphan', null),
+    ])
+    await mount()
+
+    expect(host.textContent).toContain('Mọi gói đều đã có thẻ CCCD.')
+    expect(host.textContent).toContain('gỡ thẻ của một gói trước khi gán')
+    expect(host.textContent).not.toContain('Gán từ dòng của gói cần thẻ.')
+  })
+
   it('closes the full-size viewer on a backdrop click', async () => {
     listCccdCards.mockResolvedValue([card('card-00', 0)])
     await mount()

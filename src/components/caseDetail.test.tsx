@@ -363,6 +363,26 @@ describe('CCCD aggregate summary', () => {
     )
     expect(with_).toContain('Xem thẻ CCCD')
   })
+
+  it('shows the count and the way back when only the roster was uploaded', () => {
+    // A combined workbook posted in the `roster` field only is promoted to the
+    // card source, which leaves cccdName null and never backfills it. The CCCD
+    // step is gated on the summary alone, so it opens -- and requiring BOTH
+    // here hid the count line and `Xem thẻ CCCD`, which is the last route back
+    // once the one-shot gate has been passed. Every fixture in this file used
+    // to set both fields or neither, so nothing could catch it.
+    const detail: CaseDetailT = {
+      ...baseDetail,
+      cccdName: null,
+      cccdSummary: { status: 'partial', candidates: 25, attached: 7, unresolved: 18 },
+    }
+    const html = renderToStaticMarkup(
+      <CaseDetail detail={detail} onOpenPacket={() => {}} onBack={() => {}}
+        onExport={() => {}} onOpenCccd={() => {}} />,
+    )
+    expect(html).toContain('CCCD: 7 đã gắn · 18 chưa ghép')
+    expect(html).toContain('Xem thẻ CCCD')
+  })
 })
 
 describe('view tabs', () => {
