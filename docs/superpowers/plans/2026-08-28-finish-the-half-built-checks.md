@@ -470,3 +470,54 @@ Say plainly:
 - whether the Tổng hợp back-button sequence behaved, in the exact words of what you saw
 - your real test numbers against your baseline
 - that these changes need a re-ingest before they show on an existing case
+
+---
+
+## Outcome — partial, 2026-08-29
+
+**Tasks 1–3 and Task 5 done. Task 4 (dob/gender off the card) not started.**
+
+**The word dicts did not match what Task 1 assumed, and this is the important one.** A word is
+`{text, x, y, w, h, conf}` — six keys, **no `page`** — produced by `ocr_extract.ocr_words` and
+`idp_words.parse_words`, and `scale_words` rebuilds it from exactly those six, so an extra key would
+be dropped in transit anyway. Page is *structural*: `words_by_doc: {docId: {page: [word]}}`. The
+plan's `int(word.get("page", 0))` would therefore have been a constant `0` on real data —
+reproducing the exact defect the task exists to remove, with the plan's own tests green, because its
+`_w(text, page, …)` fixture invents the key the pipeline never produces. The locator takes a
+document's `{page: [word]}` map instead.
+
+Three smaller corrections, same cause — the plan describing a shape the code does not have:
+
+- Bboxes here are `{x, y, width, height}`; the plan's `_locate` returned `{x, y, w, h}`, which is
+  truthy and renders as a zero-size highlight — a value that looks located and is not.
+- The corpus says **`Bên Cung Ứng Dịch Vụ`**, not *Cung Cấp*. Bare `Bên B` is prose throughout a real
+  BBNT and, assigned unconditionally, would overwrite the real header; `Đại diện Bên B` is used.
+- **Five criteria, not six.** #28 is unreachable: its documents are `[PURCHASE]`, which `_presence`
+  short-circuits fifteen lines above the evidence site and which `DOC_KINDS` has no entry for. That
+  is deliberate — the bảng kê is batch-level and is answered as #26 on Tổng hợp — so no `anchor` was
+  added to it and the short-circuit was left alone.
+
+**Does the card reader return gender — unanswered.** Task 4 was not started, so #4 is still open.
+
+**The Tổng hợp back-button sequence, in the exact words of what I saw.** Opened packet 1 → clicked
+the cell labelled `Họ và tên · Bảng Kê Thu Mua: Chưa kiểm tra được` → landed on **`Tổng hợp*`** →
+switched to Gói hồ sơ → opened packet 2 → pressed `←` → ended on **`Gói hồ sơ*` with 25 packet rows.**
+The bug is gone.
+
+**A second stickiness path the plan does not mention.** Clearing the pending tab only on packet-open
+leaves it at `summary`, so leaving to the case list after a jump and re-entering the case *also*
+landed on Tổng hợp. Milder than the original, same class. It is now cleared on opening a case as
+well, making the jump strictly one-shot; verified by re-entry landing on `Gói hồ sơ*`.
+
+**Test numbers.** Baseline 836; **851 passing** after Tasks 1–3 and 5. The plan's stated 821 was
+never reproducible here.
+
+**These changes need a re-ingest before they show on an existing case.** Anchors are recorded during
+the read, so every case ingested before this keeps page 0 and no box until it is put through again.
+
+**Two things measured on real data that bound what can be claimed.** Across four real contracts the
+CTV phrase matched on the correct final page 4/4, but `Đại diện VNG` matched **0/4** — OCR read it as
+`IENVNG`, as bare `VNG`, or the column produced no words at all. So #22 and #24 will usually ride the
+page-only fallback: right document, right signing page, no box. And nothing shows a reviewer these
+boxes yet — `EvidenceViewer`'s `focusBbox` is fed by field selection, not criterion evidence, so the
+only visible change today is in the findings worksheet. Wiring the popup is a separate task.
