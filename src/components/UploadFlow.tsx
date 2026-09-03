@@ -259,6 +259,7 @@ export default function UploadFlow() {
         caseId={caseId}
         caseName={detail.name}
         packets={detail.packets}
+        workbook={detail.cccdSummary}
         onContinue={() => { void continueFromCccdReview(caseId) }}
       />
     )

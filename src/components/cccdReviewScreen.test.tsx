@@ -274,3 +274,71 @@ describe('CccdReviewView', () => {
     expect(html).toContain('Thử lại')
   })
 })
+
+describe('when the card workbook could not be read', () => {
+  const failed = { status: 'error' as const, candidates: 0, attached: 0,
+                   unresolved: 0, errorCode: 'invalid-workbook' }
+
+  it('says so, instead of looking like nothing has matched yet', () => {
+    // Measured on a real case (cccdWorkbook.status "error", 0 candidates): the
+    // screen rendered 25 rows and 25 "Gán thẻ" buttons against 0 card tiles,
+    // with no mention of an error anywhere. Each button could only ever open an
+    // empty picker.
+    const html = renderToStaticMarkup(
+      <CccdReviewView
+        caseId="case-1"
+        caseName="c1.pdf"
+        review={null}
+        busy={false}
+        error={null}
+        workbook={failed}
+        onAssign={() => undefined}
+        onDetach={() => undefined}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Không đọc được file ảnh CCCD')
+    expect(html).toContain('invalid-workbook')
+    expect(html).toContain('role="alert"')
+  })
+
+  it('still offers the way forward, so the case is not a dead end', () => {
+    const html = renderToStaticMarkup(
+      <CccdReviewView
+        caseId="case-1"
+        caseName="c1.pdf"
+        review={null}
+        busy={false}
+        error={null}
+        workbook={failed}
+        onAssign={() => undefined}
+        onDetach={() => undefined}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Tiếp tục')
+  })
+
+  it('says nothing when the workbook read fine', () => {
+    const html = renderToStaticMarkup(
+      <CccdReviewView
+        caseId="case-1"
+        caseName="c1.pdf"
+        review={null}
+        busy={false}
+        error={null}
+        workbook={{ status: 'ready', candidates: 25, attached: 7, unresolved: 18 }}
+        onAssign={() => undefined}
+        onDetach={() => undefined}
+        onRetry={() => undefined}
+        onContinue={() => undefined}
+      />,
+    )
+
+    expect(html).not.toContain('Không đọc được file ảnh CCCD')
+  })
+})

@@ -1406,3 +1406,18 @@ button.cccd-review-tile-image { cursor: pointer; }
 .upload-inspect-images li { margin: 2px 0; color: var(--text-muted); }
 .upload-inspect-images li.unrecognised { color: var(--warn, #b7791f); font-weight: 600; }
 .upload-inspect-warn { margin: 8px 0 0; color: var(--warn, #b7791f); }
+
+/* The ingest could not read the card workbook at all. Stated plainly, because
+   the rows below still render a "Gán thẻ" button per packet and each one can
+   only open an empty picker -- and the headline's "0 đã gắn · 0 chưa ghép"
+   reads as "nothing matched yet" rather than "the file could not be read". */
+.cccd-review-failed {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 0.5px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  font-size: 13px;
+}
+.cccd-review-failed p { margin: 0; }
+.cccd-review-failed-hint { margin-top: 6px; color: var(--text-muted); }

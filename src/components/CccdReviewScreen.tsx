@@ -3,7 +3,7 @@
 // sits behind a collapsed section, so a wrong automatic match is still findable.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { assignCccdCard, cccdCardImageUrl, listCccdCards } from '../upload/api'
-import type { CccdCard, PacketMeta } from '../upload/api'
+import type { CccdCard, CccdSummary, PacketMeta } from '../upload/api'
 import { buildCccdReview } from '../logic/cccdReview'
 import {
   describeCard,
@@ -22,6 +22,8 @@ export interface CccdReviewViewProps {
   review: CccdReview | null
   busy: boolean
   error: string | null
+  /** The ingest's verdict on the card workbook, when there is one. */
+  workbook?: CccdSummary | null
   onAssign: (packetIndex: number, packetLabel: string) => void
   onDetach: (cardId: string) => void
   onRetry: () => void
@@ -190,11 +192,18 @@ export function CccdReviewView({
   review,
   busy,
   error,
+  workbook,
   onAssign,
   onDetach,
   onRetry,
   onContinue,
 }: CccdReviewViewProps) {
+  // The ingest could not read the card workbook at all, so there is nothing to
+  // assign from. Without saying so the screen shows a row and a "Gán thẻ" button
+  // per packet -- 25 of them on a real case -- each opening an empty picker,
+  // under a headline ("0 đã gắn · 0 chưa ghép") that reads as "nothing matched
+  // yet" rather than "the file could not be read".
+  const workbookFailed = workbook?.status === 'error'
   return (
     <div className="cccd-review">
       <div className="case-detail-head">
@@ -209,6 +218,19 @@ export function CccdReviewView({
             : 'Đang tải…'}
         </span>
       </div>
+
+      {workbookFailed && (
+        <div className="cccd-review-failed" role="alert">
+          <p>
+            <b>Không đọc được file ảnh CCCD.</b> Không có ảnh nào để gán, nên
+            các gói bên dưới sẽ không thể ghép thẻ ở bước này.
+          </p>
+          <p className="cccd-review-failed-hint">
+            Kiểm tra lại file đã tải lên (mã lỗi: {workbook?.errorCode || 'không rõ'}),
+            hoặc bấm “Tiếp tục →” để duyệt hồ sơ mà chưa ghép ảnh CCCD.
+          </p>
+        </div>
+      )}
 
       {error && (
         <>
@@ -304,6 +326,10 @@ interface Props {
   caseId: string
   caseName: string
   packets: PacketMeta[]
+  /** The ingest's own verdict on the card workbook. When it is `error` there are
+   *  no cards to assign at all, and saying so is the difference between a
+   *  reviewer re-uploading and clicking 25 buttons that cannot work. */
+  workbook?: CccdSummary | null
   onContinue: () => void
 }
 
@@ -311,6 +337,7 @@ export default function CccdReviewScreen({
   caseId,
   caseName,
   packets,
+  workbook,
   onContinue,
 }: Props) {
   const [cards, setCards] = useState<CccdCard[] | null>(null)
@@ -385,6 +412,7 @@ export default function CccdReviewScreen({
         review={cards === null ? null : buildCccdReview(packets, cards)}
         busy={busy || cards === null}
         error={error}
+        workbook={workbook}
         onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}
         onDetach={cardId => { void detach(cardId) }}
         onRetry={() => { void load() }}
