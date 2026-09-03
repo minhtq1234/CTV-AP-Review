@@ -206,7 +206,6 @@ def build_roster_index(
     by_cccd: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     by_mst: dict[str, dict] = {}
-    by_mst: dict[str, dict] = {}
     for row in all_roster_rows(rows):
         c = digits(row["cccd"])
         if c and c not in by_cccd:
