@@ -3,6 +3,20 @@ from criteria import Kind, Status
 
 
 class TestRegistryMatchesTheChecklist:
+    def test_every_in_scope_part_has_a_reviewers_label(self):
+        """A presence answer IS its note, so each declared part needs the
+        reviewer's own words -- `Chi nhánh`, not `branch`.
+
+        #27 is deliberately absent: it declares parts too, but its question is
+        agreement between VNG's details across documents, which `compare_parts`
+        was rescoped away from. Recorded here because this is the cheapest place
+        a future reader will trip over it.
+        """
+        for stt in (8, 13):
+            params = cr.BY_STT[stt].params or {}
+            assert set(params["part_labels"]) == set(params["parts"]), stt
+        assert "part_labels" not in (cr.BY_STT[27].params or {})
+
     def test_twenty_five_per_ctv_criteria(self):
         # 24 from Checklist_Binhnt10.xlsx "Requirement CTV Remove" + #28
         assert len(cr.CRITERIA) == 25

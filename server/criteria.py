@@ -161,7 +161,12 @@ CRITERIA: tuple[Criterion, ...] = (
     _c(8, "Thông tin ngân hàng", "01",
        [EXCEL, CONTRACT, BBNT], Kind.COMPARE, "matrix",
        "Kiểm tra có đủ 3 nội dung: Tên ngân hàng – Chi nhánh – Tỉnh/TP.",
-       compare="text", parts=("bank", "branch", "province")),
+       compare="text", parts=("bank", "branch", "province"),
+       #: The reviewer's own words for each part, lifted from this criterion's
+       #: `how` text. Under a presence answer the note IS the answer, so it must
+       #: not leak internal keys like `branch` at a person.
+       part_labels={"bank": "Tên ngân hàng", "branch": "Chi nhánh",
+                    "province": "Tỉnh/TP"}),
 
     # -- 02. Thông tin công ty (1) -------------------------------------------
     _c(27, "Thông tin công ty VNG khớp Hợp đồng ↔ BBNT ↔ Bảng Kê Thu Mua", "02",
@@ -203,7 +208,12 @@ CRITERIA: tuple[Criterion, ...] = (
        "bắt đầu tính hạn, phương thức thanh toán và tài khoản nhận tiền. Cảnh "
        "báo nếu các chứng từ ghi thời hạn khác nhau.",
        compare="text",
-       parts=("amount_basis", "term", "term_start", "method", "account")),
+       parts=("amount_basis", "term", "term_start", "method", "account"),
+       part_labels={"amount_basis": "Số tiền hoặc căn cứ tính phí",
+                    "term": "Thời hạn thanh toán",
+                    "term_start": "Mốc bắt đầu tính hạn",
+                    "method": "Phương thức thanh toán",
+                    "account": "Tài khoản nhận tiền"}),
 
     # -- 04. Số tiền và thuế (5) ---------------------------------------------
     _c(14, "Gross (Hợp đồng/BBNT/Bảng Kê Thu Mua = Gross Excel)", "04",
