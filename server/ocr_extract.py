@@ -1754,8 +1754,14 @@ def assemble_docs(
             j: words_by_page[pk] for j, pk in enumerate(seg["pages"])
         }
         page_of.update({(doc_id, j): pk for j, pk in enumerate(seg["pages"])})
-        # Always set, `{}` when nothing matched: a missing key and "no signature
-        # block found" are different answers and the reader must not confuse them.
+        # Set on every document this function builds, `{}` when nothing matched:
+        # a missing key and "no signature block found" are different answers.
+        # Not a guarantee across the whole manifest, though -- `cccd_ingest`
+        # attaches the card documents afterwards and they carry no `anchors` at
+        # all (14 of them on a real 25-packet case). Harmless, because no
+        # signature criterion looks at a card and `evaluate._block_evidence`
+        # reads this with `.get("anchors") or {}` -- but a reader must not take
+        # the key as always present.
         docs[-1]["anchors"] = find_anchors(
             words_by_doc[doc_id],
             {j: pages[pk].get("height") for j, pk in enumerate(seg["pages"])},

@@ -515,9 +515,43 @@ never reproducible here.
 **These changes need a re-ingest before they show on an existing case.** Anchors are recorded during
 the read, so every case ingested before this keeps page 0 and no box until it is put through again.
 
-**Two things measured on real data that bound what can be claimed.** Across four real contracts the
-CTV phrase matched on the correct final page 4/4, but `Đại diện VNG` matched **0/4** — OCR read it as
-`IENVNG`, as bare `VNG`, or the column produced no words at all. So #22 and #24 will usually ride the
-page-only fallback: right document, right signing page, no box. And nothing shows a reviewer these
-boxes yet — `EvidenceViewer`'s `focusBbox` is fed by field selection, not criterion evidence, so the
-only visible change today is in the findings worksheet. Wiring the popup is a separate task.
+### Measured on a whole real case, and verified on screen
+
+Superseding the four-contract sample this section first carried. A 25-packet submission was
+re-ingested on this code and every manifest counted:
+
+| document | n | ctv | vng |
+|---|---|---|---|
+| contract | 25 | **25 (100%)** | **1 (4%)** |
+| bbnt | 24 | **21 (88%)** | **10 (42%)** |
+
+57 boxes recorded, heights 216–288px.
+
+**#21 and #23 are delivered. #22 is not, and should not be described as such** — one contract in
+twenty-five. `Đại diện VNG` is mangled by OCR essentially always, so #22 gets the right document and
+the right signing page and never a box. #24 lands at 42%, better because a BBNT prints
+`Bên Sử Dụng Dịch Vụ` as a column header rather than a signature caption.
+
+**#25 is unverified.** This submission contains no appendix documents at all, so nothing exercised
+it. Anyone claiming it works needs a case that has one.
+
+**Verified in the running app**, not only in tests. Clicking #21's cell opened the popup on page 4 of
+the contract with the box over the right-hand signature column, enclosing the
+`BÊN CUNG ỨNG DỊCH VỤ` header, the signature and the printed name — the VNG seal in the left column
+correctly outside it. The rendered CSS is exactly `inflateBbox({x:721, y:874, w:221, h:234}, 0.2)`
+against a 1241×1755 page, matching the recorded anchor to the decimal. Re-opened fresh, the viewer's
+`scrollTop` is 0: the box is drawn and the page does not jump, so ver-3 scope §2's "no autofocus"
+holds. #22's cell opened the same document with no box, as predicted.
+
+This also settles `_BLOCK_LINES`: at 9 the box reaches the printed name under the signature, which is
+what the reviewer is actually checking. The value this plan proposed would have cropped it.
+
+**The `anchors` key is not universal.** It is set on every document `assemble_docs` builds, but
+`cccd_ingest` attaches the card documents afterwards and those carry none — 14 of them on this case.
+Harmless (`_block_evidence` reads it with `.get("anchors") or {}`, and no signature criterion looks
+at a card), but not a whole-manifest guarantee.
+
+**Nothing showed a reviewer these boxes when Tasks 1–3 landed.** `EvidenceViewer`'s `focusBbox` is
+fed by the field-selection path, and the packet-docs popup runs `overviewMode` permanently, which
+made `focusBbox` inert there. `overviewMode` conflated the jump to a value with the outline around
+it; `showFocusInOverview` now draws without scrolling, which is what let the above be verified at all.
