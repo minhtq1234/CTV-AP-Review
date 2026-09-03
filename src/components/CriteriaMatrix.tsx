@@ -21,6 +21,7 @@ import {
 import { SUMMARY_STATUS_PRESENTATION } from '../logic/summaryTab'
 import { cellAction } from '../logic/criteriaDocument'
 import type { EvidenceKind } from '../ctv/types'
+import type { Bbox } from '../types'
 
 interface Props {
   caseId: string
@@ -29,6 +30,7 @@ interface Props {
   onOpenDocument?: (
     docKind: EvidenceKind,
     context: { label: string; note?: string; value?: string },
+    focus?: { page: number; bbox: Bbox | null } | null,
   ) => void
   /** Leave for the Tổng hợp tab, where the roster-level criterion is checked. */
   onShowSummary?: () => void
@@ -173,6 +175,7 @@ export function MatrixRow({
   onOpenDocument?: (
     docKind: EvidenceKind,
     context: { label: string; note?: string; value?: string },
+    focus?: { page: number; bbox: Bbox | null } | null,
   ) => void
   /** The roster-level column is checked on the Tổng hợp tab, not in a packet. */
   onShowSummary?: () => void
@@ -233,6 +236,19 @@ export function MatrixRow({
   )
 }
 
+
+/** Where this cell says to look, if it says anything.
+ *
+ * The signature criteria (#21-#25) record the party's block during the read;
+ * others carry evidence with a page but no box, which is still worth honouring
+ * — the right page beats the first page. `null` when the cell located nothing.
+ */
+function focusOf(cell: CriterionCell): { page: number; bbox: Bbox | null } | null {
+  const located = cell.evidence.find(e => e.bbox) ?? cell.evidence[0]
+  if (!located) return null
+  return { page: located.page, bbox: located.bbox }
+}
+
 function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
   row: CriterionRow
   cell: CriterionCell
@@ -240,6 +256,7 @@ function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
   onOpenDocument?: (
     docKind: EvidenceKind,
     context: { label: string; note?: string; value?: string },
+    focus?: { page: number; bbox: Bbox | null } | null,
   ) => void
   onShowSummary?: () => void
 }) {
@@ -269,7 +286,7 @@ function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
                 label: `${row.label} · ${cell.document}`,
                 note: cell.note,
                 value: cell.value,
-              })
+              }, focusOf(cell))
             } else {
               // No handler wired: fall back to the detail row rather than
               // becoming a button that does nothing.
@@ -303,6 +320,7 @@ function CellDecision({ row, cell, onDecide }: {
   onOpenDocument?: (
     docKind: EvidenceKind,
     context: { label: string; note?: string; value?: string },
+    focus?: { page: number; bbox: Bbox | null } | null,
   ) => void
   /** The roster-level column is checked on the Tổng hợp tab, not in a packet. */
   onShowSummary?: () => void

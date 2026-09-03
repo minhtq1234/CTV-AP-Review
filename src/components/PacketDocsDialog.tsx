@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { fetchPacketManifest } from '../upload/api'
 import type { EvidenceDoc, EvidenceKind } from '../ctv/types'
+import type { Bbox } from '../types'
 import EvidenceViewer from './EvidenceViewer'
 
 interface Props {
@@ -24,6 +25,11 @@ interface Props {
    *  to open a detail row so the reviewer read these before deciding; carrying
    *  them here keeps that, rather than dropping it. */
   context?: { label: string; note?: string; value?: string } | null
+  /** Where on the document the criterion says to look — the signature block
+   *  for #21–#25, recorded during the read. Outlined, never scrolled to: ver-3
+   *  scope §2 decided this popup does not autofocus. A criterion with no box
+   *  still names a page, so the page is honoured even when the bbox is null. */
+  focus?: { page: number; bbox: Bbox | null } | null
 }
 
 type LoadState =
@@ -40,11 +46,16 @@ const LOAD_ERROR = 'Không tải được chứng từ của gói này.'
  * no mutation, nothing that writes.
  *
  * Reuses EvidenceViewer exactly as the full reviewer does, in its overview
- * presentation: there is no field selection here to focus a value against, so
- * `focusBbox` stays null and `lockView` stays false for the dialog's whole
- * life. Overview mode already makes lock view a no-op (see EvidenceViewer's
- * own `hideLockControl` doc comment), so its toggle is omitted here rather
- * than shown inert.
+ * presentation, and `lockView` stays false for the dialog's whole life.
+ * Overview mode already makes lock view a no-op (see EvidenceViewer's own
+ * `hideLockControl` doc comment), so its toggle is omitted here rather than
+ * shown inert.
+ *
+ * It does outline a box when one is given. There was no field selection here
+ * to focus against, but a criterion cell brings its own answer: #21-#25 record
+ * where each party signs, and a tool whose premise is that it points should
+ * point. It is drawn and never scrolled to (`showFocusInOverview`), because
+ * ver-3 scope §2 decided this popup must not autofocus.
  *
  * Backdrop-click + Escape follow CccdCardPicker's pattern. styles.css's
  * .packet-docs-backdrop deliberately mirrors .cccd-picker-backdrop's rules
@@ -60,6 +71,7 @@ export default function PacketDocsDialog({
   onClose,
   onOpenPacket,
   initialDocId,
+  focus,
   initialDocKind,
   context,
 }: Props) {
@@ -90,13 +102,13 @@ export default function PacketDocsDialog({
           || (initialDocKind && manifest.docs.find(doc => doc.kind === initialDocKind))
           || undefined
         setActiveDocId(requested?.id ?? manifest.docs[0]?.id ?? null)
-        setActivePage(0)
+        setActivePage(focus?.page ?? 0)
       })
       .catch(() => {
         if (liveKeyRef.current !== key) return
         setState({ status: 'error' })
       })
-  }, [caseId, packetIndex, initialDocKind, initialDocId])
+  }, [caseId, packetIndex, initialDocKind, initialDocId, focus?.page])
 
   useEffect(() => {
     load()
@@ -157,7 +169,8 @@ export default function PacketDocsDialog({
               docs={state.docs}
               activeDocId={activeDocId}
               activePage={activePage}
-              focusBbox={null}
+              focusBbox={focus?.bbox ?? null}
+              showFocusInOverview
               lockView={false}
               overviewMode
               overviewResetVersion={0}

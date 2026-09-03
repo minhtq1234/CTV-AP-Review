@@ -122,3 +122,75 @@ describe('clicking a matrix cell', () => {
     expect(opened).toHaveLength(0)
   })
 })
+
+
+describe('a cell that knows where to look', () => {
+  it('hands the parent the page and box the criterion recorded', () => {
+    const bbox = { x: 616, y: 973, width: 268, height: 225 }
+    const r = row({
+      cells: [cell({
+        document: 'Hợp đồng',
+        evidence: [{
+          documentId: 'contract-0', page: 3, bbox,
+          value: '', confidence: null, provenance: 'ocr',
+        }],
+      })],
+    })
+    const opened: Array<{ page: number; bbox: unknown }> = []
+    act(() => {
+      root.render(
+        <table><tbody>
+          <MatrixRow
+            row={r}
+            columns={['Hợp đồng']}
+            open={false}
+            onToggle={() => undefined}
+            onDecide={() => undefined}
+            onOpenDocument={(_kind, _context, focus) => {
+              if (focus) opened.push(focus)
+            }}
+          />
+        </tbody></table>,
+      )
+    })
+    clickMark('Hợp đồng')
+
+    expect(opened).toHaveLength(1)
+    expect(opened[0].page).toBe(3)
+    expect(opened[0].bbox).toEqual(bbox)
+  })
+
+  it('still names the page when the criterion located no box', () => {
+    // #22 and #24 ride this path on real contracts: OCR mangles `Đại diện VNG`,
+    // so the party has no box of its own but the signing page is still known.
+    const r = row({
+      cells: [cell({
+        document: 'Hợp đồng',
+        evidence: [{
+          documentId: 'contract-0', page: 2, bbox: null,
+          value: '', confidence: null, provenance: 'ocr',
+        }],
+      })],
+    })
+    const opened: Array<{ page: number; bbox: unknown }> = []
+    act(() => {
+      root.render(
+        <table><tbody>
+          <MatrixRow
+            row={r}
+            columns={['Hợp đồng']}
+            open={false}
+            onToggle={() => undefined}
+            onDecide={() => undefined}
+            onOpenDocument={(_kind, _context, focus) => {
+              if (focus) opened.push(focus)
+            }}
+          />
+        </tbody></table>,
+      )
+    })
+    clickMark('Hợp đồng')
+
+    expect(opened[0]).toEqual({ page: 2, bbox: null })
+  })
+})

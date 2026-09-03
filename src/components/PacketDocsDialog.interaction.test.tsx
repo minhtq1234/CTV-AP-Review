@@ -82,6 +82,7 @@ interface RenderProps {
   onClose: () => void
   onOpenPacket?: (index: number) => void
   initialDocKind?: EvidenceKind
+  focus?: { page: number; bbox: { x: number; y: number; width: number; height: number } | null } | null
 }
 
 const defaultProps = (): RenderProps => ({
@@ -103,6 +104,7 @@ async function render(overrides: Partial<RenderProps> = {}) {
         onClose={props.onClose}
         onOpenPacket={props.onOpenPacket}
         initialDocKind={props.initialDocKind}
+        focus={props.focus}
       />,
     )
   })
@@ -294,5 +296,38 @@ describe('PacketDocsDialog', () => {
     await render({ onOpenPacket: undefined })
     const buttons = [...host.querySelectorAll('button')].map(b => b.textContent)
     expect(buttons.some(t => t?.includes('Mở gói hồ sơ'))).toBe(false)
+  })
+
+  it('outlines the box the criterion pointed at', async () => {
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render({
+      initialDocKind: 'contract',
+      focus: { page: 0, bbox: { x: 100, y: 200, width: 300, height: 120 } },
+    })
+
+    expect(host.querySelector('.document-focus-anchor')).not.toBeNull()
+  })
+
+  it('does not autofocus: the page is outlined, never scrolled to', async () => {
+    // ver-3 scope §2 decided this popup must not autofocus. Overview mode
+    // conflated the outline with the jump; only the jump stays disabled.
+    const scrollIntoView = vi.fn()
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    fetchPacketManifest.mockResolvedValue(folder())
+
+    await render({
+      initialDocKind: 'contract',
+      focus: { page: 0, bbox: { x: 100, y: 200, width: 300, height: 120 } },
+    })
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('opens on the page the criterion named even with no box', async () => {
+    fetchPacketManifest.mockResolvedValue(folder())
+    await render({ initialDocKind: 'contract', focus: { page: 1, bbox: null } })
+
+    expect(host.querySelector('.document-focus-anchor')).toBeNull()
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull()
   })
 })

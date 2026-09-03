@@ -29,6 +29,16 @@ interface Props {
   rosterLabel?: string
   rosterValue?: string | null
   /**
+   * Draw `focusBbox` in overview mode, without scrolling to it.
+   *
+   * Overview mode conflates two things: the jump to a value, and the outline
+   * around it. A criterion saying "the signature block is here" wants the
+   * outline — pointing is this tool's whole premise — while ver-3 scope §2
+   * decided the packet-docs popup must not autofocus. This draws without
+   * moving the page.
+   */
+  showFocusInOverview?: boolean
+  /**
    * Omits the lock-view toggle from the toolbar. Lock view only ever gates
    * the autofocus-zoom and scroll-to-field effects below (both start with
    * `if (overviewMode || lockView) return`), so in a caller that is always
@@ -57,6 +67,7 @@ export default function EvidenceViewer({
   onToggleLock,
   rosterLabel,
   rosterValue,
+  showFocusInOverview = false,
   hideLockControl = false,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -84,10 +95,11 @@ export default function EvidenceViewer({
   const pageGroups = groupPageIndexes(pageCount, viewMode)
 
   const focusedBox = useMemo(() => {
-    if (overviewMode || !focusBbox || !doc?.pages[pageIndex]) return null
+    if ((overviewMode && !showFocusInOverview) || !focusBbox) return null
+    if (!doc?.pages[pageIndex]) return null
     const page = doc.pages[pageIndex]
     return inflateBbox(focusBbox, 0.2, page.width, page.height)
-  }, [overviewMode, focusBbox, doc, pageIndex])
+  }, [overviewMode, showFocusInOverview, focusBbox, doc, pageIndex])
 
   useEffect(() => {
     if (!overviewMode) return

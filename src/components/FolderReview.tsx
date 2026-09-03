@@ -94,6 +94,7 @@ export default function FolderReview({
     docKind?: EvidenceKind
     docId?: string
     context?: { label: string; note?: string; value?: string }
+    focus?: { page: number; bbox: Bbox | null } | null
   } | null>(null)
 
   // The CCCD card the ingest could not place. OCR fails on roughly half of
@@ -291,7 +292,7 @@ export default function FolderReview({
         <CriteriaMatrix
           caseId={caseId}
           packetIndex={packetIndex}
-          onOpenDocument={(docKind, context) => setDocPopup({ docKind, context })}
+          onOpenDocument={(docKind, context, focus) => setDocPopup({ docKind, context, focus })}
           onShowSummary={onShowSummary}
         />
       ) : viewMode === 'grid' ? (
@@ -431,6 +432,7 @@ export default function FolderReview({
           initialDocId={docPopup.docId}
           initialDocKind={docPopup.docKind}
           context={docPopup.context}
+          focus={docPopup.focus}
           onClose={() => setDocPopup(null)}
         />
       )}
