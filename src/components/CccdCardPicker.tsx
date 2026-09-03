@@ -51,7 +51,18 @@ export default function CccdCardPicker({
   const titleId = useId()
   const panel = useRef<HTMLElement | null>(null)
   const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
+  // Set true in SETUP, not only false in cleanup. A ref survives StrictMode's
+  // setup -> cleanup -> setup on mount, so a cleanup-only effect latched this
+  // to false before first paint and nothing ever set it back -- after which
+  // every assign rejection skipped both setError and setBusyCardId(null), and
+  // `busy` staying true gated all three dismissals. The picker froze on
+  // "Đang gán…" with no error, no enabled control and no way out but a page
+  // reload. The dev server is how this app is run and demoed, so that is the
+  // build reviewers use.
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   // One PUT rewrites up to 25 manifests, so the in-flight window is not tight.
   // Dismissing during it used to commit the assign anyway and then close
