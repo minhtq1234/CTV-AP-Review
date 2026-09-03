@@ -553,3 +553,31 @@ Say plainly:
 - what you did about the detail row in Task 3
 - whether Task 4 cost the reviewer anything that had no replacement
 - your real test numbers, and the baseline you compared them against
+
+---
+
+## Outcome — completed 2026-08-29
+
+**All four tasks landed and met the stated goal.** Task 1 `3944442`; Task 2 `ed49ef9`;
+Task 3 `0b51a5d`; Task 4 `4adafa3`. Clicking a ✓ / ✗ / ? / ! in the matrix and in the Dạng bảng grid
+opens that cell's document full-page, carrying the cell's note and value into the popup header, with
+no autofocus on the value.
+
+**The seams section was right, and one plan later the seam it names had to be split.** It records
+that `PacketDocsDialog` "already satisfies the no-autofocus decision with no work", because
+`focusBbox` stays `null` and `lockView` stays `false` for the dialog's whole life. Correct, and
+correct for this plan's scope: nothing here needed a box, only the right document.
+
+The signature-anchor work that followed did need one, and found that `EvidenceViewer` conflated two
+things under `overviewMode` — *do not jump to the value* and *do not outline it*. Since the
+packet-docs popup runs `overviewMode` permanently, every anchor computed for #21–#25 reached nobody:
+the right document opened on the right page with no box on it. Fixed in `50b5627` by adding
+`showFocusInOverview`, which draws the outline without scrolling, leaving `docs/ver3-scope.md` §2's
+no-autofocus decision intact rather than reverting it. Asserted both ways — the outline appears, and
+`scrollIntoView` is not called.
+
+Recorded here because a reader of this plan would otherwise conclude the popup can never show a box,
+which was true when it was written and is no longer.
+
+**Baseline.** Green at `eb05f7d`: **380 frontend across 38 files**, **864 backend**
+(`cwd=server/`). The plan's stated 821 was never reproducible in this checkout.

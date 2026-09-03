@@ -837,3 +837,49 @@ green, commit.
   matching. Nothing in this plan needs a full run to verify.
 
 When you are done, say plainly which claims you verified and which you took on trust.
+
+---
+
+## Outcome — completed 2026-08-29, corrected 2026-09-01
+
+**All seven tasks landed.** Task 1 `test_fixtures/combined_workbook.py`; Task 2 `a146309`;
+Task 3 `0f6a9cb`; Task 4 `7df46e5`; Task 5 `81219e2`; Task 6 `aa9f766`; Task 7 `822b9b0`. Two
+follow-ups the plan did not ask for: `5fdbf9f` declares what each workbook was read as *before* the
+run, and `73bf5dc` stops that declaration warning about a workbook that names no image headers.
+
+**Task 4's gate as written could not refuse what its own message reported.** The plan gates the
+refusal on `select_roster_sheet(...) is None`, but that function requires only name and CCCD — it
+never looks at money. A bảng kê with a name column, a CCCD column and no money column therefore
+selected fine and was accepted, while the diagnostic beside it said `missing money`. The gate now
+refuses on `missing_required_columns`, the same set the message prints
+(`roster_workbook.py:194-212`), so the two cannot disagree.
+
+**Task 5's classification was wrong three ways, and every one was found by measuring the real
+workbooks rather than by reading the plan.** Fixed in `5fbbd04`:
+
+- A picture is anchored where its **top-left corner** falls, which drifts a column left of the
+  header it sits under — **9 of 100** real drawings. Classification now uses the columns a drawing
+  covers, not the one it starts in.
+- The header row was whichever row came first with any content. On **both** real templates that is a
+  title merged across the whole table, and every merge was expanded unscoped — so a title containing
+  an image word would have classified *every* column as that one kind. `_header_row` now wants two
+  or more values and scopes merges to the row it picked.
+- Markers matched as bare substrings, so `anh` matched `thanh`: a `Thành tiền` column read as a tax
+  screenshot. `_has_phrase` now matches consecutive whole words. The docstring records why this is
+  not cosmetic — since Task 6 made a column's kind decide whether its drawings are cards at all, a
+  false positive **silently removes them from the candidate pool** rather than merely mislabelling
+  them.
+
+**One pre-existing crash, guarded.** `_drawing_parts_for_sheet` raised `KeyError` on a sheet
+carrying no `<drawing>` element at all, which the combined workbook has.
+
+**Task 3's fallback is not in the tree, deliberately.** A `_locate_roster_header` fallback was
+written here and then superseded by upstream `b379960`, which reads the combined template's headers
+when matching packets. The commit (`4f96ad9`) and its branch were deleted on 2026-09-03 rather than
+merged, so nobody should hunt for it; it remains in the reflog for about 90 days.
+
+**Baseline.** The plan's stated 821 was never reproducible in this checkout. Green at `eb05f7d`:
+**864 backend** (`cwd=server/`), **380 frontend across 38 files**.
+
+**A re-ingest is required** before any of this shows on a case ingested earlier — sheet choice and
+image kinds are decided at upload and baked into the manifest.
