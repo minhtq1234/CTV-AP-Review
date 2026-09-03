@@ -1,4 +1,21 @@
-"""Turn a quoted sentence into a place on the page, during the read.
+"""Read a value out of a document, with the evidence to check it.
+
+Two halves of one job, and they belong together because each is what makes the
+other honest. A reader produces `{field: value + verbatim quote + page}`; the
+locator turns that quote into a box on the page. A value without a quote is an
+unfalsifiable claim, and a quote nobody can find on the page is no better.
+
+Two rules this module exists to enforce
+---------------------------------------
+1. **A value carries a verbatim quote and a page, or it is dropped.** The
+   tool's premise is that it points and a person decides.
+2. **A failing reader never fails the ingest.** OCR has already spent minutes
+   by the time a reader runs; a model that times out degrades those cells to
+   `pending`, which is honest, rather than losing the whole read.
+
+An unlocatable quote is NOT dropped, deliberately -- see `locate_fields`.
+
+Turning a quoted sentence into a place on the page
 
 Six criteria (#8, #9, #10, #11, #13) need a clause read rather than a pattern
 matched. However they are read, the answer is worthless unless the reviewer can
@@ -56,7 +73,9 @@ the short quotes this refuses.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from typing import Protocol
 
 from ocr_extract import group_lines, norm, union_bbox
 
@@ -208,3 +227,129 @@ def locate_quote(
     if best is None:
         return None
     return {"page": best[0], "bbox": best[1], "exact": False, "ratio": best[2]}
+
+
+# --- the reader half ---------------------------------------------------------
+
+@dataclass(frozen=True)
+class SemanticField:
+    """One value, with the evidence needed to check it."""
+
+    value: str
+    #: Verbatim from the page, so it can be found again and boxed.
+    quote: str
+    page: int
+    #: Where the quote was found, once `locate_fields` has looked. `None` means
+    #: nobody looked yet; `located is False` means it was looked for and not
+    #: found, which is a different thing and is the number Task 6's gate is.
+    bbox: dict | None = None
+    located: bool | None = None
+    #: True when the quote matched the page verbatim, False when only the fuzzy
+    #: fallback reached it. A reviewer deserves to know which.
+    exact: bool | None = None
+
+
+class Reader(Protocol):
+    """Anything that can answer "what does this document say for these fields".
+
+    Deliberately narrow: text in, `{field: SemanticField}` out. It says nothing
+    about models, keys or transports, so the real adapter and the fake are
+    interchangeable and everything downstream is testable with neither.
+    """
+
+    def read(
+        self, *, doc_kind: str, pages_text: list[str], want: tuple[str, ...],
+    ) -> dict[str, SemanticField]:
+        ...
+
+
+class FakeReader:
+    """A reader that returns a fixed answer, and records what it was asked.
+
+    The recording is not decoration: it is how a test asserts that a caller
+    asked the right document for the right fields, and it is what the real
+    adapter's tests will use to check the request it builds without a network.
+    """
+
+    def __init__(self, answers: dict[str, SemanticField]):
+        self._answers = dict(answers)
+        self.calls: list[dict] = []
+
+    def read(
+        self, *, doc_kind: str, pages_text: list[str], want: tuple[str, ...],
+    ) -> dict[str, SemanticField]:
+        self.calls.append({
+            "doc_kind": doc_kind, "pages": len(pages_text), "want": tuple(want),
+        })
+        # Returns everything it holds, including fields nobody asked for:
+        # `read_document` is what filters, and it has to be exercised.
+        return dict(self._answers)
+
+
+def read_document(
+    reader,
+    *,
+    doc_kind: str,
+    pages_text: list[str],
+    want: tuple[str, ...],
+) -> dict[str, SemanticField]:
+    """`{field: SemanticField}`, keeping only what was asked for and can be
+    checked. Never raises.
+
+    Three filters, each for a different failure:
+
+    - **not asked for** -- a model volunteers things, and an unrequested field
+      would land in the manifest with no criterion to validate it;
+    - **no value** -- nothing to show;
+    - **no quote** -- a value the reviewer cannot check, which is worse than no
+      value at all, because it reads as an answer.
+
+    A reader that raises yields `{}` rather than propagating: by the time this
+    runs, OCR has already spent minutes on the packet, and losing that because
+    a model timed out is a bad trade for cells that degrade to `pending`.
+    """
+    try:
+        raw = reader.read(doc_kind=doc_kind, pages_text=pages_text, want=want)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        name: field
+        for name, field in raw.items()
+        if name in want
+        and isinstance(field, SemanticField)
+        and field.value
+        and field.quote
+    }
+
+
+def locate_fields(
+    fields: dict[str, SemanticField],
+    pages: dict[int, list[dict]],
+) -> dict[str, SemanticField]:
+    """Attach each field's box, by finding its quote on the page.
+
+    An unlocatable quote is kept, with `located=False`, and NOT dropped. That
+    is deliberate and it is the whole reason this returns what it does: the
+    fraction of quotes that cannot be located is the gate the real adapter is
+    judged by, so silently discarding them would make that number
+    unmeasurable -- the approach would look perfect precisely when it was
+    failing. The reviewer's side of it is handled where a cell is built: a
+    field with `located=False` has a value and a quote but nowhere to point,
+    so it is worth a note rather than a highlight.
+    """
+    out: dict[str, SemanticField] = {}
+    for name, field in fields.items():
+        found = locate_quote(field.quote, pages, field.page)
+        if found is None:
+            out[name] = replace(field, located=False, bbox=None, exact=None)
+            continue
+        out[name] = replace(
+            field,
+            located=True,
+            bbox=found["bbox"],
+            page=found["page"],
+            exact=found["exact"],
+        )
+    return out
