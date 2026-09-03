@@ -118,6 +118,122 @@ def test_conflicting_structural_signals_stay_unknown():
     assert classify_side(words) == ("unknown", 0.0)
 
 
+class TestAPortraitCardIsTurnedBeforeItIsGivenUpOn:
+    """A CCCD is 85.6x54mm -- always landscape. A portrait one is a photograph
+    taken sideways, and the number region is looked for horizontally, so it is
+    never found and the card reports `no-number-region`.
+
+    Measured on case 935e37e5 (2026-09-04): 2 of its 4 cards were stored
+    portrait, and both read at exactly one rotation, at 0.94 and 0.96 -- higher
+    than most, because a sideways photo is otherwise a perfectly good one. OSD
+    already runs in `_upright_image` and did not save them: it answered 0.48 and
+    0.12 confidence against a 1.5 gate, and for one of the two its answer was
+    wrong anyway. So the shape is the signal, not OSD's guess.
+    """
+
+    @staticmethod
+    def _portrait(monkeypatch, reads_at: int):
+        """A portrait image whose number is legible only at `reads_at` degrees."""
+        seen = []
+
+        def words_for(image):
+            # Only the correctly-turned image yields the number line.
+            if image.info.get("_test_angle") == reads_at:
+                return [OcrWord("000000000001", 60, 80, 150, 18, .94)]
+            return [OcrWord("CĂN", 20, 10, 40, 15, .98)]
+
+        def rotate_recording(image, angle, expand=False):
+            turned = Image.new("RGB", (image.height, image.width))
+            turned.info.update(image.info)
+            turned.info["_test_angle"] = (image.info.get("_test_angle", 0) + angle) % 360
+            seen.append(angle)
+            return turned
+
+        base = Image.new("RGB", (289, 415))
+        base.info["_test_angle"] = 0
+        monkeypatch.setattr(co, "_upright_image", lambda path: base)
+        monkeypatch.setattr(co, "_full_image_words", words_for)
+        monkeypatch.setattr(co, "_name_from_words", lambda w: ("", 0.0))
+        monkeypatch.setattr(co, "_region_digits", lambda img, box: ("000000000001", .94))
+        monkeypatch.setattr(co.Image.Image, "rotate", rotate_recording, raising=False)
+        return seen
+
+    def test_a_portrait_card_reads_after_the_quarter_turn_that_works(
+        self, tmp_path, monkeypatch,
+    ):
+        self._portrait(monkeypatch, reads_at=270)
+
+        result = co.analyze_drawing(_drawing(tmp_path))
+
+        assert result.cccd == "000000000001"
+
+    def test_the_other_quarter_turn_is_tried_too(self, tmp_path, monkeypatch):
+        """Which way a photograph was taken is not knowable from its shape, and
+        OSD was measured wrong on one of the two real cards. So try both and let
+        a valid twelve digits decide -- never guess the direction."""
+        self._portrait(monkeypatch, reads_at=90)
+
+        result = co.analyze_drawing(_drawing(tmp_path))
+
+        assert result.cccd == "000000000001"
+
+    def test_a_landscape_card_is_never_turned(self, tmp_path, monkeypatch):
+        """The 500+ packets that already read must not move. A card that is
+        landscape is left exactly as `_upright_image` returned it."""
+        turns = []
+        image = Image.new("RGB", (783, 481))
+        monkeypatch.setattr(co, "_upright_image", lambda path: image)
+        monkeypatch.setattr(co, "_full_image_words",
+                            lambda img: [OcrWord("000000000001", 60, 80, 150, 18, .96)])
+        monkeypatch.setattr(co, "_name_from_words", lambda w: ("", 0.0))
+        monkeypatch.setattr(co, "_region_digits", lambda img, box: ("000000000001", .96))
+        monkeypatch.setattr(co.Image.Image, "rotate",
+                            lambda self, angle, expand=False: turns.append(angle) or self,
+                            raising=False)
+
+        result = co.analyze_drawing(_drawing(tmp_path))
+
+        assert result.cccd == "000000000001"
+        assert turns == []
+
+    def test_a_portrait_card_that_reads_at_no_turn_is_left_alone(
+        self, tmp_path, monkeypatch,
+    ):
+        """Turning is a last resort. If the number is already legible, the image
+        is not touched -- a rotated evidence crop the reviewer did not need is a
+        worse artefact than none."""
+        turns = []
+        image = Image.new("RGB", (289, 415))
+        monkeypatch.setattr(co, "_upright_image", lambda path: image)
+        monkeypatch.setattr(co, "_full_image_words",
+                            lambda img: [OcrWord("000000000001", 60, 80, 150, 18, .94)])
+        monkeypatch.setattr(co, "_name_from_words", lambda w: ("", 0.0))
+        monkeypatch.setattr(co, "_region_digits", lambda img, box: ("000000000001", .94))
+        monkeypatch.setattr(co.Image.Image, "rotate",
+                            lambda self, angle, expand=False: turns.append(angle) or self,
+                            raising=False)
+
+        co.analyze_drawing(_drawing(tmp_path))
+
+        assert turns == []
+
+    def test_a_portrait_card_that_reads_at_no_turn_and_never_will_stays_unread(
+        self, tmp_path, monkeypatch,
+    ):
+        """Both turns tried, nothing found: the card reports no number exactly as
+        it does today. The fallback must not invent one."""
+        image = Image.new("RGB", (289, 415))
+        monkeypatch.setattr(co, "_upright_image", lambda path: image)
+        monkeypatch.setattr(co, "_full_image_words",
+                            lambda img: [OcrWord("CĂN", 20, 10, 40, 15, .98)])
+        monkeypatch.setattr(co, "_name_from_words", lambda w: ("", 0.0))
+
+        result = co.analyze_drawing(_drawing(tmp_path))
+
+        assert result.cccd == ""
+        assert result.number_bbox is None
+
+
 def test_analyze_drawing_reocrs_the_recovered_crop(tmp_path, monkeypatch):
     drawing = _drawing(tmp_path)
     words = [
