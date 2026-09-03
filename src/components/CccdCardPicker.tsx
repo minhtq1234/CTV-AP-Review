@@ -1,10 +1,11 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
   assignCccdCard,
   cccdCardImageUrl,
   listCccdCards,
   type CccdCard,
 } from '../upload/api'
+import { useDialogFocus } from './useDialogFocus'
 
 interface Props {
   caseId: string
@@ -36,6 +37,8 @@ export default function CccdCardPicker({
   const [busyCardId, setBusyCardId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const titleId = useId()
+  const panel = useRef<HTMLElement | null>(null)
+  useDialogFocus(panel, onCancel)
 
   useEffect(() => {
     let cancelled = false
@@ -71,11 +74,12 @@ export default function CccdCardPicker({
       }}
     >
       <section
+        ref={panel}
+        tabIndex={-1}
         className="cccd-picker"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        onKeyDown={event => { if (event.key === 'Escape') onCancel() }}
       >
         <header className="cccd-picker-head">
           <div>

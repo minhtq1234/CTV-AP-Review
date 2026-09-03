@@ -384,21 +384,52 @@ describe('CccdReviewScreen', () => {
     expect(host.querySelector('[role="dialog"]')).not.toBeNull()
   })
 
-  it('closes the full-size viewer on Escape', async () => {
+  it('closes the full-size viewer on Escape, from wherever focus is', async () => {
+    // Dispatched at document.activeElement, not at the dialog. The old test
+    // dispatched on the dialog element, which is the one thing a browser never
+    // does -- keydown fires at the focused element -- so it passed while
+    // Escape was dead in Chrome from every reachable path.
     listCccdCards.mockResolvedValue([card('card-00', 0)])
     await mount()
     await act(async () => { thumbButton('card-00').click() })
     const dialog = host.querySelector('[role="dialog"]') as HTMLElement
     expect(dialog).not.toBeNull()
+    // The dialog takes focus on mount, which is what makes Escape reachable.
+    expect(dialog.contains(document.activeElement)).toBe(true)
 
     await act(async () => {
-      dialog.dispatchEvent(new KeyboardEvent('keydown', {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Escape',
         bubbles: true,
         cancelable: true,
       }))
     })
     expect(host.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('traps Tab inside the viewer so the Tiếp tục gate is unreachable', async () => {
+    // Measured in Chrome before the trap: 70 tab stops, the dialog's own first
+    // control at 51 and `Tiếp tục` -- the hard gate off this screen -- at 50.
+    // Tab reached the gate behind the backdrop and activating it advanced the
+    // case with cards still unassigned.
+    listCccdCards.mockResolvedValue([card('card-00', 0)])
+    await mount()
+    await act(async () => { thumbButton('card-00').click() })
+    const dialog = host.querySelector('[role="dialog"]') as HTMLElement
+
+    const inside = Array.from(
+      dialog.querySelectorAll<HTMLElement>('button:not([disabled])'),
+    )
+    expect(inside.length).toBeGreaterThan(0)
+    inside[inside.length - 1].focus()
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab', bubbles: true, cancelable: true,
+    })
+    await act(async () => { document.activeElement!.dispatchEvent(event) })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(dialog.contains(document.activeElement)).toBe(true)
   })
 
   it('closes the full-size viewer on a backdrop click', async () => {

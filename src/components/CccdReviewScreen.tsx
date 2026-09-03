@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { assignCccdCard, cccdCardImageUrl, listCccdCards } from '../upload/api'
 import type { CccdCard, CccdSummary, PacketMeta } from '../upload/api'
 import { buildCccdReview } from '../logic/cccdReview'
+import { useDialogFocus } from './useDialogFocus'
 import {
   describeCard,
   type CccdAttachedRow,
@@ -93,6 +94,9 @@ function CccdCardViewer({ caseId, card, onClose }: {
   card: CccdCard
   onClose: () => void
 }) {
+  const panel = useRef<HTMLElement | null>(null)
+  useDialogFocus(panel, onClose)
+
   return (
     <div
       className="cccd-picker-backdrop"
@@ -101,11 +105,12 @@ function CccdCardViewer({ caseId, card, onClose }: {
       }}
     >
       <section
+        ref={panel}
+        tabIndex={-1}
         className="cccd-card-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={`Ảnh CCCD ${card.cardId}`}
-        onKeyDown={event => { if (event.key === 'Escape') onClose() }}
       >
         <header className="cccd-card-viewer-head">
           <h2>Ảnh CCCD {card.cardId}</h2>
