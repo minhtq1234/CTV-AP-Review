@@ -1202,7 +1202,9 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
    fixed grid so the STT, name and action line up down the page; it carries
    no image (there is nothing to show yet), so it is the only thing still
    shaped as a row -- every card image, attached or orphan, is a tile. */
-.cccd-review { padding: 16px 20px 32px; }
+/* Bottom padding clears the sticky footer, so the last row in the list can
+   still be scrolled out from under the Tiếp tục button. */
+.cccd-review { padding: 16px 20px 72px; }
 .cccd-review-section { margin-top: 18px; }
 .cccd-review-section > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 .cccd-review-list { list-style: none; margin: 8px 0 0; padding: 0; }
@@ -1228,7 +1230,21 @@ button.packet-grid-status.selected { outline: 3px solid var(--accent); outline-o
 .cccd-review-nothumb { color: var(--text-muted); font-size: 12px; }
 .cccd-review-empty { color: var(--text-muted); margin: 8px 0 0; }
 .cccd-review-error { color: var(--danger); margin: 10px 0 0; }
-.cccd-review-foot { margin-top: 22px; display: flex; justify-content: flex-end; }
+/* Sticks to the bottom, like .review-header sticks to the top. This is the only
+   way forward off this screen, and it used to sit in normal flow at the end of
+   the list: on a real 25-packet case with 18 cards to assign the page is 1760px
+   against an 800px viewport, so the button sat at y=1697 -- almost a thousand
+   pixels below the fold, with nothing to suggest it existed. */
+.cccd-review-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  margin-top: 22px;
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 0;
+  background: linear-gradient(to top, var(--bg) 60%, transparent);
+}
 
 /* Shared by both card-bearing sections now: an orphan card and an attached
    card are the same job -- judging a card image by eye -- so they get the
