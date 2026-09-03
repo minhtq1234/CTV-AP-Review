@@ -977,3 +977,177 @@ class TestACandidateStopsBeingOneOnceDecided:
 
         assert after["flagged"] > before["flagged"]
         assert findings_after < findings_before
+
+
+def _case_with_many_packets(monkeypatch, tmp_path, count):
+    """A case whose roster holds `count` people, each matched by one packet.
+
+    The single-packet fixtures above cannot tell "once per request" from "once
+    per packet" — with one packet both are 1. This one can.
+    """
+    people = tuple(
+        (stt, f"00110000000{stt}", 10_000_000, 1_000_000, 9_000_000)
+        for stt in range(1, count + 1)
+    )
+
+    def pipeline(pdf, roster, out_dir, cb, cccd_xlsx_path=None):
+        cb("done", count, count, "")
+        return {
+            "summary": {"found": count, "roster_n": count, "matched": count,
+                        "auto_merged": 0},
+            "packets": [
+                {"index": stt - 1, "name": f"Người {stt}", "pages": [8, 15],
+                 "confidence": "green", "flags": [], "labels": [],
+                 "matchedBy": "cccd",
+                 "rosterIdentity": {"cccd": cccd, "name": f"Người {stt}"}}
+                for stt, cccd, *_ in people
+            ],
+            "cccdWorkbook": None,
+        }
+
+    monkeypatch.setattr(appmod, "run_pipeline", pipeline)
+    monkeypatch.setattr(appmod, "store", appmod.CaseStore(str(tmp_path)))
+    c = TestClient(app)
+    r = c.post(
+        "/api/cases",
+        files={"pdf": ("jul.pdf", b"%PDF-1.4 x", "application/pdf"),
+               "roster": ("bangke.xlsx", _bang_ke_bytes(people),
+                          "application/vnd.openxmlformats-officedocument."
+                          "spreadsheetml.sheet")},
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["case_id"]
+    for _ in range(100):
+        d = c.get(f"/api/cases/{cid}").json()
+        if d["status"] in ("ready", "in_review", "done", "error"):
+            break
+        time.sleep(0.02)
+    assert d["status"] == "ready", d
+    return c, cid
+
+
+def _write_manifest_with_mst(tmp_path, cid, index, mst):
+    """A packet manifest whose contract states one MST, and nothing else.
+
+    `_write_manifest`'s contract carries a name, and criterion 01 spans four
+    documents this packet does not have -- so a disagreement there rolls up to
+    `missing` either way and cannot show which roster row was read. Criterion 05
+    spans Excel and the contract only, which makes MST the observable one.
+    """
+    packet_dir = tmp_path / cid / "packets" / str(index)
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "id": "p", "name": f"Người {index + 1}", "product": "",
+        "docs": [{"id": "contract-0", "kind": "contract",
+                  "label": "Hợp đồng dịch vụ", "pages": []}],
+        "fields": [{"key": "mst", "expected": mst, "sources": [
+            {"docId": "contract-0", "page": 0, "value": mst,
+             "confidence": 0.95,
+             "bbox": {"x": 1, "y": 2, "width": 3, "height": 4}},
+        ]}],
+    }
+    with open(packet_dir / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False)
+
+
+class TestTheRosterIsReadOncePerRequest:
+    """`GET /api/cases/{cid}` used to parse `roster.xlsx` once per packet and
+    rebuild the same people index with it, because `_roster_row_for` re-derived
+    both from scratch for every packet. On the real 41-packet July case that was
+    41 identical parses and ~440ms of the request.
+
+    Pinned because the regression is invisible from the response: reverting the
+    hoist changes no field, only the wall clock.
+    """
+
+    def _ready(self, monkeypatch, tmp_path, count=3):
+        c, cid = _case_with_many_packets(monkeypatch, tmp_path, count)
+        for stt in range(1, count + 1):
+            _write_manifest_with_mst(tmp_path, cid, stt - 1,
+                                     mst=f"00110000000{stt}")
+        return c, cid
+
+    def test_the_workbook_is_parsed_once_not_once_per_packet(
+        self, tmp_path, monkeypatch,
+    ):
+        c, cid = self._ready(monkeypatch, tmp_path, count=3)
+        real, parses = appmod.load_roster_rows, []
+        monkeypatch.setattr(
+            appmod, "load_roster_rows",
+            lambda source: (parses.append(1), real(source))[1],
+        )
+
+        assert c.get(f"/api/cases/{cid}").status_code == 200
+
+        assert len(parses) == 1
+
+    def test_the_people_index_is_built_once_not_once_per_packet(
+        self, tmp_path, monkeypatch,
+    ):
+        """The parse is the expensive half, but re-deriving the index off a
+        cached parse would leave the same shape of waste behind."""
+        import roster_checks
+
+        c, cid = self._ready(monkeypatch, tmp_path, count=3)
+        real, builds = roster_checks.read_people, []
+        monkeypatch.setattr(
+            roster_checks, "read_people",
+            lambda *a: (builds.append(1), real(*a))[1],
+        )
+
+        assert c.get(f"/api/cases/{cid}").status_code == 200
+
+        assert len(builds) == 1
+
+    def test_each_packet_still_resolves_to_its_own_roster_row(
+        self, tmp_path, monkeypatch,
+    ):
+        """The hazard in sharing one index: handing every packet the same row.
+
+        Criterion 05 spans only Excel and the contract, so alone in the matrix
+        it is not masked to `missing` by the documents these synthetic packets
+        do not carry -- it is the one cell that reveals which row was resolved.
+        Every contract states its own MST, so the three agree only if each
+        packet was matched to its own person.
+        """
+        c, cid = self._ready(monkeypatch, tmp_path, count=3)
+
+        counts = [p["findingCount"]
+                  for p in c.get(f"/api/cases/{cid}").json()["packets"]]
+
+        # 14 is the base for a packet carrying only a contract, and it moves
+        # with `optional_docs` in criteria.py: of the five criteria naming a
+        # Phụ lục, #10 is the only one whose other documents this fixture does
+        # have, so its Phụ lục cell resolves `na` and #10 rolls up `pending`
+        # rather than `missing` -- one finding fewer than before eb05f7d. What
+        # is asserted here is that the three are equal; 14 itself is incidental.
+        assert counts == [14, 14, 14]
+
+    def test_a_contract_disagreeing_with_its_own_row_is_still_counted(
+        self, tmp_path, monkeypatch,
+    ):
+        """What makes the test above discriminate: packet 1 states packet 0's
+        MST, which is exactly what a wrongly-shared index would produce."""
+        c, cid = self._ready(monkeypatch, tmp_path, count=3)
+        _write_manifest_with_mst(tmp_path, cid, 1, mst="001100000001")
+
+        counts = [p["findingCount"]
+                  for p in c.get(f"/api/cases/{cid}").json()["packets"]]
+
+        # Base 14 as above, and moving with `optional_docs` the same way; the
+        # +1 on packet 1 is the finding its wrong MST raises.
+        assert counts == [14, 15, 14]
+
+    def test_a_case_whose_roster_is_gone_still_answers(
+        self, tmp_path, monkeypatch,
+    ):
+        """No roster is no rollup, not a 500 — the hoisted parse has to fail the
+        same way the per-packet one did."""
+        c, cid = self._ready(monkeypatch, tmp_path, count=3)
+        os.remove(tmp_path / cid / "roster.xlsx")
+
+        body = c.get(f"/api/cases/{cid}").json()
+
+        assert body["progress"]["candidates"] == 0
+        assert [p["findingCount"] for p in body["packets"]] == [0, 0, 0]
+        assert [p["aiStatus"] for p in body["packets"]] == [None, None, None]

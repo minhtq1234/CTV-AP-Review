@@ -146,10 +146,12 @@ def _packet_rollups(cid: str, case: dict) -> dict[int, dict]:
     and measured at 0ms on top.
 
     Measured on the 41-packet July case: 13ms to load the manifests, 12ms to
-    evaluate all 41 packets. The whole list request is ~0.5s warm, dominated by
-    the roster .xlsx read rather than by anything here -- worth knowing before
-    optimising the wrong half. Stays per-request rather than persisted: one less
-    thing that can go stale against a re-ingest.
+    evaluate all 41 packets. The roster read used to dominate the request at
+    ~0.5s, because `_roster_row_for` reparsed `roster.xlsx` and rebuilt the same
+    people index once per packet; it is read and indexed once here and the
+    result threaded down, which puts the whole thing at ~17ms warm. Stays
+    per-request rather than persisted: one less thing that can go stale against
+    a re-ingest.
 
     `aiStatus` is the engine's own worst-wins rollup (`criteria.roll_up`) over
     the packet's criteria, so the list column and the 25-criterion matrix cannot
@@ -167,6 +169,7 @@ def _packet_rollups(cid: str, case: dict) -> dict[int, dict]:
     import criteria as cr
     import evaluate as ev
 
+    people = _roster_people(rows)
     out: dict[int, dict] = {}
     for packet in case["packets"]:
         path = os.path.join(store.case_dir(cid), "packets",
@@ -180,7 +183,8 @@ def _packet_rollups(cid: str, case: dict) -> dict[int, dict]:
             continue
         decided = effective_overrides(packet.get("review"))
         results = ev.evaluate_packet(
-            manifest, _roster_row_for(cid, packet), decided,
+            manifest, _row_for_identity(people, packet.get("rosterIdentity") or {}),
+            decided,
         )
         touched = {int(key.split(":", 1)[0]) for key in decided}
         # A finding a person has decided on is no longer a candidate -- it has
@@ -427,18 +431,27 @@ async def get_summary(cid: str):
     return payload
 
 
-def _roster_row_for(cid: str, packet: dict) -> dict | None:
-    """The bảng kê row this packet was matched to, by CCCD then name."""
-    identity = packet.get("rosterIdentity") or {}
+def _roster_people(rows: list[list]) -> list[dict]:
+    """The bảng kê's numbered rows as people — the index a lookup needs.
+
+    Split out from `_roster_row_for` so a caller resolving many packets pays for
+    it once. Deriving it per packet made `GET /api/cases/{cid}` reparse
+    `roster.xlsx` and rebuild this list once per packet: 41 times, ~440ms, on
+    the real July case.
+    """
+    import roster_checks
+
+    columns, first_data = roster_checks.locate_columns(rows)
+    people, _ = roster_checks.read_people(rows, columns, first_data)
+    return people
+
+
+def _row_for_identity(people: list[dict], identity: dict) -> dict | None:
+    """The person in `people` this packet was matched to, by CCCD then name."""
     if not identity:
         return None
     import roster_checks
 
-    rows = _roster_rows(cid)
-    if not rows:
-        return None
-    columns, first_data = roster_checks.locate_columns(rows)
-    people, _ = roster_checks.read_people(rows, columns, first_data)
     wanted = roster_checks.digits(identity.get("cccd", ""))
     if wanted:
         for person in people:
@@ -450,6 +463,22 @@ def _roster_row_for(cid: str, packet: dict) -> dict | None:
             if _norm(person.get("name", "")) == name:
                 return person
     return None
+
+
+def _roster_row_for(cid: str, packet: dict) -> dict | None:
+    """The bảng kê row this packet was matched to, by CCCD then name.
+
+    For one packet, so it reads the roster itself. A caller with a whole case in
+    hand should index once and call `_row_for_identity` per packet instead --
+    see `_packet_rollups`.
+    """
+    identity = packet.get("rosterIdentity") or {}
+    if not identity:
+        return None
+    rows = _roster_rows(cid)
+    if not rows:
+        return None
+    return _row_for_identity(_roster_people(rows), identity)
 
 
 def _norm(value: str) -> str:
