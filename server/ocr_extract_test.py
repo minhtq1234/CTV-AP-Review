@@ -1727,14 +1727,14 @@ class TestSemanticFields:
 
     def test_a_value_reaches_the_manifest_with_its_quote_page_and_box(self):
         reader = self._reader(
-            term=("15 ngày", "là 15 ngày kể từ ngày", 0))
+            term=("15 ngày", "thanh toán là 15 ngày kể từ ngày", 0))
         fields = oe._semantic_fields(reader, [self._doc()], {"d1": self._words()})
 
         field = next(f for f in fields if f["key"] == "term")
         source = field["sources"][0]
         assert source["value"] == "15 ngày"
         assert source["provenance"] == "llm"
-        assert source["quote"] == "là 15 ngày kể từ ngày"
+        assert source["quote"] == "thanh toán là 15 ngày kể từ ngày"
         assert source["page"] == 0
         assert source["bbox"] is not None
         assert source["confidence"] == 1.0
@@ -1756,7 +1756,7 @@ class TestSemanticFields:
     def test_a_document_no_criterion_reads_a_clause_from_is_not_sent(self):
         # Every field requested puts more contract text on the wire, which
         # ver3-scope §4 bounds deliberately.
-        reader = self._reader(term=("x", "là 15 ngày kể từ ngày", 0))
+        reader = self._reader(term=("x", "thanh toán là 15 ngày kể từ ngày", 0))
         fields = oe._semantic_fields(
             reader, [self._doc(kind="id_front", doc_id="d1")],
             {"d1": self._words()})
@@ -1812,7 +1812,7 @@ class TestSemanticFields:
             Boom(), [self._doc()], {"d1": self._words()}) == []
 
     def test_one_key_read_from_two_documents_keeps_both_sources(self):
-        reader = self._reader(term=("15 ngày", "là 15 ngày kể từ ngày", 0))
+        reader = self._reader(term=("15 ngày", "thanh toán là 15 ngày kể từ ngày", 0))
         docs = [self._doc(doc_id="d1"), self._doc(kind="bbnt", doc_id="d2")]
         fields = oe._semantic_fields(
             reader, docs, {"d1": self._words(), "d2": self._words()})

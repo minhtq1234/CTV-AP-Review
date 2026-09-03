@@ -376,8 +376,15 @@ def _parts_cell(
         # occurs once. A value the reviewer cannot see is a claim, and two
         # copies of a document mean a part found on one says nothing about the
         # other -- the engine's first automatic pass should not rest on either.
+        # `exact`, not merely "has a box". A fuzzy locate is a near-miss on
+        # characters, and MIN_RATIO scores characters, so it is nearly blind to
+        # a substituted digit -- the one substitution these criteria are about.
+        # `ocr_extract` records that distinction as confidence 1.0 vs 0.9, and
+        # testing only for a box threw it away right at the point it decides an
+        # automatic pass.
         located = all(
             (reads[part].get("bbox") or {}).get("width")
+            and float(reads[part].get("confidence") or 0) >= 1.0
             for part in presence.found
         )
         if located and len(documents) == 1:

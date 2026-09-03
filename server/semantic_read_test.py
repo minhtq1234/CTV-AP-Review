@@ -39,13 +39,13 @@ CLAUSE = {
 
 class TestLocatesAClause:
     def test_a_quote_spanning_a_line_break_is_located(self):
-        got = sr.locate_quote("là 15 ngày kể từ ngày", CLAUSE, 0)
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", CLAUSE, 0)
         assert got is not None
         assert got["exact"] is True
         assert got["page"] == 0
 
     def test_the_box_encloses_both_lines_and_is_not_expanded(self):
-        got = sr.locate_quote("là 15 ngày kể từ ngày", CLAUSE, 0)
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", CLAUSE, 0)
         box = got["bbox"]
         # {x, y, width, height} -- every bbox in this codebase. A {w, h} box is
         # truthy and renders as a zero-size highlight: located-looking, useless.
@@ -57,15 +57,15 @@ class TestLocatesAClause:
     def test_a_newline_in_the_quote_does_not_stop_it(self):
         # The model is handed `_page_text`, which joins lines with "\n", so it
         # may quote the break back. Under `norm` alone this matched nothing.
-        got = sr.locate_quote("là 15\nngày kể từ ngày", CLAUSE, 0)
+        got = sr.locate_quote("thanh toán là 15\nngày kể từ ngày", CLAUSE, 0)
         assert got is not None and got["exact"] is True
 
     def test_stripped_diacritics_cost_nothing(self):
-        got = sr.locate_quote("la 15 ngay ke tu ngay", CLAUSE, 0)
+        got = sr.locate_quote("thanh toan la 15 ngay ke tu ngay", CLAUSE, 0)
         assert got is not None and got["exact"] is True
 
     def test_added_punctuation_costs_nothing(self):
-        got = sr.locate_quote('"là 15 ngày, kể từ ngày."', CLAUSE, 0)
+        got = sr.locate_quote('"thanh toán là 15 ngày, kể từ ngày."', CLAUSE, 0)
         assert got is not None and got["exact"] is True
 
 
@@ -73,17 +73,17 @@ class TestFuzzyFallback:
     def test_one_changed_character_still_locates(self):
         # Exact substring matching makes this 100% unlocatable, which is the
         # single largest risk to a model-supplied quote.
-        got = sr.locate_quote("là 16 ngày kể từ ngày", CLAUSE, 0)
+        got = sr.locate_quote("thanh toan la 15 ngayx kể từ ngày", CLAUSE, 0)
         assert got is not None
         assert got["exact"] is False
         assert got["ratio"] >= sr.MIN_RATIO
 
     def test_a_dropped_word_still_locates(self):
-        got = sr.locate_quote("là 15 ngày từ ngày nghiệm", CLAUSE, 0)
+        got = sr.locate_quote("thanh toán là 15 ngày từ ngày nghiệm", CLAUSE, 0)
         assert got is not None and got["exact"] is False
 
     def test_an_exact_hit_is_preferred_over_a_near_miss(self):
-        got = sr.locate_quote("là 15 ngày kể từ ngày", CLAUSE, 0)
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", CLAUSE, 0)
         assert got["exact"] is True and got["ratio"] == 1.0
 
     def test_unrelated_text_is_refused_rather_than_boxed(self):
@@ -96,7 +96,7 @@ class TestFuzzyFallback:
 
     def test_the_window_cannot_grow_to_swallow_a_paragraph(self):
         long_page = {0: line(["một"] * 40, 10) + line(["hai"] * 40, 30)}
-        got = sr.locate_quote("một một một một một một", long_page, 0)
+        got = sr.locate_quote("một một một một một một một một", long_page, 0)
         assert got is not None
         # Six words wide, not eighty: a window free to grow would box the lot.
         assert got["bbox"]["height"] == 12
@@ -106,8 +106,8 @@ class TestRefusesWhatItCannotVouchFor:
     def test_a_short_quote_is_refused(self):
         # Below six words a quote lands on the wrong occurrence of itself
         # (7.2% at four words), so there is nothing to point at honestly.
-        assert sr.locate_quote("15 ngày", CLAUSE, 0) is None
-        assert len(sr.fold("15 ngày").split()) < sr.MIN_WORDS
+        assert sr.locate_quote("là 15 ngày kể từ", CLAUSE, 0) is None
+        assert len(sr.norm("là 15 ngày kể từ").split()) < sr.MIN_WORDS
 
     def test_an_empty_quote_is_refused(self):
         assert sr.locate_quote("", CLAUSE, 0) is None
@@ -117,7 +117,7 @@ class TestRefusesWhatItCannotVouchFor:
         assert sr.locate_quote('"""" ---- ....', CLAUSE, 0) is None
 
     def test_no_pages_locates_nothing(self):
-        assert sr.locate_quote("là 15 ngày kể từ ngày", {}, 0) is None
+        assert sr.locate_quote("thanh toán là 15 ngày kể từ ngày", {}, 0) is None
 
 
 class TestThePageIsAHintNotAContract:
@@ -125,20 +125,20 @@ class TestThePageIsAHintNotAContract:
         # At eight words or more a whole-document search lands on the wrong
         # occurrence 0% of the time, so honouring a model's page slip strictly
         # would lose a locatable quote for no accuracy gain.
-        got = sr.locate_quote("là 15 ngày kể từ ngày", CLAUSE, 7)
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", CLAUSE, 7)
         assert got is not None and got["page"] == 0
 
     def test_no_claimed_page_still_locates(self):
-        got = sr.locate_quote("là 15 ngày kể từ ngày", CLAUSE, None)
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", CLAUSE, None)
         assert got is not None and got["page"] == 0
 
     def test_the_claimed_page_wins_a_tie(self):
         pages = {
-            0: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày"], 10),
-            1: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày"], 10),
+            0: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày", "kể", "từ"], 10),
+            1: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày", "kể", "từ"], 10),
         }
-        assert sr.locate_quote("Thời hạn thanh toán là 15 ngày", pages, 1)["page"] == 1
-        assert sr.locate_quote("Thời hạn thanh toán là 15 ngày", pages, 0)["page"] == 0
+        assert sr.locate_quote("Thời hạn thanh toán là 15 ngày kể từ", pages, 1)["page"] == 1
+        assert sr.locate_quote("Thời hạn thanh toán là 15 ngày kể từ", pages, 0)["page"] == 0
 
 
 class TestFold:
@@ -149,15 +149,15 @@ class TestFold:
         # Only one side may carry the hyphen. Deleting it would give
         # "thanhtoan" against the page's "thanh toan" and match nothing.
         assert sr.fold("thanh-toán") == sr.fold("thanh toán")
-        pages = {0: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày"], 10)}
-        got = sr.locate_quote("Thời hạn thanh-toán là 15 ngày", pages, 0)
+        pages = {0: line(["Thời", "hạn", "thanh", "toán", "là", "15", "ngày", "kể", "từ"], 10)}
+        got = sr.locate_quote("Thời hạn thanh-toán là 15 ngày kể từ", pages, 0)
         assert got is not None and got["exact"] is True
 
     def test_a_token_folding_to_nothing_is_dropped_not_joined(self):
         # A table rule reads as a lone dash between two halves of a cell. Joined
         # in, it would leave a double space and stop an otherwise exact match.
-        pages = {0: line(["là", "15", "-", "ngày", "kể", "từ", "ngày"], 10)}
-        got = sr.locate_quote("là 15 ngày kể từ ngày", pages, 0)
+        pages = {0: line(["thanh", "toán", "là", "15", "-", "ngày", "kể", "từ", "ngày"], 10)}
+        got = sr.locate_quote("thanh toán là 15 ngày kể từ ngày", pages, 0)
         assert got is not None and got["exact"] is True
 
 
@@ -248,7 +248,7 @@ class TestReadDocument:
 
 class TestLocateFields:
     def test_a_located_quote_gets_its_box_and_its_page(self):
-        fields = {"term": sr.SemanticField("15 ngày", "là 15 ngày kể từ ngày", 0)}
+        fields = {"term": sr.SemanticField("15 ngày", "thanh toán là 15 ngày kể từ ngày", 0)}
         out = sr.locate_fields(fields, CLAUSE)
         assert out["term"].located is True
         assert out["term"].exact is True
@@ -271,18 +271,76 @@ class TestLocateFields:
         assert out["term"].value == "15 ngày"
 
     def test_a_fuzzy_hit_is_marked_as_not_exact(self):
-        fields = {"term": sr.SemanticField("16 ngày", "là 16 ngày kể từ ngày", 0)}
+        fields = {"term": sr.SemanticField("16 ngày", "thanh toan la 15 ngayx kể từ ngày", 0)}
         out = sr.locate_fields(fields, CLAUSE)
         assert out["term"].located is True
         assert out["term"].exact is False
 
     def test_a_wrong_claimed_page_is_corrected_to_where_it_was_found(self):
-        fields = {"term": sr.SemanticField("15 ngày", "là 15 ngày kể từ ngày", 7)}
+        fields = {"term": sr.SemanticField("15 ngày", "thanh toán là 15 ngày kể từ ngày", 7)}
         out = sr.locate_fields(fields, CLAUSE)
         assert out["term"].page == 0
 
     def test_nobody_looked_is_distinct_from_looked_and_missed(self):
-        unlooked = sr.SemanticField("15 ngày", "là 15 ngày kể từ ngày", 0)
+        unlooked = sr.SemanticField("15 ngày", "thanh toán là 15 ngày kể từ ngày", 0)
         assert unlooked.located is None
         looked = sr.locate_fields({"term": unlooked}, {})["term"]
         assert looked.located is False
+
+
+class TestRefusesWhatItCannotVouchFor2:
+    """Guards added after an independent review measured them failing."""
+
+    def test_a_quote_starting_inside_a_token_is_not_an_exact_hit(self):
+        """`str.find` has no word boundary, and `_index` flattens the page.
+
+        A quote starting or ending INSIDE a token matched and was stamped
+        `exact: True, ratio: 1.0` -- the strongest claim this makes -- while
+        the box widened to the whole straddled token. Measured on real
+        contract pages, 15,499 of 15,499 deliberately mid-token quotes came
+        back exact. The tokens it lands on are the value-bearing ones: an
+        amount, a date and an account number are each a single token, so the
+        highlight sat on a different number than the value claimed.
+        """
+        pages = {0: line(
+            ["Tổng", "cộng", "15.000.000", "đồng", "chẵn", "cho", "cả",
+             "hợp", "đồng"], 10)}
+        # Starts mid-amount. The page never says "000.000", only "15.000.000",
+        # so boxing this would vouch for a number the document does not state.
+        assert sr.locate_quote("000 000 đồng chẵn cho cả hợp đồng",
+                               pages, 0) is None
+        # the same span on whole tokens does match
+        got = sr.locate_quote("Tổng cộng 15.000.000 đồng chẵn cho cả hợp đồng",
+                              pages, 0)
+        assert got is not None and got["exact"] is True
+
+    def test_a_fuzzy_hit_may_not_disagree_on_digits(self):
+        """MIN_RATIO scores characters, so a substituted digit is nearly free.
+
+        One altered digit in a ~55-character clause costs about 0.02 of a 0.10
+        budget: measured, 95.9% of such quotes were boxed. An amount, a date
+        and an account number are precisely what these criteria are about.
+        """
+        assert sr.locate_quote("thanh toán là 16 ngày kể từ ngày",
+                               CLAUSE, 0) is None
+        # the same distance, but in letters rather than digits, still locates
+        got = sr.locate_quote("thanh toan la 15 ngayx kể từ ngày", CLAUSE, 0)
+        assert got is not None and got["exact"] is False
+
+    def test_a_quote_longer_than_a_clause_is_refused(self):
+        # The fuzzy sweep is O(window x quote) over a model-controlled string:
+        # measured on one real page, 320 words took 105s and 480 had not
+        # returned after 8 minutes. ocr_packet runs on a daemon thread, so
+        # that is a case stuck in `processing` for ever with no error.
+        assert sr.locate_quote(" ".join(["ngày"] * 200), CLAUSE, 0) is None
+
+    def test_the_length_gate_counts_words_not_punctuation(self):
+        """`fold` expands punctuation into spaces, so counting after it made
+        the gate depend on how much punctuation a value carries.
+
+        `15/07/2026 - 15/08/2026` inflated to six folded words and passed --
+        and that is #13's `term`, the very case the module says it refuses.
+        """
+        assert len(sr.fold("15/07/2026 - 15/08/2026").split()) >= 6
+        assert len(sr.norm("15/07/2026 - 15/08/2026").split()) < sr.MIN_WORDS
+        assert sr.locate_quote("15/07/2026 - 15/08/2026", CLAUSE, 0) is None
