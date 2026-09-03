@@ -5,6 +5,9 @@
 # the shape the observation depended on: digit count, a one-digit misread, an
 # accent-only difference, a truncation.
 
+import inspect
+
+import ocr_extract as oe
 from ocr_extract import (
     scale_words, group_lines, union_bbox, norm, find_in_lines, PATTERNS,
     extract_fields, build_manifest, find_name, FIELD_SPECS,
@@ -1856,3 +1859,141 @@ def test_the_neighbourhood_stops_at_the_next_fields_label():
 
     assert "001100000004" in near, "its own value must still be recorded"
     assert "001100000001" not in near, "the CCCD's value must not be"
+
+# --- semantic fields (Task 5) -------------------------------------------------
+
+class TestSemanticFields:
+    """`_semantic_fields` is where all of Task 5's logic lives.
+
+    `ocr_packet` itself is exercised by source inspection here, as it already
+    is for the page-reader hand-over above: running it needs a real PDF and
+    real OCR, and the parts worth guarding are the request derivation, the
+    text/words correspondence and the shape written to the manifest.
+    """
+
+    @staticmethod
+    def _word(text, x, y):
+        return {"text": text, "x": x, "y": y, "w": len(text) * 8, "h": 12,
+                "conf": 90.0}
+
+    def _doc(self, kind="contract", doc_id="d1", pages=1):
+        return {"id": doc_id, "kind": kind, "label": kind,
+                "pages": [{"src": f"p{i}.png", "width": 800, "height": 1000}
+                          for i in range(pages)]}
+
+    def _words(self):
+        line1 = [self._word(t, 10 + i * 60, 10) for i, t in enumerate(
+            ["Thời", "hạn", "thanh", "toán", "là", "15"])]
+        line2 = [self._word(t, 10 + i * 60, 30) for i, t in enumerate(
+            ["ngày", "kể", "từ", "ngày", "nghiệm", "thu"])]
+        return {0: line1 + line2}
+
+    def _reader(self, **fields):
+        import semantic_read as sr
+        return sr.FakeReader({
+            key: sr.SemanticField(value=v, quote=q, page=p)
+            for key, (v, q, p) in fields.items()
+        })
+
+    def test_a_value_reaches_the_manifest_with_its_quote_page_and_box(self):
+        reader = self._reader(
+            term=("15 ngày", "là 15 ngày kể từ ngày", 0))
+        fields = oe._semantic_fields(reader, [self._doc()], {"d1": self._words()})
+
+        field = next(f for f in fields if f["key"] == "term")
+        source = field["sources"][0]
+        assert source["value"] == "15 ngày"
+        assert source["provenance"] == "llm"
+        assert source["quote"] == "là 15 ngày kể từ ngày"
+        assert source["page"] == 0
+        assert source["bbox"] is not None
+        assert source["confidence"] == 1.0
+
+    def test_the_document_is_asked_only_for_what_its_criteria_declare(self):
+        # Derived from the criteria, so adding a part to a criterion asks for
+        # it and no second list can drift from the first.
+        import criteria as cr
+        reader = self._reader()
+        oe._semantic_fields(reader, [self._doc()], {"d1": self._words()})
+
+        assert len(reader.calls) == 1
+        asked = set(reader.calls[0]["want"])
+        assert asked == set(cr.semantic_parts_by_document()["Hợp đồng"])
+        assert "term" in asked and "bank" in asked
+        # #27 is deferred for want of reference data, so its parts are not sent.
+        assert "legal_name" not in asked
+
+    def test_a_document_no_criterion_reads_a_clause_from_is_not_sent(self):
+        # Every field requested puts more contract text on the wire, which
+        # ver3-scope §4 bounds deliberately.
+        reader = self._reader(term=("x", "là 15 ngày kể từ ngày", 0))
+        fields = oe._semantic_fields(
+            reader, [self._doc(kind="id_front", doc_id="d1")],
+            {"d1": self._words()})
+        assert fields == []
+        assert reader.calls == []
+
+    def test_a_document_with_no_words_is_not_sent(self):
+        reader = self._reader(term=("x", "y", 0))
+        assert oe._semantic_fields(reader, [self._doc()], {"d1": {}}) == []
+        assert reader.calls == []
+
+    def test_the_text_sent_is_rebuilt_from_the_words_that_will_be_searched(self):
+        """The correspondence that makes the unlocatable rate mean anything.
+
+        An OCR error then sits identically on both sides and cancels, so a
+        quote that fails to locate is the model departing from the page rather
+        than Tesseract having misread it.
+        """
+        seen = {}
+
+        class Recording:
+            def read(self, *, doc_kind, pages_text, want):
+                seen["text"] = pages_text
+                return {}
+
+        oe._semantic_fields(Recording(), [self._doc()], {"d1": self._words()})
+        assert "Thời hạn thanh toán là 15" in seen["text"][0]
+        assert "ngày kể từ ngày nghiệm thu" in seen["text"][0]
+
+    def test_an_unlocatable_quote_is_still_recorded_at_zero_confidence(self):
+        # Kept, not dropped: the unlocatable rate is the gate the real adapter
+        # is judged by, and discarding these would make it unmeasurable.
+        reader = self._reader(
+            term=("15 ngày", "hoàn toàn không có nội dung nào như thế", 0))
+        fields = oe._semantic_fields(reader, [self._doc()], {"d1": self._words()})
+
+        source = next(f for f in fields if f["key"] == "term")["sources"][0]
+        assert source["bbox"] is None
+        assert source["confidence"] == 0.0
+        assert source["value"] == "15 ngày"
+
+    def test_a_value_with_no_quote_never_reaches_the_manifest(self):
+        reader = self._reader(term=("15 ngày", "", 0))
+        assert oe._semantic_fields(
+            reader, [self._doc()], {"d1": self._words()}) == []
+
+    def test_a_reader_that_raises_costs_the_read_nothing(self):
+        class Boom:
+            def read(self, **kwargs):
+                raise RuntimeError("timeout")
+
+        assert oe._semantic_fields(
+            Boom(), [self._doc()], {"d1": self._words()}) == []
+
+    def test_one_key_read_from_two_documents_keeps_both_sources(self):
+        reader = self._reader(term=("15 ngày", "là 15 ngày kể từ ngày", 0))
+        docs = [self._doc(doc_id="d1"), self._doc(kind="bbnt", doc_id="d2")]
+        fields = oe._semantic_fields(
+            reader, docs, {"d1": self._words(), "d2": self._words()})
+
+        term = next(f for f in fields if f["key"] == "term")
+        assert [s["docId"] for s in term["sources"]] == ["d1", "d2"]
+
+    def test_ocr_packet_offers_the_reader_and_skips_it_when_absent(self):
+        # Same convention as the page-reader hand-over test above: running
+        # ocr_packet needs a real PDF and real OCR.
+        source = inspect.getsource(oe.ocr_packet)
+        assert "semantic_reader=None" in source
+        assert "if semantic_reader is not None:" in source
+        assert "_semantic_fields(semantic_reader" in source

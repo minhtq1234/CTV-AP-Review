@@ -78,7 +78,12 @@ class Evidence:
     bbox: dict | None
     value: str
     confidence: float | None
-    #: "ocr" | "idp" | "roster" | "override"
+    #: "ocr" | "idp" | "roster" | "override" | "llm"
+    #:
+    #: "llm" is a value a reader understood rather than a pattern matched, and
+    #: it is the only one that carries a verbatim `quote` beside it -- because
+    #: it is the only one whose value cannot be checked by looking at the box
+    #: alone.
     provenance: str
 
 

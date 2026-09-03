@@ -318,6 +318,44 @@ class Cell:
     reason: str = ""
 
 
+#: Criteria whose declared `parts` are not requested from a semantic reader.
+#:
+#: #27 needs VNG's and Adtima's own legal details as reference data, which
+#: nobody has supplied, so reading them off a document would produce values
+#: with nothing to compare against. It is not a free ask either: every field
+#: requested puts more contract text on the wire, and `docs/ver3-scope.md` §4
+#: bounds that deliberately.
+DEFERRED_SEMANTIC_PARTS: tuple[int, ...] = (27,)
+
+
+def semantic_parts_by_document() -> dict[str, tuple[str, ...]]:
+    """`{document: parts to ask that document for}`, from the criteria.
+
+    The criteria already know: #13's `parts` ARE the fields to request from a
+    contract. Deriving the request here rather than listing it in the reader
+    keeps one source of truth -- add a part to a criterion and it is asked for.
+
+    `EXCEL` and `PURCHASE` are excluded: the first is the reference value the
+    others are checked against, and the second is batch-level and answered on
+    the Tổng hợp tab. Neither is a document anyone reads a clause out of.
+    """
+    skip = {EXCEL, PURCHASE}
+    out: dict[str, list[str]] = {}
+    for criterion in CRITERIA:
+        # `parts` rides in `params`, beside `compare` and `formats`.
+        parts = (criterion.params or {}).get("parts") or ()
+        if not parts or criterion.stt in DEFERRED_SEMANTIC_PARTS:
+            continue
+        for document in criterion.docs:
+            if document in skip:
+                continue
+            have = out.setdefault(document, [])
+            for part in parts:
+                if part not in have:
+                    have.append(part)
+    return {document: tuple(parts) for document, parts in out.items()}
+
+
 def override_key(stt: int, document: str) -> str:
     """Address one cell of the matrix: `"01:Hợp đồng"`.
 

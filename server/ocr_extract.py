@@ -1539,6 +1539,97 @@ def extract_fields(words_by_doc: dict[str, dict[int, list[dict]]], roster_row: d
     return fields
 
 
+def _semantic_fields(reader, docs: list[dict],
+                     words_by_doc: dict[str, dict[int, list[dict]]]) -> list[dict]:
+    """Ask a reader for the clause-level values, and record where each sits.
+
+    Which fields each document is asked for comes from the criteria themselves
+    (`criteria.semantic_parts_by_document`) -- #13's `parts` ARE the fields to
+    request from a contract -- so adding a part to a criterion asks for it,
+    and no second list can drift from the first.
+
+    The text sent is rebuilt from the SAME words the locator will search. That
+    is not incidental: it is what makes the unlocatable-quote rate mean
+    something. An OCR error then sits identically on both sides and cancels,
+    so a model that copies what it was shown locates every time, and a quote
+    that fails to locate is the model departing from the page rather than
+    Tesseract having misread it.
+
+    A document with no words, or a kind no criterion reads a clause from, is
+    skipped rather than sent -- every field requested puts more contract text
+    on the wire, which `docs/ver3-scope.md` §4 bounds deliberately.
+    """
+    # Lazily, like `evaluate._Context.money` imports `roster_checks`: keeps
+    # this module importable on its own and cannot introduce a cycle.
+    import criteria as cr
+    import evaluate as ev
+    import semantic_read as sr
+
+    name_by_kind = {
+        kind: name
+        for name, kinds in ev.DOC_KINDS.items()
+        for kind in kinds
+    }
+    wanted = cr.semantic_parts_by_document()
+
+    sources_by_key: dict[str, list[dict]] = {}
+    for doc in docs:
+        want = wanted.get(name_by_kind.get(doc.get("kind"), ""))
+        if not want:
+            continue
+        pages = words_by_doc.get(doc.get("id"), {}) or {}
+        if not pages:
+            continue
+        pages_text = [
+            _page_text(pages.get(index, []))
+            for index in range(len(doc.get("pages") or []))
+        ]
+        read = sr.read_document(
+            reader,
+            doc_kind=str(doc.get("kind") or ""),
+            pages_text=pages_text,
+            want=tuple(want),
+        )
+        for key, field in sr.locate_fields(read, pages).items():
+            sources_by_key.setdefault(key, []).append({
+                "docId": doc.get("id", ""),
+                "page": field.page,
+                "value": field.value,
+                "bbox": field.bbox,
+                # Legibility, not correctness -- the same meaning confidence
+                # carries everywhere else here. 1.0 when the quote matched the
+                # page verbatim, the fuzzy ratio when it only nearly did, and
+                # 0.0 when it could not be found at all.
+                "confidence": (
+                    1.0 if field.exact
+                    else 0.0 if not field.located
+                    else 0.9
+                ),
+                #: The verbatim quote the value was read from. The reviewer's
+                #: means of checking it, and the reason a value without one
+                #: never gets this far.
+                "quote": field.quote,
+                "provenance": "llm",
+            })
+
+    return [
+        {
+            "key": key,
+            "label": key,
+            "group": "Điều khoản",
+            # Not "compare": nothing compares these yet. The engine's parts
+            # wiring is a separate task, and it must land AFTER a reader
+            # exists -- wiring it first turns every packet's #8 and #13 into a
+            # confident "no parts found".
+            "check": "semantic",
+            "kind": "text",
+            "expected": "",
+            "sources": sources,
+        }
+        for key, sources in sources_by_key.items()
+    ]
+
+
 def build_manifest(folder_id: str, name: str, product: str, docs: list[dict], fields: list[dict]) -> dict:
     """Assemble the CtvFolder dict (matches src/ctv/types.ts exactly)."""
     return {
@@ -1922,6 +2013,7 @@ def ocr_packet(
     display_dpi: int = 150,
     ocr_dpi: int = 300,
     page_reader=None,
+    semantic_reader=None,
 ) -> dict:
     """Render + OCR + segment one packet's page range.
 
@@ -1975,6 +2067,12 @@ def ocr_packet(
         fields = _escalate_weak_fields(
             fields, page_reader, words_by_doc, page_of, pages,
         )
+    # Opt-in, and skipped entirely when absent, so nothing changes for a caller
+    # who does not pass one -- which is every caller until a credential exists.
+    # `docs/ver3-scope.md` §4 requires exactly this: nothing leaves the machine
+    # when the credentials are unset.
+    if semantic_reader is not None:
+        fields = fields + _semantic_fields(semantic_reader, docs, words_by_doc)
     by_key = {f["key"]: f for f in fields}
     identity = {
         "cccd": _best_value(by_key["cccd"]),
