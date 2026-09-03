@@ -122,3 +122,24 @@ def test_the_demo_shows_a_mismatch_an_absence_and_something_pending(tmp_path):
     pending = manifest(demo_case._UNEXTRACTED_PACKET)
     date = next(f for f in pending["fields"] if f["key"] == "ngaysinh")
     assert date["sources"] == []
+
+
+def test_headings_are_actually_larger_than_body_text():
+    """`ImageFont.load_default()` ignores `size`, so a fallback chain that misses
+    every installed font renders the whole page at one unreadable size -- and
+    nothing else notices, because the PNG is still a valid PNG."""
+    small = demo_case._font(11).getbbox("HỢP ĐỒNG")
+    large = demo_case._font(44).getbbox("HỢP ĐỒNG")
+
+    assert large[2] > small[2] * 2, "the font is ignoring the requested size"
+
+
+def test_the_signature_block_uses_the_phrase_the_corpus_uses():
+    """`Bên Cung Ứng Dịch Vụ`, not `Cung Cấp`: the reader anchors on the former
+    (ocr_extract._PARTY_B_HEADER), so a demo drawing the latter would not be
+    found by the very code it exists to exercise."""
+    import inspect
+
+    source = inspect.getsource(demo_case.page_png)
+    assert "CUNG ỨNG" in source
+    assert "CUNG CẤP" not in source

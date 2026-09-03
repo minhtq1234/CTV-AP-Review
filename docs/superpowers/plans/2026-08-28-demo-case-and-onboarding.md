@@ -446,3 +446,51 @@ Say plainly:
 - which font `_font` ended up using on your machine
 - your real test numbers, and the baseline you compared against
 - anything you chose not to do, and why
+
+---
+
+## Outcome — completed 2026-08-29
+
+All four tasks done. `cd server && python3 seed_demo_case.py` produces a browsable case.
+
+**What was on screen, screen by screen.** The case list shows `demo.pdf`. Opening it goes straight
+to the packet list — no CCCD gate, because `cccdWorkbook` is null — headed
+`3 / 3 gói (tìm thấy / bảng kê) · 3/3 đã khớp tên · 0/3 đã xong`, with both the `Gói hồ sơ` and
+`Tổng hợp` tabs. Opening packet 2 gives `TRAN THI HAI · Danh Tướng 3Q · Trang 8–14 · Khớp theo CCCD`.
+`Dạng bảng` shows **10 match, 2 mismatch, 24 na** — the deliberate one-digit account error in red.
+`Xem chứng từ` lists all six document tabs and renders both contract pages; no broken images.
+
+**One expectation not met.** `25 tiêu chí` shows **40 `?` and 6 `!` — no ✓ and no ✗**. The ✓/✗ live
+in `Dạng bảng`. Most of the 25 criteria need evidence the demo does not carry (signatures, dates,
+company details), so the checklist tab reads as unanswered. Not a blank screen, but anyone using
+this as *the* demo should know the tab they are most likely to open looks empty of verdicts.
+
+**Manifest keys that had to differ from the spec.** Three, all found by reading a real ingested case
+rather than `cases.py` alone: `case.json` also carries `cccdWorkbook` and `purchaseTotal`, and every
+packet carries a `review` block (`{done, fields, rejection, overrides}`) beside its `ocrIdentity` and
+`rosterIdentity`. Field metadata (`label`, `group`, `check`, `kind`) was copied from a real manifest
+so the reviewer's grouping and comparators behave identically.
+
+**Which font `_font` used.** None of the three the plan names exists on this machine, so it fell
+through to `ImageFont.load_default()` — which ignores `size`: measured, the same 46×8 box at 11pt,
+24pt and 48pt. Every page rendered at one unreadable size and nothing failed, because the PNG was
+still a valid PNG. The chain now also tries Segoe UI, Arial, Tahoma, Calibri and Liberation, and a
+test asserts a 44pt heading is more than twice the width of an 11pt one.
+
+**The signature phrase was wrong.** The fixture drew `BÊN CUNG CẤP DỊCH VỤ`; the corpus says
+*cung ứng*, which is what `ocr_extract._PARTY_B_HEADER` anchors on. Corrected, with a test — a demo
+drawing a phrase the reader cannot find is worse than no demo.
+
+**Dependencies.** The manifest needed two packages the plan's derivation misses, both of which break
+its own verification step: `numpy` (imported by `../splitter/detect_packets.py`, which `pipeline.py`
+puts on `sys.path`; the plan greps `server/*.py` only) and `httpx` (`fastapi.testclient` imports it,
+so without it the suite does not collect). Verified by building a clean venv from `requirements.txt`
+alone and running the suite in it: **829 passed**.
+
+**Test numbers.** Baseline 836 before this plan; **851 passing** after it and the signature-anchor
+work. The plan's stated 821 was never reproducible here.
+
+**Not done, deliberately.** Nothing in the plan. Note that the demo cannot verify the signature
+criteria (#21–#25): it is never OCR'd, so its doc dicts carry no `anchors` and those cells will show
+page 0 with no box. Writing literal `anchors` into the demo's doc dicts would fix that and is not
+part of this plan.

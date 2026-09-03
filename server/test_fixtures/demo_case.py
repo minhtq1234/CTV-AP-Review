@@ -39,11 +39,22 @@ PEOPLE = [
 def _font(size: int) -> ImageFont.ImageFont:
     """A font that renders at the requested size.
 
-    Pillow's default font ignores `size`, which makes every page look the same
-    and the headings unreadable. Try the DejaVu that ships with most Pillow
-    installs first, then fall back rather than failing the build.
+    `ImageFont.load_default()` ignores `size` -- measured here, it returns the
+    same 46x8 box for 11pt, 24pt and 48pt -- so falling through to it makes
+    every heading the same unreadable size as the body. The list therefore has
+    to cover the platforms this actually runs on: DejaVu ships with many Pillow
+    builds, the Segoe/Arial/Tahoma/Calibri group covers Windows, and Liberation
+    covers most Linux images. All of them carry Vietnamese diacritics.
+
+    The default is still the last resort, because a demo that renders badly is
+    better than a build that fails.
     """
-    for name in ("DejaVuSans.ttf", "Arial Unicode.ttf", "Helvetica.ttc"):
+    for name in (
+        "DejaVuSans.ttf",
+        "segoeui.ttf", "arial.ttf", "tahoma.ttf", "calibri.ttf",
+        "LiberationSans-Regular.ttf",
+        "Arial Unicode.ttf", "Helvetica.ttc",
+    ):
         try:
             return ImageFont.truetype(name, size)
         except OSError:
@@ -73,7 +84,7 @@ def page_png(heading: str, lines: list[str], *, width: int, height: int) -> byte
 
     # A signature block at the foot, so the six signature criteria have
     # something plausible to point at once they learn how.
-    draw.text((margin, height - margin - height // 12), "BÊN CUNG CẤP DỊCH VỤ",
+    draw.text((margin, height - margin - height // 12), "BÊN CUNG ỨNG DỊCH VỤ",
               fill="black", font=body)
     draw.text((width // 2, height - margin - height // 12), "ĐẠI DIỆN VNG",
               fill="black", font=body)
