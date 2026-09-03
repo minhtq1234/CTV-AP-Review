@@ -318,6 +318,14 @@ def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
         if (criterion.params or {}).get("optional"):
             return Cell(name, Status.NOT_APPLICABLE, "",
                         f"Hồ sơ không có {name} — tiêu chí ghi \"nếu có\".")
+        # Per-document, unlike `optional`, which excuses every document a
+        # criterion names: a Phụ lục is genuinely absent on most submissions
+        # (22 of 169 packets have one), while a missing Hợp đồng or BBNT on the
+        # same criterion is a real gap and must keep saying so.
+        if name in ((criterion.params or {}).get("optional_docs") or ()):
+            return Cell(name, Status.NOT_APPLICABLE, "",
+                        f"Hồ sơ không có {name} — tiêu chí vẫn đối chiếu được "
+                        "từ các chứng từ khác.")
         return Cell(name, Status.MISSING, "",
                     f"Hồ sơ thiếu {name}.")
 

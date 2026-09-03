@@ -183,18 +183,18 @@ CRITERIA: tuple[Criterion, ...] = (
        [EXCEL, CONTRACT, BBNT, APPENDIX], Kind.COMPARE, "matrix",
        "Kiểm tra mô tả rõ CTV thực hiện công việc gì, cho chương trình/dự án "
        "nào và trong kỳ nào.",
-       compare="text"),
+       compare="text", optional_docs=(APPENDIX,)),
     _c(10, "Ngày bắt đầu thực hiện", "03",
        [EXCEL, CONTRACT, APPENDIX], Kind.COMPARE, "matrix",
        "Trích xuất và đối chiếu ngày bắt đầu giữa Excel với Hợp đồng/Phụ lục. "
        "Ngày bắt đầu không trước ngày hợp đồng có hiệu lực, trừ khi hồ sơ có "
        "căn cứ phù hợp.",
-       compare="date"),
+       compare="date", optional_docs=(APPENDIX,)),
     _c(11, "Ngày kết thúc thực hiện", "03",
        [EXCEL, CONTRACT, BBNT, APPENDIX], Kind.COMPARE, "matrix",
        "Đối chiếu ngày kết thúc giữa các chứng từ; ngày kết thúc phải bằng hoặc "
        "sau ngày bắt đầu và không vượt phạm vi Hợp đồng/Phụ lục.",
-       compare="date", not_before=10),
+       compare="date", not_before=10, optional_docs=(APPENDIX,)),
     _c(12, "Thời hạn dịch vụ", "03",
        [CONTRACT, APPENDIX], Kind.COMPUTE, "card",
        "Tính số ngày từ ngày bắt đầu (10) đến ngày kết thúc (11) — gộp thành 1 "
@@ -213,7 +213,8 @@ CRITERIA: tuple[Criterion, ...] = (
                     "term": "Thời hạn thanh toán",
                     "term_start": "Mốc bắt đầu tính hạn",
                     "method": "Phương thức thanh toán",
-                    "account": "Tài khoản nhận tiền"}),
+                    "account": "Tài khoản nhận tiền"},
+       optional_docs=(APPENDIX,)),
 
     # -- 04. Số tiền và thuế (5) ---------------------------------------------
     _c(14, "Gross (Hợp đồng/BBNT/Bảng Kê Thu Mua = Gross Excel)", "04",
@@ -221,7 +222,8 @@ CRITERIA: tuple[Criterion, ...] = (
        "Kiểm tra Gross là tổng thu nhập/phí dịch vụ trước PIT, là số dương và "
        "đúng định dạng tiền tệ. Đối chiếu giá trị trên Hợp đồng/BBNT/Bảng Kê "
        "Thu Mua với Gross trên Excel.",
-       formula="money_agreement", reference=EXCEL),
+       formula="money_agreement", reference=EXCEL,
+       optional_docs=(APPENDIX,)),
     _c(15, "PIT", "04",
        [EXCEL], Kind.COMPUTE, "card",
        "PIT là tính toán theo rule (ngưỡng áp dụng + tình trạng cam kết), không "

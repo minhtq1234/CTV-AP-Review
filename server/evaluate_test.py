@@ -784,3 +784,44 @@ def test_a_document_with_no_block_found_points_at_no_particular_place():
     assert cells[0].evidence[0].page == 0
     assert cells[0].evidence[0].bbox is None
     assert cells[0].status is Status.REVIEW
+
+
+def test_an_absent_appendix_is_not_applicable_but_an_absent_contract_is_missing():
+    """Only 22 of 169 real packets carry a Phụ lục, so requiring one rolled
+    #9/#10/#11/#13/#14 up to `missing` on 147 of them before any check ran.
+
+    `optional` could not express this: it is per-criterion, so it would also
+    have excused a missing Hợp đồng on the same criteria -- which is a real gap
+    -- and its note claims the criterion says "nếu có", which only #25 does.
+    """
+    no_appendix = manifest([doc("contract-0", "contract"), doc("bbnt-0", "bbnt")])
+
+    cells = {c.document: c for c in by_stt(ev.evaluate_packet(no_appendix, {}))[9].cells}
+
+    assert cells["Phụ lục/KPI"].status is Status.NOT_APPLICABLE
+    assert "nếu có" not in cells["Phụ lục/KPI"].note, "that wording belongs to #25"
+
+    # The same criterion still calls a genuinely absent document missing.
+    no_contract = manifest([doc("bbnt-0", "bbnt")])
+    cells = {c.document: c for c in by_stt(ev.evaluate_packet(no_contract, {}))[9].cells}
+    assert cells["Hợp đồng"].status is Status.MISSING
+
+
+def test_every_criterion_naming_an_appendix_treats_it_as_optional():
+    """One line each, and easy to forget on the next criterion that names one."""
+    import criteria as cr_module
+
+    for criterion in cr_module.CRITERIA:
+        if cr_module.APPENDIX not in criterion.docs:
+            continue
+        # Only COMPARE traverses the missing-document branch. #12 names an
+        # appendix and is COMPUTE, so it never reaches it -- measured: pending
+        # on all 169 real manifests, never missing.
+        if criterion.kind is not cr_module.Kind.COMPARE:
+            continue
+        params = criterion.params or {}
+        excused = (
+            params.get("optional")
+            or cr_module.APPENDIX in (params.get("optional_docs") or ())
+        )
+        assert excused, f"#{criterion.stt} requires a Phụ lục that most packets lack"
