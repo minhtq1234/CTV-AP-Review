@@ -18,7 +18,7 @@ import {
   matrixRows,
   visibleColumns,
 } from '../logic/criteriaMatrix'
-import { SUMMARY_STATUS_PRESENTATION } from '../logic/summaryTab'
+import { SUMMARY_STATUS_PRESENTATION, cellPresentation } from '../logic/summaryTab'
 import { cellAction } from '../logic/criteriaDocument'
 import type { EvidenceKind } from '../ctv/types'
 import type { Bbox } from '../types'
@@ -260,7 +260,11 @@ function MatrixCell({ row, cell, onOpen, onOpenDocument, onShowSummary }: {
   ) => void
   onShowSummary?: () => void
 }) {
-  const status = SUMMARY_STATUS_PRESENTATION[cell.status]
+  // Refined by WHY it is pending: one chip used to mean "no such check
+  // exists", "checked on Tổng hợp", "the bảng kê is blank", "your document
+  // would not read" and "this packet matched no row" -- and only the last two
+  // are about this packet at all.
+  const status = cellPresentation(cell)
   const located = cell.evidence.some(e => e.bbox)
   const decided = isDecided(cell)
   const action = cellAction(cell.document, cell.status)

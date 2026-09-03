@@ -825,3 +825,61 @@ def test_every_criterion_naming_an_appendix_treats_it_as_optional():
             or cr_module.APPENDIX in (params.get("optional_docs") or ())
         )
         assert excused, f"#{criterion.stt} requires a Phụ lục that most packets lack"
+
+
+class TestPendingReason:
+    """A pending cell says WHY, because one chip was doing five jobs.
+
+    Measured over 166 real packets and 4,813 pending cells: 41% no extractor
+    exists for the criterion at all, 14% are the batch-level bảng kê and are
+    checked on Tổng hợp, 12% are an empty bảng kê cell, 15% are a document
+    that is present and whose value would not read. Only the last is the tool
+    failing at something it can do, and showing all of them identically taught
+    the reviewer to ignore the one about their own packet.
+    """
+
+    def _cells(self, results, stt):
+        return {c.document: c for c in by_stt(results)[stt].cells}
+
+    def test_no_extractor_for_the_criterion_is_not_automated(self):
+        # #08 has no FIELD_BY_STT entry, so no packet will ever change this.
+        results = ev.evaluate_packet(full_packet(), ROSTER)
+        cell = self._cells(results, 8)[cr.CONTRACT]
+        assert cell.status is Status.PENDING
+        assert cell.pending_reason == "not-automated"
+
+    def test_the_batch_level_document_says_it_is_checked_elsewhere(self):
+        results = ev.evaluate_packet(full_packet(), ROSTER)
+        for row in results:
+            cell = next(
+                (c for c in row.cells if c.document == cr.PURCHASE), None)
+            if cell is not None and cell.status is Status.PENDING:
+                assert cell.pending_reason == "roster-level"
+                break
+        else:
+            raise AssertionError("no batch-level pending cell to check")
+
+    def test_an_unmatched_packet_says_so_on_the_excel_column(self):
+        results = ev.evaluate_packet(full_packet(), {})
+        cell = self._cells(results, 2)[cr.EXCEL]
+        assert cell.status is Status.PENDING
+        assert cell.pending_reason == "unmatched"
+
+    def test_an_empty_roster_cell_is_distinguished_from_an_unread_document(self):
+        blank = {**ROSTER, "cccd": ""}
+        cell = self._cells(ev.evaluate_packet(full_packet(), blank), 2)[cr.EXCEL]
+        assert cell.pending_reason == "no-roster-value"
+
+    def test_a_settled_status_carries_no_reason(self):
+        results = ev.evaluate_packet(full_packet(), ROSTER)
+        for row in results:
+            for cell in row.cells:
+                if cell.status is not Status.PENDING:
+                    assert cell.pending_reason is None, (row.stt, cell.document)
+
+    def test_the_reason_reaches_the_payload(self):
+        results = ev.evaluate_packet(full_packet(), ROSTER)
+        row = next(r for r in results if r.stt == 8)
+        payload = ev.as_dict(row)
+        assert any(c["pendingReason"] == "not-automated"
+                   for c in payload["cells"])

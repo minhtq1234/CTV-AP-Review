@@ -3,6 +3,7 @@ import type { SummaryCriterion, SummaryPayload } from '../upload/api'
 import {
   MISSING_LABELS,
   SUMMARY_STATUS_PRESENTATION,
+  cellPresentation,
   gapNotes,
   headlineParts,
   worstFirst,
@@ -160,5 +161,50 @@ describe('SUMMARY_STATUS_PRESENTATION', () => {
       .not.toBe(SUMMARY_STATUS_PRESENTATION.ok.label)
     expect(SUMMARY_STATUS_PRESENTATION.pending.tone).toBe('unknown')
     expect(SUMMARY_STATUS_PRESENTATION.ok.tone).toBe('good')
+  })
+})
+
+describe('cellPresentation', () => {
+  // `? Chưa kiểm tra được` was doing five jobs. Only `unread` and `unmatched`
+  // are facts about the packet in front of the reviewer; showing all five
+  // identically taught them to skip the chip, and with it the two that matter.
+  it('keeps a non-pending status exactly as it was', () => {
+    for (const status of ['ok', 'no', 'rv', 'missing', 'na'] as const) {
+      expect(cellPresentation({ status })).toBe(
+        SUMMARY_STATUS_PRESENTATION[status])
+    }
+  })
+
+  it('mutes the two that are about scope, not about this packet', () => {
+    expect(cellPresentation({ status: 'pending', pendingReason: 'not-automated' }))
+      .toMatchObject({ tone: 'muted' })
+    expect(cellPresentation({ status: 'pending', pendingReason: 'roster-level' }))
+      .toMatchObject({ tone: 'muted' })
+  })
+
+  it('says where a roster-level document is actually checked', () => {
+    expect(cellPresentation({ status: 'pending', pendingReason: 'roster-level' })
+      .label).toContain('Tổng hợp')
+  })
+
+  it('leaves the packet-specific ones as genuine unknowns', () => {
+    for (const reason of ['unread', 'unmatched'] as const) {
+      expect(cellPresentation({ status: 'pending', pendingReason: reason }))
+        .toMatchObject({ tone: 'unknown' })
+    }
+  })
+
+  it('flags an empty bảng kê cell as needing attention, not as unknown', () => {
+    // The tool knows the answer: the submitter left it blank.
+    expect(cellPresentation({
+      status: 'pending', pendingReason: 'no-roster-value',
+    })).toMatchObject({ tone: 'attention' })
+  })
+
+  it('falls back to plain pending for a reason it does not know', () => {
+    expect(cellPresentation({ status: 'pending', pendingReason: 'invented' }))
+      .toBe(SUMMARY_STATUS_PRESENTATION.pending)
+    expect(cellPresentation({ status: 'pending' }))
+      .toBe(SUMMARY_STATUS_PRESENTATION.pending)
   })
 })

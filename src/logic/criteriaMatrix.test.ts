@@ -7,6 +7,7 @@ import {
   confirms,
   decisionKey,
   isDecided,
+  automatedCount,
   criteriaHeadline,
   groupsInOrder,
   matrixRows,
@@ -105,6 +106,120 @@ describe('groupsInOrder', () => {
       '01': { label: 'Cá nhân', counts: {} as Record<SummaryStatus, number> },
     }
     expect(groupsInOrder(groups).map(g => g.code)).toEqual(['01', '03'])
+  })
+})
+
+describe('automatedCount', () => {
+  // A criterion every one of whose cells says `not-automated` has no
+  // extractor behind it: no packet will ever change its answer, so it is not
+  // something the tool checks. Telling the reviewer the denominator beats
+  // leaving them to infer it from a column of identical chips.
+  function unautomated(stt: number): CriterionRow {
+    const built = row(stt, 'pending', [['Hợp đồng', 'pending'], ['BBNT', 'pending']])
+    return {
+      ...built,
+      cells: built.cells.map(cell => ({ ...cell, pendingReason: 'not-automated' as const })),
+    }
+  }
+
+  it('ignores the Excel reference column, which is not a check', () => {
+    // #08's shape: the bảng kê has a value (green) and both document columns
+    // have no extractor. Counting Excel made this never fire.
+    const built = row(8, 'pending', [
+      ['Excel', 'ok'], ['Hợp đồng', 'pending'], ['BBNT', 'pending'],
+    ])
+    const shaped = {
+      ...built,
+      cells: [
+        built.cells[0],
+        { ...built.cells[1], pendingReason: 'not-automated' as const },
+        { ...built.cells[2], pendingReason: 'not-automated' as const },
+      ],
+    }
+    expect(automatedCount(payload([shaped]))).toBe(0)
+  })
+
+  it('also ignores the batch-level column, checked on another tab', () => {
+    // #09/#13/#27's shape. Leaving this in reported 24 of 25 automated on a
+    // real packet where far fewer are.
+    const built = row(9, 'pending', [
+      ['Excel', 'ok'], ['Hợp đồng', 'pending'],
+      ['BBNT', 'pending'], ['Bảng Kê Thu Mua', 'pending'],
+    ])
+    const shaped = {
+      ...built,
+      cells: [
+        built.cells[0],
+        { ...built.cells[1], pendingReason: 'not-automated' as const },
+        { ...built.cells[2], pendingReason: 'not-automated' as const },
+        { ...built.cells[3], pendingReason: 'roster-level' as const },
+      ],
+    }
+    expect(automatedCount(payload([shaped]))).toBe(0)
+  })
+
+  it('ignores an n/a cell, which is not a check that failed', () => {
+    // #09/#10/#11/#13's real shape: an n/a Phụ lục/KPI column. While those
+    // counted, the rule reported 23 of 25 automated on a packet where six
+    // criteria compare nothing.
+    const built = row(11, 'pending', [
+      ['Excel', 'pending'], ['Hợp đồng', 'pending'],
+      ['BBNT', 'pending'], ['Phụ lục/KPI', 'na'],
+    ])
+    const shaped = {
+      ...built,
+      cells: [
+        { ...built.cells[0], pendingReason: 'no-roster-value' as const },
+        { ...built.cells[1], pendingReason: 'not-automated' as const },
+        { ...built.cells[2], pendingReason: 'not-automated' as const },
+        built.cells[3],
+      ],
+    }
+    expect(automatedCount(payload([shaped]))).toBe(0)
+  })
+
+  it('excludes a criterion whose every cell has no extractor', () => {
+    expect(automatedCount(payload([
+      row(1, 'ok', [['Excel', 'ok']]),
+      unautomated(8),
+      unautomated(9),
+    ]))).toBe(1)
+  })
+
+  it('counts a criterion that is merely unread on this packet', () => {
+    // `unread` means the document is here and its value would not read --
+    // a fact about this packet, not about the tool's scope.
+    const built = row(2, 'pending', [['Hợp đồng', 'pending']])
+    const unread = {
+      ...built,
+      cells: built.cells.map(c => ({ ...c, pendingReason: 'unread' as const })),
+    }
+    expect(automatedCount(payload([unread]))).toBe(1)
+  })
+
+  it('counts a criterion with a mix, since something can still be read', () => {
+    const built = row(3, 'pending', [['Hợp đồng', 'pending'], ['BBNT', 'pending']])
+    const mixed = {
+      ...built,
+      cells: [
+        { ...built.cells[0], pendingReason: 'not-automated' as const },
+        { ...built.cells[1], pendingReason: 'unread' as const },
+      ],
+    }
+    expect(automatedCount(payload([mixed]))).toBe(1)
+  })
+
+  it('says nothing extra in the headline when everything is automated', () => {
+    const parts = criteriaHeadline(payload([row(1, 'ok', [['Excel', 'ok']])]))
+    expect(parts.some(p => p.includes('tự động'))).toBe(false)
+  })
+
+  it('states the denominator in the headline when some are not', () => {
+    const parts = criteriaHeadline(payload([
+      row(1, 'ok', [['Excel', 'ok']]),
+      unautomated(8),
+    ]))
+    expect(parts).toContain('công cụ kiểm tra tự động 1/2')
   })
 })
 

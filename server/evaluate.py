@@ -95,6 +95,17 @@ class Cell:
     #: the engine was wrong in the dangerous direction, and `pending -> ok` says
     #: a human supplied coverage it lacked. See the spec's §6.
     computed_status: Status | None = None
+    #: Why a PENDING cell is pending, so the reviewer is not shown one chip
+    #: meaning five different things. Measured over 166 real packets, the 4,813
+    #: pending cells split: 41% no automatic check exists for the criterion at
+    #: all, 14% are the batch-level bảng kê and ARE checked on Tổng hợp, 12%
+    #: are an empty cell on the bảng kê, 15% are a document that is present
+    #: and whose value would not read, and the rest are blocked upstream or a
+    #: packet that matched no roster row. Only the fourth is the tool failing
+    #: at something it can do -- and all five rendered as the same
+    #: "Chưa kiểm tra được", which teaches a reviewer to ignore the one that
+    #: is about their packet. None for any status that is not PENDING.
+    pending_reason: str | None = None
 
     @property
     def computed(self) -> Status:
@@ -274,11 +285,13 @@ def _reference_cell(criterion: Criterion, ctx: _Context) -> Cell:
     """
     if not ctx.roster:
         return Cell(cr.EXCEL, Status.PENDING, "",
-                    "Gói hồ sơ chưa khớp được dòng nào trên bảng kê.")
+                    "Gói hồ sơ chưa khớp được dòng nào trên bảng kê.",
+                    pending_reason="unmatched")
     value = ctx.reference(criterion.stt)
     if not value:
         return Cell(cr.EXCEL, Status.PENDING, "",
-                    "Bảng kê không có giá trị cho tiêu chí này.")
+                    "Bảng kê không có giá trị cho tiêu chí này.",
+                    pending_reason="no-roster-value")
     evidence = (Evidence("roster", 0, None, value, None, "roster"),)
     formats = (criterion.params or {}).get("formats", ())
     if formats and not cv.matches_format(value, formats):
@@ -309,7 +322,8 @@ def _batch_level_cell(criterion: Criterion, name: str) -> Cell:
     a missing document. Its own checks live on the Tổng hợp tab."""
     return Cell(name, Status.PENDING, "",
                 "Chứng từ toàn bảng kê — kiểm tra ở tab Tổng hợp, "
-                "chưa đối chiếu theo từng CTV.")
+                "chưa đối chiếu theo từng CTV.",
+                pending_reason="roster-level")
 
 
 def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
@@ -331,8 +345,12 @@ def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
 
     field_key = FIELD_BY_STT.get(criterion.stt)
     if field_key is None:
+        # No extractor is mapped to this criterion, so this is the same answer
+        # on every packet for ever, until one is built. Not a fact about the
+        # packet in front of the reviewer.
         return Cell(name, Status.PENDING, "",
-                    f"Chưa trích xuất được nội dung cần đối chiếu từ {name}.")
+                    f"Chưa trích xuất được nội dung cần đối chiếu từ {name}.",
+                    pending_reason="not-automated")
 
     reads = [
         (document, src)
@@ -340,8 +358,11 @@ def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
         for src in ctx.sources_for(field_key, document)
     ]
     if not reads:
+        # The one that IS about this packet: the document is here and its
+        # value would not read.
         return Cell(name, Status.PENDING, "",
-                    f"Có {name} trong hồ sơ nhưng chưa trích xuất được giá trị.")
+                    f"Có {name} trong hồ sơ nhưng chưa trích xuất được giá trị.",
+                    pending_reason="unread")
 
     reference = ctx.reference(criterion.stt)
     if not reference:
@@ -736,6 +757,9 @@ def _cell_dict(cell: Cell) -> dict:
         "computedStatus": cell.computed.value,
         "value": cell.value,
         "note": cell.note,
+        #: Only on PENDING, and only for the reviewer's label -- never a
+        #: verdict. See `Cell.pending_reason`.
+        "pendingReason": cell.pending_reason,
         "evidence": [_evidence_dict(e) for e in cell.evidence],
     }
 

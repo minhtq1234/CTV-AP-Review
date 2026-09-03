@@ -475,6 +475,19 @@ export interface CriterionCell {
   /** What was read here, verbatim. */
   value: string
   note: string
+  /** Why a `pending` cell is pending. Absent on every other status.
+   *
+   *  One chip used to mean five different things, and only `unread` is about
+   *  the packet in front of the reviewer -- measured over 166 real packets,
+   *  `not-automated` is 41% of pending cells and `roster-level` 14%, and the
+   *  latter is not unchecked at all: it is checked on the Tổng hợp tab. */
+  pendingReason?:
+    | 'not-automated'
+    | 'roster-level'
+    | 'no-roster-value'
+    | 'unread'
+    | 'unmatched'
+    | null
   evidence: CriterionEvidence[]
 }
 

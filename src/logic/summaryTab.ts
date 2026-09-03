@@ -29,6 +29,54 @@ export const SUMMARY_STATUS_PRESENTATION: Record<
   na: { icon: '–', label: 'Không áp dụng', tone: 'muted' },
 }
 
+/** A pending cell's real meaning, when the engine recorded one.
+ *
+ *  `? Chưa kiểm tra được` was doing five jobs at once. Measured over 166 real
+ *  packets and 4,813 pending cells: 41% `not-automated` (no extractor exists
+ *  for that criterion at all -- the same answer on every packet for ever),
+ *  14% `roster-level` (the batch-level bảng kê, which IS checked, on the Tổng
+ *  hợp tab), 12% `no-roster-value` (the submitter left the cell empty), 15%
+ *  `unread` (the document is here and its value would not read) and the rest
+ *  unmatched or blocked upstream.
+ *
+ *  Only `unread` and `unmatched` are facts about the packet in front of the
+ *  reviewer. Showing all five identically taught them to skip the chip, and
+ *  with it the two that matter. `not-automated` and `roster-level` are muted
+ *  on purpose -- they read as scope, like `Không áp dụng`, rather than as
+ *  uncertainty about this submission.
+ */
+export const PENDING_REASON_PRESENTATION: Record<
+  string,
+  { icon: string; label: string; tone: StatusTone }
+> = {
+  'not-automated': {
+    icon: '⋯', label: 'Chưa có kiểm tra tự động', tone: 'muted',
+  },
+  'roster-level': {
+    icon: '⊙', label: 'Kiểm tra ở tab Tổng hợp', tone: 'muted',
+  },
+  'no-roster-value': {
+    icon: '⊘', label: 'Bảng kê chưa ghi giá trị', tone: 'attention',
+  },
+  unread: {
+    icon: '?', label: 'Chưa đọc được giá trị trên chứng từ', tone: 'unknown',
+  },
+  unmatched: {
+    icon: '?', label: 'Gói chưa khớp dòng bảng kê', tone: 'unknown',
+  },
+}
+
+/** How one cell should read: its status, refined by why it is pending. */
+export function cellPresentation(
+  cell: { status: SummaryStatus; pendingReason?: string | null },
+): { icon: string; label: string; tone: StatusTone } {
+  if (cell.status === 'pending' && cell.pendingReason) {
+    return PENDING_REASON_PRESENTATION[cell.pendingReason]
+      ?? SUMMARY_STATUS_PRESENTATION.pending
+  }
+  return SUMMARY_STATUS_PRESENTATION[cell.status]
+}
+
 /** What the backend could not reach, in the reviewer's terms. */
 export const MISSING_LABELS: Record<string, string> = {
   rosterRows: 'Chưa đọc được dòng CTV nào trên bảng kê',
