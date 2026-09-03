@@ -423,6 +423,16 @@ def attach_sheet_evidence(
         if row is None:
             continue
         roster_cccd = _digits(row.get("cccd"))
+        # The card path refuses this at `_target_packet_index`; the sheet path
+        # did not, and the consequence is the wrong person's screenshot. A
+        # blank or "n/a" CCCD digits down to "", `_packet_target_index`
+        # compares those empty keys as EQUAL, and the sheet path routinely
+        # reaches roster rows through a non-CCCD key -- on the real workbook
+        # all 25 tax screenshots resolve by MST, not by CCCD. Two roster rows
+        # with no digits and one matched packet is all it takes.
+        if len(roster_cccd) != 12:
+            refused[drawing.id] = "non-12-digit-roster-cccd"
+            continue
         targets = [
             index
             for packet in packets
@@ -938,6 +948,17 @@ def ingest_cccd_workbook(
         "candidates": len(mappings),
         "attached": attached,
         "unresolved": len(mappings) - attached,
+        # The sheet screenshots are counted separately from cards, because
+        # they are a different population with a different failure mode -- and
+        # because a refusal was previously computed and then dropped on the
+        # floor, so a screenshot nobody could attribute vanished with nothing
+        # said. `refused` is not an error: "we could not tell whose this is" is
+        # the honest answer, and it is the reason to look.
+        "sheetEvidence": {
+            "attached": sum(len(ids) for ids in sheet_written.values()),
+            "refused": len(sheet_refused),
+            "reasons": sorted(set(sheet_refused.values())),
+        },
     }
     if reconciliation_failed or any(
         "attachment-failed" in mapping.get("issues", [])

@@ -413,6 +413,9 @@ def test_ingest_returns_aggregate_and_preserves_unresolved_provenance(
         "candidates": 1,
         "attached": 1,
         "unresolved": 0,
+        # Counted apart from cards: a different population with a different
+        # failure mode, and a refusal here used to be computed and dropped.
+        "sheetEvidence": {"attached": 0, "refused": 0, "reasons": []},
     }
     mapping = result["cccdWorkbook"]["mappings"][0]
     assert mapping["candidateId"] == CARD_ID
@@ -473,6 +476,9 @@ def test_ingest_attaches_exact_unknown_side_pair_by_layout(
         "candidates": 1,
         "attached": 1,
         "unresolved": 0,
+        # Counted apart from cards: a different population with a different
+        # failure mode, and a refusal here used to be computed and dropped.
+        "sheetEvidence": {"attached": 0, "refused": 0, "reasons": []},
     }
     mapping = result["cccdWorkbook"]["mappings"][0]
     assert mapping["candidateId"] == "card-drawing-0099-drawing-0001"

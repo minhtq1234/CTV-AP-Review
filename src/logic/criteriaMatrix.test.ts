@@ -214,12 +214,15 @@ describe('automatedCount', () => {
     expect(parts.some(p => p.includes('tự động'))).toBe(false)
   })
 
-  it('states the denominator in the headline when some are not', () => {
+  it('names what has no automatic check, rather than scoring coverage', () => {
+    // Not "1/2 automated": that reads as a property of the tool, and it is
+    // neither -- it is per packet, and several counted criteria never answer
+    // on their own.
     const parts = criteriaHeadline(payload([
       row(1, 'ok', [['Excel', 'ok']]),
       unautomated(8),
     ]))
-    expect(parts).toContain('công cụ kiểm tra tự động 1/2')
+    expect(parts).toContain('1 tiêu chí chưa có kiểm tra tự động')
   })
 })
 
