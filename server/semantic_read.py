@@ -21,21 +21,31 @@ Both reuse `ocr_extract`'s `norm`, `group_lines` and `union_bbox`.
 
 Four things measured on 12 real contracts, each of which decides a line here
 ---------------------------------------------------------------------------
-1. **Whole document, not per line.** A clause crosses a line break 71.8% of the
+1. **Whole document, not per line.** A clause crosses a line break ~60% of the
    time at twelve words. Searching line by line -- what every existing
-   `_anchor_word_span` caller does -- located 28.7% of verbatim twelve-word
-   quotes. Over a page's whole reading order: 100%.
+   `_anchor_word_span` caller does -- located **0.0%** of cross-line quotes,
+   at both eight and twelve words, over 406 samples. Not "fewer": none.
 2. **Whitespace collapsed.** A model handed `_page_text` sees a newline at
-   every line end and may quote it back. Under `norm` alone that matched 0%.
-3. **Punctuation folded out of both sides.** A model normalising a comma or a
-   quote mark dropped verbatim matching to 25-40%; folding both sides restores
-   100%. The same trick, and the same reason, as `purchase_listing._key`.
-4. **A fuzzy fallback at 0.90, not 0.85.** Exact substring matching is fatally
-   brittle -- one changed character makes a quote 100% unlocatable. A
-   best-window `SequenceMatcher` pass takes every corruption modelled to 0-2%.
-   The threshold is a false-positive control rather than a tuning knob: quotes
-   cut from a different page of the SAME contract score a median 0.59 and a
-   maximum of 0.90, so 0.85 invents a box in 3.3% of cases and 0.90 in none.
+   every line end and may quote it back, and `norm` leaves it in place.
+3. **Punctuation folded to a space on both sides.** A model normalising a
+   comma, or hyphenating a word the page does not, otherwise misses entirely.
+4. **A fuzzy fallback at 0.90, not 0.85.** Exact matching is fatally brittle:
+   one changed character makes a verbatim matcher 0%. Measured on contiguous
+   twelve-word quotes -- verbatim 100% located and 100% *exact*, one changed
+   character 100%, one dropped word 93.3%, and the locator never once returned
+   a page other than the source across 5,000+ quotes. The threshold is a
+   false-positive control rather than a tuning knob: 0.85 boxes a foreign
+   quote, 0.90 does not. One call costs ~0.01s on a 250-word page.
+
+Two traps in measuring this, both of which cost real time
+---------------------------------------------------------
+Sampling "cross-line" quotes by joining the tail of one `group_lines` line to
+the head of the next, having *filtered out* one-word lines, manufactures quotes
+that are not contiguous on the page at all -- a skipped line still sits between
+the halves in reading order. That understated this function at 71% when it
+scores 100%, twice, in two independent harnesses. Cut quotes out of the folded
+page text itself. And measuring the fuzzy path over a whole matrix is slow
+enough to look hung: it is thousands of calls, not one slow call.
 
 `MIN_WORDS` is the other half of that control. Below about six words a quote
 lands on the wrong occurrence of itself (7.2% at four words), so a short quote
