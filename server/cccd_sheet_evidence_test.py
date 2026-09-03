@@ -234,6 +234,30 @@ class TestWhatIsNotAttached:
         )
         assert written == {} and refused == {}
 
+    def test_a_roster_row_with_no_usable_cccd_cannot_claim_a_packet(self, tmp_path):
+        """The wrong-person path. `_digits("")` and `_digits("n/a")` are both
+        "", and `_packet_target_index` compares empty keys as EQUAL -- so a
+        second roster row with no digits could claim the first one's packet
+        and receive its tax screenshot. The card path already refuses this;
+        the sheet path did not, and it reaches roster rows by MST routinely.
+        """
+        case_dir, extracted, paths, metas = build_case(tmp_path)
+        blank = [
+            {"name": "NGUYEN VAN MOT", "cccd": "", "mst": "0011000001"},
+            {"name": "NGUYEN VAN HAI", "cccd": "n/a", "mst": "0011000002"},
+        ]
+        metas[0]["rosterIdentity"] = {"cccd": "n/a"}
+        drawing = FakeDrawing(
+            "d0", "tax", FakeAnchor("MST", 3),   # resolves to NGUYEN VAN MOT
+            stored_path=image_at(extracted, "tax0.png"),
+        )
+        written, refused = cccd_ingest.attach_sheet_evidence(
+            [drawing], {"MST": MST_SHEET}, blank, metas, str(case_dir), paths,
+        )
+        assert written == {}
+        assert refused == {"d0": "non-12-digit-roster-cccd"}
+        assert docs_in(paths[0]) == []
+
     def test_a_person_with_no_packet_is_refused_not_guessed(self, tmp_path):
         case_dir, extracted, paths, metas = build_case(tmp_path, packets=1)
         drawing = FakeDrawing(

@@ -120,9 +120,17 @@ export function criteriaHeadline(payload: CriteriaPayload): string[] {
   const total = payload.matchedRoster
     ? `${payload.criteria.length} tiêu chí`
     : 'chưa khớp bảng kê'
-  const automated = automatedCount(payload)
-  const scope = automated < payload.criteria.length
-    ? [`công cụ kiểm tra tự động ${automated}/${payload.criteria.length}`]
+  // Stated as what is MISSING, not as a coverage score. "kiểm tra tự động
+  // 19/25" reads as a property of the tool and is neither: it is computed per
+  // packet and moves with the documents that packet has (measured across 166
+  // real packets: 18 on 75, 19 on 86, 23 on one, 24 on four), and several of
+  // the 19 -- #06 and the signature criteria -- never answer on their own,
+  // they locate something and hand it to a person. Counting those as
+  // "automatically checked" overclaims. The honest, actionable half is the
+  // other one: these have no automatic check at all.
+  const unautomated = payload.criteria.length - automatedCount(payload)
+  const scope = unautomated > 0
+    ? [`${unautomated} tiêu chí chưa có kiểm tra tự động`]
     : []
   return [
     total,
