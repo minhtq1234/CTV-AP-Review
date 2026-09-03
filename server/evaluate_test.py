@@ -1075,3 +1075,100 @@ class TestAMisreadIsToldFromAMismatch:
             ])],
         )
         assert self.cell(7, cr.BBNT, packet).status is Status.REVIEW
+
+class TestPartsPresenceWiring:
+    """#08 and #13 are answered on presence once a reader has covered them.
+
+    The guard is the point. `check_parts` distinguishes "nobody looked" from
+    "looked and found none", and passing an empty mapping on the first case
+    turns every packet's #08 and #13 into a confident "no parts found" --
+    measured, the batch rollup goes to all-red with +328 findings that are not
+    there. So with no reader this path must not run at all.
+    """
+
+    def _llm(self, doc_id, part, value="x", bbox=None, page=0):
+        return {
+            "key": part, "label": part, "group": "Điều khoản",
+            "check": "semantic", "kind": "text", "expected": "",
+            "sources": [{
+                "docId": doc_id, "page": page, "value": value,
+                "bbox": bbox if bbox is not None
+                else {"x": 1, "y": 2, "width": 30, "height": 10},
+                "confidence": 1.0, "provenance": "llm",
+            }],
+        }
+
+    def _packet(self, *fields):
+        packet = manifest(docs=[doc("contract-0", "contract")])
+        packet["fields"] = list(packet.get("fields") or []) + list(fields)
+        return packet
+
+    def test_with_no_reader_the_cell_is_exactly_what_it_was(self):
+        # The regression this whole design exists to prevent.
+        results = by_stt(ev.evaluate_packet(self._packet(), ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.PENDING
+        assert cell.pending_reason == "not-automated"
+
+    def test_every_part_found_and_located_on_one_document_is_ok(self):
+        packet = self._packet(
+            self._llm("contract-0", "bank"),
+            self._llm("contract-0", "branch"),
+            self._llm("contract-0", "province"),
+        )
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.OK
+        assert "đủ 3" in cell.note
+        assert len(cell.evidence) == 3
+        assert all(e.provenance == "llm" for e in cell.evidence)
+
+    def test_a_part_found_but_not_locatable_goes_to_a_person(self):
+        # A value the reviewer cannot see is a claim, not an answer.
+        packet = self._packet(
+            self._llm("contract-0", "bank", bbox=None),
+            self._llm("contract-0", "branch"),
+            self._llm("contract-0", "province"),
+        )
+        packet["fields"][-3]["sources"][0]["bbox"] = None
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.REVIEW
+        assert "chỉ được vị trí" in cell.note
+
+    def test_some_parts_missing_goes_to_a_person_not_to_a_finding(self):
+        packet = self._packet(self._llm("contract-0", "bank"))
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.REVIEW
+        assert "Chi nhánh" in cell.note and "Tỉnh/TP" in cell.note
+
+    def test_a_reader_finding_nothing_is_review_not_no(self):
+        """A reader failing to find a clause is not the clause being absent.
+
+        Mapping this to NO is what fabricates findings at scale.
+        """
+        packet = self._packet(self._llm("contract-0", "bank", value="",
+                                        bbox={"x": 0, "y": 0,
+                                              "width": 0, "height": 0}))
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.REVIEW
+        assert cell.status is not Status.NO
+
+    def test_a_part_the_criterion_never_declared_cannot_complete_it(self):
+        packet = self._packet(
+            self._llm("contract-0", "bank"),
+            self._llm("contract-0", "mood"),
+        )
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+        assert cell.status is Status.REVIEW
+
+    def test_a_criterion_with_no_parts_is_untouched(self):
+        packet = self._packet(self._llm("contract-0", "bank"))
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        # #02 declares no parts; the llm sources must not reach it.
+        cell = next(c for c in results[2].cells if c.document == cr.CONTRACT)
+        assert cell.pending_reason != "not-automated" or cell.evidence == ()
+        assert all(e.provenance != "llm" for e in cell.evidence)
