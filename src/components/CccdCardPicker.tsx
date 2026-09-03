@@ -62,6 +62,17 @@ export default function CccdCardPicker({
   const dismiss = () => { if (!busy) onCancel() }
   useDialogFocus(panel, dismiss)
 
+  const errorRef = useRef<HTMLParagraphElement | null>(null)
+  useEffect(() => {
+    const node = errorRef.current
+    if (!error || !node) return
+    // Guarded: jsdom implements neither, and the message is sticky regardless.
+    if (typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'nearest' })
+    }
+    if (typeof node.focus === 'function') node.focus()
+  }, [error])
+
   useEffect(() => {
     let cancelled = false
     listCccdCards(caseId)
@@ -119,7 +130,17 @@ export default function CccdCardPicker({
           <button type="button" disabled={busy} onClick={dismiss}>Đóng</button>
         </header>
 
-        {error && <p className="cccd-picker-error" role="alert">{error}</p>}
+        {/* Sticky inside the panel, which is its own ~690px scroll box over
+            roughly 2,000px of cards. The reviewer who scrolled to card 14 saw
+            only the button's label flick back from "Đang gán…" -- indistinguishable
+            from a slow success or a missed click -- while the message that says
+            what to do was off-screen above. */}
+        {error && (
+          <p className="cccd-picker-error" role="alert" ref={errorRef}
+             tabIndex={-1}>
+            {error}
+          </p>
+        )}
 
         {cards === null && <p className="cccd-picker-empty">Đang tải…</p>}
 

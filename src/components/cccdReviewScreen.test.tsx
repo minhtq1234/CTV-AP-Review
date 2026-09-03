@@ -96,10 +96,21 @@ describe('CccdReviewView', () => {
   // section's own grid, same as an attached card.
   it('renders an orphan card as a tile in the grid, not as a row', () => {
     const html = render([card('card-09', null)])
-    const grid = html.match(/<ul class="cccd-review-grid">[\s\S]*?<\/ul>/)?.[0] ?? ''
+    // The LAST grid: orphans are their own section below `Đã gán` now, because
+    // 18 large tiles between the queue and that disclosure put it 4,277px
+    // below the fold. `Đã gán`'s own (here empty) grid comes first.
+    const grids = html.match(/<ul class="cccd-review-grid">[\s\S]*?<\/ul>/g) ?? []
+    const grid = grids[grids.length - 1] ?? ''
     expect(grid).toContain('class="cccd-review-tile"')
     expect(grid).toContain('card-09')
     expect(html).not.toContain('cccd-review-orphan')
+  })
+
+  it('puts the Đã gán disclosure above the unmatched-card tiles', () => {
+    // It is the reason this component exists -- a wrong automatic match has to
+    // stay findable -- so it cannot be the thing below 18 large images.
+    const html = render([card('card-00', 0), card('card-09', null)])
+    expect(html.indexOf('Đã gán')).toBeLessThan(html.indexOf('Ảnh chưa ghép'))
   })
 
   it("shows the orphan tile's head as the cardId, not an STT and name", () => {

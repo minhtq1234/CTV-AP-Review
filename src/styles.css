@@ -813,7 +813,18 @@ body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, san
   padding: 5px 11px; border: 0.5px solid var(--border); border-radius: 8px;
   background: transparent; cursor: pointer; font-size: 13px;
 }
-.cccd-picker-error { margin: 12px 0 0; font-size: 13px; color: var(--danger); }
+/* Sticky inside the panel's own scroll box: the grid is ~2,000px of cards in
+   ~690px, so a reviewer at card 14 could not see this at all -- only the
+   button's label flicking back from "Đang gán…", which reads as a slow
+   success or a missed click. */
+.cccd-picker-error {
+  position: sticky; top: 0; z-index: 5;
+  margin: 12px 0 0; padding: 8px 10px;
+  font-size: 13px; color: var(--danger);
+  border: 0.5px solid var(--danger); border-radius: 8px;
+  background: var(--surface);
+}
+.cccd-picker-error:focus-visible { outline: 2px solid var(--danger); outline-offset: 2px; }
 .cccd-picker-empty { margin: 24px 0; font-size: 13px; color: var(--text-muted); text-align: center; }
 
 .cccd-card-grid {

@@ -330,13 +330,13 @@ export function CccdReviewView({
               {review.counts.packetsWithoutCard === 0 && (
                 <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
               )}
-              {/* The packets waiting for a card, then the cards waiting for a
-                  packet: a compact row list first (no image, nothing to
-                  enlarge), then the orphan cards as tiles below it, in the
-                  same section -- reusing Đã gán's own .cccd-review-grid, since
-                  an orphan card gets no less scrutiny than an attached one;
-                  if anything it gets more, since there is no name to confirm
-                  it against. */}
+              {/* The packets waiting for a card: a compact row list, no
+                  image and nothing to enlarge. The cards waiting for a packet
+                  used to follow here in the same section; they are their own
+                  section below `Đã gán` now, and still get Đã gán's own
+                  .cccd-review-grid -- an orphan card gets no less scrutiny
+                  than an attached one, and arguably more, since there is no
+                  name to confirm it against. */}
               <ul className="cccd-review-list">
                 {review.needsAction
                   .filter((row): row is CccdPacketRow => row.kind === 'packet')
@@ -367,18 +367,6 @@ export function CccdReviewView({
                     </li>
                   ))}
               </ul>
-              <ul className="cccd-review-grid">
-                {review.needsAction
-                  .filter((row): row is CccdCardRow => row.kind === 'card')
-                  .map(row => (
-                    <OrphanTile
-                      key={`card-${row.card.cardId}`}
-                      caseId={caseId}
-                      card={row.card}
-                      assignable={review.counts.packetsWithoutCard > 0}
-                    />
-                  ))}
-              </ul>
             </section>
 
             <details className="cccd-review-section">
@@ -395,6 +383,34 @@ export function CccdReviewView({
                 ))}
               </ul>
             </details>
+
+            {/* Last, and no longer inside `Cần xử lý`. These tiles are large
+                images -- 18 of them on a real case -- and they sat between
+                the queue and the `Đã gán` disclosure, which put that
+                disclosure 4,277px below the fold. It is the reason this
+                component exists (a wrong automatic match has to stay
+                findable), so it cannot be the thing at the bottom. An orphan
+                card is reference material rather than a control: it is
+                assigned from a packet's own row above, and the picker shows
+                these same images again when it is. */}
+            {review.counts.unattachedCards > 0 && (
+              <section className="cccd-review-section"
+                       aria-label="Ảnh chưa ghép">
+                <h3>Ảnh chưa ghép ({review.counts.unattachedCards})</h3>
+                <ul className="cccd-review-grid">
+                  {review.needsAction
+                    .filter((row): row is CccdCardRow => row.kind === 'card')
+                    .map(row => (
+                      <OrphanTile
+                        key={`card-${row.card.cardId}`}
+                        caseId={caseId}
+                        card={row.card}
+                        assignable={review.counts.packetsWithoutCard > 0}
+                      />
+                    ))}
+                </ul>
+              </section>
+            )}
           </>
         )}
       </div>
