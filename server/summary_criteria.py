@@ -87,7 +87,6 @@ _SUMMARY_CODES = {
 #: found here is that criterion's Excel cell.
 PER_CTV_CODES = {
     "formula-mismatch": 17,
-    "pit-zero-without-basis": 15,
     "amount-missing": 14,
     "cccd-format": 2,
     "dob-format": 3,

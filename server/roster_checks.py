@@ -8,7 +8,6 @@ Implements, from `Checklist_Dich_vu_ca_nhan_CTV.xlsx` (32 tiêu chí):
 
     #2 #3 #5 #7  field formats (CCCD, ngày sinh, MST, số TK)
     #14          Gross present, positive, numeric
-    #15          PIT: if zero, a basis must be stated
     #16          Net present and positive
     #17          Gross - PIT = Net, recomputed rather than trusted
     #20          the total row equals the sum of the rows
@@ -18,9 +17,11 @@ Two things the checklist is deliberate about, and so is this module:
 
   * **No hardcoded tax rate.** #15 says PIT must match "mức/điều kiện áp dụng
     trong hồ sơ" -- the rate applicable to the file, not one this code invents.
-    So a non-zero PIT is reported with its effective rate for a human to judge,
-    and only PIT-of-zero-without-a-basis is called a finding. Anything else
-    would be this tool asserting tax policy it does not know.
+    That principle still holds, but #15 is no longer answered here: it lives in
+    `evaluate._pit_basis`, which asks whether the packet carries a commitment
+    DOCUMENT. This module only ever saw the bảng kê's `Bản cam kết` column,
+    which is the submitter's claim about the basis rather than the basis
+    itself, so it could not tell a stated commitment from a supplied one.
 
   * **Findings name the value, not just "không khớp".** The workbook's stated
     result principle: "Không chỉ báo 'Không khớp'; phải nêu trường sai, giá trị
@@ -102,6 +103,12 @@ class RosterReport:
 
     @property
     def ok(self) -> bool:
+        """No findings *from this module*, which is not "the roster is clean".
+
+        #15 is answered per packet by `evaluate._pit_basis` off the commitment
+        document, so a roster whose every zero-PIT row lacks its commitment
+        still reports `ok`. Nothing in the app reads this; it exists for tests.
+        """
         return not self.findings
 
 
@@ -170,7 +177,7 @@ def check(rows: list[tuple]) -> RosterReport:
         return report
 
     # --- #14 #16 #17 amounts, recomputed ---------------------------------
-    formula, zero_pit, absent = [], [], []
+    formula, absent = [], []
     for person in people:
         gross, pit, net = (money(person.get(k)) for k in ("gross", "pit", "net"))
         if None in (gross, pit, net):
@@ -179,11 +186,6 @@ def check(rows: list[tuple]) -> RosterReport:
         if gross - pit != net:
             formula.append(f"{stt(person)} (Gross {gross:,} − PIT {pit:,} "
                            f"≠ Net {net:,}, lệch {gross - pit - net:,})")
-        # #15: zero PIT is only acceptable with a stated basis
-        if pit == 0:
-            basis = _fold(person.get("commitment"))
-            if not basis or basis.startswith("khong"):
-                zero_pit.append(f"{stt(person)} (Gross {gross:,})")
 
     if absent:
         add(Finding("#14/#16", "amount-missing",
@@ -191,12 +193,6 @@ def check(rows: list[tuple]) -> RosterReport:
     if formula:
         add(Finding("#17", "formula-mismatch",
                     "Gross − PIT ≠ Net", tuple(formula)))
-    if zero_pit:
-        add(Finding(
-            "#15", "pit-zero-without-basis",
-            "PIT bằng 0 nhưng thiếu căn cứ (cột Bản cam kết không ghi 'có')",
-            tuple(zero_pit),
-        ))
 
     # --- #30 nothing may be shared between people -------------------------
     for label, key in (("CCCD", "cccd"), ("MST", "mst"),

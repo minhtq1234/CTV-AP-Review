@@ -73,24 +73,20 @@ class TestAmounts:
         assert "10,000,000" in finding.rows[0]
         assert "lệch" in finding.rows[0]
 
-    def test_zero_pit_without_a_basis_is_a_finding(self):
-        row = (2, "079303009458", "079303009458", "03/09/2003", "111",
-               2_000_000, "không", 0, 2_000_000)
-        report = rc.check(sheet([GOOD, row]))
-        assert "pit-zero-without-basis" in codes(report)
+    def test_zero_pit_is_not_answered_here_whatever_the_column_says(self):
+        """#15 belongs to the commitment DOCUMENT, not the bảng kê column.
 
-    def test_zero_pit_with_a_cam_ket_is_accepted(self):
-        row = (2, "079303009458", "079303009458", "03/09/2003", "111",
-               2_000_000, "có", 0, 2_000_000)
-        report = rc.check(sheet([GOOD, row]))
-        assert "pit-zero-without-basis" not in codes(report)
-
-    def test_a_nonzero_pit_is_never_judged_against_a_hardcoded_rate(self):
-        # 7% is unusual, but the checklist says the applicable rate lives in the
-        # file, not in this code. Only zero-without-basis is a finding.
-        odd = (2, "079303009458", "079303009458", "03/09/2003", "111",
-               10_000_000, "không", 700_000, 9_300_000)
-        assert "pit-zero-without-basis" not in codes(rc.check(sheet([odd])))
+        This module used to answer it off `Bản cam kết`, which records the
+        submitter's claim rather than the basis, and the answer reached no
+        cell -- `evaluate._pit_basis` was always the one on screen. Two
+        sources of truth for one criterion is the thing being prevented, so
+        neither column value may produce a roster finding here.
+        """
+        for stated in ("không", "có"):
+            row = (2, "001100000001", "0011000001", "03/09/2003",
+                   "1900000001", 2_000_000, stated, 0, 2_000_000)
+            report = rc.check(sheet([GOOD, row]))
+            assert not [c for c in codes(report) if c.startswith("pit-zero")]
 
     def test_missing_amounts_are_reported_separately(self):
         blank = (2, "079303009458", "079303009458", "03/09/2003", "111",

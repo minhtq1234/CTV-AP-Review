@@ -52,6 +52,9 @@ class TestRegistry:
         source = pathlib.Path(roster_checks.__file__).read_text()
         routed = set(sc._SUMMARY_CODES) | set(sc.PER_CTV_CODES)
         sites = re.findall(r'Finding\(\s*"#\d+",\s*f?"([^"]+)"', source)
+        # 8, not 9: #15's `pit-zero-without-basis` was retired when the
+        # commitment document became its single source. The regex also
+        # skips the `"#14/#16"` and `"—"` sites, so this audits 8 of 10.
         assert len(sites) >= 8
         for code in sites:
             if "{" in code:  # f-string family, e.g. total-mismatch-{key}
