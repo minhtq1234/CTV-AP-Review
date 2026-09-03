@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 
 import compare_values as cv
 import criteria as cr
+import parts_presence as pp
 from criteria import Criterion, Status
 
 # --- how criterion documents map onto what a packet actually contains ---------
@@ -331,6 +332,87 @@ def _batch_level_cell(criterion: Criterion, name: str) -> Cell:
                 pending_reason="roster-level")
 
 
+#: A part's own words, for the note a reviewer reads. Keys are the criteria's
+#: declared parts; anything absent falls back to the key itself.
+_PART_LABELS = {
+    "bank": "Tên ngân hàng",
+    "branch": "Chi nhánh",
+    "province": "Tỉnh/TP",
+    "amount_basis": "Căn cứ số tiền",
+    "term": "Thời hạn thanh toán",
+    "term_start": "Mốc tính thời hạn",
+    "method": "Phương thức thanh toán",
+    "account": "Tài khoản nhận",
+}
+
+
+def _parts_cell(
+    criterion: Criterion, name: str, documents: list[dict], ctx: _Context,
+) -> Cell | None:
+    """The presence answer for a criterion that declares `parts`, or None.
+
+    None means "not mine, carry on" -- either the criterion declares no parts,
+    or no reader has covered these parts on this document. Never an empty
+    mapping into `check_parts` on that second case: see the caller.
+    """
+    parts = (criterion.params or {}).get("parts") or ()
+    if not parts:
+        return None
+
+    reads: dict[str, dict] = {}
+    for document in documents:
+        for part in parts:
+            for source in ctx.sources_for(part, document):
+                if source.get("provenance") == "llm":
+                    reads.setdefault(part, source)
+    if not reads:
+        # Nobody looked. Not "looked and found none".
+        return None
+
+    presence = pp.check_parts(parts, reads, labels=_PART_LABELS)
+
+    if presence.coverage is pp.PartsCoverage.COMPLETE:
+        # OK only when every part can be pointed at AND this kind of document
+        # occurs once. A value the reviewer cannot see is a claim, and two
+        # copies of a document mean a part found on one says nothing about the
+        # other -- the engine's first automatic pass should not rest on either.
+        located = all(
+            (reads[part].get("bbox") or {}).get("width")
+            for part in presence.found
+        )
+        if located and len(documents) == 1:
+            return Cell(name, Status.OK, "", presence.note,
+                        _parts_evidence(reads, presence.found))
+        return Cell(
+            name, Status.REVIEW, "",
+            presence.note + " Cần người xác nhận nội dung."
+            if located else
+            presence.note + " Chưa chỉ được vị trí trên trang, cần người xem.",
+            _parts_evidence(reads, presence.found),
+        )
+
+    # PARTIAL and NONE both go to a person rather than to a finding. A reader
+    # failing to find a clause is not the same as the clause being absent, and
+    # this engine does not turn the first into the second.
+    return Cell(name, Status.REVIEW, "", presence.note,
+                _parts_evidence(reads, presence.found))
+
+
+def _parts_evidence(reads: dict[str, dict], found: tuple[str, ...]):
+    """One evidence entry per part that was found, so the reviewer can walk them."""
+    return tuple(
+        Evidence(
+            reads[part].get("docId", ""),
+            int(reads[part].get("page", 0) or 0),
+            reads[part].get("bbox"),
+            str(reads[part].get("value", "") or ""),
+            reads[part].get("confidence"),
+            "llm",
+        )
+        for part in found
+    )
+
+
 def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
     documents = ctx.documents_for(name)
     if not documents:
@@ -347,6 +429,24 @@ def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
                         "từ các chứng từ khác.")
         return Cell(name, Status.MISSING, "",
                     f"Hồ sơ thiếu {name}.")
+
+    # A criterion that declares `parts` is answered on presence, not on a
+    # comparison -- #08's own text is "Kiểm tra có đủ 3 nội dung", and there is
+    # nothing to compare against (the bảng kê has a bank column and none for
+    # branch or province; #13 has no Excel document at all).
+    #
+    # Guarded on reads EXISTING, and that guard is the whole safety of this
+    # wiring. `check_parts` distinguishes "nobody looked" from "looked and
+    # found none", and getting that backwards is not a small error: passing an
+    # empty mapping when no reader has run turns every packet's #08 and #13
+    # into a confident "no parts found" -- measured, the batch rollup goes from
+    # {rv 28, missing 59, no 82} to {no 169}, every packet red, +328 findings
+    # that are not there. So when no reader has covered this document, this
+    # falls through to the existing path untouched and the cell stays exactly
+    # what it was.
+    parts_cell = _parts_cell(criterion, name, documents, ctx)
+    if parts_cell is not None:
+        return parts_cell
 
     field_key = FIELD_BY_STT.get(criterion.stt)
     if field_key is None:
