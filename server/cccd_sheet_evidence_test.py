@@ -141,10 +141,7 @@ class TestTaxScreenshots:
             )
         assert len(docs_in(paths[0])) == 1
 
-    def test_the_written_ids_are_owned_so_a_re_read_cleans_them(self, tmp_path):
-        # Without this the reconciler would delete the documents the same
-        # ingest had just written, since they are owned and would not appear
-        # in the card keep-set.
+    def _attach_one(self, tmp_path):
         case_dir, extracted, paths, metas = build_case(tmp_path)
         drawing = FakeDrawing(
             "d0", "tax", FakeAnchor("MST", 3),
@@ -154,17 +151,56 @@ class TestTaxScreenshots:
             [drawing], {"MST": MST_SHEET}, ROSTER_ROWS, metas,
             str(case_dir), paths,
         )
-        for ids in written.values():
-            for doc_id in ids:
-                assert cccd_ingest._is_owned_doc_id(doc_id)
+        return case_dir, paths, written
+
+    def test_a_re_read_that_did_not_write_it_removes_it(self, tmp_path):
+        # The ingest DOES own these: it passes a keep-set, and a document not
+        # in it is stale and goes.
+        case_dir, paths, written = self._attach_one(tmp_path)
+        assert len(docs_in(paths[0])) == 1
 
         assert cccd_ingest.reconcile_owned_evidence(
             paths, str(case_dir), [], sheet_keep=written)
         assert len(docs_in(paths[0])) == 1
 
-        # and with no keep-set, the same reconciler removes it
-        assert cccd_ingest.reconcile_owned_evidence(paths, str(case_dir), [])
+        assert cccd_ingest.reconcile_owned_evidence(
+            paths, str(case_dir), [], sheet_keep={})
         assert docs_in(paths[0]) == []
+
+    def test_a_card_operation_does_not_touch_sheet_evidence(self, tmp_path):
+        """The one that shipped broken, and that this test used to assert.
+
+        `cccd_manual.assign_card` reconciles after every Gán and Gỡ and knows
+        nothing about sheet evidence, so it passes no sheet keep-set. While
+        that meant "keep none", one click deleted every tax document in the
+        case -- silently, 200 OK, #6 straight back from REVIEW to MISSING,
+        with no re-ingest route to restore it.
+
+        Omitting the sheet keep-set now means "not my family, leave it alone".
+        """
+        case_dir, paths, _ = self._attach_one(tmp_path)
+        assert len(docs_in(paths[0])) == 1
+
+        # exactly what cccd_manual.py:281 does after a card assign or detach
+        assert cccd_ingest.reconcile_owned_evidence(paths, str(case_dir), [])
+
+        surviving = docs_in(paths[0])
+        assert len(surviving) == 1
+        assert surviving[0]["kind"] == "pit"
+
+    def test_a_card_operation_still_clears_stale_CARD_evidence(self, tmp_path):
+        # The fix must not stop the reconciler doing its actual job.
+        case_dir, paths, _ = self._attach_one(tmp_path)
+        manifest = json.loads(open(paths[0], encoding="utf-8").read())
+        manifest["docs"].append({
+            "id": cccd_ingest._owned_doc_id("cand-1", "front"),
+            "kind": "id_front", "label": "CCCD", "pages": [],
+        })
+        open(paths[0], "w", encoding="utf-8").write(json.dumps(manifest))
+
+        assert cccd_ingest.reconcile_owned_evidence(paths, str(case_dir), [])
+        kinds = [d["kind"] for d in docs_in(paths[0])]
+        assert kinds == ["pit"]
 
 
 class TestWhatIsNotAttached:

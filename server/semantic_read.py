@@ -49,8 +49,11 @@ Four things measured on 12 real contracts, each of which decides a line here
 4. **A fuzzy fallback at 0.90, not 0.85.** Exact matching is fatally brittle:
    one changed character makes a verbatim matcher 0%. Measured on contiguous
    twelve-word quotes -- verbatim 100% located and 100% *exact*, one changed
-   character 100%, one dropped word 93.3%, and the locator never once returned
-   a page other than the source across 5,000+ quotes. The threshold is a
+   character **99.7%**, one dropped word 93.3%, and the locator never once
+   returned a page other than the source across 5,000+ quotes. That figure
+   read 100% here until an independent review found `_best_window` comparing
+   a word count against a token count; it was really 98.8%, and 92.5% on the
+   quotes the mismatch actually bit. Fixed and re-measured. The threshold is a
    false-positive control rather than a tuning knob: 0.85 boxes a foreign
    quote, 0.90 does not. One call costs ~0.01s on a 250-word page.
 
@@ -153,14 +156,33 @@ def _best_window(
     wanted = len(quote.split())
     if not wanted or not spans:
         return None
+
+    # Windows are measured in WORDS, not tokens, and the difference is not
+    # cosmetic. `fold` turns punctuation into a space, so a single page token
+    # becomes several words -- 1.5% of tokens on real contracts, and dates,
+    # money and hyphenated terms are over-represented among them. Sweeping
+    # token counts against a word count meant the correct window was never a
+    # candidate at all: measured, quotes containing such a token were 7.5%
+    # unlocatable, and where the true width fell outside the swept range the
+    # rate was 43.6% against 0.0% inside it. The best ratio reachable was
+    # 0.83-0.89, just under MIN_RATIO, so it failed silently rather than
+    # loudly. The exact path is character-based and never had this hole, which
+    # is why no verbatim test could see it.
+    words_in = [len(text[start:end].split()) for start, end in spans]
+
     matcher = SequenceMatcher(autojunk=False)
     matcher.set_seq2(quote)
     best: tuple[int, int, float] | None = None
-    for width in range(max(1, wanted - WIDTH_SLACK), wanted + WIDTH_SLACK + 1):
-        if width > len(spans):
-            break
-        for start in range(len(spans) - width + 1):
-            candidate = text[spans[start][0]:spans[start + width - 1][1]]
+    low, high = wanted - WIDTH_SLACK, wanted + WIDTH_SLACK
+    for start in range(len(spans)):
+        words = 0
+        for end in range(start, len(spans)):
+            words += words_in[end]
+            if words > high:
+                break
+            if words < low:
+                continue
+            candidate = text[spans[start][0]:spans[end][1]]
             matcher.set_seq1(candidate)
             # real_quick_ratio and quick_ratio are cheap upper bounds on ratio;
             # skipping on them is what keeps a whole-document sweep affordable.
@@ -170,7 +192,7 @@ def _best_window(
                 continue
             ratio = matcher.ratio()
             if ratio >= MIN_RATIO and (best is None or ratio > best[2]):
-                best = (start, start + width - 1, ratio)
+                best = (start, end, ratio)
     return best
 
 

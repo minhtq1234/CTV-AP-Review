@@ -5,7 +5,7 @@
 // mocks the component out entirely, so nothing exercised its assign path, its
 // dismissals or its error rendering.
 
-import { act } from 'react'
+import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CccdCard } from '../upload/api'
@@ -131,6 +131,38 @@ describe('CccdCardPicker', () => {
     expect(onCancel).not.toHaveBeenCalled()
 
     await act(async () => { inFlight.resolve({ cards: [] }) })
+  })
+
+  it('shows a rejection under StrictMode, not a frozen dialog', async () => {
+    // The suite mounted with a bare createRoot, so `mounted.current` stayed
+    // true and every assertion below passed against a build the reviewer
+    // never runs. React re-runs an effect setup -> cleanup -> setup on mount
+    // under StrictMode and refs survive it, so a cleanup-only effect latched
+    // the guard false before first paint: the rejection was swallowed, busy
+    // stayed set, and all three dismissals are gated on busy.
+    listCccdCards.mockResolvedValue([card('card-00')])
+    assignCccdCard.mockRejectedValue(new Error('packet-already-has-card'))
+    const onCancel = vi.fn()
+    await act(async () => {
+      root.render(
+        <React.StrictMode>
+          <CccdCardPicker
+            caseId="case-1"
+            packetIndex={3}
+            packetLabel="NGUYEN VAN MOT"
+            onAssigned={() => {}}
+            onCancel={onCancel}
+          />
+        </React.StrictMode>,
+      )
+    })
+
+    await act(async () => { button('Gán vào gói này').click() })
+
+    expect(host.textContent).toContain('Gỡ ảnh cũ trước')
+    expect(button('Đóng').disabled).toBe(false)
+    await act(async () => { button('Đóng').click() })
+    expect(onCancel).toHaveBeenCalled()
   })
 
   it('dismisses normally when nothing is in flight', async () => {

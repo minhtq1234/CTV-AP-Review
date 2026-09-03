@@ -575,10 +575,35 @@ def _kept_owned_ids_by_packet(mappings: list[dict]) -> dict[int, set[str]]:
     return kept
 
 
+def _should_drop(
+    doc_id: object, keep_ids: set[str], sheet_keep: set[str] | None,
+) -> bool:
+    """Whether this owned document did not survive the read that owns it.
+
+    Two families with two different lifecycles, and conflating them destroyed
+    real data. Card sides are rewritten by every assign and detach, so a card
+    id absent from the keep-set is stale. Sheet evidence is written ONCE, by
+    the ingest, and no card operation knows anything about it -- so
+    `sheet_keep=None` means "not my family, leave it alone", never "keep
+    none". It previously meant the latter, and `cccd_manual.assign_card`
+    passes no sheet keep-set: one click of Gán or Gỡ deleted every tax
+    document in the case, silently, with no route to restore them short of a
+    fresh upload.
+    """
+    if not isinstance(doc_id, str):
+        return False
+    if doc_id.startswith("cccd-excel-"):
+        return doc_id not in keep_ids
+    if doc_id.startswith("sheet-excel-"):
+        return sheet_keep is not None and doc_id not in sheet_keep
+    return False
+
+
 def _reconcile_manifest_owned_evidence(
     manifest_path: str,
     case_dir: str,
     keep_ids: set[str],
+    sheet_keep: set[str] | None = None,
 ) -> bool:
     try:
         _case_relative(case_dir, manifest_path)
@@ -594,19 +619,15 @@ def _reconcile_manifest_owned_evidence(
         removed_docs = [
             document
             for document in docs
-            if (
-                isinstance(document, dict)
-                and _is_owned_doc_id(document.get("id"))
-                and document.get("id") not in keep_ids
-            )
+            if isinstance(document, dict)
+            and _should_drop(document.get("id"), keep_ids, sheet_keep)
         ]
         updated["docs"] = [
             document
             for document in docs
             if not (
                 isinstance(document, dict)
-                and _is_owned_doc_id(document.get("id"))
-                and document.get("id") not in keep_ids
+                and _should_drop(document.get("id"), keep_ids, sheet_keep)
             )
         ]
         changed = bool(removed_docs)
@@ -621,8 +642,7 @@ def _reconcile_manifest_owned_evidence(
                 for source in sources
                 if not (
                     isinstance(source, dict)
-                    and _is_owned_doc_id(source.get("docId"))
-                    and source.get("docId") not in keep_ids
+                    and _should_drop(source.get("docId"), keep_ids, sheet_keep)
                 )
             ]
             if len(kept_sources) != len(sources):
@@ -649,14 +669,16 @@ def reconcile_owned_evidence(
     """Drop every owned document a fresh read of the workbook did not produce.
 
     `sheet_keep` is the sheet-evidence half: `{packet index: doc ids}` from
-    `attach_sheet_evidence`. Without it a re-ingest would delete the pit
-    documents it had just written, since they are owned (`_OWNED_PREFIXES`)
-    and would not appear in the card keep-set. Defaults to none kept, which is
-    what the two failure paths want -- nothing was written, so nothing stays.
+    `attach_sheet_evidence`, and **omitting it leaves sheet evidence
+    untouched** rather than deleting it. Only the ingest, which writes those
+    documents, knows which should survive; a card assign or detach knows
+    nothing about them and must not be able to remove them. That is not
+    hypothetical -- it shipped: `cccd_manual.assign_card` passes no sheet
+    keep-set, so one Gán or Gỡ silently deleted all 25 tax documents in a real
+    case, taking #6 from REVIEW back to MISSING with no error and no way back
+    short of re-uploading.
     """
     kept_by_packet = _kept_owned_ids_by_packet(mappings)
-    for packet_index, ids in (sheet_keep or {}).items():
-        kept_by_packet.setdefault(packet_index, set()).update(ids)
     successful = True
     for packet_index, manifest_path in manifest_paths.items():
         if (
@@ -672,6 +694,8 @@ def reconcile_owned_evidence(
                 manifest_path,
                 case_dir,
                 kept_by_packet.get(packet_index, set()),
+                None if sheet_keep is None
+                else sheet_keep.get(packet_index, set()),
             )
             and successful
         )
