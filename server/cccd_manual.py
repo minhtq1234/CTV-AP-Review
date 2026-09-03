@@ -201,6 +201,19 @@ def _plan(mapping: dict, case_dir: str, packet_index: int) -> PlannedMapping:
 
 
 def _detached(mapping: dict) -> dict:
+    """The attachment comes back with one pick; the provenance does not.
+
+    Clearing `matchMethod` is what makes a detached card need a human, which is
+    right -- but it is also irreversible in a way the attachment is not: a card
+    that the ingest matched automatically reads "Tự động khớp" until someone
+    presses `Gỡ`, after which nothing can say it was ever automatic. Re-attaching
+    sets `matchMethod = "manual"` (`:184`), not the original value.
+
+    So a mis-pressed `Gỡ` costs the audit trail, not the work. That asymmetry is
+    deliberately not guarded with a confirmation dialog -- the reviewer's job in
+    that section is to scan several attached cards by eye, and a modal on each
+    detach would slow exactly the pass it exists for.
+    """
     out = dict(mapping)
     out["attachedPacketIndex"] = None
     out["state"] = "manual"
