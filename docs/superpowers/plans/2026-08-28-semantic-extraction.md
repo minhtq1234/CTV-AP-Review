@@ -16,6 +16,33 @@ this repository already talks to.
 
 ---
 
+## STOP — parts of this plan are superseded. 2026-09-04
+
+Read this before the section below, which was written before two decisions and
+one measurement changed what should be built.
+
+| plan text | status |
+|---|---|
+| Task 1: build `compare_parts.py` with **four** verdicts including `MISMATCH` | **retired.** The owner rescoped it to presence: `server/parts_presence.py` ships `COMPLETE/PARTIAL/NONE` and deliberately no `MISMATCH`. `compare_parts.py` must NOT be built. Task 1's steps are marked `[~]`, not `[x]` -- done, but not as written. |
+| Task 2's four-verdict mapping table (`:344-349`) | **stale.** Three coverage values, and `NONE` is two different claims: the discriminator is `not found and not missing` ("nobody looked"), which a mapper switching on coverage alone cannot honour. |
+| Task 4: `locate_quote` per line, per page, exact substring (`:553-556`) | **would fail Task 6's own gate.** Measured on 12 real contracts: the existing per-line machinery locates **0.0%** of cross-line quotes, and a clause crosses a line ~60% of the time. Built as shipped -- whole document, whitespace and punctuation folded, fuzzy fallback at 0.90 -- verbatim quotes locate 100% and a one-character change 100%. |
+| Task 4's fixtures give a word a `page` key (`:524-528`) | **wrong shape.** A pipeline word has six keys and never a page; reading one yields 0 for every quote. |
+| Task 4's expected box `{x,y,w,h}` (`:531`) | **wrong shape.** Every bbox here is `{x,y,width,height}`; a `{w,h}` box is truthy and renders as a zero-size highlight. |
+| `python3` (`:28`, `:636`) | resolves to the WindowsApps stub. Use `E:/WSL/.venvs/ctv-ap-review/Scripts/python.exe` with `PYTHONUTF8=1`. |
+| `GREENNODE_MAAS_URL` (`:654`) | does not exist anywhere in the tree; it has to be introduced. |
+| "#12 comes free behind the others" (`:6`) | not established. |
+
+**Order matters, and it is not the plan's order.** Task 2 must land LAST, not
+second. Nothing in this repo produces a read keyed by a part name, so wiring
+the engine to `parts_presence` before a reader exists turns every packet's #8
+and #13 into a confident "no parts found": measured, the batch rollup goes
+from `{rv 28, missing 59, no 82}` to `{no 169}` -- every packet red, **+328
+fabricated findings**, and the 28 currently-clean packets gone. That
+regression is invisible to a test written the way Task 2 asks for one, because
+such a test hand-builds a packet *with* part reads. Safe order: **3 → 4 → 5 → 2**.
+
+---
+
 ## Read this before anything else
 
 **Four facts settle decisions you would otherwise have to make.**
@@ -113,7 +140,7 @@ wrong", and the engine has no way to say either today.
 - Create: `server/compare_parts.py`
 - Create: `server/compare_parts_test.py`
 
-- [ ] **Step 1: Write the failing test**
+- [~] **Step 1: Write the failing test**
 
 ```python
 # server/compare_parts_test.py
@@ -207,14 +234,14 @@ def test_the_note_names_what_is_wrong_in_the_reviewers_terms():
     assert "branch" in result.note
 ```
 
-- [ ] **Step 2: Run it red**
+- [~] **Step 2: Run it red**
 
 ```bash
 cd server && python3 -m pytest compare_parts_test.py -q
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'compare_parts'`.
 
-- [ ] **Step 3: Implement**
+- [~] **Step 3: Implement**
 
 ```python
 # server/compare_parts.py
@@ -317,7 +344,7 @@ def compare_parts(
     return PartsResult(verdict, missing, differing, " ".join(bits))
 ```
 
-- [ ] **Step 4: Run green and commit**
+- [~] **Step 4: Run green and commit**
 
 ```bash
 cd server && python3 -m pytest compare_parts_test.py -q
@@ -385,7 +412,7 @@ Everything downstream must be buildable and testable without a model, a key, or 
 - Create: `server/semantic_read.py`
 - Create: `server/semantic_read_test.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # server/semantic_read_test.py
@@ -430,7 +457,7 @@ def test_a_reader_that_raises_yields_nothing_rather_than_failing_the_read():
                          want=("term",)) == {}
 ```
 
-- [ ] **Step 2: Run red, then implement**
+- [x] **Step 2: Run red, then implement**
 
 ```python
 # server/semantic_read.py
@@ -498,7 +525,7 @@ def read_document(reader, *, doc_kind: str, pages_text: list[str],
     }
 ```
 
-- [ ] **Step 3: Run green and commit**
+- [x] **Step 3: Run green and commit**
 
 ```bash
 cd server && python3 -m pytest semantic_read_test.py -q
@@ -517,7 +544,7 @@ this has to run during it.
 - Modify: `server/semantic_read.py`
 - Modify: `server/semantic_read_test.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_a_quote_is_located_against_the_words_on_that_page():
@@ -550,13 +577,13 @@ def test_locating_ignores_accents_and_spacing_like_the_rest_of_the_engine():
     assert locate_quote("trong vòng", words, page=0) is not None
 ```
 
-- [ ] **Step 2: Implement `locate_quote(quote, words, page)`**
+- [x] **Step 2: Implement `locate_quote(quote, words, page)`**
 
 Fold both sides (reuse `compare_parts._fold` — do not write a third copy), slide a window over that
 page's words in reading order, and return the union box of the matching run. Return `None` on no
 match. A partial match is not a match.
 
-- [ ] **Step 3: Run green and commit**
+- [x] **Step 3: Run green and commit**
 
 ```bash
 cd server && python3 -m pytest semantic_read_test.py -q
@@ -812,3 +839,64 @@ the plan says to establish your own.
 
 The plan gives 821 passing. That was not verified here: a branch switch was not safe while a real
 ingest was in flight. Establish your own, as the plan already advises.
+
+---
+
+## Outcome — partial, 2026-09-04
+
+**Task 1 done in rescoped form, Tasks 3 and 4 done, Task 5 and 2 not started,
+Task 6 blocked on a key that has not arrived.**
+
+**Task 4 was built first, out of order, and that was the point.** Task 6's gate
+asks what fraction of a model's quotes cannot be located — so a locator that
+fails structurally would reject the whole approach for reasons that are the
+tool's own. Built the way this plan describes it, it would have: measured on 12
+real contracts, the existing per-line machinery locates **0.0%** of cross-line
+quotes at both eight and twelve words over 406 samples, and a clause crosses a
+line break about 60% of the time. Not "fewer" — none.
+
+Four changes, each measured with no model involved: whole-document reading
+order; whitespace collapsed, because the model is handed `_page_text` and may
+quote its newlines back; punctuation folded to a **space** on both sides, so a
+model writing `thanh-toán` still matches a page reading `thanh toán`; and a
+`SequenceMatcher` fallback after the exact attempt. With those, at twelve
+words: verbatim **100% located and 100% exact**, one changed character
+**100%**, one dropped word **93.3%**, and it never returned a page other than
+the source across 5,000+ quotes. A call costs ~0.01s on a 250-word page.
+
+`MIN_RATIO = 0.90` and `MIN_WORDS = 6` are false-positive controls, not tuning
+knobs: quotes cut from a different page of the same contract score a median
+0.59 and a maximum of 0.90, and below six words a quote lands on the wrong
+occurrence of itself. A quote that locates but does not support its value is
+worse than an unlocatable one, so both refuse rather than guess.
+
+**So Task 6's gate is reachable and the key is worth spending on it** — at
+clause length. Eight-word quotes are materially weaker than twelve-word ones,
+which is an argument for the prompt asking for the containing clause rather
+than the value. #13's `term` and `account` parts invite exactly the short
+quotes `MIN_WORDS` refuses.
+
+**One decision in Task 3 that is not in this plan.** `locate_fields` KEEPS an
+unlocatable quote, marked `located=False`, instead of dropping it. The
+unlocatable rate is the gate; discarding those quotes would make it
+unmeasurable, and the approach would look perfect precisely when it was
+failing.
+
+**Two measurement traps, both of which cost real time here.** Sampling
+"cross-line" quotes by joining the tail of one `group_lines` line to the head
+of the next, having filtered out one-word lines, manufactures quotes that are
+not contiguous on the page — a skipped line still sits between the halves in
+reading order. That understated the locator at 71% when it scores 100%, in two
+independent harnesses before anyone noticed. And sweeping the fuzzy path across
+a whole matrix looks hung: it is thousands of calls, not one slow call.
+
+**Baseline.** 929 backend passing, 402 frontend. The plan's stated 821 was never
+reproducible in this checkout.
+
+**Not started, and what each needs.** Task 5 wires a read into the ingest and
+needs a manifest shape for `{field → value + quote + page + bbox}`. Task 2 is
+last, for the reason in the notice at the top of this file. Task 6 needs
+`GREENNODE_API_KEY`, which is still unset — `docs/ver3-scope.md` §4 records the
+approval and its four limits, and the first thing to run when it arrives is
+`list_models.py`, because no model name may be hard-coded that nobody has seen
+listed.
