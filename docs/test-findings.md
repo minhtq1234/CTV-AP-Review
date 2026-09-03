@@ -20,9 +20,9 @@ reference packets by STT / field, not by real values.
 **Resolution (all three):** fixed together in commits `c84d52c`..`d03cdaf` (plan
 `docs/superpowers/plans/2026-07-13-fix-segment-and-align.md`). Verified live on the
 real file with the v3 error roster: the previously all-red packet at p154–161 now
-correctly resolves to **Nguyễn Đào Hồng Hạnh** (name green), shows 3 document tabs
+correctly resolves to **Nguyễn Diệu Hồng Nhung** (name green), shows 3 document tabs
 (Hợp đồng / Biên bản thanh lý / Tra cứu thuế), and each field's sources are labeled
-by document. Nguyễn Thảo Ly ↔ Nguyễn Đào Hồng Hạnh (swapped between roster order and
+by document. Nguyễn Thúy Vy ↔ Nguyễn Diệu Hồng Nhung (swapped between roster order and
 PDF order) are now paired correctly by CCCD. Remaining amber/red on that packet are
 legitimate OCR outcomes (handwritten contract fields → flagged for a human), not the
 mispairing bug.
@@ -118,14 +118,14 @@ strength.
 
 **Status:** resolved — commits `aa0e8fe` (server: locate each field on every doc,
 read or "cần xem") + `8086aec` (reviewer: per-doc sources, value is a hint not the
-gate). Verified live on the real file (Nguyễn Hoàng Phúc): Ngày sinh/CCCD/MST/TK
+gate). Verified live on the real file (Đặng Khánh Lâm): Ngày sinh/CCCD/MST/TK
 each show a source on both Hợp đồng and Biên bản; clicking the contract's
 "cần xem" chip switches to that document and boxes the handwritten value for a human
 read; unread copies don't turn matching fields red.
 
 ## 005 — "cần xem" located region lands on the wrong field slot
 
-**Observed (packet 0, Huỳnh Thị Thúy Phượng, contract page 1241×1755):** the
+**Observed (packet 0, Vũ Thị Kim Ngân, contract page 1241×1755):** the
 unread (handwritten) located regions point at the wrong place:
 - `cccd` → bbox `(x=682, y=720, w=24, h=31)` — a tiny box on the "30" of
   "Ngày cấp" (issue date), not the CCCD slot.
@@ -196,7 +196,7 @@ perpetual spinner.
 
 ## 008 — Name field not detected on some documents
 
-**Observed (Trần Ứng Hỷ):** `Họ tên` shows a source only on the Biên bản — not on
+**Observed (Lưu Ứng Kỳ):** `Họ tên` shows a source only on the Biên bản — not on
 the Bản cam kết or the Hợp đồng dịch vụ.
 
 **Cause:** the name field's anchors are only
@@ -219,14 +219,14 @@ the Bản cam kết or the Hợp đồng dịch vụ.
 **Status:** resolved — commits `ac6e55c`, `22dbb3e`. Added `"ten toi la"`,
 `"ho va ten"` (and `"en toi la"` for a real Tesseract dropped-leading-letter
 artifact) to the name anchors, and gave the name a scoped "cần xem" located fallback
-(labeled context only, no prose flood). Verified live on Trần Ứng Hỷ: Họ tên now has
+(labeled context only, no prose flood). Verified live on Lưu Ứng Kỳ: Họ tên now has
 sources on Hợp đồng (cần xem), Biên bản (read), and Bản cam kết (cần xem).
 
 ## 009 — Inconsistent document segmentation (docs fold into "Biên bản")
 
 **Observed:** two 8-page packets with the same 4 underlying documents segment
-differently — Trần Ứng Hỷ → 4 docs (Hợp đồng 4p / Biên bản 2p / Bản cam kết 1p /
-Tra cứu thuế 1p); Huỳnh Thị Thúy Phượng → only 2 docs (Hợp đồng 4p / **Biên bản 4p**
+differently — Lưu Ứng Kỳ → 4 docs (Hợp đồng 4p / Biên bản 2p / Bản cam kết 1p /
+Tra cứu thuế 1p); Vũ Thị Kim Ngân → only 2 docs (Hợp đồng 4p / **Biên bản 4p**
 with the cam kết + tra-cứu pages folded in, so the biên bản's "page 4/4" is actually
 the tax-lookup).
 
@@ -250,7 +250,7 @@ fallback for the two unambiguous doc types: tra-cứu ("bảng thông tin tra c�
 "thông tin về người nộp thuế", "gdt.gov.vn", …) and cam-kết ("bản cam kết",
 "08/ck-tncn"), matched anywhere on the page (not just heading lines); the ambiguous
 "biên bản"/"hợp đồng" titles keep the #003 anti-over-split guard. Verified: packet 0
-(Huỳnh Thị Thúy Phượng) 2 → 3 docs (Tra cứu thuế split out); packet 23 unchanged (4).
+(Vũ Thị Kim Ngân) 2 → 3 docs (Tra cứu thuế split out); packet 23 unchanged (4).
 **Correction:** packet 0 has no Bản cam kết — its 4th document is a **Phụ lục đánh
 giá chất lượng dịch vụ** (confirmed on p14). Document composition varies per CTV; the
 earlier "same 4 documents" note was a skim error. The Phụ lục residual is tracked as #010.
@@ -277,7 +277,7 @@ upright, the Phụ lục's real title band OCRs cleanly and `classify_page`'s Ph
 full-page markers ("phụ lục", "đánh giá chất lượng dịch vụ", "SOW", "KPI") split it
 into its own document; `'appendix'` added to `EvidenceKind`.
 **Verified live** on the real file (case re-OCR'd with the v3 error roster): packet 0
-(Huỳnh Thị Thúy Phượng) now shows **4 document tabs** — Hợp đồng dịch vụ / Biên bản
+(Vũ Thị Kim Ngân) now shows **4 document tabs** — Hợp đồng dịch vụ / Biên bản
 thanh lý hợp đồng / **Phụ lục** / Tra cứu thuế — and the Phụ lục renders **upright and
 fully legible** (title "PHỤ LỤC ĐÁNH GIÁ CHẤT LƯỢNG DỊCH VỤ" + the SOW/KPI table),
 where before it was sideways and folded into "Biên bản". Packet 23 unchanged (4 docs).

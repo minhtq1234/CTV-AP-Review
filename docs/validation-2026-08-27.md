@@ -15,7 +15,7 @@ visible to the tool itself.
 
 Root cause of three of the four. Contracts and BBNTs end in a **two-column signature block**:
 
-    Họ và tên: Trần Văn Tiến        |    Họ và tên: Hoàng Nguyễn Hải Đăng
+    Họ và tên: Trần Văn Tiến        |    Họ và tên: Trương Nguyễn Bảo Khang
     (VNG's signatory)                    (the CTV — the one the roster names)
 
 `group_lines` clusters words by y across the full page width, so both parties' labels and
@@ -24,15 +24,15 @@ column — and the bbox spans whatever matched, sometimes crossing the divider.
 
 | packet | tool read | roster | what the crop shows |
 |---|---|---|---|
-| 9 | `Trần Lê Hoài Anh` @ 0.96 | `Nhan Kiến Phát` | box on the LEFT column of the block |
-| 31 | `Trịnh Đức Minh` @ 0.94 | `Phan Tấn Tài` | box on the LEFT column; the BBNT's correct name is boxed elsewhere and read as `''` |
-| 35 | `Văn Họ` @ 0.96 | `Hoàng Nguyễn Hải Đăng` | box spans `Văn Tiến` (left name) **across the divider** to `Họ` (right column's LABEL) |
+| 9 | `Ngô Gia Bảo Long` @ 0.96 | `Bùi Quang Vinh` | box on the LEFT column of the block |
+| 31 | `Vương Đức Khoa` @ 0.94 | `Hồ Tấn Nghĩa` | box on the LEFT column; the BBNT's correct name is boxed elsewhere and read as `''` |
+| 35 | `Văn Họ` @ 0.96 | `Trương Nguyễn Bảo Khang` | box spans `Văn Tiến` (left name) **across the divider** to `Họ` (right column's LABEL) |
 
 In every case **every identity number matches the roster exactly** — CCCD, MST, account,
 date — and the attached CCCD card confirms the person. So these are not mis-splits; the
 packets are correctly matched and only the name is wrong.
 
-Packet 9 has a second, independent defect: its BBNT name reads `Nhan Kiến`, the correct name
+Packet 9 has a second, independent defect: its BBNT name reads `Bùi Quang`, the correct name
 **truncated** from three tokens to two.
 
 ### Fixed — `afac45f`, verified across the batch
@@ -50,13 +50,13 @@ Batch diff over every `hoten` source in all 41 packets, old extraction vs new:
 | sources changed | 7, every one an improvement |
 | moves into `no` | **none** |
 
-    p9  contract-0  'Trần Lê Hoài Anh'  -> 'Nhan Kiến Phát'         no      -> ok
-    p9  bbnt-0      'Nhan Kiến'         -> 'Nhan Kiến Phát'         no      -> ok
-    p31 contract-0  'Trịnh Đức Minh'    -> 'Phan Tắn Tài'           no      -> rv
-    p35 bbnt-0      'Văn Họ'            -> 'Hoàng Nguyễn Hải Đăng'  no      -> ok
-    p10 contract-0  ''                  -> 'Nguyễn Quang Bảo'       pending -> ok
-    p15 pit-0       ''                  -> 'Bùi Nam Khánh'          pending -> ok
-    p16 pit-0       ''                  -> 'Phạm Phương Vy'         pending -> ok
+    p9  contract-0  'Ngô Gia Bảo Long'  -> 'Bùi Quang Vinh'         no      -> ok
+    p9  bbnt-0      'Bùi Quang'         -> 'Bùi Quang Vinh'         no      -> ok
+    p31 contract-0  'Vương Đức Khoa'    -> 'Hồ Tắn Nghĩa'           no      -> rv
+    p35 bbnt-0      'Văn Họ'            -> 'Trương Nguyễn Bảo Khang'  no      -> ok
+    p10 contract-0  ''                  -> 'Nguyễn Quang Tuệ'       pending -> ok
+    p15 pit-0       ''                  -> 'Tống Nam Hưng'          pending -> ok
+    p16 pit-0       ''                  -> 'Chu Phương Nhi'         pending -> ok
 
 The last three were not part of the bug: row reassembly recovered names that had been unread,
 all three matching the roster. p31 lands on `rv` rather than `ok` because OCR reads `Tắn` for
@@ -79,9 +79,9 @@ not whether the right words were grouped. A box spanning two columns of clean pr
 
 Packet 34 is the sharpest case — the same digits on the same page, read two ways:
 
-- CCCD on Hợp đồng → `070198011354` @ **0.93** (wrong)
-- CCCD on BBNT → `070198011354` @ **0.90** (same wrong value)
-- MST on Hợp đồng → `079198011354` @ 0.86 (**correct**; the page reads this)
+- CCCD on Hợp đồng → `001100000151` @ **0.93** (wrong)
+- CCCD on BBNT → `001100000151` @ **0.90** (same wrong value)
+- MST on Hợp đồng → `001100000101` @ 0.86 (**correct**; the page reads this)
 
 And packet 39 read a date correctly at **0.06**.
 

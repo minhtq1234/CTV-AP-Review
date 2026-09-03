@@ -63,9 +63,9 @@ Doc kinds present in manifests: `contract, bbnt, commitment, pit, appendix, id_f
 from checklist import build_checklist
 
 FIELDS = [
-  {"key": "name", "label": "Họ và tên", "expected": "Nguyễn Hoàng Phúc",
-   "sources": [{"docId": "contract", "page": 0, "value": "Nguyễn Hoàng Phúc", "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]},
-  {"key": "mst", "label": "MST", "expected": "095204007694",
+  {"key": "name", "label": "Họ và tên", "expected": "Đặng Khánh Lâm",
+   "sources": [{"docId": "contract", "page": 0, "value": "Đặng Khánh Lâm", "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]},
+  {"key": "mst", "label": "MST", "expected": "001100000111",
    "sources": [{"docId": "contract", "page": 0, "value": "8391246072", "bbox": {"x":1,"y":1,"width":1,"height":1}, "confidence": 0.9}]},
   {"key": "phi", "label": "Phí", "expected": "5.555.556", "sources": []},
 ]
@@ -85,9 +85,9 @@ def test_emits_gates_first_then_detail_in_order():
 
 def test_value_check_carries_reference_source_and_autostatus():
     c = _by_code(build_checklist(FIELDS, MATCH, DOCS))
-    assert c["B1"]["kind"] == "value" and c["B1"]["reference"] == "Nguyễn Hoàng Phúc"
-    assert c["B1"]["source"]["value"] == "Nguyễn Hoàng Phúc" and c["B1"]["autostatus"] == "match"
-    assert c["A2"]["autostatus"] == "mismatch"          # 8391246072 != 095204007694
+    assert c["B1"]["kind"] == "value" and c["B1"]["reference"] == "Đặng Khánh Lâm"
+    assert c["B1"]["source"]["value"] == "Đặng Khánh Lâm" and c["B1"]["autostatus"] == "match"
+    assert c["A2"]["autostatus"] == "mismatch"          # 8391246072 != 001100000111
     assert c["B2"]["autostatus"] == "review"            # no source
 
 def test_identity_and_confirm_kinds():
@@ -292,7 +292,7 @@ CASE = {"name":"FA.pdf","packets":[
 ]}
 MANIFESTS = {0: {"checks":[
   {"code":"A2","label":"Mã số thuế khớp bảng kê","tier":"detail","kind":"value",
-   "evidenceDocId":"contract","reference":"095204007694",
+   "evidenceDocId":"contract","reference":"001100000111",
    "source":{"docId":"contract","page":0,"value":"8391246072"},"autostatus":"mismatch"}],
   "docs":[{"id":"contract","label":"Hợp đồng dịch vụ"}]}}
 def test_report_item_resolves_from_checks():
@@ -300,7 +300,7 @@ def test_report_item_resolves_from_checks():
     r = build_report(CASE, MANIFESTS, generated_at="2026-07-23T00:00:00Z")
     it = r["groups"][0]["items"][0]
     assert it["fieldLabel"]=="Mã số thuế khớp bảng kê" and it["document"]=="Hợp đồng dịch vụ"
-    assert it["rosterValue"]=="095204007694" and it["docValue"]=="8391246072"
+    assert it["rosterValue"]=="001100000111" and it["docValue"]=="8391246072"
 ```
 Keep the weak-match / markdown / csv tests (adjust to `items`).
 

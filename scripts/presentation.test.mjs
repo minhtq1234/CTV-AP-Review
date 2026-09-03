@@ -37,7 +37,12 @@ test('is offline, dependency-free, and PII-safe by construction', () => {
   assert.doesNotMatch(html, /<script[^>]+src=/i)
   assert.doesNotMatch(html, /<link[^>]+rel=["']stylesheet/i)
   assert.doesNotMatch(html, /\b\d{12}\b/)
-  assert.doesNotMatch(html, /Huỳnh Trung Quốc Thái|Quách Kiến Đức|Nguyễn Thảo Ly/i)
+  // Any Vietnamese personal name: every syllable capitalised, two or more of
+  // them. This used to list three real contractors by hand, which caught a leak
+  // of exactly those three and put their names in a public repo to do it. The
+  // deck is illustrative and carries no per-person data, so one match here means
+  // real roster content reached the slides.
+  assert.doesNotMatch(html, /\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+)+/u)
 })
 
 test('includes accessible navigation, fullscreen, keyboard, and touch controls', () => {

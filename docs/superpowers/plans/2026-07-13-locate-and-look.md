@@ -75,7 +75,7 @@ value leads as the reference; unread occurrences never hard-fail a field.
 
 ## Verify (browser, against the real backend)
 - [ ] Rebuild is code-only; restart backend (uvicorn :8000) so it serves the new
-  extraction, POST the real PDF + v3 roster, open a packet (e.g. Nguyễn Hoàng Phúc).
+  extraction, POST the real PDF + v3 roster, open a packet (e.g. Đặng Khánh Lâm).
 - [ ] Confirm: **Ngày sinh now shows a source on both Hợp đồng and Biên bản** — the
   Biên bản one read/verdicted, the Hợp đồng one as "cần xem"; clicking each makes the
   loupe land on that document's Ngày sinh region. Same for CCCD/MST/TK across the 3

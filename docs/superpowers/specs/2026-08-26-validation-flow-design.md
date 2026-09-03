@@ -172,8 +172,8 @@ like the comparators being too strict, so the disagreements were measured:
 | CCCD | 35 | 2 | 20 |
 | Số TK | 30 | 1 | 42 |
 
-Not OCR noise — different values. And the names name the pattern: `Lê Thanh Hải`
-expected, `Đinh Hữu Phúc` read; `Lý Gia Huy` expected, `Lê Thanh Hải` read. Each
+Not OCR noise — different values. And the names name the pattern: `Mai Thanh Tùng`
+expected, `Đặng Hữu Lộc` read; `Phùng Gia Khánh` expected, `Mai Thanh Tùng` read. Each
 packet carries the tail of the **previous** CTV's documents. Packet 0 holds two
 contracts and a BBNT naming a third person. The boundaries are off, and the
 matrix is what makes that visible at scale.
@@ -321,7 +321,7 @@ identities.
 #01 and #15 each gained one finding in the last column, and that is the fix
 working rather than a regression: matching row 32 means its criteria are now
 evaluated against a reference instead of sitting `pending`. Its name reads
-`Trịnh Đức Minh` — VNG's own contact from the two-column block on page 248,
+`Vương Đức Khoa` — VNG's own contact from the two-column block on page 248,
 confirmed by `minhtd4@vng.com.vn` — so #01 correctly reports a mismatch a
 reviewer should look at, where before the whole packet was invisible.
 

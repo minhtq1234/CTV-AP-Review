@@ -84,8 +84,8 @@ never been ported from ver1 (`5bf33e6`).
 Read `criteria-reliability.md` first — it says which of the 25 criteria actually decide
 anything. Ranked by value:
 
-1. **Packet 34's false `no`.** A confident double misread: CCCD `070198011354` for
-   `079198011354` at 0.93 and 0.90, while MST on the same page reads correctly at 0.86.
+1. **Packet 34's false `no`.** A confident double misread: CCCD `001100000151` for
+   `001100000101` at 0.93 and 0.90, while MST on the same page reads correctly at 0.86.
    Confidence cannot catch it; a digit-level difference against an otherwise-consistent roster
    value is the signal to try. Last of the four false rejections still open.
 2. **#15 PIT's threshold half.** It produces 14 of the batch's 20 `no` packets and 12 are

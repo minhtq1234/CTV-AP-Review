@@ -280,8 +280,8 @@ scans on 2026-08-27 refuted it:
 | flagged `rv`, < `LOW_CONF` | 64 |
 
 **8 of the 14 disagreements are high-confidence.** Packet 34 read the same digits on the same
-page two different ways — CCCD `070198011354` at 0.93 (contract) and 0.90 (BBNT), both wrong
-against a page that plainly reads `079198011354`, while MST read `079198011354` at 0.86,
+page two different ways — CCCD `001100000151` at 0.93 (contract) and 0.90 (BBNT), both wrong
+against a page that plainly reads `001100000101`, while MST read `001100000101` at 0.86,
 correctly. Packet 39 read a date correctly at 0.06.
 
 Three consequences, all load-bearing:

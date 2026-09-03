@@ -29,7 +29,7 @@ list mostly shows where it didn't.
 
 These are the ones the validation pass covered. Two known false results remain:
 
-- **#2 on packet 34** — a confident double misread, `070198011354` for `079198011354` at 0.93
+- **#2 on packet 34** — a confident double misread, `001100000151` for `001100000101` at 0.93
   and 0.90. Avoid that packet.
 - **#5 on packet 24** — the MST anchor read the value beside "TK số", the wrong field's label.
 

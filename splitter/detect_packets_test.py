@@ -215,8 +215,8 @@ def test_seed_scores_self_similarity_not_corrupted():
 
 def test_packet_filename_normal_name():
     # index 0 -> order "01"; pages are 1-based inclusive (start+1..end+1).
-    assert packet_filename(0, "Huỳnh Thị Thúy Phượng", 7, 14, False) == \
-        "01_Huỳnh-Thị-Thúy-Phượng_p8-15.pdf"
+    assert packet_filename(0, "Vũ Thị Kim Ngân", 7, 14, False) == \
+        "01_Vũ-Thị-Kim-Ngân_p8-15.pdf"
 
 def test_packet_filename_none_name():
     assert packet_filename(6, None, 49, 56, False) == "07_CHUA-KHOP-TEN_p50-57.pdf"
@@ -226,9 +226,10 @@ def test_packet_filename_strips_path_illegal_chars():
     assert packet_filename(1, "A/B Co", 0, 7, False) == "02_AB-Co_p1-8.pdf"
 
 def test_packet_filename_auto_merged_suffix():
-    # Regression case: the real Trần Ứng Hỷ packet, p193-200, auto-merged.
-    assert packet_filename(23, "Trần Ứng Hỷ", 192, 199, True) == \
-        "24_Trần-Ứng-Hỷ_p193-200_can-xac-nhan.pdf"
+    # Regression case: a real packet at p193-200, auto-merged. The name is a
+    # synthetic stand-in -- this repo is published to a public remote.
+    assert packet_filename(23, "Lưu Ứng Kỳ", 192, 199, True) == \
+        "24_Lưu-Ứng-Kỳ_p193-200_can-xac-nhan.pdf"
 
 def test_derive_threshold_splits_bimodal():
     # covers ~0.9, rest ~0.2 -> threshold sits in the gap

@@ -97,8 +97,8 @@ Why not a transform, in order of weight:
 
 1. **Transcription is the failure class this tool exists to catch.** Any human transform — retyping
    into a canonical template, or correcting what a converter got wrong — is a fresh chance for one
-   digit of a CCCD or an account number to change. Packet 34 is that exact shape: `070198011354`
-   for `079198011354`, one digit, found only because a criterion compared it against the bảng kê.
+   digit of a CCCD or an account number to change. Packet 34 is that exact shape: `001100000151`
+   for `001100000101`, one digit, found only because a criterion compared it against the bảng kê.
    Adding a copy step upstream manufactures the defect the downstream is built to detect.
 2. **The original stops being the evidence.** This is an audit tool; the artifact checked should be
    the artifact submitted. A converter that silently mis-maps a column hands the tool a clean-looking

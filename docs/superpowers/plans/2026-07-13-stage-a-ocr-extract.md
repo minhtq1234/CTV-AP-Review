@@ -105,10 +105,10 @@ def test_find_mst_on_anchor_line():
 
 def test_find_cccd_spaced_boxes_joins_digits():
     # boxed CCCD: single-digit words across the line
-    digs = [W(d, 100 + i*20, 80, 12, 18) for i, d in enumerate("048091001309")]
+    digs = [W(d, 100 + i*20, 80, 12, 18) for i, d in enumerate("001100000041")]
     lines = [[W("Mã", 10, 80, 20, 18), W("số", 35, 80, 15, 18), W("thuế", 55, 80, 25, 18)] + digs]
     hits = find_in_lines(lines, anchors=["ma so thue"], pattern=PATTERNS["CCCD_SPACED"])
-    assert hits and hits[0]["value"] == "048091001309"
+    assert hits and hits[0]["value"] == "001100000041"
     # bbox spans the 12 digit words
     assert hits[0]["bbox"]["x"] == 100 and hits[0]["bbox"]["width"] == 12*20 - 8
 
@@ -179,7 +179,7 @@ Write concrete inputs/expected values in the test (no placeholders).
 
 - [ ] **Step 1: Write a throwaway driver** in the scratchpad (NOT committed) that:
   - reads the roster via the splitter's `_roster_rows` + `extract_roster_names`, and builds a `roster_row` dict for a chosen packet by mapping roster columns → the 6 field keys (name, CCCD, MST, TK, ngày sinh, phí);
-  - calls `ocr_packet` for 2–3 real packets — include the amber **Trần Ứng Hỷ (p193–200)** — writing manifests + page PNGs under `$SCRATCH/ocr/<packet>/`.
+  - calls `ocr_packet` for 2–3 real packets — include the amber **Lưu Ứng Kỳ (p193–200)** — writing manifests + page PNGs under `$SCRATCH/ocr/<packet>/`.
 
 - [ ] **Step 2: Run it.** Confirm each manifest has 6 fields, most with ≥1 source, and that typed fields (MST/CCCD/bank on the biên-bản/tax-lookup pages) carry the correct value matching the roster (compare programmatically; print match/no-match, not raw PII).
 

@@ -73,10 +73,10 @@ pass either or both:
       --split-dir "/path/to/scratch/CTV-split"
 
 Each packet is written as `NN_Tên-CTV_pA-B.pdf` (order, slugified name,
-1-based inclusive page range), e.g. `01_Huỳnh-Thị-Thúy-Phượng_p8-15.pdf`. A
+1-based inclusive page range), e.g. `01_Vũ-Thị-Kim-Ngân_p8-15.pdf`. A
 missing/unmatched name becomes `CHUA-KHOP-TEN`; an auto-merged boundary gets
 a `_can-xac-nhan` suffix so it stays visibly flagged for review even from
-the filename alone, e.g. `24_Trần-Ứng-Hỷ_p193-200_can-xac-nhan.pdf`.
+the filename alone, e.g. `24_Lưu-Ứng-Kỳ_p193-200_can-xac-nhan.pdf`.
 
 Tests (pure logic, no PDF needed):
 

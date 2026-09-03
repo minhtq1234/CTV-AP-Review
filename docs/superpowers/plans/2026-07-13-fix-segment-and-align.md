@@ -70,7 +70,7 @@ No equality rule. MST keeps its MSTTNCN-family anchors (reads the tax-code line,
 - [ ] Commit `feat(server): align packets to roster by OCR'd CCCD (name fallback), not position`.
 
 ### T4 — Verify offline on the real, previously-misaligned pair
-- [ ] Scratch driver (NOT committed): run the pipeline pieces on the two adjacent packets that were mispaired (the Nguyễn Thảo Ly / Nguyễn Đào Hồng Hạnh region) with the real roster. Assert: the packet whose docs are Hồng Hạnh's resolves (by CCCD) to Hồng Hạnh's roster row (name + CCCD match green), and the other resolves to its own row — i.e. no cross-pairing. Also assert each packet now has **multiple EvidenceDocs** with distinct labels, and a field found in 2 documents shows 2 sources with **different docIds/labels**. Print masked pass/fail only.
+- [ ] Scratch driver (NOT committed): run the pipeline pieces on the two adjacent packets that were mispaired (the Nguyễn Thúy Vy / Nguyễn Diệu Hồng Nhung region) with the real roster. Assert: the packet whose docs are Hồng Hạnh's resolves (by CCCD) to Hồng Hạnh's roster row (name + CCCD match green), and the other resolves to its own row — i.e. no cross-pairing. Also assert each packet now has **multiple EvidenceDocs** with distinct labels, and a field found in 2 documents shows 2 sources with **different docIds/labels**. Print masked pass/fail only.
 - [ ] Report: per-packet #docs + labels, identity match `how` (cccd/name/unmatched), and that the mispaired pair is fixed. No PII, no committed output.
 
 ## Self-Review

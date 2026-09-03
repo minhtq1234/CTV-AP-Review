@@ -90,7 +90,7 @@ test('is offline, dependency-free, and PII-safe by construction', () => {
   assert.doesNotMatch(html, /<script[^>]+src=/i)
   assert.doesNotMatch(html, /<link[^>]+rel=["']stylesheet/i)
   assert.doesNotMatch(html, /\b\d{12}\b/)
-  assert.doesNotMatch(html, /Huỳnh Trung Quốc Thái|Quách Kiến Đức|Nguyễn Thảo Ly/i)
+  assert.doesNotMatch(html, /Tôn Trung Quốc Đạt|Kiều Kiến Thịnh|Nguyễn Thúy Vy/i)
 })
 
 test('includes accessible navigation, fullscreen, keyboard, and touch controls', () => {
