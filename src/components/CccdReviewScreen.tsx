@@ -206,100 +206,107 @@ export function CccdReviewView({
   const workbookFailed = workbook?.status === 'error'
   return (
     <div className="cccd-review">
-      <div className="case-detail-head">
-        <h2>{caseName}</h2>
-      </div>
-
-      <div className="banner result-banner">
-        <b>Ghép ảnh CCCD</b>
-        <span>
-          {review
-            ? `${review.counts.attached} đã gắn · ${review.counts.unattachedCards} chưa ghép · ${review.counts.packetsWithoutCard} gói chưa có thẻ`
-            : 'Đang tải…'}
-        </span>
-      </div>
-
-      {workbookFailed && (
-        <div className="cccd-review-failed" role="alert">
-          <p>
-            <b>Không đọc được file ảnh CCCD.</b> Không có ảnh nào để gán, nên
-            các gói bên dưới sẽ không thể ghép thẻ ở bước này.
-          </p>
-          <p className="cccd-review-failed-hint">
-            Kiểm tra lại file đã tải lên (mã lỗi: {workbook?.errorCode || 'không rõ'}),
-            hoặc bấm “Tiếp tục →” để duyệt hồ sơ mà chưa ghép ảnh CCCD.
-          </p>
+      {/* Scrolls on its own so the footer below is a sibling, never an
+          overlay: a sticky bar covers whatever is under it, and its own
+          right-aligned button lands exactly where every row's action
+          does, so a click meant for "Gán thẻ" fired "Tiếp tục" and
+          passed a hard gate with cards still unassigned. */}
+      <div className="cccd-review-body">
+        <div className="case-detail-head">
+          <h2>{caseName}</h2>
         </div>
-      )}
 
-      {error && (
-        <>
-          <p className="cccd-review-error" role="alert">{error}</p>
-          <button type="button" className="btn" onClick={onRetry}>Thử lại</button>
-        </>
-      )}
+        <div className="banner result-banner">
+          <b>Ghép ảnh CCCD</b>
+          <span>
+            {review
+              ? `${review.counts.attached} đã gắn · ${review.counts.unattachedCards} chưa ghép · ${review.counts.packetsWithoutCard} gói chưa có thẻ`
+              : 'Đang tải…'}
+          </span>
+        </div>
 
-      {review && (
-        <>
-          <section className="cccd-review-section" aria-label="Cần xử lý">
-            <h3>Cần xử lý</h3>
-            {review.needsAction.length === 0 && (
-              <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
-            )}
-            {/* The packets waiting for a card, then the cards waiting for a
-                packet: a compact row list first (no image, nothing to
-                enlarge), then the orphan cards as tiles below it, in the
-                same section -- reusing Đã gán's own .cccd-review-grid, since
-                an orphan card gets no less scrutiny than an attached one;
-                if anything it gets more, since there is no name to confirm
-                it against. */}
-            <ul className="cccd-review-list">
-              {review.needsAction
-                .filter((row): row is CccdPacketRow => row.kind === 'packet')
-                .map(row => (
-                  <li
-                    className="cccd-review-row cccd-review-needs"
-                    aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
-                    key={`packet-${row.packetIndex}`}
-                  >
-                    <span className="cccd-review-stt">{row.packetIndex + 1}</span>
-                    <span className="cccd-review-name">{row.name}</span>
-                    <span className="cccd-review-state">Chưa có thẻ CCCD</span>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onAssign(row.packetIndex, row.name)}
+        {workbookFailed && (
+          <div className="cccd-review-failed" role="alert">
+            <p>
+              <b>Không đọc được file ảnh CCCD.</b> Không có ảnh nào để gán, nên
+              các gói bên dưới sẽ không thể ghép thẻ ở bước này.
+            </p>
+            <p className="cccd-review-failed-hint">
+              Kiểm tra lại file đã tải lên (mã lỗi: {workbook?.errorCode || 'không rõ'}),
+              hoặc bấm “Tiếp tục →” để duyệt hồ sơ mà chưa ghép ảnh CCCD.
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <>
+            <p className="cccd-review-error" role="alert">{error}</p>
+            <button type="button" className="btn" onClick={onRetry}>Thử lại</button>
+          </>
+        )}
+
+        {review && (
+          <>
+            <section className="cccd-review-section" aria-label="Cần xử lý">
+              <h3>Cần xử lý</h3>
+              {review.needsAction.length === 0 && (
+                <p className="cccd-review-empty">Mọi gói đều đã có thẻ CCCD.</p>
+              )}
+              {/* The packets waiting for a card, then the cards waiting for a
+                  packet: a compact row list first (no image, nothing to
+                  enlarge), then the orphan cards as tiles below it, in the
+                  same section -- reusing Đã gán's own .cccd-review-grid, since
+                  an orphan card gets no less scrutiny than an attached one;
+                  if anything it gets more, since there is no name to confirm
+                  it against. */}
+              <ul className="cccd-review-list">
+                {review.needsAction
+                  .filter((row): row is CccdPacketRow => row.kind === 'packet')
+                  .map(row => (
+                    <li
+                      className="cccd-review-row cccd-review-needs"
+                      aria-label={`Gói ${row.packetIndex + 1} ${row.name}: chưa có thẻ CCCD`}
+                      key={`packet-${row.packetIndex}`}
                     >
-                      Gán thẻ
-                    </button>
-                  </li>
-                ))}
-            </ul>
-            <ul className="cccd-review-grid">
-              {review.needsAction
-                .filter((row): row is CccdCardRow => row.kind === 'card')
-                .map(row => (
-                  <OrphanTile key={`card-${row.card.cardId}`} caseId={caseId} card={row.card} />
-                ))}
-            </ul>
-          </section>
+                      <span className="cccd-review-stt">{row.packetIndex + 1}</span>
+                      <span className="cccd-review-name">{row.name}</span>
+                      <span className="cccd-review-state">Chưa có thẻ CCCD</span>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onAssign(row.packetIndex, row.name)}
+                      >
+                        Gán thẻ
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+              <ul className="cccd-review-grid">
+                {review.needsAction
+                  .filter((row): row is CccdCardRow => row.kind === 'card')
+                  .map(row => (
+                    <OrphanTile key={`card-${row.card.cardId}`} caseId={caseId} card={row.card} />
+                  ))}
+              </ul>
+            </section>
 
-          <details className="cccd-review-section">
-            <summary>Đã gán ({review.attached.length})</summary>
-            <ul className="cccd-review-grid">
-              {review.attached.map(row => (
-                <AttachedTile
-                  key={`attached-${row.packetIndex}`}
-                  caseId={caseId}
-                  row={row}
-                  busy={busy}
-                  onDetach={onDetach}
-                />
-              ))}
-            </ul>
-          </details>
-        </>
-      )}
+            <details className="cccd-review-section">
+              <summary>Đã gán ({review.attached.length})</summary>
+              <ul className="cccd-review-grid">
+                {review.attached.map(row => (
+                  <AttachedTile
+                    key={`attached-${row.packetIndex}`}
+                    caseId={caseId}
+                    row={row}
+                    busy={busy}
+                    onDetach={onDetach}
+                  />
+                ))}
+              </ul>
+            </details>
+          </>
+        )}
+      </div>
 
       <div className="cccd-review-foot">
         <button className="btn primary" type="button" onClick={onContinue}>
