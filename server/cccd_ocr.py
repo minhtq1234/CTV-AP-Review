@@ -425,24 +425,69 @@ def _name_label_span(line: list[OcrWord]) -> tuple[int, int]:
     raise ValueError("name label was not found")
 
 
+#: The quarter turns tried on a portrait card, in the order measured most likely
+#: on real submissions. Both are tried: which way a photograph was taken cannot
+#: be read off its shape, and OSD was measured answering wrongly on one of the
+#: two real cards it was asked about.
+_QUARTER_TURNS = (270, 90)
+
+
+def _read_number(image: Image.Image) -> tuple[str, float, dict | None, list]:
+    """One pass over `image`: its words, the number region, and the digits.
+
+    `("", 0.0, bbox_or_None, words)` when no twelve-digit number is there.
+    """
+    words = _full_image_words(image)
+    number_bbox = locate_number_region(words, image.width, image.height)
+    if number_bbox is None:
+        return "", 0.0, None, words
+    region_text, confidence = _region_digits(image, number_bbox)
+    candidate = re.sub(r"\D", "", region_text)
+    if len(candidate) != 12:
+        return "", 0.0, number_bbox, words
+    return candidate, confidence, number_bbox, words
+
+
 def analyze_drawing(
     drawing: EmbeddedDrawing,
     evidence_budget: EvidenceWriteBudget | None = None,
 ) -> CccdImageOcr:
-    """Analyze one drawing and re-OCR only a safely located number crop."""
+    """Analyze one drawing and re-OCR only a safely located number crop.
+
+    A CCCD is 85.6x54mm -- always landscape. A card stored PORTRAIT is a
+    photograph taken sideways, and `locate_number_region` looks for the number
+    horizontally, so it is never found and the card reports `no-number-region`.
+
+    `_upright_image` already asks Tesseract OSD to straighten the image, and on
+    real cards it does not save these: measured on case 935e37e5, the two
+    portrait cards drew 0.48 and 0.12 orientation confidence against a 1.5 gate,
+    and for one of them OSD's angle was wrong regardless. Lowering that gate
+    would fix one, miss the other, and risk the hundreds of pages that already
+    read -- so the SHAPE is the signal here, not OSD's guess.
+
+    Turning is a last resort, tried only when the number could not be read and
+    only on a portrait image, and the direction is never guessed: both quarter
+    turns are tried and a valid twelve digits decides. Both real cards then read
+    at 0.94 and 0.96, higher than most, because a sideways photograph is
+    otherwise a perfectly good one.
+    """
     image = _upright_image(drawing.stored_path)
-    words = _full_image_words(image)
+    cccd, cccd_confidence, number_bbox, words = _read_number(image)
+
+    if not cccd and image.height > image.width:
+        for angle in _QUARTER_TURNS:
+            turned = image.rotate(angle, expand=True)
+            found, confidence, bbox, turned_words = _read_number(turned)
+            if found:
+                image = turned
+                image.info["_cccd_transformed"] = True
+                cccd, cccd_confidence, number_bbox, words = (
+                    found, confidence, bbox, turned_words,
+                )
+                break
+
     side, side_confidence = classify_side(words)
-    number_bbox = locate_number_region(words, image.width, image.height)
     name, name_confidence = _name_from_words(words)
-    cccd = ""
-    cccd_confidence = 0.0
-    if number_bbox is not None:
-        region_text, confidence = _region_digits(image, number_bbox)
-        candidate = re.sub(r"\D", "", region_text)
-        if len(candidate) == 12:
-            cccd = candidate
-            cccd_confidence = confidence
     evidence_path = (
         _persist_upright_evidence(drawing, image, evidence_budget)
         if image.info.get("_cccd_transformed") is True
