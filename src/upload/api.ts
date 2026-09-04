@@ -510,6 +510,10 @@ export interface CriterionRow {
   group: string
   groupLabel: string
   kind: string
+  /** Whether the engine can reach a verdict here without a person. Decided by
+   *  the engine, not inferred from cell shapes -- inferring it understated the
+   *  reviewer's remaining work by nine to fourteen criteria a packet. */
+  automatic: boolean
   render: 'matrix' | 'card'
   /** Acc's own instruction, for when the tool abstains. */
   how: string

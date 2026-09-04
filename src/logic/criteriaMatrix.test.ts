@@ -28,6 +28,7 @@ function row(
     group: '01',
     groupLabel: 'Thông tin cá nhân',
     kind: 'compare',
+    automatic: true,
     render: 'matrix',
     how: 'Cách kiểm tra cụ thể của Acc, dài hơn bốn mươi ký tự để có ý nghĩa.',
     status,
@@ -110,118 +111,48 @@ describe('groupsInOrder', () => {
 })
 
 describe('automatedCount', () => {
-  // A criterion every one of whose cells says `not-automated` has no
-  // extractor behind it: no packet will ever change its answer, so it is not
-  // something the tool checks. Telling the reviewer the denominator beats
-  // leaving them to infer it from a column of identical chips.
-  function unautomated(stt: number): CriterionRow {
-    const built = row(stt, 'pending', [['Hợp đồng', 'pending'], ['BBNT', 'pending']])
-    return {
-      ...built,
-      cells: built.cells.map(cell => ({ ...cell, pendingReason: 'not-automated' as const })),
-    }
-  }
-
-  it('ignores the Excel reference column, which is not a check', () => {
-    // #08's shape: the bảng kê has a value (green) and both document columns
-    // have no extractor. Counting Excel made this never fire.
-    const built = row(8, 'pending', [
-      ['Excel', 'ok'], ['Hợp đồng', 'pending'], ['BBNT', 'pending'],
-    ])
-    const shaped = {
-      ...built,
-      cells: [
-        built.cells[0],
-        { ...built.cells[1], pendingReason: 'not-automated' as const },
-        { ...built.cells[2], pendingReason: 'not-automated' as const },
-      ],
-    }
-    expect(automatedCount(payload([shaped]))).toBe(0)
+  // The engine decides this and says so. It used to be inferred here from cell
+  // shapes, and the inference was wrong twice over, both times in the
+  // reassuring direction: a criterion whose every live cell was a MISSING
+  // document read as a live check (so the packet where the tool read almost
+  // nothing advertised the smallest coverage gap in the corpus), and the
+  // PRESENCE and EXTERNAL criteria -- the ones that ALWAYS need a person --
+  // escaped the test because it keyed on a pending reason, which only PENDING
+  // cells carry. Measured on 166 real packets it reported 18-24 automated,
+  // varying with how empty the packet was. The truth is 10, on every packet.
+  const auto = (stt: number) => row(stt, 'ok', [['Excel', 'ok']])
+  const manual = (stt: number) => ({
+    ...row(stt, 'rv', [['Hợp đồng', 'rv']]),
+    automatic: false,
   })
 
-  it('also ignores the batch-level column, checked on another tab', () => {
-    // #09/#13/#27's shape. Leaving this in reported 24 of 25 automated on a
-    // real packet where far fewer are.
-    const built = row(9, 'pending', [
-      ['Excel', 'ok'], ['Hợp đồng', 'pending'],
-      ['BBNT', 'pending'], ['Bảng Kê Thu Mua', 'pending'],
-    ])
-    const shaped = {
-      ...built,
-      cells: [
-        built.cells[0],
-        { ...built.cells[1], pendingReason: 'not-automated' as const },
-        { ...built.cells[2], pendingReason: 'not-automated' as const },
-        { ...built.cells[3], pendingReason: 'roster-level' as const },
-      ],
-    }
-    expect(automatedCount(payload([shaped]))).toBe(0)
+  it('counts what the engine says it can answer', () => {
+    expect(automatedCount(payload([auto(1), auto(2), manual(21)]))).toBe(2)
   })
 
-  it('ignores an n/a cell, which is not a check that failed', () => {
-    // #09/#10/#11/#13's real shape: an n/a Phụ lục/KPI column. While those
-    // counted, the rule reported 23 of 25 automated on a packet where six
-    // criteria compare nothing.
-    const built = row(11, 'pending', [
-      ['Excel', 'pending'], ['Hợp đồng', 'pending'],
-      ['BBNT', 'pending'], ['Phụ lục/KPI', 'na'],
-    ])
-    const shaped = {
-      ...built,
-      cells: [
-        { ...built.cells[0], pendingReason: 'no-roster-value' as const },
-        { ...built.cells[1], pendingReason: 'not-automated' as const },
-        { ...built.cells[2], pendingReason: 'not-automated' as const },
-        built.cells[3],
-      ],
-    }
-    expect(automatedCount(payload([shaped]))).toBe(0)
+  it('does not count a criterion that always needs a person', () => {
+    // #21/#22/#28 are pinned to REVIEW by design and used to count on 166 of
+    // 166 packets.
+    expect(automatedCount(payload([manual(21), manual(22), manual(28)]))).toBe(0)
   })
 
-  it('excludes a criterion whose every cell has no extractor', () => {
-    expect(automatedCount(payload([
-      row(1, 'ok', [['Excel', 'ok']]),
-      unautomated(8),
-      unautomated(9),
-    ]))).toBe(1)
-  })
-
-  it('counts a criterion that is merely unread on this packet', () => {
-    // `unread` means the document is here and its value would not read --
-    // a fact about this packet, not about the tool's scope.
-    const built = row(2, 'pending', [['Hợp đồng', 'pending']])
-    const unread = {
-      ...built,
-      cells: built.cells.map(c => ({ ...c, pendingReason: 'unread' as const })),
+  it('does not count a criterion whose documents are merely absent', () => {
+    // An absent document is an answer, not a live check -- and it carries no
+    // pending reason, which is how it slipped past the old inference.
+    const absent = {
+      ...row(4, 'missing', [['CCCD/Passport', 'missing']]),
+      automatic: false,
     }
-    expect(automatedCount(payload([unread]))).toBe(1)
-  })
-
-  it('counts a criterion with a mix, since something can still be read', () => {
-    const built = row(3, 'pending', [['Hợp đồng', 'pending'], ['BBNT', 'pending']])
-    const mixed = {
-      ...built,
-      cells: [
-        { ...built.cells[0], pendingReason: 'not-automated' as const },
-        { ...built.cells[1], pendingReason: 'unread' as const },
-      ],
-    }
-    expect(automatedCount(payload([mixed]))).toBe(1)
+    expect(automatedCount(payload([absent]))).toBe(0)
   })
 
   it('says nothing extra in the headline when everything is automated', () => {
-    const parts = criteriaHeadline(payload([row(1, 'ok', [['Excel', 'ok']])]))
+    const parts = criteriaHeadline(payload([auto(1)]))
     expect(parts.some(p => p.includes('tự động'))).toBe(false)
   })
 
   it('names what has no automatic check, rather than scoring coverage', () => {
-    // Not "1/2 automated": that reads as a property of the tool, and it is
-    // neither -- it is per packet, and several counted criteria never answer
-    // on their own.
-    const parts = criteriaHeadline(payload([
-      row(1, 'ok', [['Excel', 'ok']]),
-      unautomated(8),
-    ]))
+    const parts = criteriaHeadline(payload([auto(1), manual(21)]))
     expect(parts).toContain('1 tiêu chí chưa có kiểm tra tự động')
   })
 })

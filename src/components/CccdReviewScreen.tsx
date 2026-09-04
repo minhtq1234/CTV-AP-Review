@@ -21,7 +21,14 @@ export interface CccdReviewViewProps {
   /** Null before the first load resolves — nothing is known yet, so nothing
    * about which packets need a card should be claimed yet either. */
   review: CccdReview | null
+  /** A mutation is in flight. Gates the row actions AND the way out. */
   busy: boolean
+  /** The first card list has not arrived. Gates the row actions but NOT the
+   *  footer: a failed GET leaves this true for ever, and folding it into
+   *  `busy` disabled the only way off the screen permanently -- next to an
+   *  alert saying the load failed and a live region still claiming
+   *  "Đang cập nhật…". `Thử lại` only re-issues the same GET. */
+  loading: boolean
   /** `load` can be retried by reloading; `mutate` cannot -- reloading
    *  re-issues no PUT and blanks the screen. */
   error: { text: string; kind: 'load' | 'mutate' } | null
@@ -217,6 +224,7 @@ export function CccdReviewView({
   caseName,
   review,
   busy,
+  loading,
   error,
   workbook,
   onAssign,
@@ -262,7 +270,9 @@ export function CccdReviewView({
             assign or a detach reorganised the queue with nothing announced.
             It matters most for the destructive direction, `Gỡ`. */}
         <p className="sr-only" role="status">
-          {busy
+          {loading
+            ? 'Đang tải danh sách ảnh…'
+            : busy
             ? 'Đang cập nhật…'
             : review
               ? `${review.counts.attached} thẻ đã gắn, `
@@ -355,7 +365,7 @@ export function CccdReviewView({
                           consecutively identical "Gán thẻ". */}
                       <button
                         type="button"
-                        disabled={busy || workbookFailed}
+                        disabled={busy || loading || workbookFailed}
                         title={workbookFailed
                           ? 'Không đọc được file ảnh CCCD nên chưa có ảnh để gán.'
                           : undefined}
@@ -377,7 +387,7 @@ export function CccdReviewView({
                     key={`attached-${row.packetIndex}`}
                     caseId={caseId}
                     row={row}
-                    busy={busy}
+                    busy={busy || loading}
                     onDetach={onDetach}
                   />
                 ))}
@@ -416,10 +426,12 @@ export function CccdReviewView({
       </div>
 
       <div className="cccd-review-foot">
-        {/* Gated on `busy` like every other control. It used to be the only
-            live one mid-mutation, and leaving then defeats the single getCase
-            that continueFromCccdReview does precisely because a mutation moves
-            the summary and the per-packet rollups. */}
+        {/* Gated on an in-flight mutation, and deliberately NOT on `loading`.
+            Leaving mid-mutation defeats the single getCase that
+            continueFromCccdReview does, because a mutation moves the summary
+            and the per-packet rollups. But a failed card GET leaves `loading`
+            true for ever, and gating on it disabled the only way off this
+            screen permanently -- beside an alert saying the load failed. */}
         <button className="btn primary" type="button" disabled={busy}
                 onClick={onContinue}>
           Tiếp tục →
@@ -535,7 +547,8 @@ export default function CccdReviewScreen({
         caseId={caseId}
         caseName={caseName}
         review={cards === null ? null : buildCccdReview(packets, cards)}
-        busy={busy || cards === null}
+        busy={busy}
+        loading={cards === null}
         error={error}
         workbook={workbook}
         onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}

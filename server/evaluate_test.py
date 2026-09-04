@@ -1000,3 +1000,41 @@ class TestPartsPresenceWiring:
         cell = next(c for c in results[2].cells if c.document == cr.CONTRACT)
         assert cell.pending_reason != "not-automated" or cell.evidence == ()
         assert all(e.provenance != "llm" for e in cell.evidence)
+
+
+def test_every_pending_cell_says_why(tmp_path):
+    """The invariant, rather than five separate assertions that drift apart.
+
+    A census over the 166 real packets found 648 pending cells (13.5%) with no
+    reason -- including every unmatched packet's document columns, where the
+    Excel cell said `unmatched` and its siblings dropped the fact. An untagged
+    cell falls back to the old one-chip-means-five-things behaviour, so the
+    fix silently stops covering the screen it was written for.
+    """
+    packets = [
+        manifest(docs=[doc("contract-0", "contract")]),
+        manifest(docs=[]),
+        manifest(docs=[doc("contract-0", "contract"),
+                       doc("bbnt-0", "bbnt")]),
+    ]
+    rosters = [ROSTER, {}, {**ROSTER, "pit": "5000", "cccd": ""}]
+
+    untagged = []
+    for packet in packets:
+        for roster in rosters:
+            for result in ev.evaluate_packet(packet, roster):
+                for cell in result.cells:
+                    if (cell.status is Status.PENDING
+                            and cell.pending_reason is None):
+                        untagged.append((result.stt, cell.document, cell.note))
+    assert not untagged, untagged[:5]
+
+
+def test_a_settled_cell_never_carries_a_pending_reason():
+    # The reason is a label for one status, not a second verdict channel.
+    for roster in (ROSTER, {}):
+        for result in ev.evaluate_packet(full_packet(), roster):
+            for cell in result.cells:
+                if cell.status is not Status.PENDING:
+                    assert cell.pending_reason is None, (
+                        result.stt, cell.document, cell.status)

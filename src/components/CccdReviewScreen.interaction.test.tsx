@@ -422,6 +422,19 @@ describe('CccdReviewScreen', () => {
     expect(dialog.contains(document.activeElement)).toBe(true)
   })
 
+  it('leaves a way off the screen when the card list fails to load', async () => {
+    // The catch never sets `cards`, so it stays null for ever. Folding that
+    // into `busy` disabled the only exit permanently, beside an alert saying
+    // the load failed and a live region still claiming "Đang cập nhật…" --
+    // and `Thử lại` only re-issues the same GET.
+    listCccdCards.mockRejectedValue(new Error('boom'))
+    await mount()
+
+    expect(host.textContent).toContain('Không tải được danh sách ảnh')
+    expect(button('Tiếp tục').disabled).toBe(false)
+    expect(host.textContent).not.toContain('Đang cập nhật')
+  })
+
   it('gates Tiếp tục on busy like every other control', async () => {
     // It was the only live control mid-mutation, and leaving then defeats the
     // single getCase that continueFromCccdReview does because a mutation moves
