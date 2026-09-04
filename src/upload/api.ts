@@ -457,6 +457,25 @@ export async function fetchCaseSummary(caseId: string): Promise<SummaryPayload> 
 // payload 1:1).
 // ---------------------------------------------------------------------------
 
+/** Every reason `server/evaluate.py` stamps on a pending cell, as a runtime list
+ *  so `PENDING_REASON_PRESENTATION` can be pinned against it (and against the
+ *  engine's own literals) rather than drifting one side at a time. `blocked`
+ *  was missing here for exactly that reason, and its cells -- 332 of them on
+ *  the measured corpus -- fell back to the generic chip. */
+export const PENDING_REASONS = [
+  'not-automated',
+  'roster-level',
+  'no-roster-value',
+  'unread',
+  'unmatched',
+  /** An upstream input this computation needs did not read. */
+  'blocked',
+  /** A reviewer moved a settled cell back to pending, so the engine has no
+   *  reason of its own to give. */
+  'override',
+] as const
+export type PendingReason = typeof PENDING_REASONS[number]
+
 export interface CriterionEvidence {
   documentId: string
   page: number
@@ -481,13 +500,7 @@ export interface CriterionCell {
    *  the packet in front of the reviewer -- measured over 166 real packets,
    *  `not-automated` is 41% of pending cells and `roster-level` 14%, and the
    *  latter is not unchecked at all: it is checked on the Tổng hợp tab. */
-  pendingReason?:
-    | 'not-automated'
-    | 'roster-level'
-    | 'no-roster-value'
-    | 'unread'
-    | 'unmatched'
-    | null
+  pendingReason?: PendingReason | null
   evidence: CriterionEvidence[]
 }
 
@@ -512,8 +525,12 @@ export interface CriterionRow {
   kind: string
   /** Whether the engine can reach a verdict here without a person. Decided by
    *  the engine, not inferred from cell shapes -- inferring it understated the
-   *  reviewer's remaining work by nine to fourteen criteria a packet. */
-  automatic: boolean
+   *  reviewer's remaining work by nine to fourteen criteria a packet.
+   *
+   *  Optional because a server predating the field simply omits it, and a
+   *  cached bundle can meet one: see `automatedCount`, which answers null
+   *  rather than inventing a coverage figure from an absent field. */
+  automatic?: boolean
   render: 'matrix' | 'card'
   /** Acc's own instruction, for when the tool abstains. */
   how: string

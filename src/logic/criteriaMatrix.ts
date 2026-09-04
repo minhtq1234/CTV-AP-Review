@@ -79,9 +79,25 @@ const HEADLINE_ORDER: Array<[SummaryStatus, string]> = [
  *  because it keyed on a pending reason, which only PENDING cells carry.
  *
  *  Measured on 166 real packets: the inference reported 18-24 automated,
- *  varying with how empty the packet was. The truth is 10, on every packet.
+ *  varying with how empty the packet was. Against that, the engine's own
+ *  answer is 10 on a packet whose bảng kê has no PIT or a PIT of 0, and 9 once
+ *  PIT > 0 -- #15 is a COMPUTE criterion that answers PIT == 0 and never
+ *  answers PIT > 0, because the applicable rate is Acc's to state and is
+ *  deliberately not in the code. So this does move with the packet, by one,
+ *  for a stated reason; what it no longer does is move by six with how much
+ *  the tool failed to read.
+ *
+ *  Null when the payload does not say -- a bundle newer than the server it is
+ *  talking to, which is what a cached tab is. Neither default is honest here:
+ *  `?? false` reports "25 tiêu chí chưa có kiểm tra tự động", maximally
+ *  alarming and completely wrong, and `?? true` reports zero and hides a real
+ *  coverage gap. Unlike `counts[status] ?? 0`, where zero of an absent bucket
+ *  is a true statement, there is no true default for how many criteria the
+ *  engine can answer, so the headline says nothing about automation instead.
  */
-export function automatedCount(payload: CriteriaPayload): number {
+export function automatedCount(payload: CriteriaPayload): number | null {
+  const stated = payload.criteria.every(row => typeof row.automatic === 'boolean')
+  if (!stated) return null
   return payload.criteria.filter(row => row.automatic).length
 }
 
@@ -97,8 +113,18 @@ export function criteriaHeadline(payload: CriteriaPayload): string[] {
   // they locate something and hand it to a person. Counting those as
   // "automatically checked" overclaims. The honest, actionable half is the
   // other one: these have no automatic check at all.
-  const unautomated = payload.criteria.length - automatedCount(payload)
-  const scope = unautomated > 0
+  // Null = the payload never said. Never counted from an absent field -- a
+  // reviewer acts on this number -- but not silent either: silence is what
+  // full automatic coverage looks like, and reporting "the payload did not
+  // say" as "nothing is left" is the same reassuring error in a quieter
+  // voice. Says plainly that the figure is unavailable instead.
+  const automated = automatedCount(payload)
+  const unautomated = automated === null
+    ? null
+    : payload.criteria.length - automated
+  const scope = unautomated === null
+    ? ['chưa rõ mức kiểm tra tự động']
+    : unautomated > 0
     ? [`${unautomated} tiêu chí chưa có kiểm tra tự động`]
     : []
   return [

@@ -313,7 +313,18 @@ def _owned_doc_id(candidate_id: str, side: str) -> str:
 #: number on its face; and a sheet screenshot, which has no face and is
 #: attributed by the identity written on its own row (`sheet_identity`). Both
 #: are written by this ingest and must not survive it going stale.
-_OWNED_PREFIXES = ("cccd-excel-", "sheet-excel-")
+#:
+#: Keyed doc-id prefix -> packet-file prefix, because a family has two names:
+#: the manifest document id, and the basename of the image copied into the
+#: packet directory. Dropping the document without unlinking the file leaves
+#: the image served by `app.get_page`, which matches on filename and never
+#: opens the manifest -- so the two lists must not be able to drift apart.
+_OWNED_FAMILIES: dict[str, str] = {
+    "cccd-excel-": "cccd-",
+    "sheet-excel-": "sheet-",
+}
+_OWNED_PREFIXES = tuple(_OWNED_FAMILIES)
+_OWNED_FILE_PREFIXES = tuple(_OWNED_FAMILIES.values())
 
 
 def _sheet_doc_id(drawing_id: str, kind: str) -> str:
@@ -417,21 +428,48 @@ def attach_sheet_evidence(
         wanted, sheet_rows, by_cccd, by_name, by_mst,
     )
 
+    # How many roster rows fold to each CCCD key. The routing below is
+    # `_digits(row.cccd) == _digits(packet.rosterIdentity.cccd)`, and string
+    # equality is not identity equality: two DIFFERENT people whose CCCD cells
+    # both fold to the same digits -- a shared placeholder like "0", a
+    # truncated paste -- produce the same key, so a row with no packet of its
+    # own resolves to somebody else's packet and `len(targets) == 1` sees
+    # nothing wrong. `pipeline.index_roster_rows` is first-row-wins, so
+    # nothing upstream surfaces the collision either. Counting the keys is
+    # what makes "matches only itself" true.
+    rows_per_cccd: dict[str, int] = {}
+    for roster_row in roster_rows:
+        key = _digits(roster_row.get("cccd"))
+        rows_per_cccd[key] = rows_per_cccd.get(key, 0) + 1
+
     written: dict[int, set[str]] = {}
     for drawing in wanted:
         row = matched.get(drawing.id)
         if row is None:
             continue
         roster_cccd = _digits(row.get("cccd"))
-        # The card path refuses this at `_target_packet_index`; the sheet path
-        # did not, and the consequence is the wrong person's screenshot. A
-        # blank or "n/a" CCCD digits down to "", `_packet_target_index`
-        # compares those empty keys as EQUAL, and the sheet path routinely
-        # reaches roster rows through a non-CCCD key -- on the real workbook
-        # all 25 tax screenshots resolve by MST, not by CCCD. Two roster rows
-        # with no digits and one matched packet is all it takes.
-        if len(roster_cccd) != 12:
-            refused[drawing.id] = "non-12-digit-roster-cccd"
+        # The hole is the EMPTY key, not the length. A blank or "n/a" CCCD
+        # digits down to "", and `_packet_target_index` compares two empty
+        # strings as EQUAL -- so a roster row with no digits could claim a
+        # packet with no digits and receive the wrong person's screenshot.
+        # That matters here and not on the card path because the sheet path
+        # routinely reaches roster rows through a non-CCCD key: on the real
+        # workbook all 25 tax screenshots resolve by MST.
+        #
+        # Rejecting everything that is not 12 digits also rejected the legacy
+        # 9-digit CMND -- which `roster_checks`' header patterns match by name,
+        # so it is expected input -- and threw away a unique, correct match.
+        # What makes a non-empty key safe is not its length but that exactly
+        # one roster row carries it: see `rows_per_cccd` above.
+        if not roster_cccd:
+            refused[drawing.id] = "blank-roster-cccd"
+            continue
+        if rows_per_cccd.get(roster_cccd, 0) != 1:
+            # Two people, one routing key. Whichever packet this resolves to,
+            # the answer is a guess about whose screenshot this is, and the
+            # cost of guessing wrong is one person's tax lookup -- name and
+            # MST -- filed under another person's payment.
+            refused[drawing.id] = "several-roster-rows-for-cccd"
             continue
         targets = [
             index
@@ -494,6 +532,16 @@ def _write_sheet_doc(
 
     Keyed on the doc id, which is derived from the drawing, so re-reading the
     same workbook rewrites the same entry rather than accumulating copies.
+
+    The id is positional (`sheet-excel-{drawing id}-{kind}`) and the FILENAME
+    carries the image sha, so the same workbook slot holding corrected content
+    writes a new file and repoints the same document at it. The superseded
+    file has to be unlinked here: the document was never dropped, so it never
+    reaches `removed_docs` and `_remove_stale_owned_files` never sees it --
+    and an orphan `sheet-*` in the packet directory is still served by
+    `app.get_page`, which matches on filename and never opens the manifest.
+    That is one person's tax lookup, name and MST, answerable by URL with
+    nothing in the manifest to say it exists.
     """
     try:
         with open(manifest_path, "r", encoding="utf-8") as handle:
@@ -503,6 +551,10 @@ def _write_sheet_doc(
         docs = manifest.get("docs")
         if not isinstance(docs, list):
             return False
+        replaced = [
+            document for document in docs
+            if isinstance(document, dict) and document.get("id") == doc_id
+        ]
         manifest["docs"] = [
             document for document in docs
             if not (isinstance(document, dict)
@@ -518,6 +570,14 @@ def _write_sheet_doc(
             }],
         }]
         _atomic_json_write(manifest_path, manifest)
+        # After the manifest is durable, so a crash between the two leaves a
+        # file with no document (reconciled away on the next read) rather than
+        # a document with no file.
+        _remove_stale_owned_files(
+            replaced,
+            os.path.dirname(manifest_path),
+            {os.path.realpath(destination)},
+        )
         return True
     except Exception:
         return False
@@ -556,7 +616,12 @@ def _remove_stale_owned_files(
             if (
                 os.path.dirname(old_path) == real_packet_dir
                 and old_path not in new_paths
-                and os.path.basename(old_path).startswith("cccd-")
+                # Every owned family, not just cards. A sheet screenshot is
+                # written as `sheet-{kind}-{token}-{sha}.{ext}`; leaving it on
+                # disk after its document goes leaves `app.get_page` serving
+                # that person's tax lookup -- name and MST -- to any URL that
+                # was seen once, with nothing in the manifest to say so.
+                and os.path.basename(old_path).startswith(_OWNED_FILE_PREFIXES)
                 and os.path.isfile(old_path)
             ):
                 os.unlink(old_path)
@@ -599,8 +664,12 @@ def _should_drop(
     passes no sheet keep-set: one click of Gán or Gỡ deleted every tax
     document in the case, silently, with no route to restore them short of a
     fresh upload.
+
+    Anything outside `_OWNED_FAMILIES` is refused up front, so a third family
+    added there without a branch here fails the test that asserts every owned
+    prefix is reconciled, instead of being silently kept forever.
     """
-    if not isinstance(doc_id, str):
+    if not _is_owned_doc_id(doc_id):
         return False
     if doc_id.startswith("cccd-excel-"):
         return doc_id not in keep_ids
@@ -670,24 +739,87 @@ def _reconcile_manifest_owned_evidence(
         return False
 
 
+@dataclass(frozen=True)
+class LeaveSheetEvidence:
+    """Sheet evidence is not this caller's to touch. Leave every one attached.
+
+    What a card assign or detach means: it rewrites card sides and knows
+    nothing about sheet screenshots, so it may not remove them.
+    """
+
+
+@dataclass(frozen=True)
+class ReconcileSheetEvidence:
+    """This caller owns sheet evidence and produced exactly `keep`.
+
+    What the ingest means. `keep` is `{packet index: doc ids}` straight from
+    `attach_sheet_evidence`; anything else owned goes. An EMPTY `keep` is a
+    real answer -- "this read produced none" -- and drops all of them, which
+    is why it has to be said out loud rather than spelled `{}` or `None`.
+    """
+
+    keep: dict[int, set[str]]
+
+    def __post_init__(self) -> None:
+        """The wrapper is only unspellable if what it wraps is checked too.
+
+        `ReconcileSheetEvidence(None)` -- the `sheet_keep or None`
+        normalisation the docstring above warns about -- otherwise reaches
+        `keep.get(...)` and raises AttributeError mid-reconciliation, out of a
+        call site that is not inside a try. And a bare string where a set
+        belongs turns `doc_id not in sheet_keep` from set membership into
+        SUBSTRING membership, which silently keeps documents it was told to
+        drop. Both are refused here, before anything is read or written.
+        """
+        if not isinstance(self.keep, dict):
+            raise TypeError(
+                "ReconcileSheetEvidence(keep) needs a "
+                "{packet index: {doc id}} mapping, as returned by "
+                f"attach_sheet_evidence; got {type(self.keep).__name__}"
+            )
+        for index, doc_ids in self.keep.items():
+            if not isinstance(index, int) or isinstance(index, bool):
+                raise TypeError(
+                    f"packet index must be an int, got {index!r}")
+            if not isinstance(doc_ids, (set, frozenset)):
+                raise TypeError(
+                    "doc ids must be a set -- a string here becomes a "
+                    f"substring test, not a membership test; got {doc_ids!r}"
+                )
+
+
+#: The only two things a caller may mean. There is no third "I could not tell"
+#: case on purpose: keeping an old attribution is the branch that guesses the
+#: previous roster still applies, and this tool must refuse instead.
+SheetKeep = LeaveSheetEvidence | ReconcileSheetEvidence
+
+
 def reconcile_owned_evidence(
     manifest_paths: dict[int, str],
     case_dir: str,
     mappings: list[dict],
-    sheet_keep: dict[int, set[str]] | None = None,
+    sheet_keep: SheetKeep = LeaveSheetEvidence(),
 ) -> bool:
     """Drop every owned document a fresh read of the workbook did not produce.
 
-    `sheet_keep` is the sheet-evidence half: `{packet index: doc ids}` from
-    `attach_sheet_evidence`, and **omitting it leaves sheet evidence
-    untouched** rather than deleting it. Only the ingest, which writes those
-    documents, knows which should survive; a card assign or detach knows
-    nothing about them and must not be able to remove them. That is not
-    hypothetical -- it shipped: `cccd_manual.assign_card` passes no sheet
-    keep-set, so one Gán or Gỡ silently deleted all 25 tax documents in a real
-    case, taking #6 from REVIEW back to MISSING with no error and no way back
-    short of re-uploading.
+    `sheet_keep` is the sheet-evidence half, and it is a two-case value rather
+    than a nullable dict because the dangerous state must not be spellable.
+    `LeaveSheetEvidence()` -- the default -- leaves sheet evidence untouched;
+    `ReconcileSheetEvidence(written)` drops every sheet document not in
+    `written`. A bare `{}` is neither, and raises rather than quietly meaning
+    "delete them all": that is what shipped. `cccd_manual.assign_card` passes
+    no sheet keep-set, so one Gán or Gỡ silently deleted all 25 tax documents
+    in a real case, taking #6 from REVIEW back to MISSING with no error and no
+    way back short of re-uploading.
     """
+    if not isinstance(
+        sheet_keep, (LeaveSheetEvidence, ReconcileSheetEvidence),
+    ):
+        raise TypeError(
+            "sheet_keep must be LeaveSheetEvidence() or "
+            "ReconcileSheetEvidence(keep); a bare dict is ambiguous and an "
+            "empty one used to mean 'delete every sheet document'"
+        )
     kept_by_packet = _kept_owned_ids_by_packet(mappings)
     successful = True
     for packet_index, manifest_path in manifest_paths.items():
@@ -704,8 +836,8 @@ def reconcile_owned_evidence(
                 manifest_path,
                 case_dir,
                 kept_by_packet.get(packet_index, set()),
-                None if sheet_keep is None
-                else sheet_keep.get(packet_index, set()),
+                None if isinstance(sheet_keep, LeaveSheetEvidence)
+                else sheet_keep.keep.get(packet_index, set()),
             )
             and successful
         )
@@ -788,7 +920,14 @@ def _reconciled_error_result(
     manifest_paths: dict[int, str],
     case_dir: str,
 ) -> CccdIngestResult:
-    if not reconcile_owned_evidence(manifest_paths, case_dir, []):
+    # Keep NOTHING, which is what the four ingest failure exits want. This
+    # ingest owns both families, so a read that produced no evidence leaves no
+    # evidence: a case whose 25 tax screenshots came from a workbook that no
+    # longer extracts must not keep them attached, keyed to a roster that is
+    # gone, with #6 then reading OK off the previous person's MST lookup.
+    if not reconcile_owned_evidence(
+        manifest_paths, case_dir, [], sheet_keep=ReconcileSheetEvidence({}),
+    ):
         error_code = "attachment-failed"
     return _error_result(packets, error_code)
 
@@ -938,7 +1077,11 @@ def ingest_cccd_workbook(
         manifest_paths,
         case_dir,
         mappings,
-        sheet_keep=sheet_written,
+        # The ingest owns these documents, so its answer is authoritative even
+        # when it is empty: no tax screenshots in the workbook, or none the new
+        # roster could be attributed to, both mean the old attributions are
+        # stale. `sheet_identity` says why in `summary.sheetEvidence.reasons`.
+        sheet_keep=ReconcileSheetEvidence(sheet_written),
     )
     attached = sum(
         mapping.get("attachedPacketIndex") is not None

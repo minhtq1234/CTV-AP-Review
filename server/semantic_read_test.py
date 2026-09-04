@@ -36,6 +36,42 @@ CLAUSE = {
        + line(["ngày", "kể", "từ", "ngày", "nghiệm", "thu"], 30),
 }
 
+#: Tokens that each fold to SEVERAL words, so a token count and a folded word
+#: count diverge sharply. `15/07/2026` and `15.000.000` fold to three words
+#: apiece and `thanh-toán` to two, which is what makes this fixture able to
+#: tell the two units apart: 20 of these tokens are 20 norm words but 60
+#: folded ones.
+LONG = {
+    0: line(["15/07/2026"] * 10, 10)
+       + line(["15.000.000"] * 10 + ["đồng"], 30)
+       + line(["thanh-toán"] * 8, 50),
+}
+
+#: A page that states a bare date range verbatim -- the shape #13's `term`
+#: invites a model to quote back on its own, with no clause around it.
+DATES = {
+    0: line("Kỳ hạn 15/07/2026 - 15/08/2026 - 15/09/2026 và các kỳ sau".split(),
+            10),
+}
+
+#: A clause whose value-bearing tokens each occupy one span but several folded
+#: words. Real contracts put dates, money and hyphenated terms exactly here,
+#: and they are over-represented among multi-word-folding tokens (1.5% of
+#: tokens overall).
+WIDE = {
+    0: line(["Tổng", "giá", "trị", "hợp", "đồng", "là", "15.000.000",
+             "đồng"], 10)
+       + line(["thanh-toán", "một", "lần", "trước", "15/07/2026", "theo",
+               "biên", "bản"], 30)
+       + line(["nghiệm", "thu", "được", "hai", "bên", "ký", "đầy", "đủ"], 50),
+}
+
+#: Spans WIDE's first two lines: 16 tokens, but 21 folded words. The gap of 5
+#: is the whole point -- it is wider than WIDTH_SLACK, so a sweep that walks
+#: token counts against a folded word count can never build this window.
+WIDE_QUOTE = ("Tổng giá trị hợp đồng là 15.000.000 đồng "
+              "thanh-toán một lần trước 15/07/2026 theo biên bản")
+
 
 class TestLocatesAClause:
     def test_a_quote_spanning_a_line_break_is_located(self):
@@ -344,3 +380,171 @@ class TestRefusesWhatItCannotVouchFor2:
         assert len(sr.fold("15/07/2026 - 15/08/2026").split()) >= 6
         assert len(sr.norm("15/07/2026 - 15/08/2026").split()) < sr.MIN_WORDS
         assert sr.locate_quote("15/07/2026 - 15/08/2026", CLAUSE, 0) is None
+
+    def test_the_ceiling_counts_the_words_the_sweep_actually_walks(self):
+        """MAX_WORDS is a cost control, so it must count what costs.
+
+        `_best_window` sets `wanted = len(quote.split())` on the FOLDED string
+        and sweeps windows in folded words, so the O(window x quote) sweep is
+        driven by folded words and by nothing else. Counted on `norm` the gate
+        did not bind where it mattered: 60 tokens of hyphenated triples passed
+        at 60 norm words, folded to 180, and took ~52s to return None -- on
+        `ocr_packet`'s daemon thread, once per requested part per document.
+        """
+        wide = " ".join(["15/07/2026"] * 10 + ["15.000.000"] * 10)
+        assert len(wide.split()) == 20                      # 20 tokens
+        assert len(sr.fold(wide).split()) == sr.MAX_WORDS   # but 60 words
+        got = sr.locate_quote(wide, LONG, 0)
+        assert got is not None and got["exact"] is True
+
+        # One more single-word token: still only 21 norm words, so a gate
+        # counted on `norm` would wave it through, but 61 folded words.
+        over = wide + " đồng"
+        assert len(sr.norm(over).split()) < sr.MAX_WORDS
+        assert len(sr.fold(over).split()) == sr.MAX_WORDS + 1
+        assert sr.locate_quote(over, LONG, 0) is None
+
+    def test_a_refused_quote_never_reaches_the_sweep(self, monkeypatch):
+        """The point of the ceiling is that the expensive path is not entered.
+
+        Asserted structurally rather than on wall-clock, which would flake in
+        CI: `_best_window` is replaced with something that cannot be called
+        quietly. This quote is 30 norm words -- comfortably under MAX_WORDS in
+        the old unit -- and 90 folded ones.
+        """
+        def explode(*args, **kwargs):
+            raise AssertionError("swept")
+
+        monkeypatch.setattr(sr, "_best_window", explode)
+        quote = " ".join(["15/07/2026"] * 30)
+        assert len(sr.norm(quote).split()) < sr.MAX_WORDS
+        assert len(sr.fold(quote).split()) == 90
+        assert sr.locate_quote(quote, LONG, 0) is None
+
+    def test_the_floor_counts_folded_words_too(self):
+        """`fold` deflates as well as inflating, and the floor must see it.
+
+        Three lone dashes fold to nothing and `_index` drops them, so this is
+        9 norm words but 6 folded -- two under the floor MIN_WORDS was
+        measured to buy (0.95% wrong-occurrence at 8 words against 2.74% at
+        6). Counted on `norm` alone it passed the gate and came back
+        `exact: True, ratio: 1.0` on a six-token box, which is the strongest
+        claim this module makes. It is refused on the EXACT path, not merely
+        kept out of the fuzzy sweep, which is why both gates sit above both
+        passes.
+        """
+        quote = "là 15 ngày kể từ ngày - - -"
+        assert len(sr.norm(quote).split()) >= sr.MIN_WORDS
+        assert len(sr.fold(quote).split()) < sr.MIN_WORDS
+        assert sr.locate_quote(quote, CLAUSE, 0) is None
+
+    def test_the_floor_still_counts_norm_words_too(self):
+        """And the mirror case, which a fold-only floor would re-open.
+
+        A bare date range is 5 norm words but 9 folded, so a floor counted on
+        `fold` alone admits it -- and DATES states it verbatim, so it boxes as
+        an exact hit on one of several date occurrences. That is #13's `term`
+        with no clause around it: precisely what MIN_WORDS exists to refuse.
+        The floor therefore takes the smaller of the two counts.
+        """
+        quote = "15/07/2026 - 15/08/2026 - 15/09/2026"
+        assert len(sr.norm(quote).split()) < sr.MIN_WORDS
+        assert len(sr.fold(quote).split()) >= sr.MIN_WORDS
+        # Nothing but the floor can refuse this: the page says it, verbatim,
+        # on whole token boundaries.
+        text, _, _ = sr._index(sr.reading_order(DATES[0]))
+        assert sr.fold(quote) in text
+        assert sr.locate_quote(quote, DATES, 0) is None
+
+
+class TestWindowsAreMeasuredInWordsNotTokens:
+    """`_best_window` sweeps WORDS; nothing in this file used to prove it.
+
+    The rewrite was justified by "43.6% unlocatable against 0.0%", and it was
+    exercised by nothing: reverting it to the old width-in-tokens loop left
+    the whole file green, because the only multi-word-folding token in the
+    suite sat on the exact path, which is character-based and never had the
+    hole. The mechanism: the old loop swept widths in TOKENS over
+    [wanted - WIDTH_SLACK, wanted + WIDTH_SLACK] where `wanted` is in folded
+    WORDS, so a window was reachable only if its tokens expanded by 2 folded
+    words or fewer, and the correct window was never a candidate at all.
+
+    That has two outcomes, not one, and which one appears depends on the page
+    rather than the quote -- so both are covered here. On a page with room to
+    overshoot, a wider WRONG window clears MIN_RATIO and the quote is boxed
+    over text it does not mention. On a page trimmed to the quote's own lines,
+    no candidate is built and the quote comes back unlocatable, which is the
+    outcome the measured rate is about.
+    """
+
+    def test_the_fixture_really_has_multiword_tokens(self):
+        # Guards the fixture itself. This coverage went missing precisely by a
+        # page having no such token, so the property is asserted rather than
+        # assumed: silently normalising WIDE would make the test below pass
+        # for the wrong reason.
+        tokens = sr.reading_order(WIDE[0])
+        text, spans, kept = sr._index(tokens)
+        widths = {
+            tokens[kept[i]]["text"]: len(text[start:end].split())
+            for i, (start, end) in enumerate(spans)
+        }
+        assert widths["15.000.000"] == 3
+        assert widths["15/07/2026"] == 3
+        assert widths["thanh-toán"] == 2
+
+    def test_a_fuzzy_hit_over_multiword_tokens_is_reachable(self):
+        # 16 tokens, 21 folded words: the true width is 5 outside the swept
+        # token range, so the old loop could not build the correct window.
+        #
+        # What it DID build, measured: `(0, 18, 0.9137)` -- a 19-token window
+        # running into the third line, i.e. a hit whose box is 52px tall and
+        # covers `nghiệm thu được`, text this quote never mentions. So the
+        # failure the old loop produced on THIS page is an over-boxed
+        # highlight, not a refusal, and the assertions below are ordered by
+        # what actually discriminates: the ratio (0.9945 against the old
+        # 0.9137) and the extent (32 against 52). `is not None` alone does not
+        # -- see the sibling test for the page shape where the old loop really
+        # does come back empty.
+        #
+        # The alteration is in LETTERS, not digits, deliberately -- a changed
+        # digit is refused by the `_digits` guard in either version, and the
+        # test would pass for the wrong reason.
+        assert len(WIDE_QUOTE.split()) == 16
+        assert len(sr.fold(WIDE_QUOTE).split()) == 21
+        got = sr.locate_quote(WIDE_QUOTE.replace("biên", "biênx"), WIDE, 0)
+        assert got is not None
+        assert got["exact"] is False
+        # Above MIN_RATIO is not the claim: the token loop cleared that too.
+        # Only the right window scores this well.
+        assert got["ratio"] >= 0.95
+        # The first two lines, and no further: 10 -> 30 + 12. The token loop's
+        # window reached 52 here.
+        assert got["bbox"]["y"] == 10
+        assert got["bbox"]["height"] == 32
+
+    def test_a_quote_whose_window_is_unreachable_is_simply_unlocatable(self):
+        """The refusal half, on the page shape that produces it.
+
+        The class's justification is an unlocatable RATE (43.6% against 0.0%),
+        and no test demonstrated an unlocatable outcome: on the three-line
+        WIDE the old loop over-boxed instead of refusing, because a 19-token
+        window still fits a 24-token page. Trim the page to the two lines the
+        quote actually spans and there is no room to overshoot -- `wanted` is
+        21 folded words, `low` is 19, and 19 > 16 spans, so the old loop's
+        `if width > len(spans): break` fires on the first iteration and
+        nothing is ever compared. Verified: it returns None there.
+        """
+        page = {0: WIDE[0][:16]}          # WIDE's first two lines only
+        assert len(page[0]) == 16
+        got = sr.locate_quote(WIDE_QUOTE.replace("biên", "biênx"), page, 0)
+        assert got is not None, "the word sweep finds it"
+        assert got["exact"] is False
+        assert got["ratio"] >= 0.95
+        assert got["bbox"]["height"] == 32
+
+    def test_exact_over_multiword_tokens_still_works(self):
+        # The exact path is character-based and never had the hole; pinned so
+        # a future change to the sweep cannot quietly cost the verbatim case.
+        got = sr.locate_quote(WIDE_QUOTE, WIDE, 0)
+        assert got is not None and got["exact"] is True
+        assert got["bbox"]["height"] == 32

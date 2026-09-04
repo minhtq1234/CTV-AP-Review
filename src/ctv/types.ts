@@ -15,15 +15,40 @@ export interface EvidenceDoc {
   pages: DocPage[]
 }
 
-export type CheckGroup = 'Danh tính' | 'Ngân hàng' | 'Thanh toán' | 'Chính sách' | 'Chứng từ' | 'Chuyến đi'
-export type CheckType = 'compare' | 'expiry' | 'math' | 'policy'
+// Both vocabularies are runtime arrays first and types second, so a test can
+// compare them against the literals the server emits (server/ocr_extract.py).
+// They drifted apart once already: the semantic reader shipped `check:
+// "semantic"` and `group: "Điều khoản"` while these unions still listed four
+// checks and six groups, and `evalField` answered `undefined` for the field.
+export const CHECK_GROUPS = [
+  'Danh tính', 'Ngân hàng', 'Thanh toán', 'Chính sách', 'Chứng từ',
+  'Chuyến đi',
+  // Contract/BBNT clause evidence, read semantically rather than located by
+  // label (server/ocr_extract.py `_semantic_fields`).
+  'Điều khoản',
+] as const
+export type CheckGroup = typeof CHECK_GROUPS[number]
+
+export const CHECK_TYPES = [
+  'compare', 'expiry', 'math', 'policy',
+  // Read and quoted, but nothing compares it yet — see `evalField`.
+  'semantic',
+] as const
+export type CheckType = typeof CHECK_TYPES[number]
 
 // One place a field's value was found — a specific page of a specific document.
 export interface CtvSource {
   docId: string
   page: number      // 0-based page index within the doc
   value: string     // what the AI read here
-  bbox: Bbox        // in that page's natural px
+  /** In that page's natural px, or null when the value was read but could not
+   *  be located on the page (a semantic read whose quote did not match). Null
+   *  rather than a zero rectangle on purpose: a zero rectangle is a location
+   *  claim, and it would point the loupe at the page's top-left corner and
+   *  make an unlocatable quote indistinguishable from one found at the origin.
+   *  Same modelling as `CriterionEvidence.bbox`; `loupe.focusFor` already
+   *  falls back to page-level focus with no highlight. */
+  bbox: Bbox | null
   confidence: number
 }
 

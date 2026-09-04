@@ -44,15 +44,27 @@ class PartsPresence:
     #: Under presence the note is the entire answer a person acts on, so it is
     #: written in their words rather than in part keys.
     note: str
+    #: The parts a reader read and could not place on the page. A named subset
+    #: of `missing`, never of `found`: a value with nothing to check it against
+    #: is not presence. `found` + `missing` still partition `parts`, so nothing
+    #: is dropped and the unlocatable rate `semantic_read.locate_fields` gives
+    #: up dropping quotes to preserve stays countable off this answer.
+    unlocatable: tuple[str, ...] = ()
 
 
-def located_or_read(part: str, read: Mapping | None) -> bool:
-    """Whether a reader put this part somewhere on the document.
+def located_on_page(part: str, read: Mapping | None) -> bool:
+    """Whether a reader could point at this part on the document.
 
-    A readable value is obviously present. So is a located-but-unread hit:
-    `ocr_extract.locate_field` already emits `{"value": "", "bbox": ...}` when it
-    found the content and could not read it, and for "is it there?" that is a
-    yes.
+    A positioned box, and nothing less. A truthy value alone is NOT presence:
+    `semantic_read.read_document` guarantees every field it returns has a value
+    and a quote, so accepting a value would make this predicate constant-true
+    for every LLM read and turn "the model asserted it" into "it is on the
+    page". `locate_fields` deliberately keeps a quote it could not place with
+    `located=False`, and this is the flag consulting it.
+
+    A located-but-unread hit still counts: `ocr_extract.locate_field` emits
+    `{"value": "", "bbox": ...}` when it found the content and could not read
+    it, and for "is it there?" that is a yes.
 
     The size guard is load-bearing. `ocr_extract._EMPTY_SOURCE` is the
     placeholder written when a field's label appears in no document at all --
@@ -61,10 +73,22 @@ def located_or_read(part: str, read: Mapping | None) -> bool:
     """
     if not read:
         return False
-    if str(read.get("value") or "").strip():
-        return True
     bbox = read.get("bbox") or {}
     return bool(bbox.get("width")) and bool(bbox.get("height"))
+
+
+def claimed_without_place(part: str, read: Mapping | None) -> bool:
+    """Whether a reader produced a value for this part with nowhere to point.
+
+    The third answer. Counting such a part as found is the model asserting its
+    own correctness; counting it as plainly absent states an absence nobody
+    observed -- a reader did read that clause, it just could not be placed.
+    Both are guesses, so it gets named instead of guessed at.
+    """
+    if not read:
+        return False
+    return (bool(str(read.get("value") or "").strip())
+            and not located_on_page(part, read))
 
 
 def check_parts(
@@ -72,7 +96,8 @@ def check_parts(
     reads: Mapping[str, Mapping] | None,
     *,
     labels: Mapping[str, str] | None = None,
-    is_present: Callable[[str, Mapping | None], bool] = located_or_read,
+    is_present: Callable[[str, Mapping | None], bool] = located_on_page,
+    is_claimed: Callable[[str, Mapping | None], bool] = claimed_without_place,
 ) -> PartsPresence:
     """Which of `parts` a reader covered.
 
@@ -93,21 +118,56 @@ def check_parts(
 
     found = tuple(part for part in parts if is_present(part, reads.get(part)))
     missing = tuple(part for part in parts if part not in found)
+    unlocatable = tuple(part for part in missing
+                        if is_claimed(part, reads.get(part)))
+    absent = tuple(part for part in missing if part not in unlocatable)
 
-    if not found:
-        return PartsPresence(
-            PartsCoverage.NONE, (), missing,
-            f"Không thấy nội dung nào trên chứng từ: {_names(missing, labels)}.",
-        )
     if not missing:
         return PartsPresence(
             PartsCoverage.COMPLETE, found, (),
             f"Có đủ {len(found)} nội dung trên chứng từ.",
         )
+
+    coverage = PartsCoverage.PARTIAL if found else PartsCoverage.NONE
     return PartsPresence(
-        PartsCoverage.PARTIAL, found, missing,
-        f"Chưa thấy trên chứng từ: {_names(missing, labels)}.",
+        coverage, found, missing,
+        _note(found, absent, unlocatable, labels),
+        unlocatable,
     )
+
+
+def _note(
+    found: tuple[str, ...],
+    absent: tuple[str, ...],
+    unlocatable: tuple[str, ...],
+    labels: Mapping[str, str] | None,
+) -> str:
+    """One sentence per bucket, never one sentence for two of them.
+
+    "Not on the document" and "read but unplaceable" are different claims about
+    different parts, and folding the second into the first is the same lie as
+    counting it present, pointed the other way.
+
+    The "nào" wording -- "no content at all on the document" -- is a claim
+    about the whole document, so it is only available when neither other
+    bucket contradicts it. `found` alone is the wrong test now that a read the
+    locator could not place is its own bucket: with nothing located and one
+    part read-but-unplaceable it produced "Không thấy nội dung nào trên chứng
+    từ: Chi nhánh, Tỉnh/TP. Đọc được nhưng chưa chỉ được vị trí trên trang:
+    Tên ngân hàng." -- a sentence its own next sentence refutes, in the note
+    that is the entire answer a reviewer acts on.
+    """
+    sentences = []
+    if absent:
+        sentences.append(
+            f"Chưa thấy trên chứng từ: {_names(absent, labels)}."
+            if found or unlocatable
+            else f"Không thấy nội dung nào trên chứng từ: {_names(absent, labels)}."
+        )
+    if unlocatable:
+        sentences.append("Đọc được nhưng chưa chỉ được vị trí trên trang: "
+                         f"{_names(unlocatable, labels)}.")
+    return " ".join(sentences)
 
 
 def _names(parts: tuple[str, ...], labels: Mapping[str, str] | None) -> str:

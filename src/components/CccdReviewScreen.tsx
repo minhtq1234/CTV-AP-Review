@@ -23,11 +23,13 @@ export interface CccdReviewViewProps {
   review: CccdReview | null
   /** A mutation is in flight. Gates the row actions AND the way out. */
   busy: boolean
-  /** The first card list has not arrived. Gates the row actions but NOT the
-   *  footer: a failed GET leaves this true for ever, and folding it into
-   *  `busy` disabled the only way off the screen permanently -- next to an
-   *  alert saying the load failed and a live region still claiming
-   *  "Đang cập nhật…". `Thử lại` only re-issues the same GET. */
+  /** A card list request is in flight and nothing has arrived yet. Drives the
+   *  status line and the banner only -- NOT the row actions (they render
+   *  behind `review`, which is non-null exactly when a list has arrived) and
+   *  NOT the footer (folding it into `busy` disabled the only way off the
+   *  screen while the load was failing). False once a load fails, so neither
+   *  the live region nor the banner claims progress beside the alert saying it
+   *  failed; `Thử lại` re-issues the GET and this goes true again. */
   loading: boolean
   /** `load` can be retried by reloading; `mutate` cannot -- reloading
    *  re-issues no PUT and blanks the screen. */
@@ -284,9 +286,14 @@ export function CccdReviewView({
         <div className="banner result-banner">
           <b>Ghép ảnh CCCD</b>
           <span>
+            {/* Not "Đang tải…" whenever `review` is null: a failed load leaves
+                it null for ever, and the banner then claimed progress right
+                beside the alert saying the load failed — the same false
+                progress claim as the live region above, in the sighted
+                reviewer's path rather than the screen reader's. */}
             {review
               ? `${review.counts.attached} đã gắn · ${review.counts.unattachedCards} chưa ghép · ${review.counts.packetsWithoutCard} gói chưa có thẻ`
-              : 'Đang tải…'}
+              : loading ? 'Đang tải…' : '—'}
           </span>
         </div>
 
@@ -363,9 +370,14 @@ export function CccdReviewView({
                           browsing a list but not when Tab lands on a
                           descendant -- and the first 18 tab stops here are 18
                           consecutively identical "Gán thẻ". */}
+                      {/* No `loading` term on the button below: this whole
+                          subtree is gated on `review`, which is non-null
+                          exactly when the first list has arrived — so
+                          `loading` is provably false here, and including it
+                          read as a safety check that was not one. */}
                       <button
                         type="button"
-                        disabled={busy || loading || workbookFailed}
+                        disabled={busy || workbookFailed}
                         title={workbookFailed
                           ? 'Không đọc được file ảnh CCCD nên chưa có ảnh để gán.'
                           : undefined}
@@ -387,7 +399,9 @@ export function CccdReviewView({
                     key={`attached-${row.packetIndex}`}
                     caseId={caseId}
                     row={row}
-                    busy={busy || loading}
+                    // No `loading` term, same reason as `Gán thẻ` above: this
+                    // subtree only renders once the first list has arrived.
+                    busy={busy}
                     onDetach={onDetach}
                   />
                 ))}
@@ -429,9 +443,12 @@ export function CccdReviewView({
         {/* Gated on an in-flight mutation, and deliberately NOT on `loading`.
             Leaving mid-mutation defeats the single getCase that
             continueFromCccdReview does, because a mutation moves the summary
-            and the per-packet rollups. But a failed card GET leaves `loading`
-            true for ever, and gating on it disabled the only way off this
-            screen permanently -- beside an alert saying the load failed. */}
+            and the per-packet rollups. A load is different: it is not the
+            reviewer's edit, there is nothing to lose by leaving during one,
+            and gating on it once disabled the only way off this screen for as
+            long as the GET was failing -- beside an alert saying so. (That
+            `loading` no longer sticks after a failure is not the reason: the
+            footer should not follow a plain reload either way.) */}
         <button className="btn primary" type="button" disabled={busy}
                 onClick={onContinue}>
           Tiếp tục →
@@ -479,36 +496,64 @@ export default function CccdReviewScreen({
   const [error, setError] =
     useState<{ text: string; kind: 'load' | 'mutate' } | null>(null)
   const [busy, setBusy] = useState(false)
+  // Whether a card GET is actually in flight. Not derived from `cards`/`error`:
+  // `cards === null` is permanent after a failed load, and `cards === null &&
+  // error === null` answers a proxy question that comes apart from the real one
+  // -- dismissing a load error (`onDismissError` is a required prop) flips it
+  // back to true with nothing fetching, which is the same false-progress claim
+  // pointed the other way. `fetchCards` owns this flag, so it is true exactly
+  // while the newest load is unresolved. Starts true because mounting always
+  // fires one.
+  const [loading, setLoading] = useState(true)
   const [picking, setPicking] = useState<{ packetIndex: number; label: string } | null>(null)
 
-  // Which case the screen is live on — null once unmounted. Every response is
-  // checked against the case it was asked for, so an unmount or a `caseId` swap
-  // mid-flight retires the answer instead of rendering one case's cards over
-  // another's. A shared boolean cannot express the swap: the effect that re-arms
-  // it runs in the same commit as the cleanup that set it.
+  // Which case the screen is live on — null once unmounted. A mutation is
+  // user-initiated and one at a time, so case identity is the right question
+  // for `detach`: an unmount or a `caseId` swap mid-PUT retires the answer
+  // instead of rendering one case's cards over another's.
   const liveCaseIdRef = useRef<string | null>(null)
+
+  // Which LOAD is live — a fresh token per request, not a case id. The case id
+  // answers "is this the case the screen is on", which is a different question
+  // and cannot retire a superseded request for the SAME case: StrictMode's
+  // setup→cleanup→setup re-arms the case id in one commit, before either GET
+  // resolves, so both concurrent loads passed that guard. Then GET-A landed,
+  // the screen went interactive, a `Gỡ` detached a card, and GET-B — issued
+  // before the detach — put the card back with its pre-detach snapshot: the
+  // row offering `Gỡ` for a card the server has already detached, i.e. the UI
+  // telling the reviewer a person is attached to a payment when they are not.
+  const liveLoadRef = useRef<symbol | null>(null)
 
   // Always clears first. There used to be a `clearFirst: false` mode for the
   // post-assign refetch, so a one-row change would not collapse the screen --
   // but both mutations now render from their own PUT response, so the only
   // fetch left is the one that owns the whole screen and has nothing to keep.
   const fetchCards = useCallback(async () => {
+    // Minted per request and stored before the await: any load that starts
+    // after this one supersedes it, whatever case either was for.
+    const token = Symbol('cccd-load')
+    liveLoadRef.current = token
     setCards(null)
     setError(null)
+    setLoading(true)
     // The fetch holds `busy` too: without it a detach started mid-fetch races
     // it, and last write wins silently.
     setBusy(true)
     try {
       const result = await listCccdCards(caseId)
-      if (liveCaseIdRef.current === caseId) setCards(result)
+      if (liveLoadRef.current === token) setCards(result)
     } catch {
-      if (liveCaseIdRef.current === caseId)
+      if (liveLoadRef.current === token)
         setError({ text: LOAD_ERROR, kind: 'load' })
     } finally {
-      // Guarded like the setters above: a request for a case the screen has left
-      // must not clear the `busy` that the live case's own operation set. Every
-      // caseId change fires that case's own load, so `busy` is never stranded.
-      if (liveCaseIdRef.current === caseId) setBusy(false)
+      // Guarded like the setters above: a superseded or unmounted request must
+      // not clear the `busy` that the live operation set. Every caseId change
+      // fires that case's own load, so neither flag is stranded -- a retired
+      // request leaves them set and the request that retired it clears them.
+      if (liveLoadRef.current === token) {
+        setBusy(false)
+        setLoading(false)
+      }
     }
   }, [caseId])
 
@@ -520,7 +565,12 @@ export default function CccdReviewScreen({
     // packetIndex to this one — a silent attach to the wrong packet. Close it.
     setPicking(null)
     void load()
-    return () => { liveCaseIdRef.current = null }
+    return () => {
+      liveCaseIdRef.current = null
+      // Retires whatever load this setup started. The next setup mints its own
+      // token, so a re-armed effect never adopts the previous request's answer.
+      liveLoadRef.current = null
+    }
   }, [caseId, load])
 
   const detach = async (cardId: string) => {
@@ -548,7 +598,12 @@ export default function CccdReviewScreen({
         caseName={caseName}
         review={cards === null ? null : buildCccdReview(packets, cards)}
         busy={busy}
-        loading={cards === null}
+        // A load is actually in flight — not merely "no cards yet". The catch
+        // never sets `cards`, so `cards === null` is permanent after a failed
+        // load and the live region announced progress that would never happen,
+        // beside an alert saying the load failed. `Thử lại` re-issues the GET,
+        // so this re-arms on retry.
+        loading={loading}
         error={error}
         workbook={workbook}
         onAssign={(packetIndex, label) => { setPicking({ packetIndex, label }) }}

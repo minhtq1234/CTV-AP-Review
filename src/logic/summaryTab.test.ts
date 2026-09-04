@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { PENDING_REASONS } from '../upload/api'
 import type { SummaryCriterion, SummaryPayload } from '../upload/api'
 import {
   MISSING_LABELS,
+  PENDING_REASON_PRESENTATION,
   SUMMARY_STATUS_PRESENTATION,
   cellPresentation,
   gapNotes,
@@ -206,5 +209,58 @@ describe('cellPresentation', () => {
       .toBe(SUMMARY_STATUS_PRESENTATION.pending)
     expect(cellPresentation({ status: 'pending' }))
       .toBe(SUMMARY_STATUS_PRESENTATION.pending)
+  })
+})
+
+describe('the pending vocabulary is one vocabulary', () => {
+  // `blocked` is stamped by the engine at two sites and was missing from BOTH
+  // the type and this map, so #12 (332 cells) and #15 fell through to the
+  // generic chip -- the one-chip-means-five-things behaviour the pendingReason
+  // work exists to end. The pin below is three-way so the next reason cannot be
+  // added on one side only, in either direction.
+  it('gives a blocked cell its own chip rather than the generic one', () => {
+    const chip = cellPresentation({ status: 'pending', pendingReason: 'blocked' })
+    expect(chip).not.toBe(SUMMARY_STATUS_PRESENTATION.pending)
+    expect(chip.label).not.toBe(SUMMARY_STATUS_PRESENTATION.pending.label)
+    // A computation whose inputs did not read is a fact about THIS packet, so
+    // it reads as an unknown rather than as scope.
+    expect(chip.tone).toBe('unknown')
+  })
+
+  it('matches the reasons the engine actually stamps', () => {
+    const engine = readFileSync('server/evaluate.py', 'utf8')
+    // The engine's own declared vocabulary, not a scrape of its call sites.
+    // Scraping `pending_reason="..."` read only the literal sitting directly
+    // after the `=`, so it never saw `pending_reason="unmatched" if ... else
+    // "no-roster-value"` -- a form already in that file -- and a reason added
+    // that way passed this pin while its cells fell through to the generic
+    // chip. `evaluate.PENDING_REASONS` is the single source of truth and
+    // `Cell.__post_init__` refuses anything outside it, so a reason cannot be
+    // stamped without appearing here.
+    const declared = engine.match(
+      /^PENDING_REASONS: tuple\[str, \.\.\.\] = \(([\s\S]*?)^\)/m,
+    )
+    expect(declared).not.toBeNull()
+    const stamped = new Set(
+      [...declared![1].matchAll(/"([a-z-]+)"/g)].map(m => m[1]),
+    )
+    expect(stamped.size).toBeGreaterThan(0)
+    expect([...stamped].sort()).toEqual([...PENDING_REASONS].sort())
+  })
+
+  it('is enforced engine-side, not merely declared', () => {
+    // What makes reading the tuple sufficient: the engine refuses to build a
+    // cell whose reason is outside it, so a literal cannot be stamped without
+    // being declared. Without this guard the tuple would be a comment and a
+    // stray literal at a call site would reach the generic chip again. Pinned
+    // engine-side too (`test_a_reason_the_frontend_has_no_chip_for_is_refused`);
+    // pinned here as well because it is THIS map's safety that depends on it.
+    const engine = readFileSync('server/evaluate.py', 'utf8')
+    expect(engine).toContain('if self.pending_reason not in PENDING_REASONS:')
+  })
+
+  it('presents every reason the type admits, and invents none', () => {
+    expect(Object.keys(PENDING_REASON_PRESENTATION).sort())
+      .toEqual([...PENDING_REASONS].sort())
   })
 })

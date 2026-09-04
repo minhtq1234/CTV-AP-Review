@@ -1,7 +1,7 @@
 // src/components/CccdReviewScreen.interaction.test.tsx
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CccdCard, PacketMeta } from '../upload/api'
@@ -112,6 +112,25 @@ async function render(caseId: string, onContinue = () => {}) {
 
 async function mount(onContinue = () => {}) {
   await render('case-1', onContinue)
+}
+
+// A second helper rather than wrapping the shared one: StrictMode double-mounts
+// the screen, which would double every call count the rest of this file asserts.
+// The app itself renders under StrictMode, so anything about effect re-arming
+// has to be measured here.
+async function renderStrict(caseId: string, onContinue = () => {}) {
+  await act(async () => {
+    root.render(
+      <StrictMode>
+        <CccdReviewScreen
+          caseId={caseId}
+          caseName="FA-SYNTHETIC.pdf"
+          packets={packets}
+          onContinue={onContinue}
+        />
+      </StrictMode>,
+    )
+  })
 }
 
 // A response the test lands by hand, after the screen has moved on.
@@ -509,5 +528,96 @@ describe('CccdReviewScreen', () => {
     expect(host.querySelector('button[aria-label="Xem cả hai mặt của ảnh CCCD card-01"]')).not.toBeNull()
     // The single-sided card's image still renders, just not as a button.
     expect(host.querySelector('img[alt="Ảnh CCCD card-00"]')).not.toBeNull()
+  })
+})
+
+describe('CccdReviewScreen under StrictMode', () => {
+  // The screen guarded its load responses with the CASE id, which answers "is
+  // this the case the screen is on" -- a different question from "is this the
+  // request the screen is waiting for". StrictMode's setup->cleanup->setup
+  // re-arms that ref inside one commit, before either GET resolves, so BOTH
+  // concurrent loads passed the guard.
+  it('never lets a pre-detach snapshot put a detached card back on the row', async () => {
+    const first = deferred<CccdCard[]>()   // retired by the second setup
+    const second = deferred<CccdCard[]>()  // the live one
+    listCccdCards.mockReturnValueOnce(first.promise)
+    listCccdCards.mockReturnValueOnce(second.promise)
+    assignCccdCard.mockResolvedValue({
+      cards: [card('card-00', null), card('card-01', 1)],
+    })
+
+    await renderStrict('case-1')
+    // If StrictMode ever stopped double-invoking, the race below could not be
+    // staged at all and the rest of this test would pass vacuously.
+    expect(listCccdCards).toHaveBeenCalledTimes(2)
+
+    // The live load lands and the screen goes interactive.
+    await act(async () => {
+      second.resolve([card('card-00', 0), card('card-01', 1)])
+      await second.promise
+    })
+    expect(host.textContent).toContain('0 gói chưa có thẻ')
+
+    // The reviewer detaches; the server agrees.
+    await act(async () => { button('Gỡ').click() })
+    expect(assignCccdCard).toHaveBeenCalledWith('case-1', 'card-00', null)
+    expect(host.textContent).toContain('1 gói chưa có thẻ')
+
+    // The other GET -- issued before the detach -- now lands with its
+    // pre-detach snapshot. Rendering it would offer `Gỡ` for a card the server
+    // has already detached: the UI telling the reviewer a person is attached to
+    // a payment when they are not.
+    await act(async () => {
+      first.resolve([card('card-00', 0), card('card-01', 1)])
+      await first.promise
+    })
+
+    expect(host.textContent).toContain('1 gói chưa có thẻ')
+    expect(host.textContent).not.toContain('0 gói chưa có thẻ')
+  })
+
+  it('stops claiming progress once the load has failed', async () => {
+    // `fetchCards`' catch never sets `cards`, so `cards === null` is permanent
+    // after a failed load: the live region announced "Đang tải danh sách ảnh…"
+    // for ever, and the banner "Đang tải…", both beside an alert saying the
+    // load had failed. One false progress claim swapped for another.
+    listCccdCards.mockRejectedValue(new Error('boom'))
+    await renderStrict('case-1')
+
+    const live = host.querySelector('[role="status"]')
+    expect(live).not.toBeNull()
+    expect(live!.textContent).not.toContain('Đang tải')
+    expect(host.textContent).not.toContain('Đang tải…')
+    expect(host.textContent).toContain('Không tải được danh sách ảnh.')
+  })
+
+  // NOT tested here, deliberately, and worth saying why rather than shipping a
+  // test that cannot fail: `loading` is now a flag `fetchCards` owns instead of
+  // `cards === null && error === null`. Through today's DOM the two agree in
+  // every reachable state, so any test written against the rendered screen
+  // would pass under both. They come apart only via `onDismissError` on a
+  // `load` error -- clearing the error with no GET running used to flip
+  // `loading` back to true for ever -- and the load branch renders `Thử lại`,
+  // never a dismiss. The fix removes the coupling so that adding the dismiss
+  // button (the natural symmetry with the mutate branch) cannot resurrect the
+  // defect; the day that button exists, this is the test to write.
+
+  it('claims progress again when the reviewer retries', async () => {
+    const retry = deferred<CccdCard[]>()
+    listCccdCards.mockRejectedValueOnce(new Error('boom'))
+    listCccdCards.mockRejectedValueOnce(new Error('boom'))
+    listCccdCards.mockReturnValueOnce(retry.promise)
+    await renderStrict('case-1')
+    expect(host.textContent).toContain('Không tải được danh sách ảnh.')
+
+    await act(async () => { button('Thử lại').click() })
+    expect(host.querySelector('[role="status"]')!.textContent)
+      .toContain('Đang tải')
+
+    await act(async () => {
+      retry.resolve([card('card-00', 0), card('card-01', 1)])
+      await retry.promise
+    })
+    expect(host.textContent).toContain('0 gói chưa có thẻ')
   })
 })

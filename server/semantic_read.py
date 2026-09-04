@@ -72,6 +72,20 @@ lands on the wrong occurrence of itself (7.2% at four words), so a short quote
 is refused rather than boxed. The prompt's job is to ask for the containing
 clause, not the bare value -- #13's `term` and `account` parts invite exactly
 the short quotes this refuses.
+
+Each length gate is counted in its own unit, and this is not fussiness
+--------------------------------------------------------------------
+`fold` turns punctuation into a space, which moves a quote's word count in
+BOTH directions, so one count cannot serve both gates. `MAX_WORDS` is a cost
+control and cost is driven by the sweep, which measures windows in folded
+words; counted on `norm` it did not bind -- 60 hyphenated tokens fold to 180
+words and took 52 seconds to refuse. `MIN_WORDS` is a correctness control and
+both directions break it: `là 15 ngày kể từ ngày - - -` is 9 norm words but 6
+folded, and `15/07/2026 - 15/08/2026 - 15/09/2026` is 5 norm words but 9
+folded. Each was boxed as `exact: True, ratio: 1.0` by the gate that ignored
+its direction, so the floor takes the smaller of the two counts and refuses
+both. Both gates sit above the exact pass as well as the fuzzy one: the two
+short quotes above are exact hits, not fuzzy near-misses.
 """
 from __future__ import annotations
 
@@ -84,10 +98,14 @@ from ocr_extract import group_lines, norm, union_bbox
 
 #: Below this many words a quote is refused rather than located. Eight, not
 #: six: measured wrong-occurrence on a real contract was 2.74% at six words,
-#: 1.05% at seven and 0.95% at eight.
+#: 1.05% at seven and 0.95% at eight. Applied to `min(norm words, folded
+#: words)` -- `fold` moves the count in both directions, and only counting the
+#: smaller refuses in both. See `locate_quote`.
 MIN_WORDS = 8
 
-#: Above this many words a quote is refused too -- see `locate_quote`.
+#: Above this many words a quote is refused too, in FOLDED words -- that is
+#: what the fuzzy sweep walks, so that is what its cost scales with. See
+#: `locate_quote`.
 MAX_WORDS = 60
 
 #: Minimum SequenceMatcher ratio for the fuzzy fallback.
@@ -228,23 +246,55 @@ def locate_quote(
     Exact matching is tried on every page before any fuzzy matching on any
     page -- a verbatim hit elsewhere beats a 0.91 near-miss on the claimed one.
     """
-    # Counted on `norm`, BEFORE punctuation becomes spaces. Counting after it
-    # made the gate depend on how much punctuation a value carries rather than
-    # on how much clause surrounds it: `15/07/2026 - 15/08/2026` inflated to 6
-    # words and was accepted, which is #13's `term` -- the very case the
-    # docstring names as refused.
-    if len(norm(quote).split()) < MIN_WORDS:
-        return None
-    # And an upper bound, because the fuzzy sweep is O(window x quote) and the
-    # quote is a model-controlled string. Measured on one real 940-token page:
-    # 8 words 38ms, 80 words 674ms, 160 words 15.9s, 320 words 105s, 480 words
-    # still running after 8 minutes. `ocr_packet` runs on a daemon thread, so
-    # that is a case stuck in `processing` for ever with no error. A model that
-    # echoes a paragraph instead of a clause is not quoting.
-    if len(norm(quote).split()) > MAX_WORDS:
-        return None
+    # Both gates sit above BOTH passes, and each is counted in the unit that
+    # decides the thing it guards. They are not the same unit, because `fold`
+    # moves the count in both directions: punctuation expanding into spaces
+    # inflates it (a date triple becomes three words), while a pure-punctuation
+    # token folding to nothing deflates it.
     folded = fold(quote)
-    if not folded:
+    folded_words = len(folded.split())
+    norm_words = len(norm(quote).split())
+    # FLOOR: on whichever count is smaller, because each direction breaks a
+    # different guarantee and the floor exists to refuse, not to guess.
+    # Counting norm only let `là 15 ngày kể từ ngày - - -` -- 9 norm words but
+    # 6 folded, the three lone dashes folding away and `_index` dropping them
+    # -- through onto the EXACT path, where it came back
+    # `{exact: True, ratio: 1.0}` on a six-token box: the strongest claim this
+    # module makes, two words under the floor that claim was measured to buy.
+    # Counting fold only would re-open the mirror defect: `15/07/2026 -
+    # 15/08/2026 - 15/09/2026` is 5 norm words but 9 folded, and against a page
+    # that states it verbatim it boxes as exact -- a bare #13 `term` value
+    # highlighted on one of several date occurrences. Taking the min refuses
+    # both. This also subsumes the empty and pure-punctuation quotes, which
+    # fold to zero words.
+    if min(norm_words, folded_words) < MIN_WORDS:
+        return None
+    # CEILING: on folded words alone, because its justification is purely cost
+    # and cost is driven purely by folded words -- `_best_window` sets
+    # `wanted = len(quote.split())` on the FOLDED string and sweeps windows in
+    # folded words, so that is what the O(window x quote) sweep actually walks.
+    # Measured on one real 940-token page: 8 words 38ms, 80 words 674ms, 160
+    # words 15.9s, 320 words 105s, 480 words still running after 8 minutes.
+    # Counted on `norm` this gate did not bind at all where it mattered.
+    # Re-measured on a synthetic 960-token page of the payment-schedule shape
+    # (dates, amounts, hyphenated terms), sweeping a quote cut from the page
+    # itself so the `quick_ratio` prefilter cannot short-circuit it: 60 folded
+    # words 1.5s, 139 folded 6.6s, 180 folded 10.5s. Treat these as an order of
+    # magnitude, not a constant -- they move several-fold with page composition
+    # and machine, and a quote DISSIMILAR to the page is far cheaper because
+    # the prefilters reject it outright. What is stable is the shape: the cost
+    # is superlinear in folded words, and counted on `norm` this gate did not
+    # bind where it mattered (60 norm words of hyphenated triples is 180
+    # folded, i.e. the 10.5s row). It is ONE page of ONE field, and
+    # `locate_fields` runs per requested part per document -- 8 parts on a
+    # contract -- sweeping every page each time.
+    #
+    # This BOUNDS that cost; it does not remove it. `ocr_packet` still runs
+    # `locate_fields` on a daemon thread with no timeout, so a long contract
+    # can still spend a minute or more in `processing` with nothing said. The
+    # timeout is a separate piece of work. A model that echoes a paragraph
+    # instead of a clause is not quoting.
+    if folded_words > MAX_WORDS:
         return None
 
     order = ([page] if page in pages else []) \

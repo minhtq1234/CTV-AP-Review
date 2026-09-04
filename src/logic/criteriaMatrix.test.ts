@@ -155,6 +155,50 @@ describe('automatedCount', () => {
     const parts = criteriaHeadline(payload([auto(1), manual(21)]))
     expect(parts).toContain('1 tiêu chí chưa có kiểm tra tự động')
   })
+
+  // A cached bundle against a server predating `automatic`: the field is simply
+  // absent. Read straight off the payload it is undefined, the filter drops
+  // every row, and the headline reports the maximally alarming and completely
+  // wrong "25 tiêu chí chưa có kiểm tra tự động" with no error surfaced
+  // anywhere. Neither default is honest -- `?? false` IS that headline, and
+  // `?? true` reports zero and hides a real coverage gap -- so the answer is
+  // that the tool does not know.
+  const unsaid = (stt: number) => {
+    const { automatic: _automatic, ...rest } = row(stt, 'ok', [['Excel', 'ok']])
+    return rest as CriterionRow
+  }
+
+  it('answers null when the payload never said', () => {
+    expect(automatedCount(payload([unsaid(1), unsaid(2)]))).toBeNull()
+  })
+
+  it('answers null when even one row does not say', () => {
+    expect(automatedCount(payload([auto(1), unsaid(2)]))).toBeNull()
+  })
+})
+
+describe('criteriaHeadline when the payload does not say what is automated', () => {
+  const unsaid = (stt: number) => {
+    const { automatic: _automatic, ...rest } = row(stt, 'ok', [['Excel', 'ok']])
+    return rest as CriterionRow
+  }
+
+  it('says the figure is unavailable rather than inventing a number', () => {
+    const parts = criteriaHeadline(payload([unsaid(1), unsaid(2)]))
+    // Not the wrong count...
+    expect(parts.some(p => /\d+ tiêu chí chưa có kiểm tra tự động/.test(p)))
+      .toBe(false)
+    // ...and not silence either, which is what FULL coverage renders as: the
+    // two must not be indistinguishable, or "we could not tell" reads to a
+    // reviewer as "nothing is left to check by hand".
+    expect(parts).toContain('chưa rõ mức kiểm tra tự động')
+    const stated = row(1, 'ok', [['Excel', 'ok']])
+    expect(criteriaHeadline(payload([stated])))
+      .not.toContain('chưa rõ mức kiểm tra tự động')
+    // Everything it does know is still there.
+    expect(parts[0]).toBe('2 tiêu chí')
+    expect(parts).toContain('2 đạt')
+  })
 })
 
 describe('criteriaHeadline', () => {

@@ -13,7 +13,10 @@ import json
 import os
 from dataclasses import dataclass, field
 
+import pytest
+
 import cccd_ingest
+from cccd_ingest import LeaveSheetEvidence, ReconcileSheetEvidence
 
 
 @dataclass(frozen=True)
@@ -160,12 +163,141 @@ class TestTaxScreenshots:
         assert len(docs_in(paths[0])) == 1
 
         assert cccd_ingest.reconcile_owned_evidence(
-            paths, str(case_dir), [], sheet_keep=written)
+            paths, str(case_dir), [],
+            sheet_keep=ReconcileSheetEvidence(written))
         assert len(docs_in(paths[0])) == 1
 
         assert cccd_ingest.reconcile_owned_evidence(
-            paths, str(case_dir), [], sheet_keep={})
+            paths, str(case_dir), [],
+            sheet_keep=ReconcileSheetEvidence({}))
         assert docs_in(paths[0]) == []
+
+    def test_reconciling_a_sheet_document_away_removes_its_image(
+        self, tmp_path,
+    ):
+        """Dropping the document must take the file with it.
+
+        `app.get_page` serves any matching filename out of the packet
+        directory WITHOUT opening the manifest, so an orphaned
+        `sheet-pit-....png` keeps returning that person's tax lookup -- their
+        name and their MST -- to anyone who ever saw the URL. The unlink only
+        ever looked at basenames starting `cccd-`, and sheet images start
+        `sheet-`.
+        """
+        case_dir, paths, _ = self._attach_one(tmp_path)
+        source = docs_in(paths[0])[0]["pages"][0]["src"]
+        assert os.path.exists(source)
+        packet_dir = os.path.dirname(paths[0])
+
+        assert cccd_ingest.reconcile_owned_evidence(
+            paths, str(case_dir), [],
+            sheet_keep=ReconcileSheetEvidence({}))
+
+        assert docs_in(paths[0]) == []
+        assert not os.path.exists(source)
+        assert [
+            name for name in os.listdir(packet_dir)
+            if name.startswith("sheet-")
+        ] == []
+
+    def test_a_bare_keep_dict_is_not_a_spellable_reconciliation(
+        self, tmp_path,
+    ):
+        """`{}` used to mean "delete every sheet document", silently.
+
+        The PR fixed the DEFAULT and left the value nullable, so one
+        `sheet_keep or None` normalisation, or one new caller forwarding
+        `attach_sheet_evidence`'s bare `{}`, puts the deleting state back.
+        Neither case of the two-case value can be spelled by accident, and
+        anything else is refused loudly with the documents still attached.
+        """
+        case_dir, paths, _ = self._attach_one(tmp_path)
+
+        with pytest.raises(TypeError):
+            cccd_ingest.reconcile_owned_evidence(
+                paths, str(case_dir), [], sheet_keep={})
+
+        surviving = docs_in(paths[0])
+        assert len(surviving) == 1
+        assert surviving[0]["kind"] == "pit"
+
+    def test_the_wrapper_refuses_what_it_cannot_reconcile_with(self, tmp_path):
+        """Guarding the wrapper is not enough if what it wraps is unchecked.
+
+        `ReconcileSheetEvidence(None)` is the `sheet_keep or None`
+        normalisation the docstring warns about, and it used to reach
+        `keep.get(...)` and raise AttributeError from inside a reconciliation
+        that is not wrapped in a try. A bare string where a set belongs is
+        worse than loud: `doc_id not in sheet_keep` becomes a SUBSTRING test
+        and silently keeps documents it was told to drop.
+        """
+        case_dir, paths, written = self._attach_one(tmp_path)
+
+        with pytest.raises(TypeError):
+            ReconcileSheetEvidence(None)
+        with pytest.raises(TypeError):
+            ReconcileSheetEvidence({0: "sheet-excel-d0-pit"})
+        with pytest.raises(TypeError):
+            ReconcileSheetEvidence({"0": {"sheet-excel-d0-pit"}})
+
+        # Refused before anything was read or written.
+        assert len(docs_in(paths[0])) == 1
+        # And the shape `attach_sheet_evidence` really returns still works.
+        assert cccd_ingest.reconcile_owned_evidence(
+            paths, str(case_dir), [],
+            sheet_keep=ReconcileSheetEvidence(written))
+        assert len(docs_in(paths[0])) == 1
+
+    def test_replacing_a_sheet_document_removes_the_image_it_replaced(
+        self, tmp_path,
+    ):
+        """The other route to the orphan `reconcile` was taught to prevent.
+
+        The doc id is positional (`sheet-excel-{drawing id}-{kind}`); the
+        filename carries the image sha. So the same workbook slot with
+        corrected content writes a NEW file and repoints the SAME document at
+        it -- the document is never dropped, so nothing puts the old file in
+        `removed_docs`. `app.get_page` serves it by filename anyway.
+        """
+        case_dir, extracted, paths, metas = build_case(tmp_path, packets=1)
+        metas[0]["rosterIdentity"] = {"cccd": ROSTER_ROWS[0]["cccd"]}
+        packet_dir = os.path.dirname(paths[0])
+
+        def read(sha: str, blob: bytes):
+            path = extracted / f"tax-{sha[:4]}.png"
+            path.write_bytes(blob)
+            drawing = FakeDrawing(
+                "drawing-0001", "tax", FakeAnchor("MST", 3),
+                stored_path=str(path), sha256=sha,
+            )
+            return cccd_ingest.attach_sheet_evidence(
+                [drawing], {"MST": MST_SHEET}, ROSTER_ROWS, metas,
+                str(case_dir), paths,
+            )
+
+        read("a" * 64, b"\x89PNG\r\n\x1a\n" + b"1" * 40)
+        first = docs_in(paths[0])[0]["pages"][0]["src"]
+        read("b" * 64, b"\x89PNG\r\n\x1a\n" + b"2" * 40)
+        second = docs_in(paths[0])[0]["pages"][0]["src"]
+
+        assert first != second
+        assert os.path.exists(second)
+        # The superseded image is gone, not merely unreferenced.
+        assert not os.path.exists(first)
+        assert sorted(
+            name for name in os.listdir(packet_dir)
+            if name.startswith("sheet-")
+        ) == [os.path.basename(second)]
+
+    def test_every_owned_family_is_reconciled(self):
+        """A family in `_OWNED_FAMILIES` that `_should_drop` has no branch for
+        would be un-reconcilable: never dropped, never unlinked, forever. This
+        fails when the two drift apart rather than letting them.
+        """
+        for prefix in cccd_ingest._OWNED_PREFIXES:
+            assert cccd_ingest._should_drop(
+                f"{prefix}nothing-produced-this", set(), set(),
+            ), prefix
 
     def test_a_card_operation_does_not_touch_sheet_evidence(self, tmp_path):
         """The one that shipped broken, and that this test used to assert.
@@ -255,7 +387,67 @@ class TestWhatIsNotAttached:
             [drawing], {"MST": MST_SHEET}, blank, metas, str(case_dir), paths,
         )
         assert written == {}
-        assert refused == {"d0": "non-12-digit-roster-cccd"}
+        assert refused == {"d0": "blank-roster-cccd"}
+        assert docs_in(paths[0]) == []
+
+    def test_a_nine_digit_cmnd_row_still_reaches_its_packet(self, tmp_path):
+        """The guard is about the EMPTY key, not the length.
+
+        `_packet_target_index` compares digit strings for exact equality, so a
+        9-digit legacy CMND matches only itself and `len(targets) != 1` still
+        refuses a tie -- this is a unique, correct match. `roster_checks`
+        matches a `cmnd` header by name, so these rows are expected input, and
+        rejecting everything that is not 12 digits threw the screenshot away.
+        """
+        case_dir, extracted, paths, metas = build_case(tmp_path)
+        cmnd = [
+            {"name": "NGUYEN VAN MOT", "cccd": "001100000", "mst": "0011000001"},
+            {"name": "NGUYEN VAN HAI", "cccd": "001100000002",
+             "mst": "0011000002"},
+        ]
+        metas[0]["rosterIdentity"] = {"cccd": "001100000"}
+        drawing = FakeDrawing(
+            "d0", "tax", FakeAnchor("MST", 3),   # resolves to NGUYEN VAN MOT
+            stored_path=image_at(extracted, "tax0.png"),
+        )
+        written, refused = cccd_ingest.attach_sheet_evidence(
+            [drawing], {"MST": MST_SHEET}, cmnd, metas, str(case_dir), paths,
+        )
+        assert refused == {}
+        assert set(written) == {0}
+        attached = docs_in(paths[0])
+        assert len(attached) == 1
+        assert attached[0]["kind"] == "pit"
+        assert docs_in(paths[1]) == []
+
+    def test_two_people_sharing_a_cccd_key_cannot_borrow_each_others_packet(
+        self, tmp_path,
+    ):
+        """The other half of the empty-key hole: length was never the guard.
+
+        Two DIFFERENT people whose CCCD cells both fold to "0" -- a shared
+        placeholder -- share the routing key. HAI has no packet; MOT does.
+        Routing HAI's screenshot by that key lands it on MOT's packet, and
+        `len(targets) == 1` sees a clean unique hit. One person's tax lookup
+        filed under another person's payment is what this tool is least
+        allowed to do, so it refuses instead.
+        """
+        case_dir, extracted, paths, metas = build_case(tmp_path, packets=1)
+        shared = [
+            {"name": "NGUYEN VAN MOT", "cccd": "0", "mst": "0011000001"},
+            {"name": "TRAN THI HAI", "cccd": "0", "mst": "0011000002"},
+        ]
+        # The only packet is MOT's.
+        metas[0]["rosterIdentity"] = {"cccd": "0"}
+        drawing = FakeDrawing(
+            "d0", "tax", FakeAnchor("MST", 2),   # resolves to TRAN THI HAI
+            stored_path=image_at(extracted, "tax0.png"),
+        )
+        written, refused = cccd_ingest.attach_sheet_evidence(
+            [drawing], {"MST": MST_SHEET}, shared, metas, str(case_dir), paths,
+        )
+        assert written == {}
+        assert refused == {"d0": "several-roster-rows-for-cccd"}
         assert docs_in(paths[0]) == []
 
     def test_a_person_with_no_packet_is_refused_not_guessed(self, tmp_path):

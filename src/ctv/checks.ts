@@ -21,7 +21,10 @@ const worst = (vs: Verdict[]): Verdict =>
 
 // A source with no value: the label was located (e.g. "Ngày sinh" on the contract) but its
 // value couldn't be read (handwritten/illegible) -- navigable ("cần xem"), never a mismatch.
-export type SourceVerdict = Verdict | 'unread'
+// 'unchecked': read, quoted, and nothing compared it -- a semantic clause read, whose
+// engine wiring is a separate task. NOT 'unread': the value and its verbatim quote are both
+// there, so calling it unread would be a false claim about the document.
+export type SourceVerdict = Verdict | 'unread' | 'unchecked'
 // A field with no readable source at all -- every occurrence is "cần xem" -- reads as a neutral
 // "needs eyes" exception, not a hard mismatch (#004: unread copies must not turn a field red).
 export type FieldVerdict = Verdict | 'review'
@@ -35,9 +38,14 @@ const FIELD_SEVERITY: Record<FieldVerdict, number> = { mismatch: 0, fuzzy: 1, re
 export interface SourceResult { source: CtvSource; verdict: SourceVerdict }
 export interface CheckResult { verdict: FieldVerdict; actual: string; sources: SourceResult[] }
 
-function compareOne(expected: string, s: CtvSource, kind: CtvField['kind']): SourceVerdict {
+// Returns the narrow `Verdict | 'unread'` rather than the full SourceVerdict, so the
+// `v !== 'unread'` narrowing below stays honest now that 'unchecked' exists.
+function compareOne(expected: string, s: CtvSource, kind: CtvField['kind']): Verdict | 'unread' {
   if (!s.value) return 'unread'
-  return compareField(expected, { value: s.value, confidence: s.confidence, page: 0, bbox: s.bbox }, kind)
+  // compareField reads `value` and `confidence` only; the bbox is carried for focus, and a
+  // source with no location (an unlocatable semantic quote) still gets compared on its value.
+  const bbox = s.bbox ?? { x: 0, y: 0, width: 0, height: 0 }
+  return compareField(expected, { value: s.value, confidence: s.confidence, page: 0, bbox }, kind)
 }
 
 // A field's overall verdict + how each source compares. Compare-fields derive their verdict from
@@ -90,6 +98,32 @@ export function evalField(f: CtvField, folder: CtvFolder): CheckResult {
       }
       return { verdict, actual, sources: f.sources.map(src => ({ source: src, verdict })) }
     }
+    // Read from the document and quoted, but nothing compares it yet: the engine wiring for
+    // the clause fields is a separate task, and it must land after a reader exists. Every
+    // source stays navigable so the reviewer can go read the clause; the field reads "cần
+    // xem", which is what it is -- never a pass, never a mismatch the tool did not find.
+    case 'semantic':
+      return unchecked(f)
+    default: {
+      // Loud where loudness is free: adding a CheckType without a case here is a build
+      // error. At runtime it refuses instead of throwing -- evalField runs inside
+      // rankFolder and buildPacketGrid on the render path, and a throw there takes the
+      // whole packet review screen down, turning one unrenderable row into zero visible
+      // rows. Returning undefined (what this switch did before 'semantic' existed) is the
+      // same blank screen one step later, when a caller reads .verdict off it.
+      const _exhaustive: never = f.check
+      void _exhaustive
+      return unchecked(f)
+    }
+  }
+}
+
+// Nothing was computed: the sources are still where they are, and the field needs eyes.
+function unchecked(f: CtvField): CheckResult {
+  return {
+    verdict: 'review',
+    actual: f.sources.find(s => s.value)?.value ?? '—',
+    sources: f.sources.map(source => ({ source, verdict: 'unchecked' as const })),
   }
 }
 

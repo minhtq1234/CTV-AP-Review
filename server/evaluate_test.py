@@ -5,6 +5,7 @@
 # the shape the observation depended on: digit count, a one-digit misread, an
 # accent-only difference, a truncation.
 
+import pytest
 import criteria as cr
 import evaluate as ev
 from criteria import Status
@@ -699,6 +700,43 @@ class TestOverridesLayerOverTheComputedStatus:
 
         assert cells_by_doc(results[21])[cr.CONTRACT].status is Status.OK
 
+    def test_an_override_off_pending_drops_the_reason(self):
+        """The reason labels a status, so it leaves with the status. A settled
+        cell still carrying `not-automated` contradicts `Cell.pending_reason`'s
+        own rule and hands the frontend a chip for a cell that is decided."""
+        o = self._override(9, cr.CONTRACT, Status.PENDING, Status.OK)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[9])[cr.CONTRACT]
+
+        assert cell.computed_status is Status.PENDING, "was pending, with a reason"
+        assert cell.status is Status.OK
+        assert cell.pending_reason is None
+
+        # Pinned on the wire too, not just on the dataclass.
+        payload = ev.as_payload(full_packet(), ROSTER, overrides={o.key: o})
+        row = next(c for c in payload["criteria"] if c["stt"] == 9)
+        wire = next(c for c in row["cells"] if c["document"] == cr.CONTRACT)
+        assert wire["status"] == "ok"
+        assert wire["pendingReason"] is None
+
+    def test_an_override_onto_pending_still_says_why(self):
+        """An untagged pending cell is exactly the one-chip-means-five-things
+        fallback this design removes, so a reviewer moving a settled cell back
+        to pending has to leave a reason of its own behind."""
+        o = self._override(1, cr.CONTRACT, Status.OK, Status.PENDING)
+        results = by_stt(ev.evaluate_packet(
+            full_packet(), ROSTER, overrides={o.key: o}))
+        cell = cells_by_doc(results[1])[cr.CONTRACT]
+
+        assert cell.status is Status.PENDING
+        assert cell.pending_reason == "override"
+
+        payload = ev.as_payload(full_packet(), ROSTER, overrides={o.key: o})
+        row = next(c for c in payload["criteria"] if c["stt"] == 1)
+        wire = next(c for c in row["cells"] if c["document"] == cr.CONTRACT)
+        assert wire["pendingReason"] == "override"
+
     def test_a_downgrade_is_recorded_the_same_way(self):
         o = self._override(2, cr.CONTRACT, Status.OK, Status.NO,
                            reason="số trên scan khác, đã kiểm tra")
@@ -1098,6 +1136,20 @@ class TestPartsPresenceWiring:
             }],
         }
 
+    def _unplaceable(self, doc_id, part, value="x"):
+        """A read `locate_fields` could not place, in production's own shape.
+
+        `locate_fields` sets `located=False, exact=None` together and
+        `ocr_extract._semantic_fields` turns that into `0.0 if not
+        field.located`, so bbox None can only ever arrive at confidence 0.0.
+        Pairing None with 1.0 tests a combination the reader cannot emit, and
+        `_parts_cell`'s exactness guard reads confidence.
+        """
+        field = self._llm(doc_id, part, value=value)
+        field["sources"][0]["bbox"] = None
+        field["sources"][0]["confidence"] = 0.0
+        return field
+
     def _packet(self, *fields):
         packet = manifest(docs=[doc("contract-0", "contract")])
         packet["fields"] = list(packet.get("fields") or []) + list(fields)
@@ -1145,15 +1197,60 @@ class TestPartsPresenceWiring:
     def test_a_part_found_but_not_locatable_goes_to_a_person(self):
         # A value the reviewer cannot see is a claim, not an answer.
         packet = self._packet(
-            self._llm("contract-0", "bank", bbox=None),
+            self._unplaceable("contract-0", "bank"),
             self._llm("contract-0", "branch"),
             self._llm("contract-0", "province"),
         )
-        packet["fields"][-3]["sources"][0]["bbox"] = None
         results = by_stt(ev.evaluate_packet(packet, ROSTER))
         cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
         assert cell.status is Status.REVIEW
         assert "chỉ được vị trí" in cell.note
+        # The affirmative claim must not be made: "Có đủ 3 nội dung trên chứng
+        # từ" says three bank details are on the page, and one of them was
+        # never checked against it.
+        assert "đủ 3" not in cell.note
+        # ...and the unplaceable read is still handed over. Refusing to count
+        # it must not mean deleting what the reader produced.
+        assert len(cell.evidence) == 3
+        unplaced = cell.evidence[0]
+        assert unplaced.bbox is None
+        assert unplaced.value == "x"
+
+    def test_a_fuzzily_located_part_is_not_called_unlocated(self):
+        """A part boxed by a near-miss on characters IS placed on the page --
+        it just is not exact. Telling the reviewer it could not be located
+        sends them looking for something the tool can already point at."""
+        packet = self._packet(
+            self._llm("contract-0", "bank"),
+            self._llm("contract-0", "branch"),
+            self._llm("contract-0", "province"),
+        )
+        packet["fields"][-1]["sources"][0]["confidence"] = 0.9
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[8].cells if c.document == cr.CONTRACT)
+
+        assert cell.status is Status.REVIEW
+        assert "gần đúng" in cell.note
+        assert "chưa chỉ được vị trí" not in cell.note
+
+    def test_the_note_uses_the_labels_the_criterion_declares(self):
+        """One table of wording, owned by the criterion. A second copy in this
+        module had already drifted on three of #13's five parts, so the
+        sentence a reviewer read was not the one the checklist declares."""
+        labels = cr.BY_STT[13].params["part_labels"]
+        packet = self._packet(
+            self._llm("contract-0", "amount_basis"),
+            self._llm("contract-0", "term"),
+            self._llm("contract-0", "method"),
+        )
+        results = by_stt(ev.evaluate_packet(packet, ROSTER))
+        cell = next(c for c in results[13].cells if c.document == cr.CONTRACT)
+
+        assert labels["term_start"] in cell.note
+        assert labels["account"] in cell.note
+        # The exact divergence the copy carried.
+        assert "Mốc tính thời hạn" not in cell.note
+        assert "Tài khoản nhận tiền" in cell.note
 
     def test_some_parts_missing_goes_to_a_person_not_to_a_finding(self):
         packet = self._packet(self._llm("contract-0", "bank"))
@@ -1210,22 +1307,323 @@ def test_every_pending_cell_says_why(tmp_path):
     ]
     rosters = [ROSTER, {}, {**ROSTER, "pit": "5000", "cccd": ""}]
 
+    # A reviewer moving a settled cell BACK to pending is one of the ways a
+    # cell reaches pending, so the invariant has to be run with overrides
+    # applied -- without them this path was never exercised at all.
+    onto_pending = cr.Override(
+        stt=1, document=cr.CONTRACT, from_status=Status.OK,
+        to_status=Status.PENDING, reason="chưa xem được bản scan",
+        at="2026-08-27T00:00:00+00:00", by="")
+
     untagged = []
     for packet in packets:
         for roster in rosters:
-            for result in ev.evaluate_packet(packet, roster):
-                for cell in result.cells:
-                    if (cell.status is Status.PENDING
-                            and cell.pending_reason is None):
-                        untagged.append((result.stt, cell.document, cell.note))
+            for overrides in (None, {onto_pending.key: onto_pending}):
+                for result in ev.evaluate_packet(packet, roster, overrides):
+                    for cell in result.cells:
+                        if (cell.status is Status.PENDING
+                                and cell.pending_reason is None):
+                            untagged.append(
+                                (result.stt, cell.document, cell.note))
     assert not untagged, untagged[:5]
 
 
 def test_a_settled_cell_never_carries_a_pending_reason():
     # The reason is a label for one status, not a second verdict channel.
+    # Run once plain and once with a pending cell overridden to a settled one:
+    # the override path is how a reason outlives the status it labels.
+    off_pending = cr.Override(
+        stt=9, document=cr.CONTRACT, from_status=Status.PENDING,
+        to_status=Status.OK, reason="đã đối chiếu bản scan",
+        at="2026-08-27T00:00:00+00:00", by="")
+
     for roster in (ROSTER, {}):
-        for result in ev.evaluate_packet(full_packet(), roster):
-            for cell in result.cells:
-                if cell.status is not Status.PENDING:
-                    assert cell.pending_reason is None, (
-                        result.stt, cell.document, cell.status)
+        for overrides in (None, {off_pending.key: off_pending}):
+            for result in ev.evaluate_packet(full_packet(), roster, overrides):
+                for cell in result.cells:
+                    if cell.status is not Status.PENDING:
+                        assert cell.pending_reason is None, (
+                            result.stt, cell.document, cell.status)
+
+
+class TestWhatResolvesWithoutAPerson:
+    """`automatic` is the engine saying whether it can ever answer this row.
+
+    The matrix used to infer it from cell shapes and got it wrong in the
+    reassuring direction, which is why the engine states it -- but the function
+    stating it had no test of its own: replacing its whole body with
+    `return True` left the suite green. Asserted here through
+    `as_dict(...)["automatic"]` rather than the private name, because the
+    payload key is what the frontend reads and the wiring is part of the claim.
+    """
+
+    def _auto(self, packet, roster, stt):
+        result = by_stt(ev.evaluate_packet(packet, roster))[stt]
+        return ev.as_dict(result)["automatic"]
+
+    def _llm(self, doc_id, part):
+        return {
+            "key": part, "label": part, "group": "Điều khoản",
+            "check": "semantic", "kind": "text", "expected": "",
+            "sources": [{
+                "docId": doc_id, "page": 0, "value": "x",
+                "bbox": {"x": 1, "y": 2, "width": 30, "height": 10},
+                "confidence": 1.0, "provenance": "llm",
+            }],
+        }
+
+    def _with_fields(self, *fields):
+        packet = manifest(docs=[doc("contract-0", "contract")])
+        packet["fields"] = list(fields)
+        return packet
+
+    # --- kinds that are pinned to a person by design -------------------------
+
+    def test_a_signature_criterion_never_resolves_itself(self):
+        """`criteria.py` says of PRESENCE and EXTERNAL "None of them may
+        resolve automatically". The old guess keyed on a pending reason, which
+        by construction only exists on PENDING cells, so these counted as
+        automatic on 166 of 166 real packets."""
+        packet = manifest(docs=[doc("contract-0", "contract")])
+        assert self._auto(packet, ROSTER, 21) is False
+        assert self._auto(full_packet(), ROSTER, 28) is False
+
+    def test_an_external_lookup_never_resolves_itself(self):
+        packet = manifest(docs=[doc("pit-0", "pit")])
+        assert self._auto(packet, ROSTER, 6) is False
+
+    def test_a_conditional_never_resolves_itself_either_way(self):
+        """#18's answer is an input to #15, not a verdict a person can skip --
+        and that holds whether or not the Mẫu 08 is in the packet."""
+        assert self._auto(full_packet(), ROSTER, 18) is False
+        with_commitment = manifest(docs=[doc("commitment-0", "commitment")])
+        assert self._auto(with_commitment, ROSTER, 18) is False
+
+    def test_the_excluded_kinds_stay_excluded_even_with_an_extractor(
+            self, monkeypatch):
+        """The exclusion is by KIND, and that is the whole point of it.
+
+        Today #21, #06 and #18 would come out False anyway, by falling through
+        to the COMPARE tail with no extractor mapped to them -- so asserting
+        today's payload cannot tell the rule apart from the accident. Map one,
+        as the extraction backlog eventually will, and the three kinds
+        `criteria.py` says may not resolve automatically still must not: a
+        signature and a Mẫu 08 are a person's call however much the tool reads
+        off the page.
+        """
+        for stt in (21, 6, 18):
+            monkeypatch.setitem(ev.FIELD_BY_STT, stt, "hoten")
+        packet = manifest(docs=[doc("contract-0", "contract"),
+                                doc("pit-0", "pit"),
+                                doc("commitment-0", "commitment")])
+
+        assert cr.BY_STT[21].kind is cr.Kind.PRESENCE
+        assert cr.BY_STT[6].kind is cr.Kind.EXTERNAL
+        assert cr.BY_STT[18].kind is cr.Kind.CONDITIONAL
+        for stt in (21, 6, 18):
+            assert self._auto(packet, ROSTER, stt) is False, stt
+
+    # --- compare -------------------------------------------------------------
+
+    def test_a_compare_with_an_extractor_resolves_automatically(self):
+        assert cr.BY_STT[1].stt in ev.FIELD_BY_STT
+        assert self._auto(full_packet(), ROSTER, 1) is True
+
+    def test_a_compare_with_neither_extractor_nor_parts_does_not(self):
+        # #09 has no FIELD_BY_STT entry and declares no parts, so no packet
+        # will ever turn it into an answer.
+        assert ev.FIELD_BY_STT.get(9) is None
+        assert not (cr.BY_STT[9].params or {}).get("parts")
+        assert self._auto(full_packet(), ROSTER, 9) is False
+
+    def test_a_parts_criterion_is_not_automatic_before_a_reader_runs(self):
+        """Parts are per-packet on purpose. #08 declares parts, but with no
+        reader on this packet there is nothing automatic about it, and saying
+        otherwise is the same overclaim in a different place."""
+        assert (cr.BY_STT[8].params or {}).get("parts")
+        assert self._auto(full_packet(), ROSTER, 8) is False
+
+    def test_the_same_parts_criterion_is_automatic_once_a_reader_has_looked(self):
+        packet = self._with_fields(
+            self._llm("contract-0", "bank"),
+            self._llm("contract-0", "branch"),
+            self._llm("contract-0", "province"),
+        )
+        assert self._auto(packet, ROSTER, 8) is True
+
+    # --- compute -------------------------------------------------------------
+
+    def test_a_pit_that_will_never_be_computed_says_no_automatic_check(self):
+        """#15 is COMPUTE, and on any packet with PIT > 0 its own note says the
+        rate is Acc's to state and is deliberately not in this code. Shipping
+        `automatic: true` there undercounted the reviewer's remaining work by
+        one on every such packet, in the reassuring direction."""
+        results = by_stt(ev.evaluate_packet(full_packet(), ROSTER))
+        cell = results[15].cells[0]
+
+        assert cell.status is Status.PENDING
+        assert cell.pending_reason == "not-automated"
+        assert ev.as_dict(results[15])["automatic"] is False
+
+    def test_a_compute_blocked_on_an_input_still_counts_as_automatic(self):
+        """The qualifier. #12 is waiting on #10 and #11, and #17 on the bảng
+        kê's Net -- the computation exists and answers as soon as its inputs
+        read, so the row is a live automatic check."""
+        results = by_stt(ev.evaluate_packet(full_packet(), ROSTER))
+        assert results[12].cells[0].pending_reason == "blocked"
+        assert ev.as_dict(results[12])["automatic"] is True
+
+        no_net = by_stt(ev.evaluate_packet(full_packet(),
+                                           {**ROSTER, "net": ""}))
+        assert no_net[17].cells[0].pending_reason == "blocked"
+        assert ev.as_dict(no_net[17])["automatic"] is True
+
+    def test_a_person_answering_a_cell_does_not_widen_what_the_engine_checks(self):
+        """`automatic` is the engine's reach, not the packet's tidiness.
+
+        Overrides are applied before `as_dict`, so reading the post-override
+        cell meant a reviewer answering #15's PIT cell by hand cleared
+        `not-automated` and put the row's `automatic: true` back -- the
+        headline reporting one fewer criterion without an automatic check
+        because a person had just done that criterion manually. Exactly F3's
+        undercount, in the reassuring direction, triggered by doing the work.
+        """
+        packet, roster = full_packet(), ROSTER
+        assert self._auto(packet, roster, 15) is False
+
+        for decided in (Status.OK, Status.NO, Status.REVIEW):
+            overrides = {cr.override_key(15, "Excel"): cr.Override(
+                stt=15, document="Excel", from_status=Status.PENDING,
+                to_status=decided, at="2026-09-04T00:00:00Z", reason="Acc",
+            )}
+            results = by_stt(ev.evaluate_packet(packet, roster, overrides))
+            cell = results[15].cells[0]
+            assert cell.status is decided
+            # The reviewer's answer is what the cell shows...
+            assert ev._cell_dict(cell)["pendingReason"] is None
+            # ...and the engine's own reason is still what `automatic` reads.
+            assert cell.computed_reason == "not-automated"
+            assert ev.as_dict(results[15])["automatic"] is False, decided
+
+    def test_an_override_does_not_make_a_blocked_computation_manual_either(self):
+        """The same guard, pointed the other way: #12 is blocked on an input
+        it would otherwise calculate, so it is automatic before and after a
+        reviewer touches it."""
+        document = cr.BY_STT[12].docs[0]
+        overrides = {cr.override_key(12, document): cr.Override(
+            stt=12, document=document, from_status=Status.PENDING,
+            to_status=Status.OK, at="2026-09-04T00:00:00Z", reason="Acc",
+        )}
+        results = by_stt(ev.evaluate_packet(full_packet(), ROSTER, overrides))
+        assert ev.as_dict(results[12])["automatic"] is True
+
+    def test_a_pit_of_zero_resolves_automatically(self):
+        # Same criterion, same kind: PIT == 0 IS decided here, so #15 is not
+        # categorically manual -- the rule keys on the cell, not on the stt.
+        assert self._auto(full_packet(), {**ROSTER, "pit": "0"}, 15) is True
+
+
+class TestWhichCellsTheComputeRuleReads:
+    """The COMPUTE half of the rule, built by hand rather than by packet.
+
+    `_never_automatic` makes four separate decisions -- ignore `na` cells,
+    stay automatic when there are none left, require PENDING, and require
+    EVERY live cell to agree -- and no packet in the corpus distinguishes
+    them: all four could be mutated away with the whole suite still green.
+    Today's criteria table cannot reach the distinguishing shapes (measured:
+    no COMPUTE criterion has zero live cells, and #14's live cells are never
+    all `not-automated`), but `_pending_compute` and `_computed` build one
+    cell per `criterion.docs`, so a handler that answers some documents and
+    not others reaches them the moment one is written -- and that is exactly
+    the overclaim this rule exists to stop. Constructed here so the rule is
+    falsifiable now instead of after the handler lands.
+    """
+
+    def _result(self, *cells):
+        # #12 is Kind.COMPUTE, which is the branch under test.
+        return ev.CriterionResult(12, Status.PENDING, tuple(cells))
+
+    def _cell(self, name, status, reason=None):
+        return ev.Cell(name, status, "", "", pending_reason=reason)
+
+    def test_a_criterion_with_nothing_live_is_not_declared_manual(self):
+        """An all-`na` criterion says nothing about the engine's reach.
+
+        Without the emptiness guard `all()` over no cells is True, so the row
+        would advertise "no automatic check exists" off a criterion that
+        simply does not apply to this packet -- inventing a coverage gap.
+        """
+        result = self._result(
+            self._cell("Hợp đồng", Status.NOT_APPLICABLE),
+            self._cell("Excel", Status.NOT_APPLICABLE),
+        )
+        assert ev._never_automatic(result) is False
+        assert ev.as_dict(result)["automatic"] is True
+
+    def test_an_na_cell_cannot_veto_the_cells_that_are_live(self):
+        """`na` is a fact about the checklist, not a state to improve on.
+
+        Counting it as live makes one inapplicable document hide a real
+        `not-automated` verdict on every other one, in the reassuring
+        direction.
+        """
+        result = self._result(
+            self._cell("Hợp đồng", Status.PENDING, "not-automated"),
+            self._cell("Excel", Status.NOT_APPLICABLE),
+        )
+        assert ev._never_automatic(result) is True
+        assert ev.as_dict(result)["automatic"] is False
+
+    def test_one_document_the_engine_can_answer_keeps_the_row_automatic(self):
+        """`all`, not `any`. A criterion that answers one document and not
+        another HAS an automatic check; reporting otherwise invents a gap the
+        reviewer would go looking for."""
+        result = self._result(
+            self._cell("Hợp đồng", Status.OK),
+            self._cell("Excel", Status.PENDING, "not-automated"),
+        )
+        assert ev._never_automatic(result) is False
+        assert ev.as_dict(result)["automatic"] is True
+
+    def test_a_settled_cell_carrying_a_reason_cannot_be_built_at_all(self):
+        """`Cell.pending_reason`'s contract, enforced rather than asserted.
+
+        This is the F2 defect made unconstructable: an override that moved a
+        cell off PENDING and kept its reason shipped a settled cell with a
+        pending reason, and `_never_automatic` would then read that stale
+        reason and report the row manual from behind. Refused at construction,
+        so neither this nor any future site can spell it.
+        """
+        with pytest.raises(ValueError, match="pending reason"):
+            self._cell("Hợp đồng", Status.OK, "not-automated")
+
+    def test_a_reason_the_frontend_has_no_chip_for_is_refused(self):
+        """The engine's half of the one-vocabulary pin. A literal declared
+        nowhere used to reach the UI and fall back to the generic chip."""
+        with pytest.raises(ValueError, match="unknown pending reason"):
+            self._cell("Hợp đồng", Status.PENDING, "sheet-silent")
+
+    def test_every_reason_the_engine_declares_is_actually_usable(self):
+        """And the vocabulary is not a museum: each declared reason must be
+        constructible, so a stale entry cannot sit in the tuple keeping the
+        frontend's chip table honest about something the engine never says."""
+        for reason in ev.PENDING_REASONS:
+            assert self._cell("Hợp đồng", Status.PENDING, reason) \
+                .pending_reason == reason
+
+    def test_every_live_cell_saying_no_check_exists_is_believed(self):
+        result = self._result(
+            self._cell("Hợp đồng", Status.PENDING, "not-automated"),
+            self._cell("Excel", Status.PENDING, "not-automated"),
+        )
+        assert ev._never_automatic(result) is True
+        assert ev.as_dict(result)["automatic"] is False
+
+    def test_a_computation_merely_waiting_on_an_input_still_counts(self):
+        """The qualifier the deleted comment carried: blocked is not manual."""
+        result = self._result(
+            self._cell("Hợp đồng", Status.PENDING, "blocked"),
+            self._cell("Excel", Status.PENDING, "blocked"),
+        )
+        assert ev._never_automatic(result) is False
+        assert ev.as_dict(result)["automatic"] is True

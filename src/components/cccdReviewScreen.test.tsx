@@ -259,7 +259,10 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={null}
         busy={true}
-        loading={false}
+        // The state this test is named for: the first list is in flight.
+        // `loading` is what says so -- `review === null` alone also covers a
+        // load that FAILED, where the banner must not claim progress.
+        loading={true}
         error={null}
         onAssign={() => {}}
         onDetach={() => {}}

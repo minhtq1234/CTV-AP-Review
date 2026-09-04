@@ -774,6 +774,119 @@ def test_workbook_failure_removes_prior_attached_evidence(
     assert not list(manifest_path.parent.glob("cccd-*.png"))
 
 
+def test_workbook_failure_removes_prior_sheet_evidence(tmp_path, monkeypatch):
+    """A re-upload that cannot be read must not leave the OLD person attached.
+
+    The four ingest failure exits reconcile through `_reconciled_error_result`,
+    which passes no sheet keep-set. Once omitting it came to mean "leave sheet
+    evidence alone", a case with tax screenshots from a workbook that no longer
+    extracts kept every one of them attached -- keyed to a roster that is gone
+    -- and #6 then read OK off the previous person's MST lookup.
+    """
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    image = manifest_path.parent / "sheet-pit-abcdef012345-0123456789ab.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["docs"].append({
+        "id": "sheet-excel-d0-pit",
+        "kind": "pit",
+        "label": "Tra cứu MST (Excel)",
+        "pages": [{"src": str(image), "width": 600, "height": 380}],
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: (_ for _ in ()).throw(ValueError("private-workbook")),
+    )
+
+    result = ingest_cccd_workbook(
+        "bad.xlsx",
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert result["cccdWorkbook"]["errorCode"] == "invalid-workbook"
+    assert not [
+        document for document in manifest["docs"]
+        if document["id"].startswith("sheet-excel-")
+    ]
+    # and the image with it -- `app.get_page` serves the packet directory by
+    # filename and never opens the manifest.
+    assert not list(manifest_path.parent.glob("sheet-*.png"))
+
+
+def test_a_good_read_with_no_screenshots_drops_the_stale_ones(
+    tmp_path, monkeypatch,
+):
+    """An empty answer from the owner of these documents is still an answer.
+
+    The workbook read fine and produced no tax screenshot, so the ones sitting
+    in the manifest came from a previous workbook and a previous roster.
+    Keeping them is the branch that guesses that roster still applies; this
+    tool drops them, which costs #6 going MISSING -- visible, and recoverable
+    by re-uploading -- instead of a silent wrong answer against a person who
+    is no longer on the packet.
+    """
+    manifest_path = tmp_path / "packets" / "0" / "manifest.json"
+    write_manifest(manifest_path)
+    image = manifest_path.parent / "sheet-pit-abcdef012345-0123456789ab.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["docs"].append({
+        "id": "sheet-excel-d0-pit",
+        "kind": "pit",
+        "label": "Tra cứu MST (Excel)",
+        "pages": [{"src": str(image), "width": 600, "height": 380}],
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    candidate = card(tmp_path)
+    front, back = candidate.front.drawing, candidate.back.drawing
+    drawings = [replace(front, kind="card"), replace(back, kind="card")]
+    monkeypatch.setattr(
+        cccd_ingest,
+        "extract_drawings",
+        lambda *args: ExtractionResult(len(drawings), drawings, []),
+    )
+    ocr_by_id = {front.id: candidate.front.ocr, back.id: candidate.back.ocr}
+    monkeypatch.setattr(
+        cccd_ingest,
+        "analyze_drawing",
+        lambda drawing, *args: ocr_by_id[drawing.id],
+    )
+
+    result = ingest_cccd_workbook(
+        str(tmp_path / "cards.xlsx"),
+        [{"name": "Synthetic A", "cccd": CCCD}],
+        [packet()],
+        str(tmp_path),
+        {0: str(manifest_path)},
+        str(tmp_path / "cccd-assets"),
+        lambda *args: None,
+    )
+
+    assert result["cccdWorkbook"]["summary"]["sheetEvidence"]["attached"] == 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert not [
+        document for document in manifest["docs"]
+        if document["id"].startswith("sheet-excel-")
+    ]
+    assert not list(manifest_path.parent.glob("sheet-*.png"))
+    # the card the read DID produce is still there
+    assert [
+        document for document in manifest["docs"]
+        if document["id"].startswith("cccd-excel-")
+    ]
+
+
 def test_the_summary_counts_cards_and_not_screenshots(tmp_path, monkeypatch):
     """`cccd_ingest.py:703` counts the candidate pool. With screenshots filtered
     at formation this needs no arithmetic of its own -- this test is here so that

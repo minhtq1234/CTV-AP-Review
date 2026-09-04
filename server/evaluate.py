@@ -111,13 +111,73 @@ class Cell:
     #: packet that matched no roster row. Only the fourth is the tool failing
     #: at something it can do -- and all five rendered as the same
     #: "Chưa kiểm tra được", which teaches a reviewer to ignore the one that
-    #: is about their packet. None for any status that is not PENDING.
+    #: is about their packet. `override` is the sixth: a reviewer moved a
+    #: settled cell back to pending, so the engine has no reason of its own to
+    #: give. None for any status that is not PENDING.
     pending_reason: str | None = None
+    #: The reason the ENGINE gave, when a reviewer's override replaced the
+    #: status and so cleared `pending_reason`. Equal to `pending_reason`
+    #: otherwise. The mirror of `computed_status`, and needed for the same
+    #: reason: `automatic` is a claim about what the engine can do, so it must
+    #: be read off the engine's answer. Without this, overriding #15's PIT
+    #: cell to `ok` cleared `not-automated` and the row went back to
+    #: advertising an automatic check -- the engine's reach appearing to grow
+    #: because a person did the work by hand.
+    computed_pending_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """The vocabulary is closed, and this is what closes it.
+
+        A reason stamped here but declared nowhere reaches the frontend and
+        falls through `cellPresentation`'s fallback to the generic chip --
+        one chip meaning five things, which is the behaviour the reason exists
+        to end. Refusing it at construction makes that a failing engine test
+        on the commit that introduces it, wherever the literal is written,
+        instead of a silent regression in the UI.
+        """
+        if self.pending_reason is None:
+            return
+        if self.pending_reason not in PENDING_REASONS:
+            raise ValueError(
+                f"unknown pending reason {self.pending_reason!r}; add it to "
+                "evaluate.PENDING_REASONS and to PENDING_REASONS / "
+                "PENDING_REASON_PRESENTATION in the frontend"
+            )
+        if self.status is not Status.PENDING:
+            raise ValueError(
+                f"a {self.status.value} cell may not carry a pending reason "
+                f"({self.pending_reason!r}); see Cell.pending_reason"
+            )
 
     @property
     def computed(self) -> Status:
         return self.computed_status if self.computed_status is not None \
             else self.status
+
+    @property
+    def computed_reason(self) -> str | None:
+        """The engine's own reason, whatever a reviewer decided afterwards."""
+        return self.computed_pending_reason if self.computed_status is not None \
+            else self.pending_reason
+
+
+#: Every reason a PENDING cell may carry. One declared vocabulary rather than
+#: a set of literals scattered over two dozen `Cell(...)` calls, because both
+#: the engine's own guard (`Cell.__post_init__`) and the frontend's chip table
+#: (`src/upload/api.ts`'s `PENDING_REASONS`) have to agree with it, and the
+#: frontend can only pin against something it can read. Scraping the literals
+#: instead missed the ones written as `"a" if cond else "b"` -- a form already
+#: in this file -- so a seventh reason could be added on the engine side with
+#: every test still green and its cells falling back to the generic chip.
+PENDING_REASONS: tuple[str, ...] = (
+    "not-automated",
+    "roster-level",
+    "no-roster-value",
+    "unread",
+    "unmatched",
+    "blocked",
+    "override",
+)
 
 
 @dataclass(frozen=True)
@@ -177,6 +237,15 @@ def _with_overrides(result: CriterionResult, overrides: dict) -> CriterionResult
             cell,
             status=decided,
             computed_status=cell.status,
+            # The reason belongs to the status, so it moves with it. A cell
+            # whose decided status equals its current one returned above, so
+            # `decided is PENDING` always means the cell was not pending
+            # before and no engine reason exists to preserve.
+            pending_reason="override" if decided is Status.PENDING else None,
+            # The engine's reason is kept, not replaced: `automatic` is read
+            # off it, and a person answering a cell by hand does not widen
+            # what the engine can check.
+            computed_pending_reason=cell.pending_reason,
             note=_override_note(cell.note, decided, override.reason),
             evidence=cell.evidence + (Evidence(
                 "override", 0, None, override.reason, None, "override"),),
@@ -391,20 +460,6 @@ def _batch_level_cell(criterion: Criterion, name: str) -> Cell:
                 pending_reason="roster-level")
 
 
-#: A part's own words, for the note a reviewer reads. Keys are the criteria's
-#: declared parts; anything absent falls back to the key itself.
-_PART_LABELS = {
-    "bank": "Tên ngân hàng",
-    "branch": "Chi nhánh",
-    "province": "Tỉnh/TP",
-    "amount_basis": "Căn cứ số tiền",
-    "term": "Thời hạn thanh toán",
-    "term_start": "Mốc tính thời hạn",
-    "method": "Phương thức thanh toán",
-    "account": "Tài khoản nhận",
-}
-
-
 def _parts_cell(
     criterion: Criterion, name: str, documents: list[dict], ctx: _Context,
 ) -> Cell | None:
@@ -428,44 +483,55 @@ def _parts_cell(
         # Nobody looked. Not "looked and found none".
         return None
 
-    presence = pp.check_parts(parts, reads, labels=_PART_LABELS)
+    # The criterion's own labels, not a second copy of them here: #13 declares
+    # five and a module-level table had already drifted on three of them, so
+    # the wording a reviewer read was not the wording the criterion owns.
+    presence = pp.check_parts(
+        parts, reads, labels=(criterion.params or {}).get("part_labels"))
+    # Everything a reader actually produced, whether or not it could be placed.
+    # An unplaceable value is not presence, but deleting it would delete the
+    # only trace of what was read -- and losing evidence is the failure this
+    # tool is least allowed to have. Its bbox is None, which the compare path
+    # already emits, and the note says it could not be placed.
+    shown = tuple(part for part in parts
+                  if part in presence.found or part in presence.unlocatable)
 
     if presence.coverage is pp.PartsCoverage.COMPLETE:
         # OK only when every part can be pointed at AND this kind of document
         # occurs once. A value the reviewer cannot see is a claim, and two
         # copies of a document mean a part found on one says nothing about the
         # other -- the engine's first automatic pass should not rest on either.
-        # `exact`, not merely "has a box". A fuzzy locate is a near-miss on
-        # characters, and MIN_RATIO scores characters, so it is nearly blind to
-        # a substituted digit -- the one substitution these criteria are about.
-        # `ocr_extract` records that distinction as confidence 1.0 vs 0.9, and
-        # testing only for a box threw it away right at the point it decides an
-        # automatic pass.
-        located = all(
-            (reads[part].get("bbox") or {}).get("width")
-            and float(reads[part].get("confidence") or 0) >= 1.0
+        # COMPLETE already guarantees a positioned box on every part, so the
+        # one thing left to decide is exact against fuzzy. A fuzzy locate is a
+        # near-miss on characters, and MIN_RATIO scores characters, so it is
+        # nearly blind to a substituted digit -- the one substitution these
+        # criteria are about. `ocr_extract` records that distinction as
+        # confidence 1.0 vs 0.9.
+        exact = all(
+            float(reads[part].get("confidence") or 0) >= 1.0
             for part in presence.found
         )
-        if located and len(documents) == 1:
+        if exact and len(documents) == 1:
             return Cell(name, Status.OK, "", presence.note,
-                        _parts_evidence(reads, presence.found))
+                        _parts_evidence(reads, shown))
         return Cell(
             name, Status.REVIEW, "",
             presence.note + " Cần người xác nhận nội dung."
-            if located else
-            presence.note + " Chưa chỉ được vị trí trên trang, cần người xem.",
-            _parts_evidence(reads, presence.found),
+            if exact else
+            presence.note + " Chỉ định vị được gần đúng trên trang, cần người xem.",
+            _parts_evidence(reads, shown),
         )
 
     # PARTIAL and NONE both go to a person rather than to a finding. A reader
     # failing to find a clause is not the same as the clause being absent, and
     # this engine does not turn the first into the second.
     return Cell(name, Status.REVIEW, "", presence.note,
-                _parts_evidence(reads, presence.found))
+                _parts_evidence(reads, shown))
 
 
-def _parts_evidence(reads: dict[str, dict], found: tuple[str, ...]):
-    """One evidence entry per part that was found, so the reviewer can walk them."""
+def _parts_evidence(reads: dict[str, dict], parts: tuple[str, ...]):
+    """One evidence entry per part a reader produced, so the reviewer can walk
+    them -- including the ones it could not place, whose box is None."""
     return tuple(
         Evidence(
             reads[part].get("docId", ""),
@@ -475,7 +541,7 @@ def _parts_evidence(reads: dict[str, dict], found: tuple[str, ...]):
             reads[part].get("confidence"),
             "llm",
         )
-        for part in found
+        for part in parts
     )
 
 
@@ -939,7 +1005,12 @@ def _pit_basis(criterion: Criterion, ctx: _Context) -> CriterionResult:
         criterion, Status.PENDING,
         f"PIT {pit:,} — chưa kiểm tra tự động: thuế suất và ngưỡng áp dụng "
         "thuộc quy định trong checklist, không hard-code trong công cụ.",
-        f"{pit:,}", pending_reason="blocked",
+        # `not-automated`, not `blocked`: nothing is waiting on an input here.
+        # The note says the rate is Acc's to state and is deliberately not in
+        # this code, so no packet will ever turn this cell into an answer.
+        # Calling it `blocked` promised the reviewer a check that is not
+        # coming, and made the row advertise itself as automatic.
+        f"{pit:,}", pending_reason="not-automated",
     )
 
 
@@ -1018,6 +1089,36 @@ def _cell_dict(cell: Cell) -> dict:
     }
 
 
+def _never_automatic(result: CriterionResult) -> bool:
+    """Whether every live cell says no automatic check exists for it.
+
+    `na` cells are not live: they are a fact about the checklist, not a state
+    the engine could improve on. A criterion with no live cells at all stays
+    automatic rather than silently flipping on an empty `all()`. `all`, not
+    `any`: one document the engine answers means an automatic check exists,
+    whatever the others say.
+
+    Read off the ENGINE's answer (`computed`/`computed_reason`), never the
+    reviewer's. An override is a person doing the work by hand; it says
+    nothing about what the engine can check, and reading the post-override
+    cell made #15 advertise an automatic check the moment someone answered it.
+
+    No status check needed alongside the reason -- `Cell.__post_init__`
+    refuses a reason on any status but PENDING, so carrying one here would be
+    a branch no cell can take and no test could falsify.
+
+    `computed` in the liveness filter is for consistency, not for behaviour:
+    `criteria.cell_status` returns NOT_APPLICABLE before it consults an
+    override, so an `na` cell is never overridden and `computed is status`
+    holds for every one of them. Spelling it `status` here passes every test,
+    which is exactly what that equivalence means -- not an untested decision.
+    """
+    live = [c for c in result.cells if c.computed is not Status.NOT_APPLICABLE]
+    return bool(live) and all(
+        c.computed_reason == "not-automated" for c in live
+    )
+
+
 def _resolves_automatically(criterion: Criterion, result: CriterionResult) -> bool:
     """Whether this criterion can reach a verdict without a person.
 
@@ -1039,12 +1140,20 @@ def _resolves_automatically(criterion: Criterion, result: CriterionResult) -> bo
 
     CONDITIONAL is here for the same reason: #18's answer is an input to #15,
     not a verdict a person can skip reading.
+
+    COMPUTE keeps its qualifier: a COMPUTE criterion blocked on an input it
+    would otherwise calculate still counts. #12 waiting on #10/#11 and #17
+    waiting on the roster's money are automatic -- the computation exists and
+    will answer as soon as its inputs read. #15's PIT>0 cell is not: its own
+    note says the rate is Acc's to state, so it is pending for the reason that
+    means "no automatic check exists", and keying on that reason states the
+    qualifier without this function having to know which stt is special.
     """
     if criterion.kind in (cr.Kind.PRESENCE, cr.Kind.EXTERNAL,
                           cr.Kind.CONDITIONAL):
         return False
     if criterion.kind is cr.Kind.COMPUTE:
-        return True
+        return not _never_automatic(result)
     # COMPARE: an extractor exists for it, or a reader supplied its parts on
     # this packet. Parts are per-packet on purpose -- before a reader runs
     # there is nothing automatic about #08, and saying otherwise is the same
