@@ -121,12 +121,12 @@ describe('packet dashboard presentation', () => {
     expect(html).toContain('Chưa xem')
     expect(html).toContain('Đang xem')
     expect(html).toContain('Đã xong')
-    expect(html).toContain('Flagged')
+    expect(html).toContain('Cần gửi lại')
     expect(html).toContain('Tất cả</span><span class="packet-filter-count">5')
     expect(html).toContain('Chưa xem</span><span class="packet-filter-count">1')
     expect(html).toContain('Đang xem</span><span class="packet-filter-count">1')
     expect(html).toContain('Đã xong</span><span class="packet-filter-count">1')
-    expect(html).toContain('Flagged</span><span class="packet-filter-count">2')
+    expect(html).toContain('Cần gửi lại</span><span class="packet-filter-count">2')
     // The list is a table now (ver 2 §2.2); the lifecycle status moved from the
     // card's class to a pill in the "Kết quả FA" column. Same intent: each
     // status is visually distinguished on its own row.

@@ -13,7 +13,7 @@ export const PACKET_DASHBOARD_LABELS: Record<PacketDashboardStatus, string> = {
   unseen: 'Chưa xem',
   reviewing: 'Đang xem',
   completed: 'Đã xong',
-  flagged: 'Flagged',
+  flagged: 'Cần gửi lại',
 }
 
 export function packetSeenCount(
