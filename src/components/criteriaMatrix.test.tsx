@@ -11,6 +11,7 @@ function row(overrides: Partial<CriterionRow> = {}): CriterionRow {
     group: '05',
     groupLabel: 'Chứng từ và ký dấu',
     kind: 'presence',
+    automatic: false,
     render: 'matrix',
     how: 'Kiểm tra có chữ ký của đúng CTV tại vị trí dành cho bên cung cấp dịch vụ.',
     status: 'rv',

@@ -537,8 +537,14 @@ def _scanned_cell(criterion: Criterion, name: str, ctx: _Context) -> Cell:
 
     reference = ctx.reference(criterion.stt)
     if not reference:
+        # `unmatched` when the packet matched no roster row at all, which is
+        # what the Excel column on the same row already says: 159 of these
+        # cells are the one broken upload, and reporting them as a missing
+        # value blamed the bảng kê for a matching failure.
         return Cell(name, Status.PENDING, "",
-                    "Chưa có giá trị tham chiếu trên bảng kê để đối chiếu.")
+                    "Chưa có giá trị tham chiếu trên bảng kê để đối chiếu.",
+                    pending_reason="unmatched" if not ctx.roster
+                    else "no-roster-value")
 
     kind = (criterion.params or {}).get("compare") or _COMPUTED_KIND.get(
         (criterion.params or {}).get("formula", ""), "text")
@@ -586,10 +592,13 @@ def _compare_reads(
         ))
 
     if not readable:
+        # The same claim as the `unread` branch above -- the document is here
+        # and its value would not read -- so it carries the same reason. It is
+        # the one that is about the packet in front of the reviewer.
         return Cell(name, Status.PENDING, "",
                     f"Đọc được {name} nhưng không lấy được giá trị "
                     f"({blank}/{len(reads)} bản không đọc được).",
-                    tuple(evidence))
+                    tuple(evidence), pending_reason="unread")
 
     worst = min(readable, key=lambda r: _VERDICT_RANK[r[0]])
     verdict, value, _, bbox, worst_src = worst
@@ -858,13 +867,17 @@ def _compute(criterion: Criterion, ctx: _Context) -> CriterionResult:
 
 
 def _pending_compute(criterion: Criterion, note: str) -> CriterionResult:
-    cells = [Cell(name, Status.PENDING, "", note) for name in criterion.docs]
+    # `blocked`, not `not-automated`: the computation exists and will answer as
+    # soon as its inputs read. #12 waiting on #10 and #11 is 332 of these.
+    cells = [Cell(name, Status.PENDING, "", note, pending_reason="blocked")
+             for name in criterion.docs]
     return _result(criterion, cells, note)
 
 
 def _computed(criterion: Criterion, status: Status, note: str,
-              value: str = "") -> CriterionResult:
-    cells = [Cell(name, status, value, note) for name in criterion.docs]
+              value: str = "", pending_reason: str | None = None) -> CriterionResult:
+    cells = [Cell(name, status, value, note, pending_reason=pending_reason)
+             for name in criterion.docs]
     return _result(criterion, cells, note)
 
 
@@ -926,7 +939,7 @@ def _pit_basis(criterion: Criterion, ctx: _Context) -> CriterionResult:
         criterion, Status.PENDING,
         f"PIT {pit:,} — chưa kiểm tra tự động: thuế suất và ngưỡng áp dụng "
         "thuộc quy định trong checklist, không hard-code trong công cụ.",
-        f"{pit:,}",
+        f"{pit:,}", pending_reason="blocked",
     )
 
 
@@ -1005,6 +1018,45 @@ def _cell_dict(cell: Cell) -> dict:
     }
 
 
+def _resolves_automatically(criterion: Criterion, result: CriterionResult) -> bool:
+    """Whether this criterion can reach a verdict without a person.
+
+    The engine is the only thing that knows this, and the matrix was guessing
+    at it from cell shapes -- badly. Two ways, both measured on the 166 real
+    packets:
+
+    * A criterion whose every live cell is `missing` has no reason attached
+      (an absent document is an answer, not a pending state), so it read as a
+      live check. The packet where the tool read almost nothing then
+      advertised the SMALLEST coverage gap in the corpus -- one criterion,
+      against six on a complete packet.
+    * PRESENCE and EXTERNAL are pinned to REVIEW by design -- `criteria.py`
+      says of them "None of them may resolve automatically" -- and the guess
+      keyed on a pending reason, which by construction only exists on PENDING
+      cells. So #21, #22 and #28 counted as automatic on 166 of 166 packets,
+      understating the reviewer's remaining work by about five criteria every
+      time, in the reassuring direction.
+
+    CONDITIONAL is here for the same reason: #18's answer is an input to #15,
+    not a verdict a person can skip reading.
+    """
+    if criterion.kind in (cr.Kind.PRESENCE, cr.Kind.EXTERNAL,
+                          cr.Kind.CONDITIONAL):
+        return False
+    if criterion.kind is cr.Kind.COMPUTE:
+        return True
+    # COMPARE: an extractor exists for it, or a reader supplied its parts on
+    # this packet. Parts are per-packet on purpose -- before a reader runs
+    # there is nothing automatic about #08, and saying otherwise is the same
+    # overclaim in a different place.
+    if FIELD_BY_STT.get(criterion.stt) is not None:
+        return True
+    if (criterion.params or {}).get("parts"):
+        return any(e.provenance == "llm"
+                   for cell in result.cells for e in cell.evidence)
+    return False
+
+
 def as_dict(result: CriterionResult) -> dict:
     """One criterion's row, plus the metadata the matrix renders it with."""
     criterion = cr.BY_STT[result.stt]
@@ -1015,6 +1067,10 @@ def as_dict(result: CriterionResult) -> dict:
         "group": criterion.group,
         "groupLabel": cr.GROUPS[criterion.group],
         "kind": criterion.kind.value,
+        #: Whether the engine can reach a verdict here without a person. The
+        #: matrix used to infer this from cell shapes and got it wrong in the
+        #: reassuring direction; see `_resolves_automatically`.
+        "automatic": _resolves_automatically(criterion, result),
         "render": criterion.render,
         "how": criterion.how,
         "status": result.status.value,

@@ -67,53 +67,22 @@ const HEADLINE_ORDER: Array<[SummaryStatus, string]> = [
  * criterion spanning five documents must not weigh five times as much as one
  * spanning a single document.
  */
-/** The bảng kê column. It carries the value everything else is compared
- *  AGAINST, so it is not itself a check -- a green Excel cell on a criterion
- *  whose every document column says "no extractor" means the tool echoed the
- *  submitter's own number back and compared nothing. */
-const REFERENCE_COLUMN = 'Excel'
-
-/** How many criteria this tool actually compares something on.
+/** How many criteria the engine can answer without a person, on this packet.
  *
- *  A criterion whose every DOCUMENT column is `not-automated` performs no
- *  comparison: no packet will ever change its answer until an extractor is
- *  built. Counting those tells the reviewer the denominator up front instead
- *  of leaving them to infer it from a column of identical chips -- measured
- *  on 166 real packets, those cells are 41% of everything that reads as
- *  unchecked.
+ *  The engine decides this and says so (`automatic` on each row). This used to
+ *  be inferred here from cell shapes, and the inference was wrong twice over
+ *  and both times in the reassuring direction: a criterion whose every live
+ *  cell was a MISSING document read as a live check, so the packet where the
+ *  tool read almost nothing advertised the smallest coverage gap in the
+ *  corpus; and the PRESENCE and EXTERNAL criteria -- pinned to REVIEW by
+ *  design, and the ones that always need a person -- escaped the test entirely
+ *  because it keyed on a pending reason, which only PENDING cells carry.
  *
- *  Two column kinds are excluded deliberately, both found by reading the real
- *  screen rather than the types. The reference column: on #08 the Excel cell
- *  is green (the bảng kê has a value) while both document columns say "no
- *  extractor", so counting it made this never fire. And `roster-level`: #09,
- *  #13 and #27 also carry the batch-level Bảng Kê Thu Mua column, which is
- *  checked on the Tổng hợp tab, so it is not a per-packet check either --
- *  leaving it in reported 24 of 25 automated on a packet where the true
- *  figure is far lower.
- *
- *  `na` cells are excluded for the same reason: a document outside this
- *  criterion, or absent from an optional slot, is not a check that failed.
- *  Every one of #09/#10/#11/#13 carries an `na` Phụ lục/KPI cell, and while
- *  those counted the rule reported 23 of 25 on a packet where six criteria
- *  compare nothing at all.
- *
- *  A COMPUTE criterion blocked on an input it would otherwise calculate (#12
- *  waiting on #10/#11) still counts as automated. That is deliberate: it is
- *  built, and it will answer as soon as its inputs read.
+ *  Measured on 166 real packets: the inference reported 18-24 automated,
+ *  varying with how empty the packet was. The truth is 10, on every packet.
  */
-const NOT_A_PER_PACKET_CHECK = new Set(['not-automated', 'roster-level'])
-
 export function automatedCount(payload: CriteriaPayload): number {
-  return payload.criteria.filter(row => {
-    const checks = row.cells.filter(cell => (
-      cell.document !== REFERENCE_COLUMN && cell.status !== 'na'
-    ))
-    return checks.length === 0
-      || !checks.every(cell => (
-        cell.pendingReason != null
-        && NOT_A_PER_PACKET_CHECK.has(cell.pendingReason)
-      ))
-  }).length
+  return payload.criteria.filter(row => row.automatic).length
 }
 
 export function criteriaHeadline(payload: CriteriaPayload): string[] {

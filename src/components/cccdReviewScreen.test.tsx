@@ -49,6 +49,7 @@ function render(cards: CccdCard[]) {
       caseName="FA-SYNTHETIC.pdf"
       review={buildCccdReview(packets, cards)}
       busy={false}
+      loading={false}
       error={null}
       onAssign={() => {}}
       onDetach={() => {}}
@@ -238,6 +239,7 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={buildCccdReview(packets, [])}
         busy={false}
+        loading={false}
         error={{ text: 'Gói này đã có ảnh CCCD. Gỡ ảnh cũ trước.',
                  kind: 'mutate' }}
         onAssign={() => {}}
@@ -257,6 +259,7 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={null}
         busy={true}
+        loading={false}
         error={null}
         onAssign={() => {}}
         onDetach={() => {}}
@@ -278,6 +281,7 @@ describe('CccdReviewView', () => {
         caseName="FA-SYNTHETIC.pdf"
         review={null}
         busy={true}
+        loading={false}
         error={{ text: 'Không tải được danh sách ảnh.', kind: 'load' }}
         onAssign={() => {}}
         onDetach={() => {}}
@@ -306,6 +310,7 @@ describe('when the card workbook could not be read', () => {
         caseName="c1.pdf"
         review={null}
         busy={false}
+        loading={false}
         error={null}
         workbook={failed}
         onAssign={() => undefined}
@@ -328,6 +333,7 @@ describe('when the card workbook could not be read', () => {
         caseName="c1.pdf"
         review={null}
         busy={false}
+        loading={false}
         error={null}
         workbook={failed}
         onAssign={() => undefined}
@@ -348,6 +354,7 @@ describe('when the card workbook could not be read', () => {
         caseName="c1.pdf"
         review={null}
         busy={false}
+        loading={false}
         error={null}
         workbook={{ status: 'ready', candidates: 25, attached: 7, unresolved: 18 }}
         onAssign={() => undefined}
